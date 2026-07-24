@@ -34,6 +34,36 @@ pub struct ProjectScanResult {
 
     /// Existing .env keys (values redacted for safety)
     pub env_keys: Vec<String>,
+
+    /// Locally inferred pipe opportunities discovered from dependencies,
+    /// env keys, and existing compose/services. These are advisory hints for
+    /// init-time AI generation, not runtime-verified endpoints.
+    pub pipe_hints: Vec<PipeHint>,
+}
+
+/// Advisory local integration hint derived from static project evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipeHint {
+    pub source: String,
+    pub target: String,
+    pub kind: String,
+    pub confidence: PipeHintConfidence,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipeHintConfidence {
+    High,
+    Medium,
+}
+
+impl PipeHintConfidence {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+        }
+    }
 }
 
 /// Max bytes to read from any single file for AI context.
@@ -151,6 +181,14 @@ pub fn scan_project(project_dir: &Path, fs: &dyn FileSystem) -> ProjectScanResul
         file_contents.insert(filename.clone(), truncated);
     }
 
+    let pipe_hints = discover_local_pipe_hints(
+        &project_name,
+        detection.app_type.to_string(),
+        &root_files,
+        &file_contents,
+        &env_keys,
+    );
+
     ProjectScanResult {
         detection,
         root_files,
@@ -159,7 +197,185 @@ pub fn scan_project(project_dir: &Path, fs: &dyn FileSystem) -> ProjectScanResul
         existing_dockerfile,
         existing_compose,
         env_keys,
+        pipe_hints,
     }
+}
+
+fn discover_local_pipe_hints(
+    project_name: &str,
+    detected_app_type: String,
+    root_files: &[String],
+    file_contents: &HashMap<String, String>,
+    env_keys: &[String],
+) -> Vec<PipeHint> {
+    let mut hints = Vec::new();
+    let lower_env_keys: Vec<String> = env_keys.iter().map(|k| k.to_lowercase()).collect();
+
+    let package_json = file_contents
+        .get("package.json")
+        .map(|c| c.to_lowercase())
+        .unwrap_or_default();
+    let requirements = file_contents
+        .get("requirements.txt")
+        .map(|c| c.to_lowercase())
+        .unwrap_or_default();
+    let pyproject = file_contents
+        .get("pyproject.toml")
+        .map(|c| c.to_lowercase())
+        .unwrap_or_default();
+    let compose = file_contents
+        .get("docker-compose.yml")
+        .or_else(|| file_contents.get("docker-compose.yaml"))
+        .or_else(|| file_contents.get("compose.yml"))
+        .or_else(|| file_contents.get("compose.yaml"))
+        .map(|c| c.to_lowercase())
+        .unwrap_or_default();
+
+    let mut push_hint =
+        |target: &str, kind: &str, confidence: PipeHintConfidence, evidence: Vec<String>| {
+            if evidence.is_empty() {
+                return;
+            }
+            hints.push(PipeHint {
+                source: project_name.to_string(),
+                target: target.to_string(),
+                kind: kind.to_string(),
+                confidence,
+                evidence,
+            });
+        };
+
+    let mut webhook_evidence = Vec::new();
+    if package_json.contains("webhook")
+        || requirements.contains("webhook")
+        || pyproject.contains("webhook")
+    {
+        webhook_evidence.push("webhook-related dependency detected".to_string());
+    }
+    if lower_env_keys.iter().any(|k| k.contains("webhook")) {
+        webhook_evidence.push("env keys reference webhooks".to_string());
+    }
+    if lower_env_keys.iter().any(|k| k.contains("slack")) {
+        webhook_evidence.push("env keys reference Slack integration".to_string());
+    }
+    if lower_env_keys.iter().any(|k| k.contains("discord")) {
+        webhook_evidence.push("env keys reference Discord integration".to_string());
+    }
+    if !webhook_evidence.is_empty() {
+        push_hint(
+            "external-webhook",
+            "webhook",
+            PipeHintConfidence::Medium,
+            webhook_evidence,
+        );
+    }
+
+    let mut postgres_evidence = Vec::new();
+    if compose.contains("postgres") {
+        postgres_evidence.push("compose references postgres".to_string());
+    }
+    if lower_env_keys
+        .iter()
+        .any(|k| k == "database_url" || k.contains("postgres"))
+    {
+        postgres_evidence.push("env keys reference postgres/database".to_string());
+    }
+    if !postgres_evidence.is_empty() {
+        push_hint(
+            "postgres",
+            "database",
+            PipeHintConfidence::High,
+            postgres_evidence,
+        );
+    }
+
+    let mut redis_evidence = Vec::new();
+    if compose.contains("redis") {
+        redis_evidence.push("compose references redis".to_string());
+    }
+    if lower_env_keys
+        .iter()
+        .any(|k| k == "redis_url" || k.contains("redis"))
+    {
+        redis_evidence.push("env keys reference redis".to_string());
+    }
+    if !redis_evidence.is_empty() {
+        push_hint(
+            "redis",
+            "cache-or-queue",
+            PipeHintConfidence::High,
+            redis_evidence,
+        );
+    }
+
+    let mut qdrant_evidence = Vec::new();
+    if compose.contains("qdrant") {
+        qdrant_evidence.push("compose references qdrant".to_string());
+    }
+    if lower_env_keys.iter().any(|k| k.contains("qdrant")) {
+        qdrant_evidence.push("env keys reference qdrant".to_string());
+    }
+    if !qdrant_evidence.is_empty() {
+        push_hint(
+            "qdrant",
+            "vector-store",
+            PipeHintConfidence::High,
+            qdrant_evidence,
+        );
+    }
+
+    let mut llm_evidence = Vec::new();
+    if package_json.contains("openai")
+        || requirements.contains("openai")
+        || pyproject.contains("openai")
+    {
+        llm_evidence.push("OpenAI dependency detected".to_string());
+    }
+    if package_json.contains("anthropic")
+        || requirements.contains("anthropic")
+        || pyproject.contains("anthropic")
+    {
+        llm_evidence.push("Anthropic dependency detected".to_string());
+    }
+    if compose.contains("ollama") || lower_env_keys.iter().any(|k| k.contains("ollama")) {
+        llm_evidence.push("local Ollama usage detected".to_string());
+    }
+    if !llm_evidence.is_empty() {
+        push_hint(
+            "llm-provider",
+            "ai-provider",
+            PipeHintConfidence::Medium,
+            llm_evidence,
+        );
+    }
+
+    let mut frontend_api_evidence = Vec::new();
+    let looks_like_frontend = detected_app_type == "node"
+        && root_files.iter().any(|f| {
+            f == "next.config.js"
+                || f == "next.config.mjs"
+                || f == "vite.config.ts"
+                || f == "vite.config.js"
+        });
+    if looks_like_frontend {
+        frontend_api_evidence.push("frontend framework config detected".to_string());
+    }
+    if lower_env_keys
+        .iter()
+        .any(|k| k.contains("api_url") || k.contains("api_base") || k.contains("backend_url"))
+    {
+        frontend_api_evidence.push("env keys reference backend/api URL".to_string());
+    }
+    if !frontend_api_evidence.is_empty() {
+        push_hint(
+            "backend-api",
+            "http-api",
+            PipeHintConfidence::Medium,
+            frontend_api_evidence,
+        );
+    }
+
+    hints
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -168,47 +384,94 @@ pub fn scan_project(project_dir: &Path, fs: &dyn FileSystem) -> ProjectScanResul
 
 /// System prompt that instructs the AI how to generate stacker.yml.
 const SYSTEM_PROMPT: &str = "\
-You are an expert DevOps engineer integrated into the `stacker` CLI tool. \
-Your job is to generate a complete, production-ready `stacker.yml` configuration \
-based on the project files and context provided.
+You are an expert DevOps engineer. Generate a `stacker.yml` configuration file.
 
-The `stacker.yml` schema supports these top-level keys:
+IMPORTANT: You are generating stacker.yml, NOT docker-compose.yml.
+- stacker.yml has top-level keys: `name:`, `app:`, `services:`, `proxy:`, `deploy:`, `monitoring:`
+- docker-compose has top-level keys: `version:`, `services:`, `networks:`, `volumes:`
+- DO NOT output docker-compose format. DO NOT include `version:`, top-level `networks:`, or top-level `volumes:`.
+- Convert any docker-compose you see into stacker.yml format: the main app goes in `app:`, infra databases go in `services:`.
+
+CORRECT example of a stacker.yml with a public image:
+---
+name: myapp
+deploy:
+  target: local
+app:
+  type: custom
+  image: myapp/myapp:latest
+  ports:
+    - \"8080:8080\"
+  environment:
+    APP_PORT: \"8080\"
+services:
+  - name: postgres
+    image: postgres:16-alpine
+    ports:
+      - \"127.0.0.1:5432:5432\"
+    environment:
+      POSTGRES_PASSWORD: \"${DB_PASSWORD}\"
+    healthcheck:
+      test: \"CMD-SHELL pg_isready -U postgres\"
+      interval: 5s
+      timeout: 2s
+      retries: 10
+---
+
+stacker.yml schema:
 - name: (string, required) Project name
 - version: (string) Version label
 - app: Application source config
   - type: static|node|python|rust|go|php|custom
   - path: Source directory (default '.')
-  - dockerfile: Path to custom Dockerfile
-  - image: Pre-built Docker image
+  - image: Pre-built Docker image (preferred when available)
+  - dockerfile: Path to custom Dockerfile (only when no public image exists)
   - build: { context: '.', args: { KEY: VALUE } }
-- services: Array of sidecar containers
-  - name, image, ports[], environment{}, volumes[], depends_on[]
-- proxy: Reverse proxy config
-  - type: nginx|nginx-proxy-manager|traefik|none
-  - auto_detect: bool
-  - domains: [{ domain, ssl: auto|manual|off, upstream }]
-- deploy:
-  - target: local|cloud|server
-  - cloud: { provider: hetzner|digitalocean|aws|linode|vultr, orchestrator: local|remote, region, size, ssh_key }
-  - server: { host (REQUIRED), user (default 'root'), port (default 22), ssh_key }
-  - registry: { username, password, server } — Docker registry credentials for private images
-  - compose_file: path to existing docker-compose (skips generation)
+  - ports: [\"host:container\"] port mappings
+  - volumes: [\"./host:/container\"] volume mounts
+  - environment: { KEY: VALUE } env vars
+  - command: Override the container CMD
+  - healthcheck: { test, interval, timeout, retries }
+- services: Array of INFRASTRUCTURE containers ONLY (never the main app)
+  - name, image (REQUIRED), ports[], environment{}, volumes[], depends_on[], healthcheck
+- proxy: { type: nginx|nginx-proxy-manager|traefik|none, auto_detect: bool, domains: [...] }
+- deploy: { target: local|cloud|server, compose_file, cloud: {...}, server: {...} }
 - monitoring: { status_panel: bool, healthcheck: { endpoint, interval }, metrics: { enabled, telegraf } }
-- hooks: { pre_build, post_deploy, on_failure } (paths to scripts)
+- hooks: { pre_build, post_deploy, on_failure }
 - env_file: Path to .env file
-- env: { KEY: VALUE } inline environment variables
+- env: { KEY: VALUE }
+- install: { inputs: { commonDomain: example.com } }
+- config_contract: { services: { name: { required: [VAR], secret: [VAR] } } }
 
 Rules:
-1. Output ONLY valid YAML — no markdown fences, no explanations, no comments except brief inline ones.
-2. Use ${VAR_NAME} syntax for secrets and sensitive values (DB passwords, API keys).
-3. Include appropriate services (databases, caches, queues) based on detected dependencies.
-4. Set proper port mappings avoiding conflicts.
-5. Add volumes for data persistence.
-6. Use depends_on for service ordering.
-7. Add healthcheck and monitoring when appropriate.
-8. If a Dockerfile already exists, set app.type to 'custom' and reference it via app.dockerfile.
-9. If a docker-compose already exists, set deploy.compose_file to reference it.
-10. Keep the configuration practical and deployable — don't add services that aren't needed.";
+1. Output ONLY valid YAML — no markdown fences, no explanations, no comments.
+2. THE MAIN APPLICATION goes in the `app:` block with ALL its config:
+   ports, volumes, environment, command, healthcheck — NEVER put it in `services:`.
+   `services:` is ONLY for infrastructure: databases, caches, queues, proxies.
+3. Image selection (app block) — in priority order:
+   a. Prefer `app.image` when a public Docker image exists for this project
+      (check compose files and README for image references like owner/project:tag).
+   b. Use `app.dockerfile` only when NO public image exists and the project
+      needs a custom build (e.g. `build: .` in compose with no image).
+   c. NEVER set both image and dockerfile — they are mutually exclusive.
+   d. When using image, set app.type to 'custom'.
+4. Use ${VAR_NAME} syntax for secrets and sensitive values (DB passwords, API keys).
+5. Bind infrastructure service ports to 127.0.0.1 (e.g. 127.0.0.1:5432:5432)
+   unless the service needs to be accessed externally.
+6. Add healthchecks to infrastructure services:
+   - postgres: pg_isready -U postgres (interval 5s, timeout 2s, retries 10)
+   - redis: redis-cli ping (interval 5s, timeout 2s, retries 10)
+   - mysql/mariadb: mysqladmin ping -h localhost (interval 5s, timeout 2s, retries 10)
+   - mongo: mongosh --eval 'db.adminCommand(\"ping\")' (interval 5s, timeout 2s, retries 10)
+7. Add volumes for data persistence on infrastructure services.
+8. Use depends_on to order startup (app depends on infra services).
+9. Do NOT set deploy.compose_file unless the project has a complex multi-file
+   compose setup that cannot be expressed in stacker.yml.
+10. Detect env vars from compose files and documentation; include them in the
+    app.environment or service.environment blocks.
+11. Keep the config deployable: local target, no cloud config unless requested.
+12. Add monitoring.status_panel: true for production stacks.
+13. Set deploy.target: local by default — this is a local development config.";
 
 /// Expose the system prompt used for AI-based stacker.yml generation.
 pub fn generation_system_prompt() -> &'static str {
@@ -254,6 +517,28 @@ pub fn build_generation_prompt(scan: &ProjectScanResult) -> String {
     // Existing compose content
     if let Some(ref dc) = scan.existing_compose {
         sections.push(format!("--- Existing docker-compose ---\n{}", dc));
+    }
+
+    if !scan.pipe_hints.is_empty() {
+        let formatted = scan
+            .pipe_hints
+            .iter()
+            .map(|hint| {
+                format!(
+                    "- {} -> {} [{}] confidence={} evidence={}",
+                    hint.source,
+                    hint.target,
+                    hint.kind,
+                    hint.confidence.as_str(),
+                    hint.evidence.join("; ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        sections.push(format!(
+            "Potential local pipe / integration hints (advisory, not runtime-verified):\n{}",
+            formatted
+        ));
     }
 
     sections.push(
@@ -304,14 +589,12 @@ pub fn generate_config_with_ai_impl(
 
     // Validate that it's parseable YAML (but don't require it to be a valid StackerConfig
     // yet — the caller will do from_str() and report detailed errors)
-    serde_yaml::from_str::<serde_yaml::Value>(&yaml).map_err(|e| {
-        CliError::AiProviderError {
-            provider: provider.name().to_string(),
-            message: format!(
-                "AI generated invalid YAML: {}. Raw response:\n{}",
-                e, raw_response
-            ),
-        }
+    serde_yaml::from_str::<serde_yaml::Value>(&yaml).map_err(|e| CliError::AiProviderError {
+        provider: provider.name().to_string(),
+        message: format!(
+            "AI generated invalid YAML: {}. Raw response:\n{}",
+            e, raw_response
+        ),
     })?;
 
     Ok(yaml)
@@ -323,19 +606,11 @@ pub fn strip_code_fences(text: &str) -> String {
     let trimmed = text.trim();
 
     // Check for opening fence
-    let without_open = if trimmed.starts_with("```yaml")
-        || trimmed.starts_with("```yml")
-    {
+    let without_open = if trimmed.starts_with("```yaml") || trimmed.starts_with("```yml") {
         // Remove opening fence line
-        trimmed
-            .splitn(2, '\n')
-            .nth(1)
-            .unwrap_or(trimmed)
+        trimmed.splitn(2, '\n').nth(1).unwrap_or(trimmed)
     } else if trimmed.starts_with("```") {
-        trimmed
-            .splitn(2, '\n')
-            .nth(1)
-            .unwrap_or(trimmed)
+        trimmed.splitn(2, '\n').nth(1).unwrap_or(trimmed)
     } else {
         return trimmed.to_string();
     };
@@ -384,6 +659,13 @@ mod tests {
 
         fn list_dir(&self, _path: &Path) -> Result<Vec<String>, std::io::Error> {
             Ok(self.files.clone())
+        }
+
+        fn read_to_string(&self, _path: &Path) -> Result<String, std::io::Error> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "read_to_string not used in ai_scanner tests",
+            ))
         }
     }
 
@@ -485,6 +767,46 @@ mod tests {
         assert!(result.file_contents.is_empty());
     }
 
+    #[test]
+    fn test_discover_local_pipe_hints_from_env_and_compose() {
+        let mut file_contents = HashMap::new();
+        file_contents.insert(
+            "docker-compose.yml".to_string(),
+            "services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n"
+                .to_string(),
+        );
+
+        let hints = discover_local_pipe_hints(
+            "openclaw-app",
+            "node".to_string(),
+            &["docker-compose.yml".to_string()],
+            &file_contents,
+            &["DATABASE_URL".to_string(), "REDIS_URL".to_string()],
+        );
+
+        assert!(hints
+            .iter()
+            .any(|h| h.target == "postgres" && h.kind == "database"));
+        assert!(hints
+            .iter()
+            .any(|h| h.target == "redis" && h.kind == "cache-or-queue"));
+    }
+
+    #[test]
+    fn test_discover_local_pipe_hints_for_frontend_api() {
+        let hints = discover_local_pipe_hints(
+            "frontend-app",
+            "node".to_string(),
+            &["next.config.js".to_string()],
+            &HashMap::new(),
+            &["NEXT_PUBLIC_API_URL".to_string()],
+        );
+
+        assert!(hints
+            .iter()
+            .any(|h| h.target == "backend-api" && h.kind == "http-api"));
+    }
+
     // ── build_generation_prompt ─────────────────────
 
     #[test]
@@ -574,6 +896,26 @@ mod tests {
         let prompt = build_generation_prompt(&scan);
         assert!(prompt.contains("package.json"));
         assert!(prompt.contains("express"));
+    }
+
+    #[test]
+    fn test_prompt_includes_pipe_hints() {
+        let scan = ProjectScanResult {
+            project_name: "openclaw-app".to_string(),
+            pipe_hints: vec![PipeHint {
+                source: "openclaw-app".to_string(),
+                target: "postgres".to_string(),
+                kind: "database".to_string(),
+                confidence: PipeHintConfidence::High,
+                evidence: vec!["env keys reference postgres/database".to_string()],
+            }],
+            ..Default::default()
+        };
+
+        let prompt = build_generation_prompt(&scan);
+        assert!(prompt.contains("Potential local pipe / integration hints"));
+        assert!(prompt.contains("openclaw-app -> postgres [database]"));
+        assert!(prompt.contains("confidence=high"));
     }
 
     // ── generate_config_with_ai_impl ────────────────
@@ -695,7 +1037,10 @@ env:
         assert_eq!(config.services.len(), 2);
         assert_eq!(config.services[0].name, "postgres");
         assert_eq!(config.services[1].name, "redis");
-        assert_eq!(config.proxy.proxy_type, crate::cli::config_parser::ProxyType::Nginx);
+        assert_eq!(
+            config.proxy.proxy_type,
+            crate::cli::config_parser::ProxyType::Nginx
+        );
         assert!(config.monitoring.status_panel);
     }
 

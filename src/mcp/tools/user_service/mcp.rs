@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use crate::connectors::user_service::UserServiceClient;
+use crate::connectors::user_service::{UserServiceClient, UserServiceConnector};
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
 use serde::Deserialize;
@@ -280,7 +280,8 @@ impl ToolHandler for GetNotificationsTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "get_notifications".to_string(),
-            description: "List user notifications with optional pagination and unread filter".to_string(),
+            description: "List user notifications with optional pagination and unread filter"
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

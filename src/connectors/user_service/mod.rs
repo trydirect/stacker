@@ -6,12 +6,11 @@ pub mod deployment_resolver;
 pub mod deployment_validator;
 pub mod init;
 pub mod install;
-pub mod marketplace_webhook;
 pub mod marketplace_search;
+pub mod marketplace_webhook;
 pub mod mock;
 pub mod notifications;
 pub mod plan;
-pub mod profile;
 pub mod stack;
 pub mod types;
 pub mod utils;
@@ -27,8 +26,8 @@ pub use marketplace_webhook::{
 };
 pub use mock::MockUserServiceConnector;
 pub use types::{
-    CategoryInfo, PlanDefinition, ProductInfo, StackResponse, UserPlanInfo, UserProduct,
-    UserProfile,
+    AuthorizationHandle, BillingCapability, CategoryInfo, PlanDefinition, ProductInfo,
+    StackResponse, UserPlanInfo, UserProduct, UserProfile,
 };
 
 #[cfg(test)]

@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use crate::services::{ProjectAppService, VaultService};
 
-use super::{merge_project_app, project_app_from_post, store_configs_to_vault_from_params};
+use super::{
+    is_platform_managed_app_code, merge_project_app, project_app_from_post,
+    store_configs_to_vault_from_params,
+};
 
 /// Upsert app config and sync to Vault for deploy_app
 ///
@@ -16,6 +19,14 @@ pub(crate) async fn upsert_app_config_for_deploy(
     parameters: &serde_json::Value,
     deployment_hash: &str,
 ) {
+    if is_platform_managed_app_code(app_code) {
+        tracing::info!(
+            "[UPSERT_APP_CONFIG] Skipping platform-managed app code: {}",
+            app_code
+        );
+        return;
+    }
+
     tracing::info!(
         "[UPSERT_APP_CONFIG] START - deployment_id: {}, app_code: {}, deployment_hash: {}",
         deployment_id,
@@ -23,42 +34,44 @@ pub(crate) async fn upsert_app_config_for_deploy(
         deployment_hash
     );
     tracing::info!(
-        "[UPSERT_APP_CONFIG] Parameters: {}",
-        serde_json::to_string_pretty(parameters).unwrap_or_else(|_| parameters.to_string())
+        "[UPSERT_APP_CONFIG] Parameters summary - has_env: {}, config_files: {}, has_image: {}",
+        parameters.get("env").is_some(),
+        parameters
+            .get("config_files")
+            .and_then(|value| value.as_array())
+            .map(|files| files.len())
+            .unwrap_or(0),
+        parameters.get("image").is_some()
     );
 
     // Resolve the actual deployment record ID from deployment_hash
     // (deployment_id parameter is actually project_id in the current code)
-    let actual_deployment_id = match crate::db::deployment::fetch_by_deployment_hash(
-        pg_pool,
-        deployment_hash,
-    )
-    .await
-    {
-        Ok(Some(dep)) => {
-            tracing::info!(
-                "[UPSERT_APP_CONFIG] Resolved deployment.id={} from hash={}",
-                dep.id,
-                deployment_hash
-            );
-            Some(dep.id)
-        }
-        Ok(None) => {
-            tracing::warn!(
+    let actual_deployment_id =
+        match crate::db::deployment::fetch_by_deployment_hash(pg_pool, deployment_hash).await {
+            Ok(Some(dep)) => {
+                tracing::info!(
+                    "[UPSERT_APP_CONFIG] Resolved deployment.id={} from hash={}",
+                    dep.id,
+                    deployment_hash
+                );
+                Some(dep.id)
+            }
+            Ok(None) => {
+                tracing::warn!(
                 "[UPSERT_APP_CONFIG] No deployment found for hash={}, deployment_id will be NULL",
                 deployment_hash
             );
-            None
-        }
-        Err(e) => {
-            tracing::warn!(
-                "[UPSERT_APP_CONFIG] Failed to resolve deployment for hash={}: {}",
-                deployment_hash,
-                e
-            );
-            None
-        }
-    };
+                None
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "[UPSERT_APP_CONFIG] Failed to resolve deployment for hash={}: {}",
+                    deployment_hash,
+                    e
+                );
+                None
+            }
+        };
 
     // Fetch project from DB
     let project = match crate::db::project::fetch(pg_pool, deployment_id).await {

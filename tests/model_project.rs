@@ -1,7 +1,5 @@
-use stacker::forms::project::App;
 use stacker::forms::project::DockerImage;
 use stacker::forms::project::ProjectForm;
-use std::collections::HashMap;
 
 //  Unit Test
 
@@ -30,7 +28,7 @@ fn test_deserialize_project() {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/mock_data/custom.json"
     ));
-    let form = serde_json::from_str::<ProjectForm>(&body_str).unwrap();
+    let form = serde_json::from_str::<ProjectForm>(body_str).unwrap();
     println!("{:?}", form);
     // @todo assert required data
 
@@ -70,6 +68,7 @@ fn test_docker_image_only_name_other_empty() {
         dockerhub_name: Some("mysql".to_string()),
         dockerhub_image: Some("".to_string()),
         dockerhub_password: None,
+        dockerhub_tag: None,
     };
     let output = docker_image.to_string();
     assert_eq!(String::from("mysql:latest"), output);
@@ -82,6 +81,7 @@ fn test_docker_image_only_name_other_none() {
         dockerhub_name: Some("mysql".to_string()),
         dockerhub_image: None,
         dockerhub_password: None,
+        dockerhub_tag: None,
     };
     let output = docker_image.to_string();
     assert_eq!(String::from("mysql:latest"), output);
@@ -93,6 +93,7 @@ fn test_docker_image_namespace_and_repo() {
         dockerhub_name: Some("mysql".to_string()),
         dockerhub_image: Some("".to_string()),
         dockerhub_password: None,
+        dockerhub_tag: None,
     };
     let output = docker_image.to_string();
     assert_eq!(String::from("trydirect/mysql:latest"), output);
@@ -105,6 +106,7 @@ fn test_docker_image_namespace_and_repo_tag() {
         dockerhub_name: Some("mysql:8.1".to_string()),
         dockerhub_image: Some("".to_string()),
         dockerhub_password: None,
+        dockerhub_tag: None,
     };
     let output = docker_image.to_string();
     assert_eq!(String::from("trydirect/mysql:8.1"), output);
@@ -116,6 +118,7 @@ fn test_docker_image_only_image() {
         dockerhub_name: None,
         dockerhub_image: Some("trydirect/mysql:stable".to_string()),
         dockerhub_password: None,
+        dockerhub_tag: None,
     };
     let output = docker_image.to_string();
     assert_eq!(String::from("trydirect/mysql:stable"), output);
@@ -128,6 +131,7 @@ fn test_docker_image_only_image_other_empty() {
         dockerhub_name: Some("".to_string()),
         dockerhub_image: Some("trydirect/mysql:stable".to_string()),
         dockerhub_password: None,
+        dockerhub_tag: None,
     };
     let output = docker_image.to_string();
     assert_eq!(String::from("trydirect/mysql:stable"), output);
@@ -139,6 +143,7 @@ fn test_docker_repo_name_with_tag_other_none() {
         dockerhub_name: Some("mysql:stable".to_string()),
         dockerhub_image: None,
         dockerhub_password: None,
+        dockerhub_tag: None,
     };
     let output = docker_image.to_string();
     assert_eq!(String::from("mysql:stable"), output);

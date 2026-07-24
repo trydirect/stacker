@@ -4,7 +4,7 @@ use std::fmt;
 use std::path::Path;
 
 use crate::cli::config_parser::{
-    AppType, ProxyType, ServiceDefinition, StackerConfig,
+    AppType, ComposeHealthcheck, DomainConfig, ProxyType, ServiceDefinition, StackerConfig,
 };
 use crate::cli::error::CliError;
 
@@ -24,8 +24,13 @@ pub struct ComposeService {
     pub depends_on: Vec<String>,
     pub restart: String,
     pub networks: Vec<String>,
+    pub labels: HashMap<String, String>,
     /// Container runtime (e.g., "kata"). None or "runc" means default.
     pub runtime: Option<String>,
+    /// Override the container CMD (docker-compose `command:`).
+    pub command: Option<String>,
+    /// Docker compose healthcheck for this service.
+    pub healthcheck: Option<ComposeHealthcheck>,
 }
 
 impl Default for ComposeService {
@@ -41,7 +46,10 @@ impl Default for ComposeService {
             depends_on: Vec::new(),
             restart: "unless-stopped".to_string(),
             networks: vec!["app-network".to_string()],
+            labels: HashMap::new(),
             runtime: None,
+            command: None,
+            healthcheck: None,
         }
     }
 }
@@ -49,15 +57,26 @@ impl Default for ComposeService {
 /// Convert a `ServiceDefinition` (from stacker.yml) into a `ComposeService`.
 impl From<&ServiceDefinition> for ComposeService {
     fn from(svc: &ServiceDefinition) -> Self {
-        Self {
+        let mut compose_service = Self {
             name: svc.name.clone(),
             image: Some(svc.image.clone()),
             ports: svc.ports.clone(),
             environment: svc.environment.clone(),
             volumes: svc.volumes.clone(),
             depends_on: svc.depends_on.clone(),
+            command: svc.command.clone(),
+            healthcheck: svc.healthcheck.clone(),
             ..Default::default()
-        }
+        };
+        crate::helpers::stacker_labels::insert_runtime_labels(
+            &mut compose_service.labels,
+            None::<String>,
+            None,
+            crate::helpers::stacker_labels::SCOPE_PROJECT,
+            &svc.name,
+            &svc.name,
+        );
+        compose_service
     }
 }
 
@@ -69,6 +88,7 @@ impl From<&ServiceDefinition> for ComposeService {
 pub struct ComposeDefinition {
     pub services: Vec<ComposeService>,
     pub networks: Vec<String>,
+    pub external_networks: Vec<String>,
     pub volumes: Vec<String>,
 }
 
@@ -77,6 +97,7 @@ impl Default for ComposeDefinition {
         Self {
             services: Vec::new(),
             networks: vec!["app-network".to_string()],
+            external_networks: Vec::new(),
             volumes: Vec::new(),
         }
     }
@@ -94,8 +115,23 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
         let mut named_volumes: Vec<String> = Vec::new();
 
         // --- Main app service ---
-        let app_service = build_app_service(config);
-        compose.services.push(app_service);
+        // A marketplace-generated config describes its whole stack in
+        // `services:` — there is no local application to build. Synthesizing an
+        // `app` service there produces a phantom `build: .stacker/Dockerfile`
+        // whose context is never shipped to the remote host, failing the
+        // deploy with "lstat /home/.../.stacker: no such file or directory".
+        // Skip it unless the app section carries an explicit source.
+        if config_has_buildable_app(config) {
+            let app_service = build_app_service(config);
+            for vol in &app_service.volumes {
+                if let Some(named) = extract_named_volume(vol) {
+                    if !named_volumes.contains(&named) {
+                        named_volumes.push(named);
+                    }
+                }
+            }
+            compose.services.push(app_service);
+        }
 
         // --- Additional services (databases, caches, etc.) ---
         for svc_def in &config.services {
@@ -121,6 +157,33 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
         // --- Set top-level volumes ---
         compose.volumes = named_volumes;
 
+        // --- Auto-inject default_network for NginxProxyManager-proxied services ---
+        if config.proxy.proxy_type == ProxyType::NginxProxyManager
+            && !config.proxy.domains.is_empty()
+        {
+            let proxied: Vec<String> = config
+                .proxy
+                .domains
+                .iter()
+                .filter_map(|d| upstream_service_name_from_domain(d))
+                .collect();
+
+            let mut injected = false;
+            for svc in compose.services.iter_mut() {
+                if proxied.contains(&svc.name)
+                    && !svc.networks.contains(&"default_network".to_string())
+                {
+                    svc.networks.push("default_network".to_string());
+                    injected = true;
+                }
+            }
+            if injected {
+                compose
+                    .external_networks
+                    .push("default_network".to_string());
+            }
+        }
+
         Ok(compose)
     }
 }
@@ -129,11 +192,57 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
 // Internal construction helpers (SRP: each builds one aspect)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Whether the config's `app` section should be materialized as a service.
+///
+/// `app` is a non-optional field, so every config carries a default `AppSource`
+/// even when none was declared. Synthesizing a service from that default yields
+/// a phantom `app` that builds from `.stacker/Dockerfile` — a context that
+/// doesn't exist for a services-only stack (a marketplace stack, or a
+/// hand-written `stacker.yml` with only `services:`), failing the remote deploy
+/// with "lstat .../.stacker: no such file or directory".
+///
+/// The app is materialized when:
+/// - it declares an explicit source (`image` / `dockerfile` / `build`), or
+/// - the source config actually declared an `app:` section (`app_present`), or
+/// - there are no services to deploy (keep it so the compose isn't empty).
+///
+/// This is origin-independent: it fixes both marketplace-generated and
+/// user-authored services-only configs.
+fn config_has_buildable_app(config: &StackerConfig) -> bool {
+    if config.app.image.is_some() || config.app.dockerfile.is_some() || config.app.build.is_some() {
+        return true;
+    }
+    if config.app_present {
+        return true;
+    }
+    config.services.is_empty()
+}
+
 fn build_app_service(config: &StackerConfig) -> ComposeService {
     let mut svc = ComposeService {
         name: "app".to_string(),
         ..Default::default()
     };
+    // The compose service (and its DNS name) stays `app` so intra-project
+    // references keep working, but the `my.stacker.service` label carries the
+    // project code so the status-panel agent can resolve this container by the
+    // app code it queries with (`stacker pipe scan --app <code>`). Previously
+    // this was hardcoded to "app" and never matched the project code.
+    let app_code = crate::helpers::stacker_labels::sanitize_service_code(
+        config
+            .project
+            .identity
+            .as_deref()
+            .unwrap_or(config.name.as_str()),
+    );
+    crate::helpers::stacker_labels::insert_runtime_labels(
+        &mut svc.labels,
+        None::<String>,
+        None,
+        crate::helpers::stacker_labels::SCOPE_PROJECT,
+        &app_code,
+        "app",
+    );
 
     // If user specifies an image directly, use it.
     if let Some(ref img) = config.app.image {
@@ -156,6 +265,12 @@ fn build_app_service(config: &StackerConfig) -> ComposeService {
 
     // Volumes from app section
     svc.volumes.extend(config.app.volumes.clone());
+
+    // Command override from app section
+    svc.command = config.app.command.clone();
+
+    // Healthcheck from app section
+    svc.healthcheck = config.app.healthcheck.clone();
 
     // Merge environment: top-level env first, then app-level (app wins)
     for (k, v) in &config.env {
@@ -195,7 +310,7 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
             Some(svc)
         }
         ProxyType::NginxProxyManager => {
-            let svc = ComposeService {
+            let mut svc = ComposeService {
                 name: "proxy-manager".to_string(),
                 image: Some("jc21/nginx-proxy-manager:latest".to_string()),
                 ports: vec![
@@ -206,6 +321,14 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
                 depends_on: vec!["app".to_string()],
                 ..Default::default()
             };
+            crate::helpers::stacker_labels::insert_runtime_labels(
+                &mut svc.labels,
+                None::<String>,
+                None,
+                crate::helpers::stacker_labels::SCOPE_PLATFORM,
+                "nginx_proxy_manager",
+                "nginx-proxy-manager",
+            );
             Some(svc)
         }
         ProxyType::Traefik => {
@@ -224,6 +347,21 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
     }
 }
 
+/// Extract the service (host) name from a DomainConfig upstream like `svc:3000` or `http://svc:3000`.
+fn upstream_service_name_from_domain(domain: &DomainConfig) -> Option<String> {
+    let s = domain
+        .upstream
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let host = s.split('/').next()?;
+    let name = host.split(':').next()?;
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
 /// Extract a named volume from a volume string like "my-data:/var/lib/data".
 /// Returns `None` for bind mounts (starting with `.` or `/`).
 fn extract_named_volume(vol_str: &str) -> Option<String> {
@@ -235,6 +373,14 @@ fn extract_named_volume(vol_str: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Quote a value for YAML output by wrapping it in double quotes.
+///
+/// This handles strings that contain spaces, colons, or special characters
+/// that would otherwise break YAML parsing (e.g. `command:`, `healthcheck.test:`).
+fn yaml_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -285,6 +431,10 @@ impl ComposeDefinition {
                 }
             }
 
+            if let Some(ref cmd) = svc.command {
+                out.push_str(&format!("    command: {}\n", yaml_quote(cmd)));
+            }
+
             if !svc.volumes.is_empty() {
                 out.push_str("    volumes:\n");
                 for v in &svc.volumes {
@@ -299,6 +449,14 @@ impl ComposeDefinition {
                 }
             }
 
+            if let Some(ref hc) = svc.healthcheck {
+                out.push_str("    healthcheck:\n");
+                out.push_str(&format!("      test: {}\n", yaml_quote(&hc.test)));
+                out.push_str(&format!("      interval: {}\n", hc.interval));
+                out.push_str(&format!("      timeout: {}\n", hc.timeout));
+                out.push_str(&format!("      retries: {}\n", hc.retries));
+            }
+
             out.push_str(&format!("    restart: {}\n", svc.restart));
 
             if !svc.networks.is_empty() {
@@ -308,14 +466,26 @@ impl ComposeDefinition {
                 }
             }
 
+            if !svc.labels.is_empty() {
+                out.push_str("    labels:\n");
+                let mut keys: Vec<&String> = svc.labels.keys().collect();
+                keys.sort();
+                for k in keys {
+                    out.push_str(&format!("      {}: \"{}\"\n", k, svc.labels[k]));
+                }
+            }
+
             out.push('\n');
         }
 
         // Top-level networks
-        if !self.networks.is_empty() {
+        if !self.networks.is_empty() || !self.external_networks.is_empty() {
             out.push_str("networks:\n");
             for n in &self.networks {
                 out.push_str(&format!("  {}:\n    driver: bridge\n", n));
+            }
+            for n in &self.external_networks {
+                out.push_str(&format!("  {}:\n    external: true\n", n));
             }
             out.push('\n');
         }
@@ -360,7 +530,7 @@ impl fmt::Display for ComposeDefinition {
 mod tests {
     use super::*;
     use crate::cli::config_parser::{
-        AppSource, ConfigBuilder, DeployConfig, ProxyConfig, SslMode,
+        AppSource, ConfigBuilder, ConfigOrigin, DeployConfig, DomainConfig, ProxyConfig, SslMode,
     };
     use std::collections::HashMap;
 
@@ -379,6 +549,29 @@ mod tests {
         assert_eq!(compose.services.len(), 1);
         assert_eq!(compose.services[0].name, "app");
         assert!(compose.services[0].ports.contains(&"80:80".to_string()));
+    }
+
+    #[test]
+    fn app_service_label_carries_project_code_not_hardcoded_app() {
+        let config = minimal_config(AppType::Static);
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let app = &compose.services[0];
+        // Service name and DNS stay "app" so intra-project references keep working.
+        assert_eq!(app.name, "app");
+        assert_eq!(
+            app.labels
+                .get(crate::helpers::stacker_labels::DNS)
+                .map(String::as_str),
+            Some("app")
+        );
+        // The agent-resolution label carries the project code, not "app", so
+        // `stacker pipe scan --app <code>` can resolve this container.
+        assert_eq!(
+            app.labels
+                .get(crate::helpers::stacker_labels::SERVICE)
+                .map(String::as_str),
+            Some("test-app")
+        );
     }
 
     #[test]
@@ -404,6 +597,116 @@ mod tests {
         assert!(app.image.is_none());
     }
 
+    fn service_names(config: &StackerConfig) -> Vec<String> {
+        ComposeDefinition::try_from(config)
+            .unwrap()
+            .services
+            .iter()
+            .map(|s| s.name.clone())
+            .collect()
+    }
+
+    // A services-only config with no `app:` section must NOT get a phantom
+    // `app` (which would build from an unshipped `.stacker/Dockerfile`). This
+    // holds regardless of origin — both a hand-written user config (e.g.
+    // screego) and a marketplace-generated one.
+    #[test]
+    fn services_only_config_without_app_section_omits_phantom_app() {
+        let yaml = "\
+name: screego
+services:
+  screego:
+    image: screego/server:latest
+    ports:
+      - \"5050:5050\"
+";
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert!(!config.app_present);
+        let names = service_names(&config);
+        assert!(
+            !names.contains(&"app".to_string()),
+            "services-only config must not synthesize an app service, got {:?}",
+            names
+        );
+        assert!(names.contains(&"screego".to_string()));
+    }
+
+    // Same shape, but marketplace-origin (the ghost case) — identical result.
+    #[test]
+    fn marketplace_services_only_config_omits_phantom_app() {
+        let yaml = "\
+# @stacker-origin: marketplace
+name: ghost
+services:
+  ghost:
+    image: ghost:5-alpine
+    ports:
+      - \"2368:2368\"
+";
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert_eq!(config.origin, ConfigOrigin::MarketplaceGenerated);
+        assert!(!config.app_present);
+        let names = service_names(&config);
+        assert!(!names.contains(&"app".to_string()));
+        assert!(names.contains(&"ghost".to_string()));
+    }
+
+    // An explicit `app:` section is always honored, even alongside services.
+    #[test]
+    fn config_with_declared_app_section_keeps_app() {
+        let yaml = "\
+name: myproj
+app:
+  type: node
+services:
+  db:
+    image: postgres:16
+";
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert!(config.app_present);
+        let names = service_names(&config);
+        assert!(
+            names.contains(&"app".to_string()),
+            "declared app must be kept: {:?}",
+            names
+        );
+        assert!(names.contains(&"db".to_string()));
+    }
+
+    // An explicit image source keeps the app even without an `app:` key path
+    // through the builder.
+    #[test]
+    fn config_with_explicit_app_image_keeps_app_service() {
+        let mut config = minimal_config(AppType::Static);
+        config.app_present = false; // simulate no declared app: section
+        config.app.image = Some("myorg/app:1.0".to_string());
+        config.services = vec![ServiceDefinition {
+            name: "db".to_string(),
+            image: "postgres:16".to_string(),
+            ports: vec![],
+            environment: HashMap::new(),
+            volumes: vec![],
+            depends_on: vec![],
+            command: None,
+            healthcheck: None,
+        }];
+
+        let names = service_names(&config);
+        assert!(names.contains(&"app".to_string()));
+        assert!(names.contains(&"db".to_string()));
+    }
+
+    // No services and no app declared: keep the fallback app so the compose is
+    // never empty.
+    #[test]
+    fn config_without_services_or_app_keeps_app_fallback() {
+        let yaml = "name: bare\n";
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert!(!config.app_present);
+        assert!(config.services.is_empty());
+        assert!(service_names(&config).contains(&"app".to_string()));
+    }
+
     #[test]
     fn test_compose_app_service_with_explicit_image() {
         let config = ConfigBuilder::new()
@@ -427,6 +730,8 @@ mod tests {
             environment: HashMap::from([("POSTGRES_PASSWORD".into(), "secret".into())]),
             volumes: vec!["pg-data:/var/lib/postgresql/data".into()],
             depends_on: Vec::new(),
+            command: None,
+            healthcheck: None,
         };
         let config = ConfigBuilder::new()
             .name("with-db")
@@ -490,10 +795,7 @@ mod tests {
         let compose = ComposeDefinition::try_from(&config).unwrap();
         let traefik = compose.services.iter().find(|s| s.name == "traefik");
         assert!(traefik.is_some());
-        assert_eq!(
-            traefik.unwrap().image.as_deref(),
-            Some("traefik:v2.10")
-        );
+        assert_eq!(traefik.unwrap().image.as_deref(), Some("traefik:v2.10"));
     }
 
     #[test]
@@ -531,6 +833,8 @@ mod tests {
             environment: HashMap::new(),
             volumes: vec!["redis-data:/data".into()],
             depends_on: Vec::new(),
+            command: None,
+            healthcheck: None,
         };
         let config = ConfigBuilder::new()
             .name("with-vol")
@@ -557,8 +861,14 @@ mod tests {
 
         let compose = ComposeDefinition::try_from(&config).unwrap();
         let app = &compose.services[0];
-        assert_eq!(app.environment.get("NODE_ENV").map(|s| s.as_str()), Some("production"));
-        assert_eq!(app.environment.get("LOG_LEVEL").map(|s| s.as_str()), Some("debug"));
+        assert_eq!(
+            app.environment.get("NODE_ENV").map(|s| s.as_str()),
+            Some("production")
+        );
+        assert_eq!(
+            app.environment.get("LOG_LEVEL").map(|s| s.as_str()),
+            Some("debug")
+        );
     }
 
     #[test]
@@ -603,6 +913,8 @@ mod tests {
             environment: HashMap::from([("MYSQL_ROOT_PASSWORD".into(), "pass".into())]),
             volumes: vec!["mysql-data:/var/lib/mysql".into()],
             depends_on: Vec::new(),
+            command: None,
+            healthcheck: None,
         };
 
         let compose_svc = ComposeService::from(&svc_def);
@@ -610,8 +922,93 @@ mod tests {
         assert_eq!(compose_svc.image.as_deref(), Some("mysql:8"));
         assert!(compose_svc.ports.contains(&"3306:3306".to_string()));
         assert_eq!(
-            compose_svc.environment.get("MYSQL_ROOT_PASSWORD").map(|s| s.as_str()),
+            compose_svc
+                .environment
+                .get("MYSQL_ROOT_PASSWORD")
+                .map(|s| s.as_str()),
             Some("pass")
+        );
+    }
+
+    #[test]
+    fn service_definition_adds_project_scope_labels() {
+        let svc_def = ServiceDefinition {
+            name: "smtp".into(),
+            image: "trydirect/smtp:latest".into(),
+            ports: Vec::new(),
+            environment: HashMap::new(),
+            volumes: Vec::new(),
+            depends_on: Vec::new(),
+            command: None,
+            healthcheck: None,
+        };
+
+        let compose_svc = ComposeService::from(&svc_def);
+
+        assert_eq!(
+            compose_svc
+                .labels
+                .get(crate::helpers::stacker_labels::SCOPE)
+                .map(String::as_str),
+            Some("project")
+        );
+        assert_eq!(
+            compose_svc
+                .labels
+                .get(crate::helpers::stacker_labels::SERVICE)
+                .map(String::as_str),
+            Some("smtp")
+        );
+        assert_eq!(
+            compose_svc
+                .labels
+                .get(crate::helpers::stacker_labels::DNS)
+                .map(String::as_str),
+            Some("smtp")
+        );
+    }
+
+    #[test]
+    fn app_named_volumes_appear_in_top_level_volumes_block() {
+        let config = ConfigBuilder::new()
+            .name("rustfs")
+            .app_type(AppType::Custom)
+            .app_image("rustfs/rustfs:latest")
+            .app_volumes(vec![
+                "rustfs_data:/data".into(),
+                "rustfs_logs:/app/logs".into(),
+                "./local-config:/etc/config:ro".into(), // bind mount — must NOT appear
+            ])
+            .build()
+            .unwrap();
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+
+        assert!(
+            compose.volumes.contains(&"rustfs_data".to_string()),
+            "rustfs_data should be in top-level volumes"
+        );
+        assert!(
+            compose.volumes.contains(&"rustfs_logs".to_string()),
+            "rustfs_logs should be in top-level volumes"
+        );
+        assert!(
+            !compose.volumes.contains(&"./local-config".to_string()),
+            "bind mount should not appear in top-level volumes"
+        );
+
+        let yaml = compose.render();
+        assert!(
+            yaml.contains("volumes:"),
+            "top-level volumes: block must exist"
+        );
+        assert!(
+            yaml.contains("  rustfs_data:"),
+            "rustfs_data entry must appear"
+        );
+        assert!(
+            yaml.contains("  rustfs_logs:"),
+            "rustfs_logs entry must appear"
         );
     }
 
@@ -644,13 +1041,28 @@ mod tests {
             .unwrap();
 
         let compose = ComposeDefinition::try_from(&config).unwrap();
-        let npm = compose
-            .services
-            .iter()
-            .find(|s| s.name == "proxy-manager");
+        let npm = compose.services.iter().find(|s| s.name == "proxy-manager");
         assert!(npm.is_some());
         let npm = npm.unwrap();
         assert!(npm.ports.contains(&"81:81".to_string())); // NPM admin port
+        assert_eq!(
+            npm.labels
+                .get(crate::helpers::stacker_labels::SCOPE)
+                .map(String::as_str),
+            Some("platform")
+        );
+        assert_eq!(
+            npm.labels
+                .get(crate::helpers::stacker_labels::SERVICE)
+                .map(String::as_str),
+            Some("nginx_proxy_manager")
+        );
+        assert_eq!(
+            npm.labels
+                .get(crate::helpers::stacker_labels::DNS)
+                .map(String::as_str),
+            Some("nginx-proxy-manager")
+        );
     }
 
     #[test]
@@ -664,6 +1076,7 @@ mod tests {
         let def = ComposeDefinition {
             services: vec![svc],
             networks: vec!["app-network".to_string()],
+            external_networks: vec![],
             volumes: vec![],
         };
         let output = def.render();
@@ -685,6 +1098,7 @@ mod tests {
         let def = ComposeDefinition {
             services: vec![svc],
             networks: vec!["app-network".to_string()],
+            external_networks: vec![],
             volumes: vec![],
         };
         let output = def.render();
@@ -692,6 +1106,128 @@ mod tests {
             !output.contains("runtime:"),
             "runc runtime should not appear in:\n{}",
             output
+        );
+    }
+
+    #[test]
+    fn npm_proxy_injects_default_network_into_proxied_service() {
+        let svc = ServiceDefinition {
+            name: "api".into(),
+            image: "myapp:latest".into(),
+            ports: vec!["8080:8080".into()],
+            environment: Default::default(),
+            volumes: vec![],
+            depends_on: vec![],
+            command: None,
+            healthcheck: None,
+        };
+        let config = ConfigBuilder::new()
+            .name("npm-proxied")
+            .app_type(AppType::Node)
+            .add_service(svc)
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::NginxProxyManager,
+                auto_detect: false,
+                domains: vec![DomainConfig {
+                    domain: "api.example.com".into(),
+                    ssl: SslMode::Auto,
+                    upstream: "api:8080".into(),
+                }],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let api_svc = compose.services.iter().find(|s| s.name == "api").unwrap();
+        assert!(
+            api_svc.networks.contains(&"default_network".to_string()),
+            "proxied service should have default_network, got: {:?}",
+            api_svc.networks
+        );
+        assert!(
+            compose
+                .external_networks
+                .contains(&"default_network".to_string()),
+            "default_network should be declared as external"
+        );
+        let yaml = compose.render();
+        assert!(
+            yaml.contains("external: true"),
+            "rendered YAML should declare default_network external:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn npm_proxy_does_not_inject_into_unproxied_service() {
+        let smtp = ServiceDefinition {
+            name: "smtp".into(),
+            image: "trydirect/smtp".into(),
+            ports: vec![],
+            environment: Default::default(),
+            volumes: vec![],
+            depends_on: vec![],
+            command: None,
+            healthcheck: None,
+        };
+        let config = ConfigBuilder::new()
+            .name("partial-proxy")
+            .app_type(AppType::Node)
+            .add_service(smtp)
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::NginxProxyManager,
+                auto_detect: false,
+                domains: vec![DomainConfig {
+                    domain: "app.example.com".into(),
+                    ssl: SslMode::Off,
+                    upstream: "app:3000".into(),
+                }],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let smtp_svc = compose.services.iter().find(|s| s.name == "smtp").unwrap();
+        assert!(
+            !smtp_svc.networks.contains(&"default_network".to_string()),
+            "unproxied service should not get default_network"
+        );
+    }
+
+    #[test]
+    fn non_npm_proxy_does_not_inject_default_network() {
+        let svc = ServiceDefinition {
+            name: "web".into(),
+            image: "nginx:latest".into(),
+            ports: vec![],
+            environment: Default::default(),
+            volumes: vec![],
+            depends_on: vec![],
+            command: None,
+            healthcheck: None,
+        };
+        let config = ConfigBuilder::new()
+            .name("traefik-app")
+            .app_type(AppType::Node)
+            .add_service(svc)
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::Traefik,
+                auto_detect: false,
+                domains: vec![DomainConfig {
+                    domain: "web.example.com".into(),
+                    ssl: SslMode::Auto,
+                    upstream: "web:80".into(),
+                }],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        assert!(
+            compose.external_networks.is_empty(),
+            "Traefik proxy should not inject default_network"
         );
     }
 
@@ -706,6 +1242,7 @@ mod tests {
         let def = ComposeDefinition {
             services: vec![svc],
             networks: vec!["app-network".to_string()],
+            external_networks: vec![],
             volumes: vec![],
         };
         let output = def.render();

@@ -2,6 +2,7 @@ use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models::{PipeInstance, PipeTemplate, User};
 use actix_web::{post, web, Responder, Result};
+use pipe_adapter_sdk::PipeAdapterReference;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use sqlx::PgPool;
@@ -27,8 +28,13 @@ pub struct CreatePipeTemplateRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct CreatePipeInstanceRequest {
-    pub deployment_hash: String,
+    #[serde(default)]
+    pub deployment_hash: Option<String>,
+    #[serde(default)]
+    pub source_adapter: Option<PipeAdapterReference>,
     pub source_container: String,
+    #[serde(default)]
+    pub target_adapter: Option<PipeAdapterReference>,
     #[serde(default)]
     pub target_container: Option<String>,
     #[serde(default)]
@@ -107,27 +113,38 @@ pub async fn create_instance_handler(
     req: web::Json<CreatePipeInstanceRequest>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    if req.deployment_hash.trim().is_empty() {
-        return Err(JsonResponse::<()>::build().bad_request("deployment_hash is required"));
+    // Reject explicitly-provided but empty deployment_hash (distinct from omitting the field)
+    if let Some(hash) = &req.deployment_hash {
+        if hash.trim().is_empty() {
+            return Err(JsonResponse::<()>::build().bad_request("deployment_hash cannot be empty"));
+        }
     }
+
+    let deployment_hash = req
+        .deployment_hash
+        .as_deref()
+        .map(|h| h.trim())
+        .filter(|h| !h.is_empty());
+
     if req.source_container.trim().is_empty() {
         return Err(JsonResponse::<()>::build().bad_request("source_container is required"));
     }
-    if req.target_container.is_none() && req.target_url.is_none() {
+    if req.target_container.is_none() && req.target_url.is_none() && req.target_adapter.is_none() {
         return Err(JsonResponse::<()>::build()
-            .bad_request("either target_container or target_url is required"));
+            .bad_request("either target_container, target_url, or target_adapter is required"));
     }
 
-    // Verify deployment belongs to the requesting user
-    let deployment =
-        db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), req.deployment_hash.trim())
+    // For remote pipes, verify deployment belongs to the requesting user
+    if let Some(hash) = deployment_hash {
+        let deployment = db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), hash)
             .await
             .map_err(|err| JsonResponse::<()>::build().internal_server_error(err))?;
 
-    match &deployment {
-        Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
-        _ => {
-            return Err(JsonResponse::<()>::build().not_found("Deployment not found"));
+        match &deployment {
+            Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
+            _ => {
+                return Err(JsonResponse::<()>::build().not_found("Deployment not found"));
+            }
         }
     }
 
@@ -144,14 +161,27 @@ pub async fn create_instance_handler(
         }
     }
 
-    let mut instance = PipeInstance::new(
-        req.deployment_hash.trim().to_string(),
-        req.source_container.trim().to_string(),
-        user.id.clone(),
-    );
+    let mut instance = match deployment_hash {
+        Some(hash) => PipeInstance::new(
+            hash.to_string(),
+            req.source_container.trim().to_string(),
+            user.id.clone(),
+        ),
+        None => PipeInstance::new_local(req.source_container.trim().to_string(), user.id.clone()),
+    };
 
     if let Some(template_id) = req.template_id {
         instance = instance.with_template(template_id);
+    }
+    if let Some(adapter) = &req.source_adapter {
+        let adapter = serde_json::to_value(adapter)
+            .map_err(|err| JsonResponse::<()>::build().internal_server_error(err.to_string()))?;
+        instance = instance.with_source_adapter(adapter);
+    }
+    if let Some(adapter) = &req.target_adapter {
+        let adapter = serde_json::to_value(adapter)
+            .map_err(|err| JsonResponse::<()>::build().internal_server_error(err.to_string()))?;
+        instance = instance.with_target_adapter(adapter);
     }
     if let Some(target) = &req.target_container {
         instance = instance.with_target_container(target.clone());
@@ -175,7 +205,8 @@ pub async fn create_instance_handler(
 
     tracing::info!(
         instance_id = %saved.id,
-        deployment_hash = %saved.deployment_hash,
+        deployment_hash = ?saved.deployment_hash,
+        is_local = saved.is_local,
         "Pipe instance created by user {}",
         user.id
     );

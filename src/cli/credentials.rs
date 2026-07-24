@@ -122,9 +122,7 @@ impl FileCredentialStore {
     pub fn default_path() -> PathBuf {
         let base = std::env::var("XDG_CONFIG_HOME")
             .map(PathBuf::from)
-            .or_else(|_| {
-                std::env::var("HOME").map(|h| PathBuf::from(h).join(".config"))
-            })
+            .or_else(|_| std::env::var("HOME").map(|h| PathBuf::from(h).join(".config")))
             .unwrap_or_else(|_| PathBuf::from("."));
 
         base.join("stacker").join("credentials.json")
@@ -220,10 +218,7 @@ impl<S: CredentialStore> CredentialsManager<S> {
     /// Load credentials and ensure they are present and not expired.
     /// Returns `CliError::LoginRequired` when absent,
     /// `CliError::TokenExpired` when expired.
-    pub fn require_valid_token(
-        &self,
-        feature: &str,
-    ) -> Result<StoredCredentials, CliError> {
+    pub fn require_valid_token(&self, feature: &str) -> Result<StoredCredentials, CliError> {
         let creds = self.store.load()?.ok_or_else(|| CliError::LoginRequired {
             feature: feature.to_string(),
         })?;
@@ -253,15 +248,42 @@ impl CredentialsManager<FileCredentialStore> {
 // OAuthClient trait — abstraction over HTTP login calls
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Default TryDirect platform API base URL.
-pub const DEFAULT_API_URL: &str = "https://api.try.direct";
-
 /// OAuth token endpoint path (relative to auth_url).
 const TOKEN_ENDPOINT: &str = "/auth/login";
 
 fn is_direct_login_endpoint(auth_url: &str) -> bool {
     let url = auth_url.trim_end_matches('/').to_lowercase();
-    url.ends_with("/auth/login") || url.ends_with("/server/user/auth/login") || url.ends_with("/login")
+    url.ends_with("/auth/login")
+        || url.ends_with("/server/user/auth/login")
+        || url.ends_with("/login")
+}
+
+fn resolve_auth_url(request: &LoginRequest) -> Result<String, CliError> {
+    request
+        .auth_url
+        .clone()
+        .or_else(|| std::env::var("STACKER_AUTH_URL").ok())
+        .or_else(|| std::env::var("STACKER_API_URL").ok())
+        .or_else(|| crate::cli::user_config::UserConfig::load().auth_url)
+        .ok_or_else(|| {
+            CliError::ConfigValidation(
+                "Missing auth URL. Pass `stacker login --auth-url <user-service-url> --server-url <stacker-api-url>` or set STACKER_AUTH_URL (or STACKER_API_URL) and STACKER_URL.".to_string(),
+            )
+        })
+}
+
+fn resolve_server_url(request: &LoginRequest) -> Result<String, CliError> {
+    request
+        .server_url
+        .clone()
+        .or_else(|| std::env::var("STACKER_URL").ok())
+        .or_else(|| crate::cli::user_config::UserConfig::load().server_url)
+        .map(|value| crate::cli::install_runner::normalize_stacker_server_url(&value))
+        .ok_or_else(|| {
+            CliError::ConfigValidation(
+                "Missing Stacker API URL. Pass `stacker login --server-url <stacker-api-url>` (alias: `--api-url`) or set STACKER_URL.".to_string(),
+            )
+        })
 }
 
 /// Parameters for a login request.
@@ -270,6 +292,7 @@ pub struct LoginRequest {
     pub email: String,
     pub password: String,
     pub auth_url: Option<String>,
+    pub server_url: Option<String>,
     pub org: Option<String>,
     pub domain: Option<String>,
 }
@@ -277,8 +300,12 @@ pub struct LoginRequest {
 /// Abstraction over the HTTP call to the OAuth token endpoint.
 /// Production uses `HttpOAuthClient`; tests can inject a mock.
 pub trait OAuthClient: Send + Sync {
-    fn request_token(&self, auth_url: &str, email: &str, password: &str)
-        -> Result<TokenResponse, CliError>;
+    fn request_token(
+        &self,
+        auth_url: &str,
+        email: &str,
+        password: &str,
+    ) -> Result<TokenResponse, CliError>;
 }
 
 /// Production OAuth client using `reqwest::blocking`.
@@ -309,10 +336,7 @@ impl OAuthClient for HttpOAuthClient {
         let resp = if direct_login {
             client
                 .post(&url)
-                .form(&[
-                    ("email", email),
-                    ("password", password),
-                ])
+                .form(&[("email", email), ("password", password)])
                 .send()
         } else {
             client
@@ -361,19 +385,12 @@ pub fn login<S: CredentialStore, O: OAuthClient>(
     oauth: &O,
     request: &LoginRequest,
 ) -> Result<StoredCredentials, CliError> {
-    let env_auth_url = std::env::var("STACKER_AUTH_URL")
-        .ok()
-        .or_else(|| std::env::var("STACKER_API_URL").ok());
-    let auth_url = request
-        .auth_url
-        .as_deref()
-        .or(env_auth_url.as_deref())
-        .unwrap_or(DEFAULT_API_URL);
-
-    let token_resp = oauth.request_token(auth_url, &request.email, &request.password)?;
+    let auth_url = resolve_auth_url(request)?;
+    let server_url = resolve_server_url(request)?;
+    let token_resp = oauth.request_token(&auth_url, &request.email, &request.password)?;
     let mut creds = StoredCredentials::from(token_resp);
     creds.email = Some(request.email.clone());
-    creds.server_url = Some(auth_url.to_string());
+    creds.server_url = Some(server_url);
     creds.org = request.org.clone();
     creds.domain = request.domain.clone();
 
@@ -390,6 +407,272 @@ impl fmt::Display for StoredCredentials {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// RFC 8628 Device Authorization Grant helpers
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Strip a trailing `/auth/login` suffix so we always work from the user-service
+/// base URL (e.g. `https://try.direct/server/user`).
+fn oauth_base_url(auth_url: &str) -> String {
+    let url = auth_url.trim_end_matches('/');
+    for suffix in &["/auth/login", "/server/user/auth/login"] {
+        if let Some(base) = url.strip_suffix(suffix) {
+            return base.to_string();
+        }
+    }
+    url.to_string()
+}
+
+/// Response from `POST /oauth_client/device_authorization`.
+struct DeviceAuthResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    verification_uri_complete: String,
+    expires_in: u64,
+    interval: u64,
+}
+
+/// RFC 8628 §3.1 — Device Authorization Request.
+///
+/// POSTs `{"client_id": "stacker-cli", "provider": "<gc|gh|...>"}` and returns
+/// the server-generated codes the CLI needs to display and poll with.
+fn request_device_authorization(
+    base_url: &str,
+    provider: &str,
+) -> Result<DeviceAuthResponse, CliError> {
+    let endpoint = format!("{base_url}/oauth_client/device_authorization");
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| CliError::AuthFailed(format!("HTTP client error: {e}")))?;
+
+    let body = serde_json::json!({ "client_id": "stacker-cli", "provider": provider });
+    let resp = client
+        .post(&endpoint)
+        .json(&body)
+        .send()
+        .map_err(|e| CliError::AuthFailed(format!("Network error: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let preview: String = resp.text().unwrap_or_default().chars().take(200).collect();
+        return Err(CliError::AuthFailed(format!(
+            "Device authorization failed ({status}): {preview}"
+        )));
+    }
+
+    let data: serde_json::Value = resp
+        .json()
+        .map_err(|e| CliError::AuthFailed(format!("Invalid response: {e}")))?;
+    let inner = data.get("data").unwrap_or(&data);
+
+    let field = |key: &str| -> Result<String, CliError> {
+        inner
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| CliError::AuthFailed(format!("Response missing `{key}`: {data}")))
+    };
+
+    Ok(DeviceAuthResponse {
+        device_code: field("device_code")?,
+        user_code: field("user_code")?,
+        verification_uri: field("verification_uri")?,
+        verification_uri_complete: field("verification_uri_complete")?,
+        expires_in: inner
+            .get("expires_in")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(300),
+        interval: inner.get("interval").and_then(|v| v.as_u64()).unwrap_or(5),
+    })
+}
+
+/// RFC 8628 §3.4 — Device Access Token Request (polling).
+///
+/// Polls `POST /oauth_client/device_token` every `interval` seconds.
+/// Handles `authorization_pending` (keep waiting), `slow_down` (+5 s),
+/// `access_denied`, and `expired_token` per the spec.
+fn poll_device_token(
+    base_url: &str,
+    device_code: &str,
+    interval_secs: u64,
+    expires_in: u64,
+) -> Result<(String, Option<String>, Option<u64>), CliError> {
+    let endpoint = format!("{base_url}/oauth_client/device_token");
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| CliError::AuthFailed(format!("HTTP client error: {e}")))?;
+
+    let body = serde_json::json!({
+        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+        "device_code": device_code,
+        "client_id": "stacker-cli",
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(expires_in);
+    let mut interval = std::time::Duration::from_secs(interval_secs);
+
+    loop {
+        std::thread::sleep(interval);
+
+        if std::time::Instant::now() >= deadline {
+            return Err(CliError::AuthFailed(
+                "Authentication timed out. Please try again.".to_string(),
+            ));
+        }
+
+        let resp = match client.post(&endpoint).json(&body).send() {
+            Ok(r) => r,
+            Err(_) => continue, // transient network error — keep polling
+        };
+
+        let status = resp.status();
+        let data: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
+
+        if status.is_success() {
+            let access_token = data
+                .get("access_token")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    CliError::AuthFailed("Token response missing access_token".to_string())
+                })?
+                .to_string();
+            let refresh_token = data
+                .get("refresh_token")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let token_expires_in = data.get("expires_in").and_then(|v| v.as_u64());
+            return Ok((access_token, refresh_token, token_expires_in));
+        }
+
+        // RFC 8628 §3.5 error codes
+        match data.get("error").and_then(|v| v.as_str()) {
+            Some("authorization_pending") => {} // normal — keep polling
+            Some("slow_down") => interval += std::time::Duration::from_secs(5),
+            Some("access_denied") => {
+                return Err(CliError::AuthFailed("Access denied by user.".to_string()))
+            }
+            Some("expired_token") => {
+                return Err(CliError::AuthFailed(
+                    "Session expired. Please run `stacker login` again.".to_string(),
+                ))
+            }
+            Some(other) => return Err(CliError::AuthFailed(format!("Auth error: {other}"))),
+            None => {} // unexpected non-200 without error field — keep polling
+        }
+    }
+}
+
+/// Retrieve the authenticated user's email from the user service.
+pub fn fetch_user_email(auth_url: &str, access_token: &str) -> Result<Option<String>, CliError> {
+    let base = oauth_base_url(auth_url);
+    let endpoint = format!("{base}/oauth_server/api/me");
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| CliError::AuthFailed(format!("HTTP client error: {e}")))?;
+
+    let resp = client
+        .get(&endpoint)
+        .bearer_auth(access_token)
+        .send()
+        .map_err(|e| CliError::AuthFailed(format!("Network error fetching user profile: {e}")))?;
+
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+
+    let data: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
+    let email = data
+        .get("email")
+        .or_else(|| data.get("user").and_then(|u| u.get("email")))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    Ok(email)
+}
+
+/// RFC 8628 Device Authorization Grant login flow.
+///
+/// 1. Requests device + user codes from the server.
+/// 2. Shows the user_code and opens the browser to the OAuth URL.
+/// 3. Polls until the user authenticates or the session expires.
+/// 4. Saves and returns the credentials.
+pub fn browser_login<S: CredentialStore>(
+    store: &CredentialsManager<S>,
+    auth_url: &str,
+    server_url: &str,
+    provider: &str,
+    org: Option<&str>,
+    domain: Option<&str>,
+) -> Result<StoredCredentials, CliError> {
+    let base = oauth_base_url(auth_url);
+    let device_auth = request_device_authorization(&base, provider)?;
+
+    eprintln!("\nTo sign in, open this URL in your browser:");
+    eprintln!("  {}", device_auth.verification_uri_complete);
+    eprintln!();
+
+    let opened = {
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open")
+                .arg(&device_auth.verification_uri_complete)
+                .status()
+                .is_ok()
+        }
+        #[cfg(target_os = "linux")]
+        {
+            std::process::Command::new("xdg-open")
+                .arg(&device_auth.verification_uri_complete)
+                .status()
+                .is_ok()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            false
+        }
+    };
+    if opened {
+        eprintln!("  (Browser opened automatically)");
+    }
+
+    eprintln!("Waiting for authentication...");
+
+    let (access_token, refresh_token, token_expires_in) = poll_device_token(
+        &base,
+        &device_auth.device_code,
+        device_auth.interval,
+        device_auth.expires_in,
+    )?;
+
+    let email = fetch_user_email(auth_url, &access_token)?;
+
+    let min_ttl = session_ttl_secs();
+    let ttl = token_expires_in.unwrap_or(min_ttl).max(min_ttl);
+    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl as i64);
+
+    let creds = StoredCredentials {
+        access_token,
+        refresh_token,
+        token_type: "Bearer".to_string(),
+        expires_at,
+        email,
+        server_url: Some(crate::cli::install_runner::normalize_stacker_server_url(
+            server_url,
+        )),
+        org: org.map(|s| s.to_string()),
+        domain: domain.map(|s| s.to_string()),
+    };
+
+    store.save(&creds)?;
+    Ok(creds)
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Tests
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -400,8 +683,12 @@ mod tests {
 
     #[test]
     fn test_is_direct_login_endpoint_detection() {
-        assert!(is_direct_login_endpoint("https://dev.try.direct/server/user/auth/login"));
-        assert!(is_direct_login_endpoint("https://dev.try.direct/server/user/auth/login/"));
+        assert!(is_direct_login_endpoint(
+            "https://dev.try.direct/server/user/auth/login"
+        ));
+        assert!(is_direct_login_endpoint(
+            "https://dev.try.direct/server/user/auth/login/"
+        ));
         assert!(!is_direct_login_endpoint("https://api.try.direct"));
     }
 
@@ -539,8 +826,9 @@ mod tests {
         };
         let creds = StoredCredentials::from(resp);
         let diff = creds.expires_at - Utc::now();
-        assert!(diff.num_seconds() > (ten_hours as i64) - 100
-            && diff.num_seconds() <= ten_hours as i64);
+        assert!(
+            diff.num_seconds() > (ten_hours as i64) - 100 && diff.num_seconds() <= ten_hours as i64
+        );
     }
 
     #[test]
@@ -759,7 +1047,8 @@ mod tests {
         let request = LoginRequest {
             email: "user@example.com".into(),
             password: "secret".into(),
-            auth_url: None,
+            auth_url: Some("https://auth.example.com".into()),
+            server_url: Some("https://stacker.example.com".into()),
             org: None,
             domain: None,
         };
@@ -767,7 +1056,10 @@ mod tests {
         let creds = login(&manager, &oauth, &request).unwrap();
         assert_eq!(creds.access_token, "mock-access-token");
         assert_eq!(creds.email.as_deref(), Some("user@example.com"));
-        assert_eq!(creds.server_url.as_deref(), Some(DEFAULT_API_URL));
+        assert_eq!(
+            creds.server_url.as_deref(),
+            Some("https://stacker.example.com")
+        );
 
         // Verify persisted
         let loaded = manager.load().unwrap().unwrap();
@@ -781,7 +1073,8 @@ mod tests {
         let request = LoginRequest {
             email: "user@example.com".into(),
             password: "secret".into(),
-            auth_url: None,
+            auth_url: Some("https://auth.example.com".into()),
+            server_url: Some("https://stacker.example.com".into()),
             org: Some("acme".into()),
             domain: None,
         };
@@ -797,7 +1090,8 @@ mod tests {
         let request = LoginRequest {
             email: "user@example.com".into(),
             password: "secret".into(),
-            auth_url: None,
+            auth_url: Some("https://auth.example.com".into()),
+            server_url: Some("https://stacker.example.com".into()),
             org: None,
             domain: Some("acme.com".into()),
         };
@@ -809,11 +1103,13 @@ mod tests {
     #[test]
     fn test_login_invalid_credentials_returns_error() {
         let (manager, _) = make_manager();
-        let oauth = MockOAuthClient::failure("Authentication failed (HTTP 401 Unauthorized): invalid");
+        let oauth =
+            MockOAuthClient::failure("Authentication failed (HTTP 401 Unauthorized): invalid");
         let request = LoginRequest {
             email: "bad@example.com".into(),
             password: "wrong".into(),
-            auth_url: None,
+            auth_url: Some("https://auth.example.com".into()),
+            server_url: Some("https://stacker.example.com".into()),
             org: None,
             domain: None,
         };
@@ -830,13 +1126,93 @@ mod tests {
         let request = LoginRequest {
             email: "user@example.com".into(),
             password: "secret".into(),
-            auth_url: Some("https://custom.api".into()),
+            auth_url: Some("https://auth.example.com".into()),
+            server_url: Some("https://custom.api".into()),
             org: None,
             domain: None,
         };
 
         let creds = login(&manager, &oauth, &request).unwrap();
         assert_eq!(creds.server_url.as_deref(), Some("https://custom.api"));
+    }
+
+    #[test]
+    fn test_login_preserves_explicit_legacy_stacker_route() {
+        let (manager, _) = make_manager();
+        let oauth = MockOAuthClient::success();
+        let request = LoginRequest {
+            email: "user@example.com".into(),
+            password: "secret".into(),
+            auth_url: Some("https://dev.try.direct/server/user/auth/login".into()),
+            server_url: Some("https://dev.try.direct/stacker".into()),
+            org: None,
+            domain: None,
+        };
+
+        let creds = login(&manager, &oauth, &request).unwrap();
+        assert_eq!(
+            creds.server_url.as_deref(),
+            Some("https://dev.try.direct/stacker")
+        );
+    }
+
+    #[test]
+    fn test_login_preserves_explicit_api_gateway_url() {
+        let (manager, _) = make_manager();
+        let oauth = MockOAuthClient::success();
+        let request = LoginRequest {
+            email: "user@example.com".into(),
+            password: "secret".into(),
+            auth_url: Some("https://dev.try.direct/server/user/auth/login".into()),
+            server_url: Some("https://api.try.direct".into()),
+            org: None,
+            domain: None,
+        };
+
+        let creds = login(&manager, &oauth, &request).unwrap();
+        assert_eq!(creds.server_url.as_deref(), Some("https://api.try.direct"));
+    }
+
+    #[test]
+    fn test_login_requires_auth_url_when_not_provided_by_flag_or_env() {
+        let (manager, _) = make_manager();
+        let oauth = MockOAuthClient::success();
+        let request = LoginRequest {
+            email: "user@example.com".into(),
+            password: "secret".into(),
+            auth_url: None,
+            server_url: Some("https://dev.stacker.try.direct".into()),
+            org: None,
+            domain: None,
+        };
+
+        // Isolate from the real ~/.config/stacker/config.yml which may provide a fallback URL.
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path());
+        let err = login(&manager, &oauth, &request).unwrap_err();
+        std::env::remove_var("XDG_CONFIG_HOME");
+        assert!(format!("{err}").contains("Missing auth URL"));
+    }
+
+    #[test]
+    fn test_login_requires_server_url_when_not_provided_by_flag_or_env() {
+        let (manager, _) = make_manager();
+        let oauth = MockOAuthClient::success();
+        let request = LoginRequest {
+            email: "user@example.com".into(),
+            password: "secret".into(),
+            auth_url: Some("https://dev.try.direct/server/user/auth/login".into()),
+            server_url: None,
+            org: None,
+            domain: None,
+        };
+
+        // Isolate from the real ~/.config/stacker/config.yml which may provide a fallback URL.
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path());
+        let err = login(&manager, &oauth, &request).unwrap_err();
+        std::env::remove_var("XDG_CONFIG_HOME");
+        assert!(format!("{err}").contains("Missing Stacker API URL"));
     }
 
     #[test]
@@ -849,7 +1225,8 @@ mod tests {
         let request = LoginRequest {
             email: "user@example.com".into(),
             password: "secret".into(),
-            auth_url: None,
+            auth_url: Some("https://auth.example.com".into()),
+            server_url: Some("https://stacker.example.com".into()),
             org: None,
             domain: None,
         };

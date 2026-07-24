@@ -2,6 +2,7 @@
 //!
 //! Uses russh to connect to servers and execute system check commands.
 
+use base64::{engine::general_purpose, Engine as _};
 use russh::client::{Config, Handle};
 use russh::keys::key::PrivateKeyWithHashAlg;
 use russh::keys::PrivateKey;
@@ -111,6 +112,12 @@ impl SystemCheckResult {
     }
 }
 
+/// Opaque wrapper around an authenticated SSH handle.
+///
+/// Returned by [`open_ssh`] and consumed by [`exec_remote`] and
+/// [`disconnect_ssh`]. Keeps `ClientHandler` private to this module.
+pub struct SshSession(Handle<ClientHandler>);
+
 /// SSH client handler for russh
 struct ClientHandler;
 
@@ -159,8 +166,11 @@ pub async fn check_server(
     let addr = format!("{}:{}", host, port);
     tracing::info!("Connecting to {} as {}", addr, username);
 
-    let connection_result =
-        timeout(connection_timeout, connect_and_auth(config, &addr, username, key)).await;
+    let connection_result = timeout(
+        connection_timeout,
+        connect_and_auth(config, &addr, username, key),
+    )
+    .await;
 
     match connection_result {
         Ok(Ok(handle)) => {
@@ -174,7 +184,10 @@ pub async fn check_server(
         Ok(Err(e)) => {
             tracing::warn!("SSH connection/auth failed: {}", e);
             let error_str = e.to_string().to_lowercase();
-            if error_str.contains("auth") || error_str.contains("key") || error_str.contains("permission") {
+            if error_str.contains("auth")
+                || error_str.contains("key")
+                || error_str.contains("permission")
+            {
                 result.connected = true;
                 result.error = Some(format!("Authentication failed: {}", e));
             } else {
@@ -193,11 +206,109 @@ pub async fn check_server(
     result
 }
 
+/// Authorize an OpenSSH public key on the remote server using an accepted private key.
+pub async fn authorize_public_key(
+    host: &str,
+    port: u16,
+    username: &str,
+    private_key_pem: &str,
+    public_key: &str,
+    connection_timeout: Duration,
+) -> Result<(), anyhow::Error> {
+    let public_key = public_key.trim();
+    if public_key.is_empty() {
+        return Err(anyhow::anyhow!("Public key cannot be empty"));
+    }
+
+    let key = parse_private_key(private_key_pem)?;
+    let config = Arc::new(Config {
+        ..Default::default()
+    });
+    let addr = format!("{}:{}", host, port);
+
+    let handle = timeout(
+        connection_timeout,
+        connect_and_auth(config, &addr, username, key),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "Connection timed out after {} seconds",
+            connection_timeout.as_secs()
+        )
+    })??;
+
+    let encoded_key = general_purpose::STANDARD.encode(public_key.as_bytes());
+    let command = format!(
+        "set -eu; key=$(printf '%s' '{}' | base64 -d); \
+         mkdir -p ~/.ssh; chmod 700 ~/.ssh; \
+         touch ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; \
+         grep -qxF \"$key\" ~/.ssh/authorized_keys || printf '%s\\n' \"$key\" >> ~/.ssh/authorized_keys",
+        encoded_key
+    );
+
+    let result = exec_command_checked(&handle, &command).await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "English")
+        .await;
+
+    result
+}
+
 /// Parse a PEM-encoded private key (OpenSSH or traditional formats)
 fn parse_private_key(pem: &str) -> Result<PrivateKey, anyhow::Error> {
     // russh-keys supports various formats including OpenSSH and traditional PEM
     let key = russh::keys::decode_secret_key(pem, None)?;
     Ok(key)
+}
+
+async fn exec_command_checked(
+    handle: &Handle<ClientHandler>,
+    command: &str,
+) -> Result<(), anyhow::Error> {
+    let mut channel = handle.channel_open_session().await?;
+    channel.exec(true, command).await?;
+
+    let mut stderr = Vec::new();
+    let mut exit_status = None;
+    let timeout_duration = Duration::from_secs(10);
+
+    let read_result = timeout(timeout_duration, async {
+        loop {
+            match channel.wait().await {
+                Some(russh::ChannelMsg::ExtendedData { data, ext: _ }) => {
+                    stderr.extend_from_slice(&data);
+                }
+                Some(russh::ChannelMsg::ExitStatus {
+                    exit_status: status,
+                }) => {
+                    exit_status = Some(status);
+                }
+                Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) | None => break,
+                _ => {}
+            }
+        }
+    })
+    .await;
+
+    let _ = channel.eof().await;
+    let _ = channel.close().await;
+
+    if read_result.is_err() {
+        return Err(anyhow::anyhow!("Remote authorization command timed out"));
+    }
+
+    if exit_status.unwrap_or(0) != 0 {
+        let stderr = String::from_utf8_lossy(&stderr).trim().to_string();
+        let message = if stderr.is_empty() {
+            "Remote authorization command failed".to_string()
+        } else {
+            format!("Remote authorization command failed: {}", stderr)
+        };
+        return Err(anyhow::anyhow!(message));
+    }
+
+    Ok(())
 }
 
 /// Connect and authenticate to the SSH server
@@ -310,6 +421,98 @@ async fn exec_command(
     Ok(String::from_utf8_lossy(&output).to_string())
 }
 
+/// Run a command on an open [`SshSession`], returning `(stdout, stderr, exit_code)`.
+///
+/// Uses a configurable timeout so long-running commands (e.g. install scripts) don't
+/// block indefinitely. Surfaces stderr so callers can surface errors to the user.
+pub async fn exec_remote(
+    session: &SshSession,
+    command: &str,
+    timeout_secs: u64,
+) -> Result<(String, String, u32), anyhow::Error> {
+    let mut channel = session.0.channel_open_session().await?;
+    channel.exec(true, command).await?;
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut exit_code: u32 = 0;
+    let timeout_duration = Duration::from_secs(timeout_secs);
+
+    let read_result = timeout(timeout_duration, async {
+        loop {
+            match channel.wait().await {
+                Some(russh::ChannelMsg::Data { data }) => {
+                    stdout.extend_from_slice(&data);
+                }
+                Some(russh::ChannelMsg::ExtendedData { data, ext: _ }) => {
+                    stderr.extend_from_slice(&data);
+                }
+                Some(russh::ChannelMsg::ExitStatus { exit_status }) => {
+                    exit_code = exit_status;
+                }
+                Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) | None => break,
+                _ => {}
+            }
+        }
+    })
+    .await;
+
+    let _ = channel.eof().await;
+    let _ = channel.close().await;
+
+    if read_result.is_err() {
+        return Err(anyhow::anyhow!(
+            "Command timed out after {} seconds: {}",
+            timeout_secs,
+            command
+        ));
+    }
+
+    Ok((
+        String::from_utf8_lossy(&stdout).to_string(),
+        String::from_utf8_lossy(&stderr).to_string(),
+        exit_code,
+    ))
+}
+
+/// Open an SSH connection and authenticate with a PEM private key.
+///
+/// Returns an [`SshSession`] that can be passed to [`exec_remote`] multiple times.
+/// Call [`disconnect_ssh`] when done.
+pub async fn open_ssh(
+    host: &str,
+    port: u16,
+    username: &str,
+    private_key_pem: &str,
+    connection_timeout: Duration,
+) -> Result<SshSession, anyhow::Error> {
+    let key = parse_private_key(private_key_pem)?;
+    let config = Arc::new(Config::default());
+    let addr = format!("{}:{}", host, port);
+
+    let handle = timeout(
+        connection_timeout,
+        connect_and_auth(config, &addr, username, key),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "SSH connection timed out after {} seconds",
+            connection_timeout.as_secs()
+        )
+    })??;
+
+    Ok(SshSession(handle))
+}
+
+/// Gracefully disconnect an open [`SshSession`].
+pub async fn disconnect_ssh(session: SshSession) {
+    let _ = session
+        .0
+        .disconnect(russh::Disconnect::ByApplication, "", "English")
+        .await;
+}
+
 /// Parse disk info from df output
 fn parse_disk_info(result: &mut SystemCheckResult, output: &str) {
     // df -BG output: "Filesystem     1G-blocks  Used Available Use% Mounted on"
@@ -317,19 +520,25 @@ fn parse_disk_info(result: &mut SystemCheckResult, output: &str) {
     let parts: Vec<&str> = output.split_whitespace().collect();
     if parts.len() >= 4 {
         // Parse total (index 1)
-        if let Some(total) = parts.get(1).and_then(|s| s.trim_end_matches('G').parse::<f64>().ok())
+        if let Some(total) = parts
+            .get(1)
+            .and_then(|s| s.trim_end_matches('G').parse::<f64>().ok())
         {
             result.disk_total_gb = Some(total);
         }
 
         // Parse available (index 3)
-        if let Some(avail) = parts.get(3).and_then(|s| s.trim_end_matches('G').parse::<f64>().ok())
+        if let Some(avail) = parts
+            .get(3)
+            .and_then(|s| s.trim_end_matches('G').parse::<f64>().ok())
         {
             result.disk_available_gb = Some(avail);
         }
 
         // Parse usage percentage (index 4)
-        if let Some(usage) = parts.get(4).and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())
+        if let Some(usage) = parts
+            .get(4)
+            .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())
         {
             result.disk_usage_percent = Some(usage);
         }

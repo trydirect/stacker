@@ -75,8 +75,8 @@ async fn main() -> std::io::Result<()> {
     let address = format!("{}:{}", settings.app_host, settings.app_port);
     banner::print_startup_info(&settings.app_host, settings.app_port);
     tracing::info!("Start server at {:?}", &address);
-    let listener =
-        TcpListener::bind(address).expect(&format!("failed to bind to {}", settings.app_port));
+    let listener = TcpListener::bind(address)
+        .unwrap_or_else(|_| panic!("failed to bind to {}", settings.app_port));
 
     run(listener, api_pool, agent_pool, settings).await?.await
 }

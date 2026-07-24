@@ -1,7 +1,7 @@
 <div align="center">
 
 <a href="https://discord.gg/mNhsa8VdYX"><img alt="Discord" src="https://img.shields.io/discord/578119430391988232?label=discord"></a>
-<img alt="Version" src="https://img.shields.io/badge/version-0.2.7-blue">
+<img alt="Version" src="https://img.shields.io/badge/version-0.3.0-blue">
 <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 
 <br><br>
@@ -12,6 +12,8 @@
 </div>
 
 Stacker is a platform for turning any project into a deployable Docker stack. Add a `stacker.yml` to your repo, and Stacker generates Dockerfiles, docker-compose definitions, reverse-proxy configs, and deploys locally or to cloud providers — optionally with AI assistance.
+
+**v0.3.0 highlights:** generate `stacker.yml` from any GitHub repo with `stacker init --from-github`, infra-service healthcheck inference, remote Vault-backed secrets for deployable service/app targets, paused or failed cloud/server installs retain discovered IP addresses, and cloud-provider firewalls can be managed without SSH.
 
 
 ## Quick Start
@@ -31,6 +33,28 @@ stacker deploy            # builds and runs locally via docker compose
 stacker status            # check running containers
 ```
 
+### Deploy from any GitHub repo
+
+Generate a `stacker.yml` from a GitHub repository — no clone required.
+For the best results (port mappings, env vars, service context inferred
+from README and source), use `--with-ai`:
+
+```bash
+# AI-powered (recommended — reads README, compose, source files)
+stacker init --from-github owner/repo --with-ai
+
+# Template-based (project type + Dockerfile detection only)
+stacker init -g https://github.com/ArchiveBox/ArchiveBox
+```
+
+With `--with-ai`, Stacker shallow-clones the repo, then uses an LLM (Ollama
+by default) to scan project files and generate a context-aware `stacker.yml`
+with services, ports, env vars, and healthchecks. Falls back to template
+detection if the AI provider is unreachable.
+
+When environment variables are in the compose file, `.env.example` and
+`scripts/generate-secrets.sh` are also generated.
+
 ### AI-powered init (optional)
 
 Stacker can scan your project files and use an LLM to generate a tailored `stacker.yml`:
@@ -48,6 +72,22 @@ stacker init --with-ai --ai-provider anthropic
 ```
 
 If the AI provider is unreachable, Stacker falls back to template-based generation automatically.
+
+When the project looks like a simple HTML or Next.js website and the configured
+Ollama model is `qwen2.5-code` or `qwen2.5-coder`, `stacker init --with-ai`
+can also bootstrap a website deployment scenario. The bootstrap seeds values
+from the generated `stacker.yml`, asks only for the missing deploy inputs, and
+saves scenario state under `.stacker/scenarios/qwen2.5-code/website-deploy/`
+for later continuation with `stacker ai`.
+
+### AI deployment workflows
+
+For the canonical AI/MCP deployment flow — inspect state, explain topology or
+env provenance, preview a plan, apply it safely, and recover with events or
+rollback — see [AI deployment workflows](docs/AI_DEPLOYMENT_WORKFLOWS.md).
+
+For the qwen-specific website scenario flow, including `--scenario` and `--step`
+continuation, see the same guide.
 
 ---
 
@@ -111,7 +151,7 @@ Full schema reference: [docs/STACKER_YML_REFERENCE.md](docs/STACKER_YML_REFERENC
 │  Stacker CLI │────────►│  Stacker Server  │────────►│  Status Panel Agent │
 │              │  REST   │                  │  queue  │  (on target server) │
 │  stacker.yml │  API    │  Stack Builder UI│  pull   │                     │
-│  init/deploy │         │  48+ MCP tools   │◄────────│  health / logs /    │
+│  init/deploy │         │  85+ MCP tools   │◄────────│  health / logs /    │
 │  status/logs │         │  Vault · AMQP    │  HMAC   │  restart / exec /   │
 └──────────────┘         └──────────────────┘         │  deploy_app / proxy │
                                 │                     └─────────────────────┘
@@ -134,38 +174,58 @@ The end-user tool. No server required for local deploys.
 | Command | Description |
 |---------|-------------|
 | `stacker init` | Detect project type, generate `stacker.yml` + `.stacker/` artifacts |
-| `stacker deploy` | Build & deploy the stack (local, cloud, or server). `--runtime kata\|runc` selects container runtime |
+| `stacker deploy` | Build & deploy the stack (local, cloud, or server). Cloud deploys also install a local SSH backup key when possible. `--runtime kata\|runc` selects container runtime |
 | `stacker status` | Show running containers and health |
 | `stacker logs` | View container logs (`--follow`, `--service`, `--tail`) |
-| `stacker list deployments` | List deployments on the Stacker server |
+| `stacker secrets` | Manage local `.env` secrets or remote Vault-backed `service` / `server` secrets |
+| `stacker list deployments` / `stacker deployments` | List deployments on the Stacker server |
+| `stacker list servers` / `stacker servers` | List saved servers |
+| `stacker list clouds` / `stacker clouds` | List saved cloud credentials |
+| `stacker list ssh-keys` / `stacker ssh-keys` | List per-server SSH key status |
 | `stacker destroy` | Tear down the deployed stack |
 | `stacker config validate` | Validate `stacker.yml` syntax |
 | `stacker config show` | Show resolved configuration |
 | `stacker config example` | Print a full commented reference |
 | `stacker config setup cloud` | Guided cloud deployment setup |
+| `stacker config setup ai` | Configure AI provider, endpoint, model, and tasks |
 | `stacker ai ask "question"` | Ask the AI about your stack |
 | `stacker proxy add` | Add a reverse-proxy domain entry |
 | `stacker proxy detect` | Auto-detect existing reverse-proxy containers |
+| `stacker cloud firewall add` | Open cloud-provider firewall ports without SSH, for example `--public-ports 8000/tcp` on Hetzner |
+| `stacker cloud firewall remove` | Remove Stacker-managed cloud-provider firewall rules |
+| `stacker cloud firewall list` | List cloud-provider firewall rules for a server |
 | `stacker ssh-key generate` | Generate a new SSH key pair for a server (Vault-backed) |
 | `stacker ssh-key show` | Display the public SSH key for a server |
 | `stacker ssh-key upload` | Upload an existing SSH key pair for a server |
+| `stacker ssh-key inject` | Repair Vault-key trust by using an already-working private key to update `authorized_keys` |
 | `stacker service add` | Add a service from the template catalog to `stacker.yml` |
 | `stacker service list` | List available service templates (20+ built-in) |
 | `stacker agent health` | Check Status Panel agent connectivity and health |
 | `stacker agent status` | Display agent snapshot — containers, versions, uptime |
+| `stacker agent list apps` / `stacker agent apps` | List apps for the target deployment |
+| `stacker agent list containers` / `stacker agent containers` | List containers on the target server |
 | `stacker agent logs <app>` | Retrieve container logs from the remote agent |
 | `stacker agent restart <app>` | Restart a container via the agent |
-| `stacker agent deploy-app` | Deploy or update an app container on the target server. `--runtime kata\|runc` selects container runtime |
+| `stacker agent deploy-app` | Deploy or update an app container on the target server. `--runtime kata\|runc` selects container runtime; `--env <name>` selects the deploy environment/profile |
 | `stacker agent remove-app` | Remove an app container (with optional volume/image cleanup) |
-| `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent |
+| `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent; use `--no-ssl` for plain HTTP hosts (credentials are resolved from Vault and are auto-seeded for managed Status Panel + NPM deploys) |
+| `stacker agent configure-firewall` | Configure guest OS firewall rules via the Status Panel agent; use `stacker cloud firewall` for provider firewalls |
 | `stacker agent history` | Show recent command execution history |
 | `stacker agent exec` | Execute a raw agent command with JSON parameters |
-| `stacker pipe scan <app>` | Discover API endpoints on a running container |
+| `stacker pipe scan` | Discover local endpoints/resources from running containers (when target is `local`) |
+| `stacker pipe scan --containers [filter]` | Discover local endpoints/resources for matching containers |
+| `stacker pipe scan --app <app>` | Probe a remote app for API endpoints |
 | `stacker pipe create <src> <tgt>` | Create a data pipe between two containers (interactive) |
 | `stacker pipe list` | List pipe instances for the current deployment |
 | `stacker pipe activate <id>` | Activate a pipe (start listening for triggers) |
 | `stacker pipe deactivate <id>` | Pause an active pipe |
 | `stacker pipe trigger <id>` | One-shot pipe execution with optional input data |
+| `stacker pipe deploy <id>` | Promote a local pipe to a remote deployment |
+| `stacker pipe history <id>` | View execution history for a pipe |
+| `stacker pipe replay <exec-id>` | Re-run a previous pipe execution |
+| `stacker target [local\|cloud\|server]` | Switch deployment target mode |
+| `stacker env [local\|dev\|prod]` | Show or persist the active deploy environment/profile used by app-only updates |
+| `stacker whoami` | Show the active login, subscription plan, and current project deployment context |
 | `stacker submit` | Package current stack and submit to marketplace for review |
 | `stacker marketplace status` | Check submission status for your marketplace templates |
 | `stacker marketplace logs <name>` | Show review comments and history for a submission |
@@ -180,6 +240,84 @@ stacker deploy --target cloud     # Terraform + Ansible → cloud provider
 stacker deploy --target server    # deploy to existing server via SSH
 stacker deploy --dry-run          # preview generated files without executing
 ```
+
+After a successful cloud deploy, Stacker creates or reuses a local backup key at
+`~/.config/stacker/ssh/server-<id>_ed25519` (or under `$XDG_CONFIG_HOME`) and
+authorizes its public key on the server when possible. The CLI prints a normal
+`ssh -i ...` command, while the Vault private key remains server-side.
+
+When a cloud/server deploy includes `deploy.registry` credentials (or the
+equivalent `STACKER_DOCKER_*` environment variables), Stacker stores that
+registry auth securely and reuses it for later Status-managed image refreshes
+such as `stacker agent deploy-app`. This keeps private-image redeploys working
+without depending on host-level `docker login` state or mounting `/root/.docker`
+into the agent container.
+
+### Secrets workflow
+
+```bash
+# Local project .env secret
+stacker secrets set DB_PASSWORD=supersecret
+
+# Discover valid remote deployable service/app targets first
+stacker secrets apps
+
+# Remote service secret used at render/deploy time for one target
+stacker secrets set S3_SECRET_KEY \
+  --scope service \
+  --service uploader \
+  --body supersecret
+
+# Remote server secret for future host-level consumers
+stacker secrets set NPM_TOKEN \
+  --scope server \
+  --server-id 42 \
+  --body-file .npm-token
+
+# Remote reads are metadata-only in v1
+stacker secrets list --scope service --service uploader --json
+stacker secrets get S3_SECRET_KEY --scope service --service uploader --json
+
+# Push stored remote secrets into the target's runtime env
+stacker secrets push --service uploader
+stacker secrets push --service uploader --env prod
+# Aliases: stacker secrets deploy --service uploader
+#          stacker secrets apply --service uploader
+
+```
+
+- Local mode remains the default and reads/writes the project `.env` file.
+- Remote mode is enabled only with `--scope service` or `--scope server`.
+- Service-scoped remote commands default `--project` from `stacker.yml -> project.identity`; `--project` still overrides it explicitly.
+- Service-scoped secrets target deployable service/app codes listed by `stacker secrets apps`, including registered `stacker.yml` services and supported image-backed Compose services after a deploy/update sync.
+- Service-scoped secrets are merged only into the matching rendered service/app env at deploy time.
+- `stacker secrets push --service <target>` applies stored service secrets to the remote runtime env without changing secret values. Use `--env <name>` for a one-off environment selection, or `stacker env <name>` to persist the active environment/profile for future app-only updates. Use `--force` only when the remote env drift check reports an out-of-band change.
+- Remote `get` and `list` do **not** return plaintext values in v1.
+- MCP env inspection now exposes explicit secure metadata for Vault-backed
+  variables: `get_app_env_vars` keeps the redacted
+  `environment_variables` object for compatibility and also returns
+  `environment_entries[]` with `secure`, `redacted`, and `source` fields.
+
+Remote deploys render runtime env into one canonical host file:
+`/home/trydirect/project/.env`. Generated compose uses `env_file: .env`, so the
+path is relative to the deployed compose file. To inspect paths and contributing
+layers without exposing values, run:
+
+```bash
+stacker config show --resolved
+```
+
+For app-only updates, `stacker agent deploy-app <target>` resolves the deploy
+environment from `--env`, then `.stacker/active-env`, then `stacker.yml`. If
+`<target>/docker/<env>/compose.yml` exists, Stacker uses the app-local service
+definition for that target but merges it into the full project-level compose
+file before sending it to the agent. This prevents app-only updates from
+replacing the remote stack compose with a single-service compose file. Any
+app-local `.env` referenced by that compose file is uploaded in the config
+bundle, and Stacker appends the Vault-rendered service secrets for the same
+target to that file before the agent writes it on the server. Repeated app-only
+updates replace the prior `# stacker-render ...` block in that file instead of
+stacking duplicate rendered secret sections.
 
 ### Marketplace workflow (for stack developers)
 
@@ -206,14 +344,17 @@ curl -sL https://marketplace.try.direct/<purchase-token>/install.sh | sh
 - **Auto-detection** — identifies Node, Python, Rust, Go, PHP, static sites from project files
 - **Dockerfile generation** — produces optimised multi-stage Dockerfiles per app type
 - **Docker Compose generation** — wires app + services + proxy + monitoring
+- **Remote service secrets** — Vault-backed service/app target secrets are metadata-only when read and isolated to the selected service
 - **AI-assisted config** — scans project, calls LLM to generate tailored `stacker.yml`
 - **AI troubleshooting** — on deploy failure, suggests fixes via AI or deterministic fallback hints
 - **Service catalog** — 20+ built-in service templates (Postgres, Redis, WordPress, etc.) — add with `stacker service add`
 - **AI service addition** — ask `stacker ai ask --write "add wordpress"` and the AI uses the template catalog
 - **Agent control** — `stacker agent` subcommand to manage remote Status Panel agents (health, logs, restart, deploy, proxy) with `--json` output
-- **SSH key management** — generate, view, and upload server SSH keys (Vault-backed)
+- **SSH key management** — generate, view, upload, and repair server SSH keys
+  (Vault-backed), with automatic local backup SSH access after cloud deploy
 - **Reverse proxy** — auto-detects Nginx / Nginx Proxy Manager, configures domains + SSL
-- **Cloud deployment** — Hetzner, DigitalOcean, AWS, Linode
+- **Cloud deployment** — Hetzner, DigitalOcean, AWS, Linode, with provider firewall operations and paused/failed install IP retention
+- **MCP Server** — 85+ tools, including deployment, agent control, config, proxy, firewall, and remote service secret management
 - **Marketplace** — submit stacks for review, auto-publish on approval, check status from CLI
 - **Buyer install** — purchase tokens, one-liner install scripts, agent self-registration
 
@@ -240,9 +381,14 @@ cargo run --bin server                           # http://127.0.0.1:8000
 | `POST /project` | Create a project from a stack definition |
 | `POST /{id}/deploy/{cloud_id}` | Deploy to a cloud provider |
 | `GET /project/{id}/apps` | List apps in a project |
+| `DELETE /project/{id}/apps/{code}` | Remove an app from a project |
 | `PUT /project/{id}/apps/{code}/env` | Update app environment variables |
+| `GET /project/{id}/apps/{code}/secrets` | List service-scoped secret metadata for an app |
+| `PUT /project/{id}/apps/{code}/secrets/{name}` | Create or update a Vault-backed service secret |
 | `PUT /project/{id}/apps/{code}/ports` | Update port mappings |
 | `PUT /project/{id}/apps/{code}/domain` | Update domain / SSL settings |
+| `GET /server/{id}/secrets` | List server-scoped secret metadata |
+| `PUT /server/{id}/secrets/{name}` | Create or update a Vault-backed server secret |
 | `POST /api/v1/commands` | Enqueue a command for the Status Panel agent |
 | `POST /api/templates` | Create or update a marketplace template (creator) |
 | `POST /api/templates/{id}/submit` | Submit template for marketplace review |

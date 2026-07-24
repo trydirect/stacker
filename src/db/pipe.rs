@@ -245,22 +245,24 @@ pub async fn insert_instance(
     sqlx::query_as::<_, PipeInstance>(
         r#"
         INSERT INTO pipe_instances (
-            id, template_id, deployment_hash, source_container, target_container,
-            target_url, field_mapping_override, config_override, status,
-            last_triggered_at, trigger_count, error_count, created_by,
-            created_at, updated_at
+            id, template_id, deployment_hash, source_adapter, source_container, target_adapter,
+            target_container, target_url, field_mapping_override, config_override, status,
+            last_triggered_at, trigger_count, error_count, is_local, created_by, created_at,
+            updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-        RETURNING id, template_id, deployment_hash, source_container, target_container,
-                  target_url, field_mapping_override, config_override, status,
-                  last_triggered_at, trigger_count, error_count, created_by,
-                  created_at, updated_at
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+        RETURNING id, template_id, deployment_hash, source_adapter, source_container,
+                  target_adapter, target_container, target_url, field_mapping_override,
+                  config_override, status, last_triggered_at, trigger_count, error_count,
+                  is_local, created_by, created_at, updated_at
         "#,
     )
     .bind(instance.id)
     .bind(instance.template_id)
     .bind(&instance.deployment_hash)
+    .bind(&instance.source_adapter)
     .bind(&instance.source_container)
+    .bind(&instance.target_adapter)
     .bind(&instance.target_container)
     .bind(&instance.target_url)
     .bind(&instance.field_mapping_override)
@@ -269,6 +271,7 @@ pub async fn insert_instance(
     .bind(instance.last_triggered_at)
     .bind(instance.trigger_count)
     .bind(instance.error_count)
+    .bind(instance.is_local)
     .bind(&instance.created_by)
     .bind(instance.created_at)
     .bind(instance.updated_at)
@@ -287,10 +290,10 @@ pub async fn get_instance(pool: &PgPool, id: &Uuid) -> Result<Option<PipeInstanc
     let query_span = tracing::info_span!("Fetching pipe instance by ID");
     sqlx::query_as::<_, PipeInstance>(
         r#"
-        SELECT id, template_id, deployment_hash, source_container, target_container,
-               target_url, field_mapping_override, config_override, status,
-               last_triggered_at, trigger_count, error_count, created_by,
-               created_at, updated_at
+        SELECT id, template_id, deployment_hash, source_adapter, source_container,
+               target_adapter, target_container, target_url, field_mapping_override,
+               config_override, status, last_triggered_at, trigger_count, error_count,
+               is_local, created_by, created_at, updated_at
         FROM pipe_instances
         WHERE id = $1
         "#,
@@ -314,10 +317,10 @@ pub async fn list_instances(
     let query_span = tracing::info_span!("Listing pipe instances for deployment");
     sqlx::query_as::<_, PipeInstance>(
         r#"
-        SELECT id, template_id, deployment_hash, source_container, target_container,
-               target_url, field_mapping_override, config_override, status,
-               last_triggered_at, trigger_count, error_count, created_by,
-               created_at, updated_at
+        SELECT id, template_id, deployment_hash, source_adapter, source_container,
+               target_adapter, target_container, target_url, field_mapping_override,
+               config_override, status, last_triggered_at, trigger_count, error_count,
+               is_local, created_by, created_at, updated_at
         FROM pipe_instances
         WHERE deployment_hash = $1
         ORDER BY created_at DESC
@@ -330,6 +333,34 @@ pub async fn list_instances(
     .map_err(|err| {
         tracing::error!("Failed to list pipe instances: {:?}", err);
         format!("Failed to list pipe instances: {}", err)
+    })
+}
+
+/// List local pipe instances for a specific user (is_local = true)
+#[tracing::instrument(name = "List local pipe instances for user", skip(pool))]
+pub async fn list_local_instances_by_user(
+    pool: &PgPool,
+    user_id: &str,
+) -> Result<Vec<PipeInstance>, String> {
+    let query_span = tracing::info_span!("Listing local pipe instances");
+    sqlx::query_as::<_, PipeInstance>(
+        r#"
+        SELECT id, template_id, deployment_hash, source_adapter, source_container,
+               target_adapter, target_container, target_url, field_mapping_override,
+               config_override, status, last_triggered_at, trigger_count, error_count,
+               is_local, created_by, created_at, updated_at
+        FROM pipe_instances
+        WHERE is_local = true AND created_by = $1
+        ORDER BY created_at DESC
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to list local pipe instances: {:?}", err);
+        format!("Failed to list local pipe instances: {}", err)
     })
 }
 
@@ -346,10 +377,10 @@ pub async fn update_instance_status(
         UPDATE pipe_instances
         SET status = $2, updated_at = NOW()
         WHERE id = $1
-        RETURNING id, template_id, deployment_hash, source_container, target_container,
-                  target_url, field_mapping_override, config_override, status,
-                  last_triggered_at, trigger_count, error_count, created_by,
-                  created_at, updated_at
+        RETURNING id, template_id, deployment_hash, source_adapter, source_container,
+                  target_adapter, target_container, target_url, field_mapping_override,
+                  config_override, status, last_triggered_at, trigger_count, error_count,
+                  is_local, created_by, created_at, updated_at
         "#,
     )
     .bind(id)
@@ -436,12 +467,12 @@ pub async fn insert_execution(
         INSERT INTO pipe_executions (
             id, pipe_instance_id, deployment_hash, trigger_type, status,
             source_data, mapped_data, target_response, error, duration_ms,
-            replay_of, created_by, started_at, completed_at
+            replay_of, is_local, created_by, started_at, completed_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         RETURNING id, pipe_instance_id, deployment_hash, trigger_type, status,
                   source_data, mapped_data, target_response, error, duration_ms,
-                  replay_of, created_by, started_at, completed_at
+                  replay_of, is_local, created_by, started_at, completed_at
         "#,
     )
     .bind(execution.id)
@@ -455,6 +486,7 @@ pub async fn insert_execution(
     .bind(&execution.error)
     .bind(execution.duration_ms)
     .bind(execution.replay_of)
+    .bind(execution.is_local)
     .bind(&execution.created_by)
     .bind(execution.started_at)
     .bind(execution.completed_at)
@@ -475,7 +507,7 @@ pub async fn get_execution(pool: &PgPool, id: &Uuid) -> Result<Option<PipeExecut
         r#"
         SELECT id, pipe_instance_id, deployment_hash, trigger_type, status,
                source_data, mapped_data, target_response, error, duration_ms,
-               replay_of, created_by, started_at, completed_at
+               replay_of, is_local, created_by, started_at, completed_at
         FROM pipe_executions
         WHERE id = $1
         "#,
@@ -487,6 +519,40 @@ pub async fn get_execution(pool: &PgPool, id: &Uuid) -> Result<Option<PipeExecut
     .map_err(|err| {
         tracing::error!("Failed to fetch pipe execution: {:?}", err);
         format!("Failed to fetch pipe execution: {}", err)
+    })
+}
+
+/// Find the latest pending replay execution for an instance/deployment pair.
+#[tracing::instrument(name = "Find pending replay execution", skip(pool))]
+pub async fn find_pending_replay_execution(
+    pool: &PgPool,
+    instance_id: &Uuid,
+    deployment_hash: &str,
+) -> Result<Option<PipeExecution>, String> {
+    let query_span = tracing::info_span!("Finding pending replay execution");
+    sqlx::query_as::<_, PipeExecution>(
+        r#"
+        SELECT id, pipe_instance_id, deployment_hash, trigger_type, status,
+               source_data, mapped_data, target_response, error, duration_ms,
+               replay_of, is_local, created_by, started_at, completed_at
+        FROM pipe_executions
+        WHERE pipe_instance_id = $1
+          AND deployment_hash = $2
+          AND trigger_type = 'replay'
+          AND replay_of IS NOT NULL
+          AND status = 'running'
+        ORDER BY started_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(instance_id)
+    .bind(deployment_hash)
+    .fetch_optional(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to find pending replay execution: {:?}", err);
+        format!("Failed to find pending replay execution: {}", err)
     })
 }
 
@@ -503,7 +569,7 @@ pub async fn list_executions(
         r#"
         SELECT id, pipe_instance_id, deployment_hash, trigger_type, status,
                source_data, mapped_data, target_response, error, duration_ms,
-               replay_of, created_by, started_at, completed_at
+               replay_of, is_local, created_by, started_at, completed_at
         FROM pipe_executions
         WHERE pipe_instance_id = $1
         ORDER BY started_at DESC
@@ -548,7 +614,7 @@ pub async fn update_execution_result(
         WHERE id = $1
         RETURNING id, pipe_instance_id, deployment_hash, trigger_type, status,
                   source_data, mapped_data, target_response, error, duration_ms,
-                  replay_of, created_by, started_at, completed_at
+                  replay_of, is_local, created_by, started_at, completed_at
         "#,
     )
     .bind(id)

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectorConfig {
     pub user_service: Option<UserServiceConfig>,
+    pub install_service: Option<InstallServiceConfig>,
     pub payment_service: Option<PaymentServiceConfig>,
     pub events: Option<EventsConfig>,
     pub dockerhub_service: Option<DockerHubConnectorConfig>,
@@ -34,6 +35,19 @@ impl Default for UserServiceConfig {
             retry_attempts: 3,
             auth_token: None,
         }
+    }
+}
+
+/// Install Service connector configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstallServiceConfig {
+    /// Enable/disable Install Service integration
+    pub enabled: bool,
+}
+
+impl Default for InstallServiceConfig {
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 
@@ -90,6 +104,7 @@ impl Default for ConnectorConfig {
     fn default() -> Self {
         Self {
             user_service: Some(UserServiceConfig::default()),
+            install_service: Some(InstallServiceConfig::default()),
             payment_service: Some(PaymentServiceConfig::default()),
             events: Some(EventsConfig::default()),
             dockerhub_service: Some(DockerHubConnectorConfig::default()),

@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "v1alpha1",
+  "project": {
+    "id": 18,
+    "identity": "offline-demo",
+    "name": "Offline Demo"
+  },
+  "deployment": {
+    "id": 32,
+    "deploymentHash": "deployment_state_offline",
+    "status": "pending",
+    "runtime": "runc"
+  },
+  "agent": {
+    "status": "offline",
+    "capabilities": [],
+    "features": {
+      "compose": false,
+      "kataRuntime": false,
+      "backup": false,
+      "pipes": false,
+      "proxyCredentialsVault": false
+    }
+  },
+  "runtime": {
+    "composePath": "/home/trydirect/project/docker-compose.yml",
+    "envPath": "/home/trydirect/project/.env"
+  },
+  "apps": [],
+  "drift": {
+    "hasDrift": false,
+    "summary": "no drift detected"
+  }
+}

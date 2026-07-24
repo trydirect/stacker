@@ -155,7 +155,7 @@ impl ToolHandler for ConfigureProxyTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "configure_proxy".to_string(),
-            description: "Configure a reverse proxy (Nginx Proxy Manager) to route a domain to an application. Creates SSL certificates automatically with Let's Encrypt.".to_string(),
+            description: "Configure a reverse proxy (Nginx Proxy Manager) to route a domain to an application. Set ssl_enabled=false for plain HTTP hosts; when enabled, SSL certificates are requested with Let's Encrypt.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -186,11 +186,11 @@ impl ToolHandler for ConfigureProxyTool {
                     },
                     "ssl_enabled": {
                         "type": "boolean",
-                        "description": "Enable SSL with Let's Encrypt (default: true)"
+                        "description": "Enable SSL with Let's Encrypt; set false for plain HTTP hosts (default: true)"
                     },
                     "ssl_forced": {
                         "type": "boolean",
-                        "description": "Force HTTPS redirect (default: true)"
+                        "description": "Force HTTPS redirect when SSL is enabled (default: true)"
                     },
                     "http2_support": {
                         "type": "boolean",

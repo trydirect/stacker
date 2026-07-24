@@ -111,3 +111,29 @@ pub async fn try_hmac(req: &mut ServiceRequest) -> Result<bool, String> {
 
     Ok(true)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::try_hmac;
+    use actix_web::test::TestRequest;
+
+    #[actix_web::test]
+    async fn no_stacker_id_header_skips_hmac() {
+        let mut req = TestRequest::default().to_srv_request();
+        let result = try_hmac(&mut req).await;
+        assert_eq!(result, Ok(false));
+    }
+
+    #[actix_web::test]
+    async fn stacker_id_without_stacker_hash_returns_error() {
+        let mut req = TestRequest::default()
+            .insert_header(("stacker-id", "42"))
+            .to_srv_request();
+        let result = try_hmac(&mut req).await;
+        assert!(
+            matches!(result, Err(ref msg) if msg.contains("stacker-hash")),
+            "expected Err containing 'stacker-hash', got {:?}",
+            result
+        );
+    }
+}

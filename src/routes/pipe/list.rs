@@ -50,10 +50,9 @@ pub async fn list_instances_handler(
     let deployment_hash = path.into_inner();
 
     // Verify deployment belongs to the requesting user
-    let deployment =
-        db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &deployment_hash)
-            .await
-            .map_err(|err| JsonResponse::internal_server_error(err))?;
+    let deployment = db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &deployment_hash)
+        .await
+        .map_err(|err| JsonResponse::internal_server_error(err))?;
 
     match &deployment {
         Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
@@ -72,4 +71,22 @@ pub async fn list_instances_handler(
     Ok(JsonResponse::build()
         .set_list(instances)
         .ok("Pipe instances fetched successfully"))
+}
+
+#[tracing::instrument(name = "List local pipe instances", skip_all)]
+#[get("/instances/local")]
+pub async fn list_local_instances_handler(
+    user: web::ReqData<Arc<User>>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let instances = db::pipe::list_local_instances_by_user(pg_pool.get_ref(), &user.id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to list local pipe instances: {}", err);
+            JsonResponse::internal_server_error(err)
+        })?;
+
+    Ok(JsonResponse::build()
+        .set_list(instances)
+        .ok("Local pipe instances fetched successfully"))
 }

@@ -9,12 +9,18 @@
 //! The CLI never connects to the agent directly. All communication is mediated
 //! by the Stacker server.
 
+use crate::cli::config_bundle::{build_config_bundle, ConfigBundleArtifacts};
+use crate::cli::config_parser::StackerConfig;
+use crate::cli::debug::cli_debug_enabled;
 use crate::cli::error::CliError;
 use crate::cli::fmt;
+use crate::cli::generator::compose::ComposeDefinition;
+use crate::cli::install_runner::resolve_docker_registry_credentials;
 use crate::cli::progress;
 use crate::cli::runtime::CliRuntime;
 use crate::cli::stacker_client::{AgentCommandInfo, AgentEnqueueRequest};
 use crate::console::commands::CallableTrait;
+use std::path::{Path, PathBuf};
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Deployment hash resolution
@@ -32,7 +38,7 @@ const DEFAULT_POLL_INTERVAL_SECS: u64 = 2;
 /// 1. Explicit `--deployment` flag value
 /// 2. `stacker.yml` project name → API project lookup → active agent hash (most reliable)
 /// 3. `.stacker/deployment.lock` → `deployment_id` → API lookup for hash (fallback)
-fn resolve_deployment_hash(
+pub(crate) fn resolve_deployment_hash(
     explicit: &Option<String>,
     ctx: &CliRuntime,
 ) -> Result<String, CliError> {
@@ -44,15 +50,32 @@ fn resolve_deployment_hash(
     }
 
     let project_dir = std::env::current_dir().map_err(CliError::Io)?;
-
-    // 2. stacker.yml project → active agent (takes priority over lock file)
-    // The lock file records the deployment_id at deploy time but the agent may
-    // have been redeployed since, leaving the lock pointing at a stale hash.
     let config_path = project_dir.join("stacker.yml");
+
+    // 2. stacker.yml deploy.deployment_hash — written by `stacker agent install`
+    // and `stacker deploy` after a successful remote deploy.
     if config_path.exists() {
-        if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path) {
-            if let Some(ref project_name) = config.project.identity {
-                if let Ok(Some(proj)) = ctx.block_on(ctx.client.find_project_by_name(project_name)) {
+        if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path)
+            .and_then(|c| c.with_resolved_deploy_target(None))
+        {
+            if let Some(ref hash) = config.deploy.deployment_hash {
+                if !hash.trim().is_empty() {
+                    return Ok(hash.clone());
+                }
+            }
+
+            // 3. stacker.yml project identity → active agent
+            // Falls back to config.name when project.identity is null.
+            let project_name = config
+                .project
+                .identity
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| config.name.clone());
+
+            if !project_name.trim().is_empty() {
+                if let Ok(Some(proj)) = ctx.block_on(ctx.client.find_project_by_name(&project_name))
+                {
                     match ctx.block_on(ctx.client.agent_snapshot_by_project(proj.id)) {
                         Ok((_, hash)) => {
                             eprintln!(
@@ -61,8 +84,15 @@ fn resolve_deployment_hash(
                             );
                             return Ok(hash);
                         }
-                        Err(_) => {
-                            // No active agent for this project; fall through to lock
+                        Err(_) => {}
+                    }
+
+                    // No active agent yet; try most recent deployment for the project
+                    if let Ok(deployments) =
+                        ctx.block_on(ctx.client.list_deployments(Some(proj.id), Some(1)))
+                    {
+                        if let Some(dep) = deployments.into_iter().next() {
+                            return Ok(dep.deployment_hash);
                         }
                     }
                 }
@@ -70,7 +100,7 @@ fn resolve_deployment_hash(
         }
     }
 
-    // 3. Deployment lock (fallback when no stacker.yml or no active project agent)
+    // 4. Deployment lock → integer ID → API lookup
     if let Some(lock) = crate::cli::deployment_lock::DeploymentLock::load(&project_dir)? {
         if let Some(dep_id) = lock.deployment_id {
             let info = ctx.block_on(ctx.client.get_deployment_status(dep_id as i32))?;
@@ -87,6 +117,34 @@ fn resolve_deployment_hash(
     ))
 }
 
+pub(crate) fn resolve_registry_auth_for_agent_deploy(
+    project_dir: &Path,
+) -> Option<crate::forms::status_panel::RegistryAuthCommandRequest> {
+    let config_path = project_dir.join("stacker.yml");
+    let config = crate::cli::config_parser::StackerConfig::from_file(&config_path)
+        .and_then(|config| config.with_resolved_deploy_target(None))
+        .ok()?;
+    let creds = resolve_docker_registry_credentials(&config);
+    let username = creds.get("docker_username")?.as_str()?.trim();
+    let password = creds.get("docker_password")?.as_str()?.trim();
+    if username.is_empty() || password.is_empty() {
+        return None;
+    }
+
+    let registry = creds
+        .get("docker_registry")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("docker.io");
+
+    Some(crate::forms::status_panel::RegistryAuthCommandRequest {
+        registry: registry.to_string(),
+        username: username.to_string(),
+        password: password.to_string(),
+    })
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Shared agent command execution
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -96,7 +154,206 @@ fn resolve_deployment_hash(
 /// 1. Enqueues the command via the Stacker API
 /// 2. Shows a spinner while polling for the result
 /// 3. Returns the completed `AgentCommandInfo`
-fn run_agent_command(
+fn format_error_message(
+    message: &str,
+    code: Option<&str>,
+    details: Option<&serde_json::Value>,
+) -> String {
+    let mut formatted = message.to_string();
+    if let Some(code) = code.filter(|value| !value.trim().is_empty()) {
+        formatted = format!("{} ({})", formatted, code);
+    }
+    if let Some(details) = details {
+        let details = match details {
+            serde_json::Value::String(value) => value.clone(),
+            other => fmt::pretty_json(other),
+        };
+        if !details.trim().is_empty() {
+            formatted = format!("{}: {}", formatted, details);
+        }
+    }
+    formatted
+}
+
+fn json_error_message(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(message) if !message.trim().is_empty() => Some(message.clone()),
+        serde_json::Value::Object(map) => {
+            if let Some(first) = map
+                .get("errors")
+                .and_then(|value| value.as_array())
+                .and_then(|errors| errors.first())
+                .and_then(|value| value.as_object())
+            {
+                let message = first
+                    .get("message")
+                    .and_then(|value| value.as_str())
+                    .or_else(|| first.get("error").and_then(|value| value.as_str()))
+                    .or_else(|| first.get("detail").and_then(|value| value.as_str()))?;
+                let code = first.get("code").and_then(|value| value.as_str());
+                let details = first.get("details");
+                return Some(format_error_message(message, code, details));
+            }
+
+            let message = map
+                .get("message")
+                .and_then(|value| value.as_str())
+                .or_else(|| map.get("error").and_then(|value| value.as_str()))
+                .or_else(|| map.get("detail").and_then(|value| value.as_str()))?;
+            let code = map.get("code").and_then(|value| value.as_str());
+            let details = map.get("details");
+            Some(format_error_message(message, code, details))
+        }
+        _ => None,
+    }
+}
+
+fn sanitize_npm_credentials_message(raw_message: String, code: Option<&str>) -> String {
+    // Fall back to substring match when the error arrives as a pre-formatted string
+    // with no structured "code" field (the server embeds the code inline).
+    if code == Some("npm_credentials_invalid") || raw_message.contains("npm_credentials_invalid") {
+        let user_msg = "NPM credentials are invalid or missing. \
+                        Update them with:\n  \
+                        stacker secrets set npm_credentials --scope server \
+                        --body-file ./npm_credentials.json"
+            .to_string();
+        if cli_debug_enabled() {
+            format!("{}\n  [debug] {}", user_msg, raw_message)
+        } else {
+            user_msg
+        }
+    } else {
+        raw_message
+    }
+}
+
+fn agent_command_error_message(info: &AgentCommandInfo) -> Option<String> {
+    if let Some(error) = info.error.as_ref() {
+        let raw = json_error_message(error).unwrap_or_else(|| fmt::pretty_json(error));
+        let code = error
+            .get("code")
+            .and_then(|v| v.as_str())
+            .or_else(|| error.get("error_code").and_then(|v| v.as_str()));
+        return Some(sanitize_npm_credentials_message(raw, code));
+    }
+
+    let result = info.result.as_ref()?;
+    let reported_status = result.get("status").and_then(|value| value.as_str());
+    let result_is_error = matches!(reported_status, Some("error" | "failed"))
+        || result.get("success").and_then(|value| value.as_bool()) == Some(false)
+        || result.get("ok").and_then(|value| value.as_bool()) == Some(false);
+
+    if !result_is_error {
+        return None;
+    }
+
+    let raw_message = json_error_message(result)
+        .unwrap_or_else(|| "Agent command reported an application error".to_string());
+
+    // "code" is already embedded into raw_message by format_error_message.
+    // "error_code" is a separate field not yet appended — handled below.
+    let inline_code = result.get("code").and_then(|v| v.as_str());
+    let extra_code = result.get("error_code").and_then(|v| v.as_str());
+
+    let mut message = sanitize_npm_credentials_message(raw_message, inline_code.or(extra_code));
+
+    // Append extra_code (the "error_code" field) if present — it is NOT yet in the message.
+    if let Some(code) = extra_code {
+        // Skip appending if sanitize_npm_credentials_message already replaced the whole message.
+        if inline_code != Some("npm_credentials_invalid") {
+            message = format!("{} ({})", message, code);
+            if code == "npm_create_failed" {
+                message = format!(
+                    "{}\n\n{}",
+                    message,
+                    npm_create_failed_guidance(Some(result))
+                );
+            }
+        }
+    }
+    Some(message)
+}
+
+fn npm_create_failed_guidance(result: Option<&serde_json::Value>) -> String {
+    let domain = result
+        .and_then(|value| value.get("domain_names"))
+        .and_then(|value| value.as_array())
+        .and_then(|domains| domains.first())
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            result
+                .and_then(|value| value.get("domain"))
+                .and_then(|value| value.as_str())
+        })
+        .unwrap_or("<domain>");
+
+    format!(
+        "Route diagnostics:\n\
+         - Nginx Proxy Manager may have created the host despite returning an error; check for an existing host for {domain} and retry configure-proxy to adopt it.\n\
+         - Verify DNS A/AAAA records for {domain} point at this server before requesting Let's Encrypt.\n\
+         - Ensure cloud firewall ports are open: stacker cloud firewall add --server-id <server-id> --public-ports 80/tcp,443/tcp\n\
+         - Check for a duplicate NPM proxy host using the same domain.\n\
+         - SSL is off by default; add --ssl only once DNS is confirmed and ports 80/443 are open."
+    )
+}
+
+async fn execute_agent_command(
+    ctx: &CliRuntime,
+    request: &AgentEnqueueRequest,
+    timeout: u64,
+) -> Result<AgentCommandInfo, CliError> {
+    let info = ctx.client.agent_enqueue(request).await?;
+    let command_id = info.command_id.clone();
+    let deployment_hash = request.deployment_hash.clone();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
+    let interval = std::time::Duration::from_secs(DEFAULT_POLL_INTERVAL_SECS);
+    let mut last_status = "pending".to_string();
+
+    loop {
+        tokio::time::sleep(interval).await;
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err(CliError::AgentCommandTimeout {
+                command_id: command_id.clone(),
+                command_type: request.command_type.clone(),
+                last_status,
+                deployment_hash,
+            });
+        }
+
+        let status = ctx
+            .client
+            .agent_command_status(&deployment_hash, &command_id)
+            .await?;
+
+        last_status = status.status.clone();
+
+        match status.status.as_str() {
+            "completed" => {
+                if let Some(error) = agent_command_error_message(&status) {
+                    return Err(CliError::AgentCommandFailed {
+                        command_id: command_id.clone(),
+                        error,
+                    });
+                }
+                return Ok(status);
+            }
+            "failed" | "cancelled" => {
+                let error = agent_command_error_message(&status).unwrap_or_else(|| {
+                    format!("Agent command ended with status '{}'", status.status)
+                });
+                return Err(CliError::AgentCommandFailed {
+                    command_id: command_id.clone(),
+                    error,
+                });
+            }
+            _ => continue,
+        }
+    }
+}
+
+pub(crate) fn run_agent_command(
     ctx: &CliRuntime,
     request: &AgentEnqueueRequest,
     spinner_msg: &str,
@@ -109,8 +366,7 @@ fn run_agent_command(
         let command_id = info.command_id.clone();
         let deployment_hash = request.deployment_hash.clone();
 
-        let deadline =
-            tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
         let interval = std::time::Duration::from_secs(DEFAULT_POLL_INTERVAL_SECS);
         let mut last_status = "pending".to_string();
 
@@ -132,30 +388,45 @@ fn run_agent_command(
                 .await?;
 
             last_status = status.status.clone();
-            progress::update_message(
-                &pb,
-                &format!("{} [{}]", spinner_msg, status.status),
-            );
+            progress::update_message(&pb, &format!("{} [{}]", spinner_msg, status.status));
 
             match status.status.as_str() {
-                "completed" | "failed" => return Ok(status),
+                "completed" => {
+                    if let Some(error) = agent_command_error_message(&status) {
+                        return Err(CliError::AgentCommandFailed {
+                            command_id: command_id.clone(),
+                            error,
+                        });
+                    }
+                    return Ok(status);
+                }
+                "failed" | "cancelled" => {
+                    let error = agent_command_error_message(&status).unwrap_or_else(|| {
+                        format!("Agent command ended with status '{}'", status.status)
+                    });
+                    return Err(CliError::AgentCommandFailed {
+                        command_id: command_id.clone(),
+                        error,
+                    });
+                }
                 _ => continue,
             }
         }
     });
 
     match &result {
-        Ok(info) if info.status == "completed" => {
-            progress::finish_success(&pb, &format!("{} ✓", spinner_msg));
-        }
-        Ok(info) => {
-            progress::finish_error(&pb, &format!("{} — {}", spinner_msg, info.status));
-        }
+        Ok(_) => progress::finish_success(&pb, spinner_msg),
         Err(e) => {
-            let short_msg = if matches!(e, CliError::AgentCommandTimeout { .. }) {
-                format!("{} — timed out", spinner_msg)
-            } else {
-                format!("{} — {}", spinner_msg, e)
+            let short_msg = match e {
+                CliError::AgentCommandTimeout { .. } => {
+                    format!("{} — timed out", spinner_msg)
+                }
+                CliError::AgentCommandFailed { error, .. } => {
+                    format!("{} — {}", spinner_msg, error)
+                }
+                _ => {
+                    format!("{} — {}", spinner_msg, e)
+                }
             };
             progress::finish_error(&pb, &short_msg);
         }
@@ -175,14 +446,120 @@ fn print_command_result(info: &AgentCommandInfo, json: bool) {
 
     println!("Command:  {}", info.command_id);
     println!("Type:     {}", info.command_type);
-    println!("Status:   {} {}", progress::status_icon(&info.status), info.status);
+    println!(
+        "Status:   {} {}",
+        progress::status_icon(&info.status),
+        info.status
+    );
 
     if let Some(ref result) = info.result {
         println!("\n{}", fmt::pretty_json(result));
     }
 
-    if let Some(ref error) = info.error {
-        eprintln!("\nError: {}", fmt::pretty_json(error));
+    if let Some(error) = agent_command_error_message(info) {
+        eprintln!("\nError: {}", error);
+    }
+}
+
+fn print_health_result(info: &AgentCommandInfo) {
+    if let Some(ref result) = info.result {
+        let result_type = result.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+        // "all_health": list of all containers
+        if result_type == "all_health" {
+            let overall = result.get("status").and_then(|v| v.as_str()).unwrap_or("-");
+            println!("Overall: {} {}", progress::status_icon(overall), overall);
+            println!();
+            if let Some(containers) = result.get("containers").and_then(|v| v.as_array()) {
+                println!("{:<28} {:<10} {}", "CONTAINER", "STATE", "STATUS");
+                for c in containers {
+                    let name = c
+                        .get("container_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("-");
+                    let state = c
+                        .get("container_state")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("-");
+                    let status = c.get("status").and_then(|v| v.as_str()).unwrap_or("-");
+                    println!(
+                        "{:<28} {} {:<8} {}",
+                        fmt::truncate(name, 26),
+                        progress::status_icon(state),
+                        state,
+                        status,
+                    );
+                }
+            }
+            return;
+        }
+
+        // Single-container health
+        if result_type == "health" {
+            let state = result
+                .get("container_state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-");
+            let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("-");
+            let app = result
+                .get("app_code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-");
+            println!(
+                "{}: {} {} ({})",
+                app,
+                progress::status_icon(state),
+                state,
+                status
+            );
+            if let Some(metrics) = result.get("metrics") {
+                println!("{}", fmt::pretty_json(metrics));
+            }
+            return;
+        }
+
+        // Fallback
+        println!("{}", fmt::pretty_json(result));
+    }
+
+    if let Some(error) = agent_command_error_message(info) {
+        eprintln!("Error: {}", error);
+    }
+}
+
+fn print_all_container_health(containers: &[serde_json::Value]) {
+    if containers.is_empty() {
+        println!("No containers found.");
+        return;
+    }
+
+    let all_running = containers.iter().all(|c| {
+        let state = c.get("status").and_then(|v| v.as_str()).unwrap_or("-");
+        state == "running"
+    });
+    let overall = if all_running { "running" } else { "degraded" };
+    println!("Overall: {} {}", progress::status_icon(overall), overall);
+    println!();
+
+    println!(
+        "{:<28} {:<12} {:<8} {:<8} {}",
+        "CONTAINER", "STATE", "CPU%", "MEM%", "IMAGE"
+    );
+    for c in containers {
+        let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("-");
+        let state = c.get("status").and_then(|v| v.as_str()).unwrap_or("-");
+        let image = c.get("image").and_then(|v| v.as_str()).unwrap_or("-");
+        let cpu = c.get("cpu_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let mem = c.get("mem_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        println!(
+            "{:<28} {} {:<10} {:<8.1} {:<8.1} {}",
+            fmt::truncate(name, 26),
+            progress::status_icon(state),
+            state,
+            cpu,
+            mem,
+            fmt::truncate(image, 30),
+        );
     }
 }
 
@@ -194,23 +571,27 @@ fn print_command_result(info: &AgentCommandInfo, json: bool) {
 ///
 /// Returns `Ok(())` when it's safe to proceed, or a `CliError` when the user
 /// aborts or the prompt cannot be answered.
-fn check_active_connections(
-    ctx: &CliRuntime,
-    hash: &str,
-    force: bool,
-) -> Result<(), CliError> {
+fn check_active_connections(ctx: &CliRuntime, hash: &str, force: bool) -> Result<(), CliError> {
     let params = crate::forms::status_panel::CheckConnectionsCommandRequest { ports: None };
     let request = AgentEnqueueRequest::new(hash, "check_connections")
         .with_parameters(&params)
         .map_err(|e| CliError::ConfigValidation(format!("check_connections parameters: {}", e)))?;
 
-    let info = match run_agent_command(ctx, &request, "Checking active connections", 15) {
-        Ok(info) => info,
-        Err(_) => {
+    let pb = progress::spinner("Checking active connections");
+    let info = match ctx.block_on(execute_agent_command(ctx, &request, 15)) {
+        Ok(info) => {
+            progress::finish_success(&pb, "Checking active connections");
+            info
+        }
+        Err(err) => {
             // Non-fatal: if the check times out or fails we warn but proceed.
-            eprintln!(
-                "\x1b[33m⚠ Connection check skipped (agent did not respond in time)\x1b[0m"
-            );
+            progress::finish_warning(&pb, "Checking active connections — skipped");
+            let reason = if matches!(err, CliError::AgentCommandTimeout { .. }) {
+                "agent did not respond in time"
+            } else {
+                "agent could not verify active connections"
+            };
+            eprintln!("\x1b[33m⚠ Connection check skipped ({})\x1b[0m", reason);
             return Ok(());
         }
     };
@@ -234,11 +615,17 @@ fn check_active_connections(
     }
 
     // Print a per-port table.
-    eprintln!("\n\x1b[33m⚠  {} active HTTP connection(s) detected:\x1b[0m", active);
+    eprintln!(
+        "\n\x1b[33m⚠  {} active HTTP connection(s) detected:\x1b[0m",
+        active
+    );
     if let Some(ports) = result.get("ports").and_then(|v| v.as_array()) {
         for entry in ports {
             let port = entry.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
-            let conns = entry.get("connections").and_then(|v| v.as_u64()).unwrap_or(0);
+            let conns = entry
+                .get("connections")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             if conns > 0 {
                 eprintln!("   port {:5} — {} connection(s)", port, conns);
             }
@@ -288,7 +675,12 @@ impl AgentHealthCommand {
         deployment: Option<String>,
         include_system: bool,
     ) -> Self {
-        Self { app_code, json, deployment, include_system }
+        Self {
+            app_code,
+            json,
+            deployment,
+            include_system,
+        }
     }
 }
 
@@ -297,8 +689,20 @@ impl CallableTrait for AgentHealthCommand {
         let ctx = CliRuntime::new("agent health")?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
 
+        // No specific app requested → list all containers with health metrics.
+        // This avoids sending app_code="all" to older agents that don't handle it.
+        if self.app_code.is_none() && !self.include_system {
+            let containers = fetch_live_containers(&ctx, &hash)?.unwrap_or_default();
+            if self.json {
+                println!("{}", serde_json::to_string_pretty(&containers)?);
+            } else {
+                print_all_container_health(&containers);
+            }
+            return Ok(());
+        }
+
         let params = crate::forms::status_panel::HealthCommandRequest {
-            app_code: self.app_code.clone().unwrap_or_else(|| "all".to_string()),
+            app_code: self.app_code.clone().unwrap_or_default(),
             container: None,
             include_metrics: true,
             include_system: self.include_system,
@@ -309,7 +713,11 @@ impl CallableTrait for AgentHealthCommand {
             .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
 
         let info = run_agent_command(&ctx, &request, "Checking health", DEFAULT_TIMEOUT_SECS)?;
-        print_command_result(&info, self.json);
+        if self.json {
+            print_command_result(&info, true);
+        } else {
+            print_health_result(&info);
+        }
         Ok(())
     }
 }
@@ -331,7 +739,12 @@ impl AgentLogsCommand {
         json: bool,
         deployment: Option<String>,
     ) -> Self {
-        Self { app_code, limit, json, deployment }
+        Self {
+            app_code,
+            limit,
+            json,
+            deployment,
+        }
     }
 }
 
@@ -376,13 +789,13 @@ pub struct AgentRestartCommand {
 }
 
 impl AgentRestartCommand {
-    pub fn new(
-        app_code: String,
-        force: bool,
-        json: bool,
-        deployment: Option<String>,
-    ) -> Self {
-        Self { app_code, force, json, deployment }
+    pub fn new(app_code: String, force: bool, json: bool, deployment: Option<String>) -> Self {
+        Self {
+            app_code,
+            force,
+            json,
+            deployment,
+        }
     }
 }
 
@@ -424,6 +837,9 @@ pub struct AgentDeployAppCommand {
     pub runtime: String,
     pub json: bool,
     pub deployment: Option<String>,
+    pub environment: Option<String>,
+    pub plan: bool,
+    pub apply_plan: Option<String>,
 }
 
 impl AgentDeployAppCommand {
@@ -434,8 +850,29 @@ impl AgentDeployAppCommand {
         runtime: String,
         json: bool,
         deployment: Option<String>,
+        environment: Option<String>,
     ) -> Self {
-        Self { app_code, image, force_recreate, runtime, json, deployment }
+        Self {
+            app_code,
+            image,
+            force_recreate,
+            runtime,
+            json,
+            deployment,
+            environment,
+            plan: false,
+            apply_plan: None,
+        }
+    }
+
+    pub fn with_plan(mut self, plan: bool) -> Self {
+        self.plan = plan;
+        self
+    }
+
+    pub fn with_apply_plan(mut self, apply_plan: Option<String>) -> Self {
+        self.apply_plan = apply_plan;
+        self
     }
 }
 
@@ -444,16 +881,69 @@ impl CallableTrait for AgentDeployAppCommand {
         let ctx = CliRuntime::new("agent deploy-app")?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
 
+        if self.plan {
+            return crate::console::commands::cli::deployment::run_remote_deployment_plan(
+                Some(&hash),
+                crate::services::DeployPlanOperation::DeployApp,
+                Some(&self.app_code),
+                None,
+                None,
+            );
+        }
+
+        if let Some(fingerprint) = self.apply_plan.as_deref() {
+            let project_dir = std::env::current_dir().map_err(CliError::Io)?;
+            let config_path = project_dir.join("stacker.yml");
+            let config = StackerConfig::from_file(&config_path)?
+                .with_resolved_deploy_target(None)
+                .map_err(|e| CliError::ConfigValidation(format!("Invalid stacker.yml: {}", e)))?;
+            let base_url =
+                crate::console::commands::cli::status::resolve_stacker_base_url(&ctx.creds);
+            let validated_plan = ctx.block_on(async {
+                crate::console::commands::cli::deployment::fetch_remote_deployment_plan(
+                    &config,
+                    &base_url,
+                    &ctx.client,
+                    Some(&hash),
+                    crate::services::DeployPlanOperation::DeployApp,
+                    Some(&self.app_code),
+                    None,
+                    Some(fingerprint),
+                )
+                .await
+            })?;
+            if !validated_plan.has_changes {
+                println!(
+                    "Plan already satisfied for {}. Nothing to apply.",
+                    validated_plan.deployment_hash
+                );
+                return Ok(());
+            }
+        }
+
+        let project_dir = std::env::current_dir().map_err(CliError::Io)?;
+
         check_active_connections(&ctx, &hash, self.force_recreate)?;
+        let local_config = local_config_files_for_agent_deploy(
+            &project_dir,
+            &self.app_code,
+            self.environment.as_deref(),
+        )?;
+        for notice in &local_config.notices {
+            eprintln!("  ⚠ {notice}");
+        }
 
         let params = crate::forms::status_panel::DeployAppCommandRequest {
             app_code: self.app_code.clone(),
-            compose_content: None,
+            compose_content: local_config.compose_content,
             image: self.image.clone(),
             env_vars: None,
             pull: true,
             force_recreate: self.force_recreate,
+            force_config_overwrite: self.force_recreate,
             runtime: self.runtime.clone(),
+            registry_auth: resolve_registry_auth_for_agent_deploy(&project_dir),
+            config_files: local_config.config_files,
         };
 
         let request = AgentEnqueueRequest::new(&hash, "deploy_app")
@@ -461,15 +951,515 @@ impl CallableTrait for AgentDeployAppCommand {
             .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?
             .with_timeout(300);
 
-        let info = run_agent_command(
-            &ctx,
-            &request,
-            &format!("Deploying {}", self.app_code),
-            300,
-        )?;
+        let info = run_agent_command(&ctx, &request, &format!("Deploying {}", self.app_code), 300)?;
         print_command_result(&info, self.json);
         Ok(())
     }
+}
+
+#[derive(Debug, Default)]
+struct LocalDeployAppConfig {
+    compose_content: Option<String>,
+    config_files: Option<Vec<serde_json::Value>>,
+    notices: Vec<String>,
+}
+
+fn local_config_files_for_agent_deploy(
+    project_dir: &Path,
+    app_code: &str,
+    environment_override: Option<&str>,
+) -> Result<LocalDeployAppConfig, CliError> {
+    let mut result = LocalDeployAppConfig::default();
+    let config_path = project_dir.join("stacker.yml");
+    if !config_path.exists() {
+        return Ok(result);
+    }
+
+    let active_target =
+        crate::cli::deployment_lock::DeploymentLock::read_active_target(project_dir)?;
+    let mut config = StackerConfig::from_file(&config_path)?
+        .with_resolved_deploy_target(active_target.as_deref())?;
+    let active_environment = read_active_environment(project_dir)?;
+    let requested_environment = environment_override.or(active_environment.as_deref());
+    let Some((environment, environment_config)) =
+        config.resolve_environment_config(requested_environment)?
+    else {
+        return Ok(result);
+    };
+
+    if environment_override.is_none() && active_environment.is_none() {
+        if let Some(active_target) = active_target.as_deref() {
+            if active_target != "local" && environment == "local" {
+                result.notices.push(format!(
+                    "Active target is '{}', but resolved environment is 'local'; use `stacker agent deploy-app {} --env prod` or `stacker env prod` if this should use production config.",
+                    active_target, app_code
+                ));
+            }
+        }
+    }
+
+    if let Some(compose_file) = environment_config.compose_file {
+        config.deploy.compose_file = Some(compose_file);
+    }
+    if let Some(env_file) = environment_config.env_file {
+        config.env_file = Some(env_file);
+    }
+
+    let Some(configured_compose_file) = config.deploy.compose_file.as_ref() else {
+        return Ok(result);
+    };
+    let configured_compose_path = resolve_compose_path(project_dir, configured_compose_file);
+    if !configured_compose_path.exists() {
+        return Ok(result);
+    }
+    let app_local_compose_path = app_local_compose_path(project_dir, app_code, &environment);
+    let compose_path = if app_local_compose_path.exists() {
+        app_local_compose_path.as_path()
+    } else {
+        configured_compose_path.as_path()
+    };
+
+    if !compose_service_has_env_file(&compose_path, app_code)? {
+        let conventional_env = project_dir
+            .join(app_code)
+            .join("docker")
+            .join(&environment)
+            .join(".env");
+        if conventional_env.exists() {
+            result.notices.push(format!(
+                "{} exists, but service '{}' in {} has no env_file entry; Docker Compose will not inject local or remote-rendered env values into that container.",
+                conventional_env.display(),
+                app_code,
+                compose_path.display()
+            ));
+        }
+    }
+
+    let bundle = if compose_path == configured_compose_path.as_path() {
+        let reference_base = configured_compose_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| project_dir.to_path_buf());
+        let mut bundle = build_config_bundle(
+            project_dir,
+            &environment,
+            &configured_compose_path,
+            config.env_file.as_deref(),
+            &reference_base,
+            false,
+        )?;
+        if materialize_stacker_service_in_bundle(&mut bundle, &config, app_code)? {
+            result.notices.push(format!(
+                "Materialized service '{}' from stacker.yml into the remote compose payload.",
+                app_code
+            ));
+        }
+        bundle
+    } else {
+        let app_reference_base = compose_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| project_dir.to_path_buf());
+        let app_bundle = build_config_bundle(
+            project_dir,
+            &environment,
+            compose_path,
+            None,
+            &app_reference_base,
+            false,
+        )?;
+        let project_compose = std::fs::read_to_string(&configured_compose_path).map_err(|err| {
+            CliError::ConfigValidation(format!(
+                "failed to read project compose {}: {}",
+                configured_compose_path.display(),
+                err
+            ))
+        })?;
+        let app_compose = bundle_compose_content(&app_bundle)?;
+        result.compose_content = Some(merge_compose_service(
+            &project_compose,
+            &app_compose,
+            app_code,
+        )?);
+        app_bundle
+    };
+
+    if result.compose_content.is_none() {
+        result.compose_content = Some(bundle_compose_content(&bundle)?);
+    }
+    if let Some(compose_content) = result.compose_content.take() {
+        let lock = crate::cli::deployment_lock::DeploymentLock::load_active(project_dir)?;
+        let target_label = active_target
+            .clone()
+            .or_else(|| lock.as_ref().map(|lock| lock.target.clone()));
+        let project_id_label = lock
+            .and_then(|lock| lock.project_id)
+            .map(|project_id| project_id.to_string());
+        result.compose_content = Some(annotate_project_compose_with_stacker_labels(
+            &compose_content,
+            target_label.as_deref(),
+            project_id_label.as_deref(),
+        )?);
+    }
+
+    let deploy_config_files: Vec<_> = bundle
+        .config_files
+        .into_iter()
+        .filter(|file| {
+            file.get("destination_path")
+                .and_then(|path| path.as_str())
+                .map(|path| path != "docker-compose.yml")
+                .unwrap_or(false)
+        })
+        .collect();
+    if !deploy_config_files.is_empty() {
+        result.config_files = Some(deploy_config_files);
+    }
+    Ok(result)
+}
+
+fn bundle_compose_content(
+    bundle: &crate::cli::config_bundle::ConfigBundleArtifacts,
+) -> Result<String, CliError> {
+    bundle
+        .config_files
+        .iter()
+        .find(|file| file.get("name").and_then(|name| name.as_str()) == Some("docker-compose.yml"))
+        .and_then(|file| file.get("content").and_then(|content| content.as_str()))
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            CliError::ConfigValidation("config bundle missing docker-compose.yml".into())
+        })
+}
+
+fn materialize_stacker_service_in_bundle(
+    bundle: &mut ConfigBundleArtifacts,
+    config: &StackerConfig,
+    app_code: &str,
+) -> Result<bool, CliError> {
+    let compose = bundle_compose_content(bundle)?;
+    let updated = merge_stacker_config_service(&compose, config, app_code)?;
+    if updated == compose {
+        return Ok(false);
+    }
+
+    std::fs::write(&bundle.remote_compose_path, &updated)?;
+    if let Some(file) = bundle.config_files.iter_mut().find(|file| {
+        file.get("destination_path").and_then(|path| path.as_str()) == Some("docker-compose.yml")
+    }) {
+        file["content"] = serde_json::Value::String(updated);
+    }
+    Ok(true)
+}
+
+fn merge_stacker_config_service(
+    project_compose: &str,
+    config: &StackerConfig,
+    app_code: &str,
+) -> Result<String, CliError> {
+    let project_doc: serde_yaml::Value = serde_yaml::from_str(project_compose)?;
+    let service_exists = project_doc
+        .as_mapping()
+        .and_then(|root| root.get(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping)
+        .map(|services| services.contains_key(serde_yaml::Value::String(app_code.to_string())))
+        .unwrap_or(false);
+    if service_exists
+        || !config
+            .services
+            .iter()
+            .any(|service| service.name == app_code)
+    {
+        return Ok(project_compose.to_string());
+    }
+
+    let generated_compose = ComposeDefinition::try_from(config)?.render();
+    merge_compose_service(project_compose, &generated_compose, app_code)
+}
+
+fn merge_compose_service(
+    project_compose: &str,
+    app_compose: &str,
+    app_code: &str,
+) -> Result<String, CliError> {
+    let mut project_doc: serde_yaml::Value = serde_yaml::from_str(project_compose)?;
+    let app_doc: serde_yaml::Value = serde_yaml::from_str(app_compose)?;
+
+    let mut app_service = app_doc
+        .as_mapping()
+        .and_then(|root| root.get(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(|services| services.get(serde_yaml::Value::String(app_code.to_string())))
+        .cloned()
+        .ok_or_else(|| {
+            CliError::ConfigValidation(format!(
+                "app-local compose does not define service '{app_code}'"
+            ))
+        })?;
+    let should_merge_networks = !project_service_networks(&project_doc).is_empty();
+    align_service_networks_with_project(&mut app_service, &project_doc);
+
+    let project_services = project_doc
+        .as_mapping_mut()
+        .and_then(|root| root.get_mut(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping_mut)
+        .ok_or_else(|| {
+            CliError::ConfigValidation("project compose does not define services".into())
+        })?;
+    project_services.insert(serde_yaml::Value::String(app_code.to_string()), app_service);
+
+    if should_merge_networks {
+        merge_compose_top_level_mapping(&mut project_doc, &app_doc, "networks");
+    }
+    merge_compose_top_level_mapping(&mut project_doc, &app_doc, "volumes");
+
+    serde_yaml::to_string(&project_doc)
+        .map_err(|err| CliError::ConfigValidation(format!("failed to merge compose: {err}")))
+}
+
+fn annotate_project_compose_with_stacker_labels(
+    compose_content: &str,
+    target: Option<&str>,
+    project_id: Option<&str>,
+) -> Result<String, CliError> {
+    let mut doc: serde_yaml::Value = serde_yaml::from_str(compose_content)?;
+    let services = doc
+        .as_mapping_mut()
+        .and_then(|root| root.get_mut(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping_mut)
+        .ok_or_else(|| CliError::ConfigValidation("compose does not define services".into()))?;
+
+    for (service_name, service) in services {
+        let Some(service_name) = service_name.as_str().map(ToOwned::to_owned) else {
+            continue;
+        };
+        let Some(service_map) = service.as_mapping_mut() else {
+            continue;
+        };
+        let labels_key = serde_yaml::Value::String("labels".to_string());
+        let mut labels = service_map
+            .remove(&labels_key)
+            .map(compose_labels_to_mapping)
+            .unwrap_or_default();
+
+        insert_compose_label(
+            &mut labels,
+            crate::helpers::stacker_labels::SCOPE,
+            crate::helpers::stacker_labels::SCOPE_PROJECT,
+        );
+        insert_compose_label(
+            &mut labels,
+            crate::helpers::stacker_labels::SERVICE,
+            &service_name,
+        );
+        insert_compose_label(
+            &mut labels,
+            crate::helpers::stacker_labels::DNS,
+            &service_name,
+        );
+        if let Some(target) = target.filter(|value| !value.trim().is_empty()) {
+            insert_compose_label(&mut labels, crate::helpers::stacker_labels::TARGET, target);
+        }
+        if let Some(project_id) = project_id.filter(|value| !value.trim().is_empty()) {
+            insert_compose_label(
+                &mut labels,
+                crate::helpers::stacker_labels::PROJECT_ID,
+                project_id,
+            );
+        }
+
+        service_map.insert(labels_key, serde_yaml::Value::Mapping(labels));
+    }
+
+    serde_yaml::to_string(&doc)
+        .map_err(|err| CliError::ConfigValidation(format!("failed to annotate compose: {err}")))
+}
+
+fn compose_labels_to_mapping(value: serde_yaml::Value) -> serde_yaml::Mapping {
+    match value {
+        serde_yaml::Value::Mapping(mapping) => mapping,
+        serde_yaml::Value::Sequence(items) => items
+            .into_iter()
+            .filter_map(|item| {
+                let label = item.as_str()?;
+                let (key, value) = label.split_once('=')?;
+                Some((
+                    serde_yaml::Value::String(key.to_string()),
+                    serde_yaml::Value::String(value.to_string()),
+                ))
+            })
+            .collect(),
+        _ => serde_yaml::Mapping::new(),
+    }
+}
+
+fn insert_compose_label(labels: &mut serde_yaml::Mapping, key: &str, value: &str) {
+    labels.insert(
+        serde_yaml::Value::String(key.to_string()),
+        serde_yaml::Value::String(value.to_string()),
+    );
+}
+
+fn align_service_networks_with_project(
+    app_service: &mut serde_yaml::Value,
+    project_doc: &serde_yaml::Value,
+) {
+    let project_networks = project_service_networks(project_doc);
+    let Some(service_map) = app_service.as_mapping_mut() else {
+        return;
+    };
+    let networks_key = serde_yaml::Value::String("networks".to_string());
+    if project_networks.is_empty() {
+        service_map.remove(&networks_key);
+        return;
+    }
+
+    service_map.insert(
+        networks_key,
+        serde_yaml::Value::Sequence(
+            project_networks
+                .into_iter()
+                .map(serde_yaml::Value::String)
+                .collect(),
+        ),
+    );
+}
+
+fn project_service_networks(project_doc: &serde_yaml::Value) -> Vec<String> {
+    let Some(project_services) = project_doc
+        .as_mapping()
+        .and_then(|root| root.get(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return Vec::new();
+    };
+
+    let mut networks = Vec::new();
+    for service in project_services.values() {
+        let Some(networks_value) = service
+            .as_mapping()
+            .and_then(|service| service.get(serde_yaml::Value::String("networks".to_string())))
+        else {
+            continue;
+        };
+        collect_network_names(networks_value, &mut networks);
+    }
+    networks
+}
+
+fn collect_network_names(value: &serde_yaml::Value, networks: &mut Vec<String>) {
+    match value {
+        serde_yaml::Value::String(name) => push_unique_network(networks, name),
+        serde_yaml::Value::Sequence(items) => {
+            for item in items {
+                if let Some(name) = item.as_str() {
+                    push_unique_network(networks, name);
+                }
+            }
+        }
+        serde_yaml::Value::Mapping(map) => {
+            for key in map.keys() {
+                if let Some(name) = key.as_str() {
+                    push_unique_network(networks, name);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn push_unique_network(networks: &mut Vec<String>, name: &str) {
+    if !networks.iter().any(|existing| existing == name) {
+        networks.push(name.to_string());
+    }
+}
+
+fn merge_compose_top_level_mapping(
+    project_doc: &mut serde_yaml::Value,
+    app_doc: &serde_yaml::Value,
+    key: &str,
+) {
+    let Some(app_mapping) = app_doc
+        .as_mapping()
+        .and_then(|root| root.get(serde_yaml::Value::String(key.to_string())))
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return;
+    };
+
+    let Some(project_root) = project_doc.as_mapping_mut() else {
+        return;
+    };
+    let project_key = serde_yaml::Value::String(key.to_string());
+    if !project_root.contains_key(&project_key) {
+        project_root.insert(
+            project_key.clone(),
+            serde_yaml::Value::Mapping(Default::default()),
+        );
+    }
+    let Some(project_mapping) = project_root
+        .get_mut(&project_key)
+        .and_then(serde_yaml::Value::as_mapping_mut)
+    else {
+        return;
+    };
+
+    for (name, value) in app_mapping {
+        project_mapping.insert(name.clone(), value.clone());
+    }
+}
+
+fn resolve_compose_path(project_dir: &Path, compose_file: &Path) -> PathBuf {
+    if compose_file.is_absolute() {
+        compose_file.to_path_buf()
+    } else {
+        project_dir.join(compose_file)
+    }
+}
+
+fn app_local_compose_path(project_dir: &Path, app_code: &str, environment: &str) -> PathBuf {
+    project_dir
+        .join(app_code)
+        .join("docker")
+        .join(environment)
+        .join("compose.yml")
+}
+
+fn active_environment_path(project_dir: &Path) -> std::path::PathBuf {
+    project_dir.join(".stacker").join("active-env")
+}
+
+fn read_active_environment(project_dir: &Path) -> Result<Option<String>, CliError> {
+    let path = active_environment_path(project_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let value = std::fs::read_to_string(path).map_err(CliError::Io)?;
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
+fn compose_service_has_env_file(compose_path: &Path, app_code: &str) -> Result<bool, CliError> {
+    let raw = std::fs::read_to_string(compose_path).map_err(CliError::Io)?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(&raw)?;
+    let Some(service) = doc
+        .as_mapping()
+        .and_then(|root| root.get(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(|services| services.get(serde_yaml::Value::String(app_code.to_string())))
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return Ok(false);
+    };
+
+    Ok(service
+        .get(serde_yaml::Value::String("env_file".to_string()))
+        .is_some())
 }
 
 // ── Remove App ───────────────────────────────────────
@@ -493,7 +1483,14 @@ impl AgentRemoveAppCommand {
         json: bool,
         deployment: Option<String>,
     ) -> Self {
-        Self { app_code, remove_volumes, remove_image, force, json, deployment }
+        Self {
+            app_code,
+            remove_volumes,
+            remove_image,
+            force,
+            json,
+            deployment,
+        }
     }
 }
 
@@ -551,48 +1548,24 @@ impl AgentConfigureFirewallCommand {
         json: bool,
         deployment: Option<String>,
     ) -> Self {
-        Self { action, app_code, public_ports, private_ports, persist, force, json, deployment }
+        Self {
+            action,
+            app_code,
+            public_ports,
+            private_ports,
+            persist,
+            force,
+            json,
+            deployment,
+        }
     }
 
-    /// Parse "80/tcp" or "443" into a FirewallPortRule (source defaults to 0.0.0.0/0).
     fn parse_public_port(s: &str) -> Result<crate::forms::status_panel::FirewallPortRule, String> {
-        let (port, protocol) = Self::parse_port_proto(s)?;
-        Ok(crate::forms::status_panel::FirewallPortRule {
-            port,
-            protocol,
-            source: "0.0.0.0/0".to_string(),
-            comment: None,
-        })
+        crate::forms::firewall::parse_public_port(s)
     }
 
-    /// Parse "5432/tcp:10.0.0.0/8" or "5432:10.0.0.0/8" into a FirewallPortRule.
     fn parse_private_port(s: &str) -> Result<crate::forms::status_panel::FirewallPortRule, String> {
-        // Split on first ':' that separates port/proto from source
-        // Format: port[/proto]:source
-        let parts: Vec<&str> = s.splitn(2, ':').collect();
-        if parts.len() != 2 || parts[1].is_empty() {
-            return Err(format!(
-                "Invalid private port '{}'. Expected format: port[/proto]:source (e.g. 5432/tcp:10.0.0.0/8)",
-                s
-            ));
-        }
-        let (port, protocol) = Self::parse_port_proto(parts[0])?;
-        Ok(crate::forms::status_panel::FirewallPortRule {
-            port,
-            protocol,
-            source: parts[1].to_string(),
-            comment: None,
-        })
-    }
-
-    fn parse_port_proto(s: &str) -> Result<(u16, String), String> {
-        if let Some((port_s, proto)) = s.split_once('/') {
-            let port: u16 = port_s.parse().map_err(|_| format!("Invalid port number: {}", port_s))?;
-            Ok((port, proto.to_string()))
-        } else {
-            let port: u16 = s.parse().map_err(|_| format!("Invalid port number: {}", s))?;
-            Ok((port, "tcp".to_string()))
-        }
+        crate::forms::firewall::parse_private_port(s)
     }
 }
 
@@ -642,7 +1615,7 @@ impl CallableTrait for AgentConfigureFirewallCommand {
 
 // ── Configure Proxy ──────────────────────────────────
 
-/// `stacker agent configure-proxy <app> --domain <d> --port <p> [--force] [--json] [--deployment <hash>]`
+/// `stacker agent configure-proxy <app> --domain <d> --port <p> [--no-ssl] [--force] [--json] [--deployment <hash>]`
 pub struct AgentConfigureProxyCommand {
     pub app_code: String,
     pub domain: String,
@@ -660,12 +1633,23 @@ impl AgentConfigureProxyCommand {
         domain: String,
         port: u16,
         ssl: bool,
+        no_ssl: bool,
         action: String,
         force: bool,
         json: bool,
         deployment: Option<String>,
     ) -> Self {
-        Self { app_code, domain, port, ssl, action, force, json, deployment }
+        let ssl = ssl && !no_ssl;
+        Self {
+            app_code,
+            domain,
+            port,
+            ssl,
+            action,
+            force,
+            json,
+            deployment,
+        }
     }
 }
 
@@ -739,22 +1723,24 @@ impl CallableTrait for AgentStatusCommand {
                     .unwrap_or("unknown");
                 let version = item
                     .get("agent")
-                    .and_then(|a| a.get("version"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("-");
+                    .and_then(|agent| agent_display_version(agent, None));
                 let n_apps = item
                     .get("apps")
                     .and_then(|v| v.as_array())
                     .map(|a| a.len())
                     .unwrap_or(0);
+                let version_label = version
+                    .as_deref()
+                    .map(agent_version_label)
+                    .unwrap_or_default();
 
                 progress::finish_success(
                     &pb,
                     &format!(
-                        "Agent status fetched — {} {} · v{} · {} app(s)",
+                        "Agent status fetched — {} {}{} · {} app(s)",
                         progress::status_icon(agent_status),
                         agent_status,
-                        version,
+                        version_label,
                         n_apps,
                     ),
                 );
@@ -770,7 +1756,10 @@ impl CallableTrait for AgentStatusCommand {
                     let mut output = item.clone();
                     if let Some(list) = &live_containers {
                         if let Some(obj) = output.as_object_mut() {
-                            obj.insert("containers_live".to_string(), serde_json::Value::Array(list.clone()));
+                            obj.insert(
+                                "containers_live".to_string(),
+                                serde_json::Value::Array(list.clone()),
+                            );
                         } else {
                             output = serde_json::json!({
                                 "snapshot": output,
@@ -820,12 +1809,25 @@ fn print_apps_summary(apps: &[serde_json::Value]) {
 }
 
 fn print_containers_summary(containers: &[serde_json::Value]) {
+    print_containers_summary_with_apps(containers, None)
+}
+
+fn print_containers_summary_with_apps(
+    containers: &[serde_json::Value],
+    apps: Option<&[serde_json::Value]>,
+) {
+    let containers = visible_containers(containers);
+    let port_lookup = apps.map(build_app_port_lookup).unwrap_or_default();
+
     if containers.is_empty() {
         println!("Containers: none");
         return;
     }
 
-    println!("{:<24} {:<12} {:<30}", "CONTAINER", "STATE", "IMAGE");
+    println!(
+        "{:<24} {:<12} {:<22} {:<30}",
+        "CONTAINER", "STATE", "PORTS", "IMAGE"
+    );
     for c in containers {
         let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("-");
         let state = c
@@ -834,22 +1836,251 @@ fn print_containers_summary(containers: &[serde_json::Value]) {
             .and_then(|v| v.as_str())
             .unwrap_or("-");
         let image = c.get("image").and_then(|v| v.as_str()).unwrap_or("-");
+        let ports = format_container_ports_with_lookup(c, name, &port_lookup);
         println!(
-            "{:<24} {} {:<10} {:<30}",
+            "{:<24} {} {:<10} {:<22} {:<30}",
             fmt::truncate(name, 22),
             progress::status_icon(state),
             state,
+            fmt::truncate(&ports, 20),
             fmt::truncate(image, 28),
         );
     }
 }
+
+fn build_app_port_lookup(apps: &[serde_json::Value]) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for app in apps {
+        let code = match app.get("code").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => continue,
+        };
+        let ports = match app.get("ports").and_then(|v| v.as_array()) {
+            Some(arr) if !arr.is_empty() => arr,
+            _ => continue,
+        };
+        let parts: Vec<String> = ports
+            .iter()
+            .filter_map(|p| {
+                let host = p
+                    .get("host_port")
+                    .or_else(|| p.get("hostPort"))
+                    .and_then(|v| v.as_str());
+                let container = p
+                    .get("container_port")
+                    .or_else(|| p.get("containerPort"))
+                    .and_then(|v| v.as_str());
+                match (host, container) {
+                    (Some(h), Some(c)) if h == c => Some(format!("{}", c)),
+                    (Some(h), Some(c)) => Some(format!("{}:{}", h, c)),
+                    (None, Some(c)) => Some(c.to_string()),
+                    (Some(h), None) => Some(h.to_string()),
+                    (None, None) => None,
+                }
+            })
+            .collect();
+        if !parts.is_empty() {
+            map.insert(code.to_string(), parts.join(", "));
+        }
+    }
+    map
+}
+
+fn container_app_code<'a>(name: &'a str) -> Option<&'a str> {
+    let name = name.trim_start_matches('/');
+    let prefix = if name.starts_with("project-") {
+        "project-"
+    } else if name.starts_with("project_") {
+        "project_"
+    } else {
+        return None;
+    };
+    let after_prefix = &name[prefix.len()..];
+    if let Some(idx) = after_prefix.rfind(|c: char| c == '-' || c == '_') {
+        let candidate = &after_prefix[..idx];
+        let suffix = &after_prefix[idx + 1..];
+        if suffix.chars().all(|c| c.is_numeric()) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn format_container_ports_with_lookup(
+    container: &serde_json::Value,
+    name: &str,
+    port_lookup: &std::collections::HashMap<String, String>,
+) -> String {
+    let from_container = format_container_ports(container);
+    if from_container != "-" {
+        return from_container;
+    }
+    if let Some(code) = container_app_code(name) {
+        if let Some(ports) = port_lookup.get(code) {
+            return ports.clone();
+        }
+    }
+    "-".to_string()
+}
+
+fn format_container_ports(container: &serde_json::Value) -> String {
+    let arr = match container.get("ports").and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => return "-".to_string(),
+    };
+
+    let parts: Vec<String> = arr
+        .iter()
+        .filter_map(|p| {
+            if let Some(s) = p.as_str() {
+                Some(s.to_string())
+            } else if let Some(n) = p.as_u64() {
+                Some(n.to_string())
+            } else if let Some(obj) = p.as_object() {
+                let host = obj
+                    .get("hostPort")
+                    .or_else(|| obj.get("host_port"))
+                    .or_else(|| obj.get("PublicPort"))
+                    .and_then(|v| v.as_u64());
+                let container = obj
+                    .get("containerPort")
+                    .or_else(|| obj.get("container_port"))
+                    .or_else(|| obj.get("PrivatePort"))
+                    .and_then(|v| v.as_u64());
+                let proto = obj
+                    .get("protocol")
+                    .or_else(|| obj.get("Type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("tcp");
+                match (host, container) {
+                    (Some(h), Some(c)) => Some(format!("{}:{}/{}", h, c, proto)),
+                    (None, Some(c)) => Some(format!("{}/{}", c, proto)),
+                    (Some(h), None) => Some(h.to_string()),
+                    (None, None) => None,
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if parts.is_empty() {
+        "-".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn visible_containers(containers: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+    containers
+        .iter()
+        .filter(|container| !is_stale_platform_project_container(container))
+        .collect()
+}
+
+fn is_stale_platform_project_container(container: &serde_json::Value) -> bool {
+    let Some(name) = container.get("name").and_then(|value| value.as_str()) else {
+        return false;
+    };
+
+    let normalized_name = crate::project_app::normalize_app_code(name);
+    normalized_name.starts_with("project_")
+        && ["nginx_proxy_manager", "statuspanel"]
+            .iter()
+            .any(|code| normalized_name.contains(code))
+}
+
+fn agent_display_version(
+    agent: &serde_json::Value,
+    live_containers: Option<&Vec<serde_json::Value>>,
+) -> Option<String> {
+    agent
+        .get("system_info")
+        .and_then(agent_version_from_system_info)
+        .or_else(|| {
+            agent
+                .get("version")
+                .and_then(|value| value.as_str())
+                .and_then(non_placeholder_agent_version)
+        })
+        .or_else(|| {
+            live_containers.and_then(|containers| agent_version_from_live_containers(containers))
+        })
+}
+
+fn agent_version_from_system_info(system_info: &serde_json::Value) -> Option<String> {
+    [
+        "agent_version",
+        "agentVersion",
+        "status_panel_agent_version",
+        "statusPanelAgentVersion",
+        "dashboard_version",
+        "dashboardVersion",
+        "version",
+    ]
+    .iter()
+    .find_map(|key| {
+        system_info
+            .get(*key)
+            .and_then(|value| value.as_str())
+            .and_then(non_placeholder_agent_version)
+    })
+}
+
+fn agent_version_from_live_containers(containers: &[serde_json::Value]) -> Option<String> {
+    containers.iter().find_map(|container| {
+        let name = container.get("name").and_then(|value| value.as_str())?;
+        let normalized_name = crate::project_app::normalize_app_code(name);
+        if !normalized_name.contains("statuspanel_agent")
+            && !normalized_name.contains("status_panel_agent")
+        {
+            return None;
+        }
+
+        container
+            .get("image")
+            .and_then(|value| value.as_str())
+            .and_then(image_tag)
+            .and_then(non_placeholder_agent_version)
+    })
+}
+
+fn image_tag(image: &str) -> Option<&str> {
+    let image_without_digest = image.split('@').next().unwrap_or(image);
+    image_without_digest
+        .rsplit_once(':')
+        .map(|(_, tag)| tag)
+        .filter(|tag| !tag.contains('/'))
+}
+
+fn non_placeholder_agent_version(version: &str) -> Option<String> {
+    let version = version.trim().trim_start_matches('v');
+    if version.is_empty()
+        || matches!(
+            version.to_ascii_lowercase().as_str(),
+            "1.0.0" | "latest" | "main" | "stable" | "unknown"
+        )
+    {
+        return None;
+    }
+
+    Some(version.to_string())
+}
+
+fn agent_version_label(version: &str) -> String {
+    format!(" · v{}", version.trim().trim_start_matches('v'))
+}
+
+/// Pretty-print a snapshot summary for human consumption.
+// Width that covers the widest table (containers: 24+1+12+1+22+1+30 = 91 cols).
+const STATUS_SEP_WIDTH: usize = 92;
 
 /// Pretty-print a snapshot summary for human consumption.
 fn print_snapshot_summary(
     snap: &serde_json::Value,
     live_containers: Option<&Vec<serde_json::Value>>,
 ) {
-    println!("{}", fmt::separator(60));
+    println!("{}", fmt::separator(STATUS_SEP_WIDTH));
 
     // Agent info
     if let Some(agent) = snap.get("agent") {
@@ -857,27 +2088,27 @@ fn print_snapshot_summary(
             .get("status")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        let version = agent
-            .get("version")
-            .and_then(|v| v.as_str())
-            .unwrap_or("-");
+        let version_label = agent_display_version(agent, live_containers)
+            .as_deref()
+            .map(agent_version_label)
+            .unwrap_or_default();
         let heartbeat = agent
             .get("last_heartbeat")
             .and_then(|v| v.as_str())
             .unwrap_or("-");
 
         println!(
-            "Agent:     {} {}  (v{})",
+            "Agent:     {} {}{}",
             progress::status_icon(status),
             status,
-            version
+            version_label
         );
         println!("Heartbeat: {}", heartbeat);
     } else {
         println!("Agent:     not registered");
     }
 
-    println!("{}", fmt::separator(60));
+    println!("{}", fmt::separator(STATUS_SEP_WIDTH));
 
     if let Some(apps) = snap.get("apps").and_then(|v| v.as_array()) {
         print_apps_summary(apps);
@@ -885,16 +2116,20 @@ fn print_snapshot_summary(
         println!("Apps:       none");
     }
 
-    println!("{}", fmt::separator(60));
+    println!("{}", fmt::separator(STATUS_SEP_WIDTH));
 
     // Containers
+    let apps = snap
+        .get("apps")
+        .and_then(|v| v.as_array())
+        .map(|v| v.as_slice());
     if let Some(containers) = live_containers {
-        print_containers_summary(containers);
+        print_containers_summary_with_apps(containers, apps);
     } else if let Some(containers) = snap.get("containers").and_then(|v| v.as_array()) {
-        print_containers_summary(containers);
+        print_containers_summary_with_apps(containers, apps);
     }
 
-    println!("{}", fmt::separator(60));
+    println!("{}", fmt::separator(STATUS_SEP_WIDTH));
 
     // Recent commands
     if let Some(commands) = snap.get("commands").and_then(|v| v.as_array()) {
@@ -942,7 +2177,11 @@ impl CallableTrait for AgentListAppsCommand {
 
         let snapshot = ctx.block_on(ctx.client.agent_snapshot(&hash))?;
         let item = snapshot_item(&snapshot);
-        let apps = item.get("apps").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let apps = item
+            .get("apps")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
 
         if self.json {
             let value = serde_json::Value::Array(apps);
@@ -971,8 +2210,7 @@ impl CallableTrait for AgentListContainersCommand {
         let ctx = CliRuntime::new("agent list containers")?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
 
-        let containers = fetch_live_containers(&ctx, &hash)?
-            .unwrap_or_default();
+        let containers = fetch_live_containers(&ctx, &hash)?.unwrap_or_default();
 
         if self.json {
             let value = serde_json::Value::Array(containers);
@@ -1058,7 +2296,13 @@ impl AgentExecCommand {
         json: bool,
         deployment: Option<String>,
     ) -> Self {
-        Self { command_type, params, timeout, json, deployment }
+        Self {
+            command_type,
+            params,
+            timeout,
+            json,
+            deployment,
+        }
     }
 }
 
@@ -1162,21 +2406,418 @@ impl CallableTrait for AgentHistoryCommand {
 
 // ── Install (deploy Status Panel to existing server) ─
 
-/// `stacker agent install [--file <path>] [--json]`
+/// `stacker agent install [--file <path>] [--persist-config] [--json] [--local]`
 ///
-/// Deploys the Status Panel agent to an existing server that was previously
-/// deployed without it. Reads the project identity from stacker.yml, finds
-/// the corresponding project and server on the Stacker API, and triggers
-/// a deploy with only the statuspanel feature enabled.
+/// Deploys the Status Panel agent.
+///
+/// For cloud / public-IP servers the command routes through the Stacker install
+/// service (Ansible over cloud-initiated SSH). For intranet servers — detected
+/// automatically when `deploy.server.host` is a private RFC1918 address, or
+/// forced with `--local` — the CLI itself SSHes to the host, runs the status
+/// panel install script, and links the agent via the Stacker API. No inbound
+/// connection from the cloud is needed.
 pub struct AgentInstallCommand {
     pub file: Option<String>,
+    pub persist_config: bool,
     pub json: bool,
+    /// Force the local-SSH path even for public-IP servers.
+    pub local: bool,
 }
 
 impl AgentInstallCommand {
-    pub fn new(file: Option<String>, json: bool) -> Self {
-        Self { file, json }
+    pub fn new(file: Option<String>, persist_config: bool, json: bool) -> Self {
+        Self {
+            file,
+            persist_config,
+            json,
+            local: false,
+        }
     }
+
+    pub fn with_local(mut self, local: bool) -> Self {
+        self.local = local;
+        self
+    }
+}
+
+use crate::helpers::ip::is_private_host;
+
+/// Install the Status Panel agent directly from the CLI over local SSH.
+///
+/// Used when the target server is on an intranet and the Stacker cloud install
+/// service cannot reach it. Uses the system `ssh` binary (not russh) to avoid
+/// macOS routing stack issues (EHOSTUNREACH) with private IPs. Steps:
+///   1. Call `POST /api/v1/agent/link` to mint agent credentials
+///   2. Run the status panel install script on the remote via system `ssh`
+///   3. Write `~/stacker/.agent.env` with `AGENT_ID`, `AGENT_TOKEN`, `DASHBOARD_URL`
+///   4. Start the agent in daemon mode
+async fn install_agent_via_local_ssh(
+    server_cfg: &crate::cli::config_parser::ServerConfig,
+    deployment_hash: &str,
+    ctx: &CliRuntime,
+    stacker_url: &str,
+) -> Result<(), CliError> {
+    let key_path = server_cfg
+        .ssh_key
+        .as_ref()
+        .map(|p| {
+            let s = p.to_string_lossy();
+            if s.starts_with("~/") {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                std::path::PathBuf::from(home).join(&s[2..])
+            } else {
+                p.clone()
+            }
+        })
+        .ok_or_else(|| {
+            CliError::ConfigValidation(
+                "deploy.server.ssh_key is required for local agent install.\n\
+                 Set it in stacker.yml or run `stacker config setup server`."
+                    .to_string(),
+            )
+        })?;
+
+    if !key_path.exists() {
+        return Err(CliError::ConfigValidation(format!(
+            "SSH key not found: {}",
+            key_path.display()
+        )));
+    }
+
+    let user_at_host = format!("{}@{}", server_cfg.user, server_cfg.host);
+    let ssh_args = [
+        "-i",
+        key_path.to_str().unwrap_or(""),
+        "-p",
+        &server_cfg.port.to_string(),
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "BatchMode=yes",
+    ];
+
+    // Helper: run a command on the remote, stream output, return exit code.
+    let ssh_run = |cmd: &str| -> Result<std::process::Output, CliError> {
+        std::process::Command::new("ssh")
+            .args(&ssh_args)
+            .arg(&user_at_host)
+            .arg(cmd)
+            .output()
+            .map_err(|e| CliError::ConfigValidation(format!("ssh exec failed: {}", e)))
+    };
+
+    // 1. Mint agent credentials via the Stacker API (outbound, always works)
+    eprintln!("  Linking agent to deployment {}...", deployment_hash);
+    let fingerprint = serde_json::json!({ "host": server_cfg.host, "source": "cli_local_install" });
+    let (agent_id, agent_token, linked_hash) =
+        ctx.client.agent_link(deployment_hash, fingerprint).await?;
+    eprintln!("  Agent linked (id: {}).", agent_id);
+
+    // 2. Install the status panel binary into ~/.local/bin (no sudo needed).
+    // The install.sh respects INSTALL_DIR; we avoid /usr/local/bin which
+    // requires sudo and prompts for a TTY we don't have in BatchMode.
+    eprintln!(
+        "  Running status panel install script on {}...",
+        server_cfg.host
+    );
+    let install_out = ssh_run(
+        "mkdir -p $HOME/.local/bin && \
+         curl -sSfL https://raw.githubusercontent.com/trydirect/status/master/install.sh \
+         | INSTALL_DIR=$HOME/.local/bin sh",
+    )?;
+    if !install_out.status.success() {
+        let stderr = String::from_utf8_lossy(&install_out.stderr);
+        return Err(CliError::ConfigValidation(format!(
+            "Install script failed (exit {}):\n{}",
+            install_out.status.code().unwrap_or(-1),
+            stderr.trim()
+        )));
+    }
+    eprintln!("  Binary installed.");
+
+    // 3. Write .env into the agent's working directory.
+    // The status panel binary loads .env from its current working directory
+    // via dotenvy::dotenv() at startup.  We use ~/stacker/ as the working dir.
+    let env_content = format!(
+        "AGENT_ID={}\nAGENT_TOKEN={}\nDASHBOARD_URL={}\nDEPLOYMENT_HASH={}\nCOMPOSE_AGENT_ENABLED=true\n",
+        agent_id, agent_token, stacker_url, linked_hash
+    );
+    use base64::Engine as _;
+    let env_b64 = base64::engine::general_purpose::STANDARD.encode(&env_content);
+    let write_cmd = format!(
+        "mkdir -p ~/stacker && printf '%s' '{}' | base64 -d > ~/stacker/.env && chmod 600 ~/stacker/.env",
+        env_b64
+    );
+    let write_out = ssh_run(&write_cmd)?;
+    if !write_out.status.success() {
+        let stderr = String::from_utf8_lossy(&write_out.stderr);
+        return Err(CliError::ConfigValidation(format!(
+            "Failed to write ~/stacker/.env: {}",
+            stderr.trim()
+        )));
+    }
+
+    // 4. Generate config.json (required by the daemon) then start it.
+    // `status init` creates config.json with defaults; without --force it
+    // won't overwrite the .env we already wrote.
+    //
+    // Do NOT use `status --daemon`: that flag triggers POSIX daemonize() which
+    // forks and redirects its own stdout/stderr to /dev/null — the polling loop
+    // runs silently and the log file only ever gets the banner.
+    //
+    // Instead run `status` in foreground mode and use setsid+nohup to detach
+    // from the SSH session. This keeps all log output going to status.log.
+    let start_cmd = "cd ~/stacker && \
+        $HOME/.local/bin/status init 2>/dev/null; \
+        pkill -f '$HOME/.local/bin/status' 2>/dev/null; \
+        setsid nohup $HOME/.local/bin/status > ~/stacker/status.log 2>&1 &";
+    let _ = ssh_run(start_cmd)?;
+
+    eprintln!();
+    eprintln!("✓ Status Panel agent installed on {}.", server_cfg.host);
+    eprintln!("  Agent ID:         {}", agent_id);
+    eprintln!("  Deployment:       {}", linked_hash);
+    eprintln!("  Working dir:      ~/stacker/");
+    eprintln!("  Config:           ~/stacker/.env");
+    eprintln!(
+        "  The agent is now polling {} for deploy commands.",
+        stacker_url
+    );
+    eprintln!("  Run `stacker agent status` to verify connectivity.");
+
+    Ok(())
+}
+
+fn fallback_server_config_for_agent_install(
+    server: &crate::cli::stacker_client::ServerInfo,
+) -> Result<crate::cli::config_parser::ServerConfig, CliError> {
+    let host = server.srv_ip.clone().ok_or_else(|| {
+        CliError::ConfigValidation(
+            "Server record has no reachable IP address.\n\
+             Cannot install Status Panel without a server host."
+                .to_string(),
+        )
+    })?;
+
+    let port = server
+        .ssh_port
+        .and_then(|value| u16::try_from(value).ok())
+        .unwrap_or(22);
+
+    Ok(crate::cli::config_parser::ServerConfig {
+        host,
+        user: server
+            .ssh_user
+            .clone()
+            .unwrap_or_else(|| "root".to_string()),
+        ssh_key: None,
+        port,
+    })
+}
+
+const AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_KEY: &str = "status_panel_only";
+const AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_VALUE: &str = "true";
+const AGENT_INSTALL_MODE_KEY: &str = "statuspanel_install_mode";
+const AGENT_INSTALL_MODE_VALUE: &str = "status_only";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentInstallConfigPersistence {
+    config_path: PathBuf,
+    backup_path: PathBuf,
+    changed: bool,
+}
+
+fn persist_agent_install_config(
+    config_path: &Path,
+) -> Result<AgentInstallConfigPersistence, CliError> {
+    let mut config = crate::cli::config_parser::StackerConfig::from_file_raw(config_path)?;
+    let changed = !config.monitoring.status_panel;
+    let backup_path = PathBuf::from(format!("{}.bak", config_path.display()));
+
+    if changed {
+        config.monitoring.status_panel = true;
+        let yaml = serde_yaml::to_string(&config).map_err(|e| {
+            CliError::ConfigValidation(format!("Failed to serialize config: {}", e))
+        })?;
+        std::fs::copy(config_path, &backup_path)?;
+        std::fs::write(config_path, yaml)?;
+    }
+
+    Ok(AgentInstallConfigPersistence {
+        config_path: config_path.to_path_buf(),
+        backup_path,
+        changed,
+    })
+}
+
+fn persist_agent_install_config_if_requested(
+    config_path: &Path,
+    persist_config: bool,
+) -> Result<Option<AgentInstallConfigPersistence>, CliError> {
+    if !persist_config {
+        return Ok(None);
+    }
+
+    persist_agent_install_config(config_path).map(Some)
+}
+
+fn print_agent_install_config_persistence(result: &AgentInstallConfigPersistence) {
+    if result.changed {
+        eprintln!(
+            "✓ Updated monitoring.status_panel=true in {}",
+            result.config_path.display()
+        );
+        eprintln!("  Backup written to {}", result.backup_path.display());
+    } else {
+        eprintln!(
+            "✓ monitoring.status_panel already enabled in {}",
+            result.config_path.display()
+        );
+    }
+}
+
+fn add_agent_install_scope_contract(deploy_form: &mut serde_json::Value) {
+    if let Some(root) = deploy_form.as_object_mut() {
+        root.entry(AGENT_INSTALL_MODE_KEY.to_string())
+            .or_insert_with(|| serde_json::Value::String(AGENT_INSTALL_MODE_VALUE.to_string()));
+    }
+
+    let Some(vars) = deploy_form
+        .get_mut("stack")
+        .and_then(|value| value.get_mut("vars"))
+        .and_then(|value| value.as_array_mut())
+    else {
+        return;
+    };
+
+    if vars.iter().any(|value| {
+        value.get("key").and_then(|key| key.as_str())
+            == Some(AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_KEY)
+    }) {
+        return;
+    }
+
+    vars.push(serde_json::json!({
+        "key": AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_KEY,
+        "value": AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_VALUE,
+    }));
+}
+
+fn build_agent_install_deploy_request(
+    config: &crate::cli::config_parser::StackerConfig,
+    server: &crate::cli::stacker_client::ServerInfo,
+    project_name: &str,
+    vault_url: &str,
+) -> Result<(Option<i32>, serde_json::Value), CliError> {
+    let server_target = config.deploy.target == crate::cli::config_parser::DeployTarget::Server
+        || server.cloud_id.is_none();
+
+    if server_target {
+        let server_cfg = match config.deploy.server.as_ref() {
+            Some(server_cfg) => server_cfg.clone(),
+            None => fallback_server_config_for_agent_install(server)?,
+        };
+        let effective_server_name = server
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("{}-server", project_name));
+        let mut deploy_form = crate::cli::stacker_client::build_server_deploy_form(
+            config,
+            &server_cfg,
+            &effective_server_name,
+            true,
+        );
+
+        if let Some(server_obj) = deploy_form
+            .get_mut("server")
+            .and_then(|value| value.as_object_mut())
+        {
+            if let Some((private_key, public_key)) =
+                crate::cli::install_runner::load_existing_server_ssh_key(&server_cfg)?
+            {
+                server_obj.insert(
+                    "ssh_private_key".to_string(),
+                    serde_json::Value::String(private_key),
+                );
+                if let Some(public_key) = public_key {
+                    server_obj.insert(
+                        "public_key".to_string(),
+                        serde_json::Value::String(public_key),
+                    );
+                }
+            }
+
+            server_obj.insert("server_id".to_string(), serde_json::json!(server.id));
+
+            if let Some(vault_key_path) = &server.vault_key_path {
+                server_obj.insert(
+                    "vault_key_path".to_string(),
+                    serde_json::Value::String(vault_key_path.clone()),
+                );
+            }
+
+            if let Some(region) = &server.region {
+                server_obj.insert(
+                    "region".to_string(),
+                    serde_json::Value::String(region.clone()),
+                );
+            }
+
+            if let Some(os) = &server.os {
+                server_obj.insert("os".to_string(), serde_json::Value::String(os.clone()));
+            }
+
+            if let Some(server_kind) = &server.server {
+                server_obj.insert(
+                    "server".to_string(),
+                    serde_json::Value::String(server_kind.clone()),
+                );
+            }
+        }
+
+        add_agent_install_scope_contract(&mut deploy_form);
+        return Ok((None, deploy_form));
+    }
+
+    let cloud_id = server.cloud_id.ok_or_else(|| {
+        CliError::ConfigValidation(
+            "Server has no associated cloud credentials.\n\
+             Cannot install Status Panel without cloud credentials."
+                .to_string(),
+        )
+    })?;
+
+    let mut deploy_form = serde_json::json!({
+        "cloud": {
+            "provider": server.cloud.clone().unwrap_or_else(|| "htz".to_string()),
+            "save_token": true,
+        },
+        "server": {
+            "server_id": server.id,
+            "region": server.region,
+            "server": server.server,
+            "os": server.os,
+            "name": server.name,
+            "srv_ip": server.srv_ip,
+            "ssh_user": server.ssh_user,
+            "ssh_port": server.ssh_port,
+            "vault_key_path": server.vault_key_path,
+            "connection_mode": "status_panel",
+        },
+        "stack": {
+            "stack_code": project_name,
+            "vars": [
+                { "key": "vault_url", "value": vault_url },
+                { "key": "status_panel_port", "value": "5000" },
+            ],
+            "integrated_features": ["statuspanel"],
+            "extended_features": [],
+            "subscriptions": [],
+        },
+    });
+
+    add_agent_install_scope_contract(&mut deploy_form);
+    Ok((Some(cloud_id), deploy_form))
 }
 
 impl CallableTrait for AgentInstallCommand {
@@ -1189,7 +2830,8 @@ impl CallableTrait for AgentInstallCommand {
             None => project_dir.join("stacker.yml"),
         };
 
-        let config = crate::cli::config_parser::StackerConfig::from_file(&config_path)?;
+        let config = crate::cli::config_parser::StackerConfig::from_file(&config_path)?
+            .with_resolved_deploy_target(None)?;
 
         let project_name = config
             .project
@@ -1197,21 +2839,116 @@ impl CallableTrait for AgentInstallCommand {
             .clone()
             .unwrap_or_else(|| config.name.clone());
 
+        // Detect intranet server: use local SSH path when the host is a private IP
+        // (or --local is explicitly set) so the cloud install service is bypassed.
+        // If there's no deploy.server at all (e.g. cloud-deployed project), always
+        // use the cloud install path.
+        let use_local_ssh = match config.deploy.server.as_ref() {
+            Some(s) => self.local || is_private_host(s.host.as_str()),
+            None => self.local,
+        };
+
         let ctx = CliRuntime::new("agent install")?;
+
+        if use_local_ssh {
+            let server_cfg = config.deploy.server.clone().ok_or_else(|| {
+                CliError::ConfigValidation(
+                    "deploy.server must be configured for local agent install.\n\
+                     Run `stacker config setup server` first."
+                        .to_string(),
+                )
+            })?;
+
+            let stacker_url = std::env::var("STACKER_URL")
+                .unwrap_or_else(|_| stacker_client::DEFAULT_STACKER_URL.to_string());
+
+            eprintln!(
+                "Server {} is on a private network — using local SSH to install agent.",
+                server_cfg.host
+            );
+            eprintln!("(Use --local to force this path for public-IP servers.)");
+            eprintln!();
+
+            // Find the deployment hash for this project
+            let pb = progress::spinner("Resolving deployment...");
+            let deployment_hash: Result<String, CliError> = ctx.block_on(async {
+                let project = ctx
+                    .client
+                    .find_project_by_name(&project_name)
+                    .await?
+                    .ok_or_else(|| {
+                        CliError::ConfigValidation(format!(
+                            "Project '{}' not found on the Stacker server.\n\
+                             Deploy the project first with: stacker deploy --target server",
+                            project_name
+                        ))
+                    })?;
+
+                let deployments = ctx
+                    .client
+                    .list_deployments(Some(project.id), Some(1))
+                    .await?;
+                deployments
+                    .into_iter()
+                    .next()
+                    .map(|d| d.deployment_hash)
+                    .ok_or_else(|| {
+                        CliError::ConfigValidation(format!(
+                            "No active deployment found for project '{}'.\n\
+                             Deploy first with: stacker deploy --target server",
+                            project_name
+                        ))
+                    })
+            });
+            progress::finish_success(&pb, "Deployment resolved");
+
+            let deployment_hash = deployment_hash?;
+
+            ctx.block_on(install_agent_via_local_ssh(
+                &server_cfg,
+                &deployment_hash,
+                &ctx,
+                &stacker_url,
+            ))?;
+
+            // Persist the deployment hash into stacker.yml so that subsequent
+            // `stacker agent status/logs` commands can find it without --deployment.
+            if config_path.exists() {
+                if let Ok(mut cfg) =
+                    crate::cli::config_parser::StackerConfig::from_file_raw(&config_path)
+                {
+                    cfg.deploy.deployment_hash = Some(deployment_hash.clone());
+                    if let Ok(yaml) = serde_yaml::to_string(&cfg) {
+                        let _ = std::fs::write(&config_path, yaml);
+                    }
+                }
+            }
+
+            persist_agent_install_config_if_requested(&config_path, self.persist_config)?
+                .as_ref()
+                .map(print_agent_install_config_persistence);
+
+            return Ok(());
+        }
+
+        // ── Cloud install path (public-IP servers) ────────────────────────────
         let pb = progress::spinner("Installing Status Panel agent");
 
         let result: Result<stacker_client::DeployResponse, CliError> = ctx.block_on(async {
+            let target_label = config.deploy.target.to_string();
             // 1. Find the project
             progress::update_message(&pb, "Finding project...");
             let project = ctx
                 .client
                 .find_project_by_name(&project_name)
                 .await?
-                .ok_or_else(|| CliError::ConfigValidation(format!(
-                    "Project '{}' not found on the Stacker server.\n\
-                     Deploy the project first with: stacker deploy --target cloud",
-                    project_name
-                )))?;
+                .ok_or_else(|| {
+                    CliError::ConfigValidation(format!(
+                        "Project '{}' not found on the Stacker server.\n\
+                     Deploy the project first with: stacker deploy --target {}",
+                        project_name, target_label
+                    ))
+                })?;
 
             // 2. Find the server for this project
             progress::update_message(&pb, "Finding server...");
@@ -1219,64 +2956,38 @@ impl CallableTrait for AgentInstallCommand {
             let server = servers
                 .into_iter()
                 .find(|s| s.project_id == project.id)
-                .ok_or_else(|| CliError::ConfigValidation(format!(
-                    "No server found for project '{}' (id={}).\n\
-                     Deploy the project first with: stacker deploy --target cloud",
-                    project_name, project.id
-                )))?;
-
-            let cloud_id = server.cloud_id.ok_or_else(|| CliError::ConfigValidation(
-                "Server has no associated cloud credentials.\n\
-                 Cannot install Status Panel without cloud credentials."
-                    .to_string(),
-            ))?;
+                .ok_or_else(|| {
+                    CliError::ConfigValidation(format!(
+                        "No server found for project '{}' (id={}).\n\
+                     Deploy the project first with: stacker deploy --target {}",
+                        project_name, project.id, target_label
+                    ))
+                })?;
 
             // 3. Build a minimal deploy form with only the statuspanel feature
             progress::update_message(&pb, "Preparing deploy payload...");
             let vault_url = std::env::var("STACKER_VAULT_URL")
                 .unwrap_or_else(|_| DEFAULT_VAULT_URL.to_string());
-
-            let deploy_form = serde_json::json!({
-                "cloud": {
-                    "provider": server.cloud.clone().unwrap_or_else(|| "htz".to_string()),
-                    "save_token": true,
-                },
-                "server": {
-                    "server_id": server.id,
-                    "region": server.region,
-                    "server": server.server,
-                    "os": server.os,
-                    "name": server.name,
-                    "srv_ip": server.srv_ip,
-                    "ssh_user": server.ssh_user,
-                    "ssh_port": server.ssh_port,
-                    "vault_key_path": server.vault_key_path,
-                    "connection_mode": "status_panel",
-                },
-                "stack": {
-                    "stack_code": project_name,
-                    "vars": [
-                        { "key": "vault_url", "value": vault_url },
-                        { "key": "status_panel_port", "value": "5000" },
-                    ],
-                    "integrated_features": ["statuspanel"],
-                    "extended_features": [],
-                    "subscriptions": [],
-                },
-            });
+            let (cloud_id, deploy_form) =
+                build_agent_install_deploy_request(&config, &server, &project_name, &vault_url)?;
 
             // 4. Trigger the deploy
             progress::update_message(&pb, "Deploying Status Panel...");
-            let resp = ctx.client.deploy(project.id, Some(cloud_id), deploy_form).await?;
+            let resp = ctx.client.deploy(project.id, cloud_id, deploy_form).await?;
             Ok(resp)
         });
 
         match result {
             Ok(resp) => {
                 progress::finish_success(&pb, "Status Panel agent installation triggered");
+                let persistence =
+                    persist_agent_install_config_if_requested(&config_path, self.persist_config)?;
 
                 if self.json {
-                    println!("{}", serde_json::to_string_pretty(&resp).unwrap_or_default());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&resp).unwrap_or_default()
+                    );
                 } else {
                     println!("Status Panel deploy queued for project '{}'", project_name);
                     if let Some(id) = resp.id {
@@ -1290,6 +3001,13 @@ impl CallableTrait for AgentInstallCommand {
                     println!();
                     println!("The Status Panel agent will be installed on the server.");
                     println!("Once ready, use `stacker agent status` to verify connectivity.");
+                    if let Some(persistence) = persistence.as_ref() {
+                        print_agent_install_config_persistence(persistence);
+                    } else {
+                        println!(
+                            "Local stacker.yml unchanged. Re-run with --persist-config to set monitoring.status_panel=true locally."
+                        );
+                    }
                 }
             }
             Err(e) => {
@@ -1309,6 +3027,416 @@ impl CallableTrait for AgentInstallCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+
+    fn label_value<'a>(labels: &'a serde_yaml::Mapping, key: &str) -> Option<&'a str> {
+        labels
+            .get(serde_yaml::Value::String(key.to_string()))
+            .and_then(serde_yaml::Value::as_str)
+    }
+
+    fn sample_server_info() -> crate::cli::stacker_client::ServerInfo {
+        crate::cli::stacker_client::ServerInfo {
+            id: 7,
+            user_id: "user_1".to_string(),
+            project_id: 42,
+            cloud_id: None,
+            cloud: None,
+            region: Some("nbg1".to_string()),
+            zone: None,
+            server: Some("cpx11".to_string()),
+            os: Some("ubuntu-24.04".to_string()),
+            disk_type: None,
+            srv_ip: Some("203.0.113.10".to_string()),
+            ssh_port: Some(2222),
+            ssh_user: Some("deployer".to_string()),
+            name: Some("syncopia-prod".to_string()),
+            vault_key_path: Some("secret/users/user_1/servers/7/ssh".to_string()),
+            connection_mode: "ssh".to_string(),
+            key_status: "uploaded".to_string(),
+        }
+    }
+
+    fn stack_var_value<'a>(deploy_form: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+        deploy_form["stack"]["vars"]
+            .as_array()?
+            .iter()
+            .find(|value| value.get("key").and_then(|item| item.as_str()) == Some(key))
+            .and_then(|value| value.get("value"))
+            .and_then(|value| value.as_str())
+    }
+
+    fn top_level_str<'a>(deploy_form: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+        deploy_form.get(key).and_then(|value| value.as_str())
+    }
+
+    #[test]
+    fn compose_service_has_env_file_detects_service_topology() {
+        let dir = TempDir::new().expect("temp dir");
+        let compose_path = dir.path().join("compose.yml");
+        std::fs::write(
+            &compose_path,
+            r#"
+services:
+  device-api:
+    image: optimum/syncopia-device-api:latest
+    env_file:
+      - ../../device-api/docker/prod/.env
+  upload:
+    image: syncopia/upload:latest
+"#,
+        )
+        .expect("compose");
+
+        assert!(compose_service_has_env_file(&compose_path, "device-api").unwrap());
+        assert!(!compose_service_has_env_file(&compose_path, "upload").unwrap());
+    }
+
+    #[test]
+    fn local_config_files_warns_when_conventional_env_is_not_in_compose_topology() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docker/prod")).expect("docker prod");
+        std::fs::create_dir_all(root.join("device-api/docker/prod")).expect("service env dir");
+        std::fs::write(
+            root.join("docker/prod/.env"),
+            "DEVICE_API_IMAGE=syncopia/device-api\n",
+        )
+        .expect("project env");
+        std::fs::write(root.join("device-api/docker/prod/.env"), "RUST_LOG=debug\n")
+            .expect("service env");
+        std::fs::write(
+            root.join("docker/prod/compose.yml"),
+            r#"
+services:
+  device-api:
+    image: ${DEVICE_API_IMAGE}
+"#,
+        )
+        .expect("compose");
+        std::fs::write(
+            root.join("stacker.yml"),
+            r#"
+name: syncopia
+project:
+  identity: syncopia
+app:
+  image: syncopia/device-api:latest
+deploy:
+  target: server
+  environment: prod
+  server:
+    host: 203.0.113.10
+environments:
+  prod:
+    compose_file: docker/prod/compose.yml
+    env_file: docker/prod/.env
+"#,
+        )
+        .expect("stacker config");
+
+        let config = local_config_files_for_agent_deploy(root, "device-api", None).unwrap();
+
+        assert!(config.config_files.is_some());
+        assert!(config.compose_content.is_some());
+        assert_eq!(config.notices.len(), 1);
+        assert!(config.notices[0].contains("has no env_file entry"));
+    }
+
+    #[test]
+    fn local_config_files_uses_environment_override() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docker/local")).expect("docker local");
+        std::fs::create_dir_all(root.join("docker/prod")).expect("docker prod");
+        std::fs::write(
+            root.join("docker/local/compose.yml"),
+            "services:\n  device-api:\n    image: syncopia/device-api:local\n",
+        )
+        .expect("local compose");
+        std::fs::write(
+            root.join("docker/prod/compose.yml"),
+            "services:\n  device-api:\n    image: syncopia/device-api:prod\n",
+        )
+        .expect("prod compose");
+        std::fs::write(
+            root.join("stacker.yml"),
+            r#"
+name: syncopia
+project:
+  identity: syncopia
+app:
+  image: syncopia/device-api:latest
+deploy:
+  target: local
+  environment: local
+environments:
+  local:
+    compose_file: docker/local/compose.yml
+  prod:
+    compose_file: docker/prod/compose.yml
+"#,
+        )
+        .expect("stacker config");
+
+        let config = local_config_files_for_agent_deploy(root, "device-api", Some("prod")).unwrap();
+
+        let compose = config.compose_content.expect("compose content");
+        assert!(compose.contains("syncopia/device-api:prod"));
+        assert!(!compose.contains("syncopia/device-api:local"));
+    }
+
+    #[test]
+    fn local_config_files_keeps_shared_project_env_file_for_root_env_topology() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docker/prod")).expect("project compose dir");
+        std::fs::write(
+            root.join("docker/prod/compose.yml"),
+            "services:\n  upload:\n    image: syncopia/upload:prod\n    env_file: .env\n",
+        )
+        .expect("project compose");
+        std::fs::write(
+            root.join("docker/prod/.env"),
+            "DEVICE_API_IMAGE=syncopia/device-api:prod\nUPLOAD_IMAGE=syncopia/upload:prod\n",
+        )
+        .expect("project env");
+        std::fs::write(
+            root.join("stacker.yml"),
+            r#"
+name: syncopia
+project:
+  identity: syncopia
+app:
+  image: syncopia/upload:latest
+deploy:
+  target: server
+  environment: prod
+environments:
+  prod:
+    compose_file: docker/prod/compose.yml
+    env_file: docker/prod/.env
+"#,
+        )
+        .expect("stacker config");
+
+        let config = local_config_files_for_agent_deploy(root, "upload", None).unwrap();
+
+        let config_files = config.config_files.expect("config files");
+        assert!(config_files.iter().any(|file| {
+            file.get("destination_path")
+                .and_then(|path| path.as_str())
+                .map(|path| path == ".env")
+                .unwrap_or(false)
+        }));
+        assert!(config_files.iter().any(|file| {
+            file.get("destination_path")
+                .and_then(|path| path.as_str())
+                .map(|path| path == ".env")
+                .unwrap_or(false)
+                && file
+                    .get("content")
+                    .and_then(|content| content.as_str())
+                    .map(|content| content.contains("UPLOAD_IMAGE=syncopia/upload:prod"))
+                    .unwrap_or(false)
+        }));
+    }
+
+    #[test]
+    fn local_config_files_materializes_stacker_yml_service_into_project_compose() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docker/prod")).expect("project compose dir");
+        std::fs::write(
+            root.join("docker/prod/compose.yml"),
+            r#"
+services:
+  status-panel-web:
+    image: trydirect/status-panel-web:latest
+"#,
+        )
+        .expect("project compose");
+        std::fs::write(
+            root.join("stacker.yml"),
+            r#"
+name: status-panel
+project:
+  identity: status-panel
+app:
+  image: trydirect/status-panel-web:latest
+deploy:
+  target: server
+  environment: prod
+environments:
+  prod:
+    compose_file: docker/prod/compose.yml
+services:
+  - name: smtp
+    image: trydirect/smtp
+    ports:
+      - "1025:25"
+    environment:
+      PORT: "25"
+      RELAY_NETWORKS: ":127.0.0.0/8:10.0.0.0/8:172.16.0.0/12:192.168.0.0/16"
+    volumes:
+      - smtp_data:/data
+"#,
+        )
+        .expect("stacker config");
+
+        let config = local_config_files_for_agent_deploy(root, "smtp", None).unwrap();
+
+        let compose = config.compose_content.expect("compose content");
+        assert!(compose.contains("status-panel-web:"));
+        assert!(compose.contains("smtp:"));
+        assert!(compose.contains("image: trydirect/smtp"));
+        assert!(compose.contains("1025:25"));
+        assert!(compose.contains("RELAY_NETWORKS"));
+        assert!(compose.contains("smtp_data:"));
+        assert!(compose.contains("my.stacker.scope: project"));
+        assert!(compose.contains("my.stacker.service: smtp"));
+        assert!(compose.contains("my.stacker.dns: smtp"));
+        assert!(!compose.contains("app-network"));
+    }
+
+    #[test]
+    fn annotate_project_compose_adds_stable_stacker_labels() {
+        let compose = r#"
+services:
+  smtp:
+    image: trydirect/smtp
+    labels:
+      - existing=value
+"#;
+
+        let annotated =
+            annotate_project_compose_with_stacker_labels(compose, Some("cloud"), Some("123"))
+                .unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&annotated).unwrap();
+        let labels = doc
+            .get("services")
+            .and_then(|services| services.get("smtp"))
+            .and_then(|service| service.get("labels"))
+            .and_then(serde_yaml::Value::as_mapping)
+            .unwrap();
+
+        assert_eq!(label_value(labels, "existing"), Some("value"));
+        assert_eq!(label_value(labels, "my.stacker.project_id"), Some("123"));
+        assert_eq!(label_value(labels, "my.stacker.target"), Some("cloud"));
+        assert_eq!(label_value(labels, "my.stacker.scope"), Some("project"));
+        assert_eq!(label_value(labels, "my.stacker.service"), Some("smtp"));
+        assert_eq!(label_value(labels, "my.stacker.dns"), Some("smtp"));
+    }
+
+    #[test]
+    fn local_config_files_merges_app_local_service_into_project_compose() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docker/prod")).expect("project compose dir");
+        std::fs::create_dir_all(root.join("device-api/docker/prod")).expect("app compose dir");
+        std::fs::write(
+            root.join("docker/prod/compose.yml"),
+            "services:\n  database:\n    image: postgres:17-alpine\n",
+        )
+        .expect("project compose");
+        std::fs::write(root.join("device-api/docker/prod/.env"), "RUST_LOG=debug\n")
+            .expect("app env");
+        std::fs::write(
+            root.join("device-api/docker/prod/compose.yml"),
+            "services:\n  device-api:\n    image: syncopia/device-api:prod\n    env_file: .env\n",
+        )
+        .expect("app compose");
+        std::fs::write(
+            root.join("stacker.yml"),
+            r#"
+name: syncopia
+project:
+  identity: syncopia
+app:
+  image: syncopia/device-api:latest
+deploy:
+  target: server
+  environment: prod
+environments:
+  prod:
+    compose_file: docker/prod/compose.yml
+"#,
+        )
+        .expect("stacker config");
+
+        let config = local_config_files_for_agent_deploy(root, "device-api", None).unwrap();
+
+        let compose = config.compose_content.expect("compose content");
+        assert!(compose.contains("syncopia/device-api:prod"));
+        assert!(compose.contains("postgres:17-alpine"));
+        assert!(!compose.contains("syncopia/device-api:latest"));
+        assert!(compose.contains("device-api/docker/prod/.env"));
+        assert!(config.notices.is_empty());
+        let config_files = config.config_files.expect("config files");
+        assert!(config_files.iter().any(|file| {
+            file.get("destination_path")
+                .and_then(|path| path.as_str())
+                .map(|path| path == "device-api/docker/prod/.env")
+                .unwrap_or(false)
+        }));
+    }
+
+    #[test]
+    fn local_config_files_app_local_deploy_does_not_require_unrelated_project_env_file() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docker/prod")).expect("project compose dir");
+        std::fs::create_dir_all(root.join("device-api/docker/prod")).expect("app compose dir");
+        std::fs::write(
+            root.join("docker/prod/compose.yml"),
+            "services:\n  upload:\n    image: syncopia/upload:prod\n    env_file:\n      - upload.env\n",
+        )
+        .expect("project compose");
+        std::fs::write(root.join("device-api/docker/prod/.env"), "RUST_LOG=debug\n")
+            .expect("app env");
+        std::fs::write(
+            root.join("device-api/docker/prod/compose.yml"),
+            "services:\n  device-api:\n    image: syncopia/device-api:prod\n    env_file: .env\n",
+        )
+        .expect("app compose");
+        std::fs::write(
+            root.join("stacker.yml"),
+            r#"
+name: syncopia
+project:
+  identity: syncopia
+app:
+  image: syncopia/device-api:latest
+deploy:
+  target: server
+  environment: prod
+environments:
+  prod:
+    compose_file: docker/prod/compose.yml
+"#,
+        )
+        .expect("stacker config");
+
+        let config = local_config_files_for_agent_deploy(root, "device-api", None).unwrap();
+        let compose = config.compose_content.expect("compose content");
+
+        assert!(compose.contains("syncopia/device-api:prod"));
+        assert!(compose.contains("syncopia/upload:prod"));
+        assert!(compose.contains("upload.env"));
+        let config_files = config.config_files.expect("config files");
+        assert!(config_files.iter().any(|file| {
+            file.get("destination_path")
+                .and_then(|path| path.as_str())
+                .map(|path| path == "device-api/docker/prod/.env")
+                .unwrap_or(false)
+        }));
+        assert!(!config_files.iter().any(|file| {
+            file.get("destination_path")
+                .and_then(|path| path.as_str())
+                .map(|path| path.ends_with("/docker/prod/upload.env"))
+                .unwrap_or(false)
+        }));
+    }
 
     #[test]
     fn enqueue_request_builder() {
@@ -1345,5 +3473,637 @@ mod tests {
         let snap = serde_json::json!({});
         // Should not panic
         print_snapshot_summary(&snap, None);
+    }
+
+    #[test]
+    fn agent_display_version_suppresses_placeholder_version() {
+        let agent = serde_json::json!({
+            "version": "1.0.0",
+            "status": "online"
+        });
+
+        assert_eq!(agent_display_version(&agent, None), None);
+    }
+
+    #[test]
+    fn agent_display_version_prefers_system_info_version() {
+        let agent = serde_json::json!({
+            "version": "1.0.0",
+            "system_info": {
+                "agent_version": "0.2.8"
+            }
+        });
+
+        assert_eq!(
+            agent_display_version(&agent, None),
+            Some("0.2.8".to_string())
+        );
+    }
+
+    #[test]
+    fn agent_display_version_can_use_status_agent_container_tag() {
+        let agent = serde_json::json!({
+            "version": "1.0.0"
+        });
+        let containers = vec![serde_json::json!({
+            "name": "statuspanel-agent",
+            "image": "ghcr.io/trydirect/statuspanel-agent:0.3.1"
+        })];
+
+        assert_eq!(
+            agent_display_version(&agent, Some(&containers)),
+            Some("0.3.1".to_string())
+        );
+    }
+
+    #[test]
+    fn visible_containers_hides_stale_platform_project_container() {
+        let containers = vec![
+            serde_json::json!({
+                "name": "nginx-proxy-manager",
+                "state": "running",
+                "image": "jc21/nginx-proxy-manager:latest"
+            }),
+            serde_json::json!({
+                "name": "project-nginx_proxy_manager-1",
+                "state": "exited",
+                "image": "jc21/nginx-proxy-manager:latest"
+            }),
+            serde_json::json!({
+                "name": "project-coolify-1",
+                "state": "running",
+                "image": "coollabsio/coolify:latest"
+            }),
+        ];
+
+        let visible = visible_containers(&containers);
+        let names = visible
+            .iter()
+            .map(|container| container["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["nginx-proxy-manager", "project-coolify-1"]);
+    }
+
+    #[test]
+    fn agent_install_request_uses_server_deploy_path_without_cloud_credentials() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("syncopia")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Server)
+            .build()
+            .expect("config");
+        let server = sample_server_info();
+
+        let (cloud_id, deploy_form) = build_agent_install_deploy_request(
+            &config,
+            &server,
+            "syncopia",
+            "https://vault.try.direct",
+        )
+        .expect("server install request");
+
+        assert_eq!(cloud_id, None);
+        assert_eq!(deploy_form["cloud"]["provider"], "own");
+        assert_eq!(deploy_form["server"]["server_id"], 7);
+        assert_eq!(deploy_form["server"]["srv_ip"], "203.0.113.10");
+        assert_eq!(deploy_form["server"]["ssh_user"], "deployer");
+        assert_eq!(deploy_form["server"]["ssh_port"], 2222);
+        assert_eq!(deploy_form["server"]["connection_mode"], "status_panel");
+        assert_eq!(
+            deploy_form["server"]["vault_key_path"],
+            "secret/users/user_1/servers/7/ssh"
+        );
+        assert!(deploy_form["stack"]["integrated_features"]
+            .as_array()
+            .expect("integrated_features array")
+            .contains(&serde_json::Value::String("statuspanel".to_string())));
+        assert_eq!(
+            stack_var_value(&deploy_form, AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_KEY),
+            Some(AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_VALUE)
+        );
+        assert_eq!(
+            top_level_str(&deploy_form, AGENT_INSTALL_MODE_KEY),
+            Some(AGENT_INSTALL_MODE_VALUE)
+        );
+    }
+
+    #[test]
+    fn agent_install_request_keeps_cloud_deploy_path_when_cloud_server_is_linked() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("syncopia")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .build()
+            .expect("config");
+        let mut server = sample_server_info();
+        server.cloud_id = Some(9);
+        server.cloud = Some("htz".to_string());
+
+        let (cloud_id, deploy_form) = build_agent_install_deploy_request(
+            &config,
+            &server,
+            "syncopia",
+            "https://vault.try.direct",
+        )
+        .expect("cloud install request");
+
+        assert_eq!(cloud_id, Some(9));
+        assert_eq!(deploy_form["cloud"]["provider"], "htz");
+        assert_eq!(deploy_form["server"]["server_id"], 7);
+        assert_eq!(deploy_form["server"]["connection_mode"], "status_panel");
+        assert_eq!(
+            stack_var_value(&deploy_form, AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_KEY),
+            Some(AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_VALUE)
+        );
+        assert_eq!(
+            top_level_str(&deploy_form, AGENT_INSTALL_MODE_KEY),
+            Some(AGENT_INSTALL_MODE_VALUE)
+        );
+    }
+
+    #[test]
+    fn persist_agent_install_config_enables_status_panel_monitoring() {
+        let dir = TempDir::new().expect("temp dir");
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            "name: demo\napp:\n  image: ${APP_IMAGE}\nmonitoring:\n  status_panel: false\n",
+        )
+        .expect("stacker config");
+
+        let result = persist_agent_install_config(&config_path).expect("persist config");
+
+        assert!(result.changed);
+        assert!(result.backup_path.exists());
+
+        let written = std::fs::read_to_string(&config_path).expect("written config");
+        assert!(written.contains("${APP_IMAGE}"));
+
+        let config =
+            crate::cli::config_parser::StackerConfig::from_file_raw(&config_path).expect("config");
+        assert!(config.monitoring.status_panel);
+    }
+
+    #[test]
+    fn persist_agent_install_config_if_requested_skips_local_write_by_default() {
+        let dir = TempDir::new().expect("temp dir");
+        let config_path = dir.path().join("stacker.yml");
+        let original =
+            "name: demo\napp:\n  image: ${APP_IMAGE}\nmonitoring:\n  status_panel: false\n";
+        std::fs::write(&config_path, original).expect("stacker config");
+
+        let result =
+            persist_agent_install_config_if_requested(&config_path, false).expect("skip persist");
+
+        assert!(result.is_none());
+        assert_eq!(
+            std::fs::read_to_string(&config_path).expect("config should remain unchanged"),
+            original
+        );
+        assert!(!dir.path().join("stacker.yml.bak").exists());
+    }
+
+    #[test]
+    fn persist_agent_install_config_is_noop_when_status_panel_monitoring_enabled() {
+        let dir = TempDir::new().expect("temp dir");
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            "name: demo\nmonitoring:\n  status_panel: true\n",
+        )
+        .expect("stacker config");
+
+        let result = persist_agent_install_config(&config_path).expect("persist config");
+
+        assert!(!result.changed);
+        assert!(!result.backup_path.exists());
+        let config =
+            crate::cli::config_parser::StackerConfig::from_file_raw(&config_path).expect("config");
+        assert!(config.monitoring.status_panel);
+    }
+
+    #[test]
+    fn given_stacker_agent_install_when_config_is_persisted_then_stacker_yml_reflects_status_panel()
+    {
+        let dir = TempDir::new().expect("temp dir");
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            r#"
+name: web
+proxy:
+  type: nginx-proxy-manager
+  domains:
+    - domain: status.stacker.my
+      ssl: auto
+      upstream: status-panel-web:3000
+monitoring:
+  status_panel: false
+  healthcheck: null
+  metrics: null
+"#,
+        )
+        .expect("stacker config");
+
+        let result = persist_agent_install_config(&config_path).expect("persist config");
+
+        assert!(result.changed);
+        assert!(result.backup_path.exists());
+
+        let config =
+            crate::cli::config_parser::StackerConfig::from_file_raw(&config_path).expect("config");
+        assert!(config.monitoring.status_panel);
+        assert_eq!(
+            config
+                .proxy
+                .domains
+                .first()
+                .map(|domain| domain.domain.as_str()),
+            Some("status.stacker.my")
+        );
+    }
+
+    #[test]
+    fn agent_install_request_includes_bootstrap_ssh_key_from_config() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let private_key_path = temp_dir.path().join("id_ed25519");
+        let public_key_path = temp_dir.path().join("id_ed25519.pub");
+
+        std::fs::write(&private_key_path, "TEST PRIVATE KEY").expect("private key");
+        std::fs::write(&public_key_path, "ssh-ed25519 TEST PUBLIC KEY").expect("public key");
+
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("syncopia")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Server)
+            .server(crate::cli::config_parser::ServerConfig {
+                host: "203.0.113.10".to_string(),
+                user: "deploy".to_string(),
+                ssh_key: Some(private_key_path),
+                port: 2222,
+            })
+            .build()
+            .expect("config");
+        let server = sample_server_info();
+
+        let (_, deploy_form) = build_agent_install_deploy_request(
+            &config,
+            &server,
+            "syncopia",
+            "https://vault.try.direct",
+        )
+        .expect("server install request");
+
+        assert_eq!(deploy_form["server"]["ssh_private_key"], "TEST PRIVATE KEY");
+        assert_eq!(
+            deploy_form["server"]["public_key"],
+            "ssh-ed25519 TEST PUBLIC KEY"
+        );
+    }
+
+    #[test]
+    fn agent_command_error_message_prefers_error_field() {
+        let info = AgentCommandInfo {
+            command_id: "cmd_1".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "completed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: Some(serde_json::json!({
+                "status": "error",
+                "message": "ignored"
+            })),
+            error: Some(serde_json::json!(
+                "Vault-backed proxy credential resolution is not configured on this agent"
+            )),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        assert_eq!(
+            agent_command_error_message(&info),
+            Some(
+                "Vault-backed proxy credential resolution is not configured on this agent"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn agent_command_error_message_reads_error_result_payload() {
+        let info = AgentCommandInfo {
+            command_id: "cmd_2".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "completed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: Some(serde_json::json!({
+                "status": "error",
+                "error_code": "vault_not_configured",
+                "message": "Vault-backed proxy credential resolution is not configured on this agent"
+            })),
+            error: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        assert_eq!(
+            agent_command_error_message(&info),
+            Some(
+                "Vault-backed proxy credential resolution is not configured on this agent (vault_not_configured)"
+                    .to_string()
+            )
+        );
+    }
+
+    // Shared lock so env-var tests don't race each other.
+    fn npm_creds_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    fn npm_creds_invalid_info_via_result(vault_path: &str) -> AgentCommandInfo {
+        AgentCommandInfo {
+            command_id: "cmd_npm_creds".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "completed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: Some(serde_json::json!({
+                "status": "error",
+                "code": "npm_credentials_invalid",
+                "message": format!("NPM credentials in Vault are invalid at {}", vault_path),
+                "details": vault_path,
+            })),
+            error: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    fn npm_creds_invalid_info_via_error(vault_path: &str) -> AgentCommandInfo {
+        AgentCommandInfo {
+            command_id: "cmd_npm_creds".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "failed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: None,
+            error: Some(serde_json::json!({
+                "code": "npm_credentials_invalid",
+                "message": format!("NPM credentials in Vault are invalid at {}", vault_path),
+                "details": vault_path,
+            })),
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn agent_command_error_message_sanitizes_vault_path_via_result_field() {
+        let _guard = npm_creds_env_lock();
+        std::env::remove_var("STACKER_DEBUG");
+        std::env::remove_var("DEBUG");
+
+        let vault_path = "secret/base/status_panel/hosts/86/npm_credentials";
+        let message = agent_command_error_message(&npm_creds_invalid_info_via_result(vault_path))
+            .expect("error message");
+
+        assert!(
+            !message.contains(vault_path),
+            "Vault path must not appear in user-facing output: {message}"
+        );
+        assert!(
+            message.contains("stacker secrets set npm_credentials"),
+            "Message should include the remediation command: {message}"
+        );
+    }
+
+    #[test]
+    fn agent_command_error_message_sanitizes_vault_path_via_error_field() {
+        let _guard = npm_creds_env_lock();
+        std::env::remove_var("STACKER_DEBUG");
+        std::env::remove_var("DEBUG");
+
+        let vault_path = "secret/base/status_panel/hosts/86/npm_credentials";
+        let message = agent_command_error_message(&npm_creds_invalid_info_via_error(vault_path))
+            .expect("error message");
+
+        assert!(
+            !message.contains(vault_path),
+            "Vault path must not appear in user-facing output (error field path): {message}"
+        );
+        assert!(
+            message.contains("stacker secrets set npm_credentials"),
+            "Message should include the remediation command: {message}"
+        );
+    }
+
+    #[test]
+    fn agent_command_error_message_sanitizes_vault_path_when_error_is_preformatted_string() {
+        let _guard = npm_creds_env_lock();
+        std::env::remove_var("STACKER_DEBUG");
+        std::env::remove_var("DEBUG");
+
+        let vault_path = "secret/base/status_panel/hosts/86/npm_credentials";
+        // Simulate the server sending a pre-formatted string (no structured "code" field)
+        let info = AgentCommandInfo {
+            command_id: "cmd_npm_creds".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "failed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: None,
+            error: Some(serde_json::Value::String(format!(
+                "NPM credentials in Vault are invalid at {vault_path} (npm_credentials_invalid): {vault_path}"
+            ))),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        let message = agent_command_error_message(&info).expect("error message");
+
+        assert!(
+            !message.contains(vault_path),
+            "Vault path must not appear when error is a pre-formatted string: {message}"
+        );
+        assert!(
+            message.contains("stacker secrets set npm_credentials"),
+            "Message should include the remediation command: {message}"
+        );
+    }
+
+    #[test]
+    fn agent_command_error_message_exposes_vault_path_in_debug_mode_for_npm_credentials_invalid() {
+        let _guard = npm_creds_env_lock();
+        std::env::set_var("STACKER_DEBUG", "1");
+
+        let vault_path = "secret/base/status_panel/hosts/86/npm_credentials";
+        // Test both paths in debug mode
+        let msg_via_result =
+            agent_command_error_message(&npm_creds_invalid_info_via_result(vault_path));
+        let msg_via_error =
+            agent_command_error_message(&npm_creds_invalid_info_via_error(vault_path));
+        std::env::remove_var("STACKER_DEBUG");
+
+        let msg_via_result = msg_via_result.expect("error message (result path)");
+        assert!(
+            msg_via_result.contains(vault_path),
+            "Vault path should appear in debug output (result path): {msg_via_result}"
+        );
+        assert!(
+            msg_via_result.contains("stacker secrets set npm_credentials"),
+            "Debug output should still include the remediation command: {msg_via_result}"
+        );
+
+        let msg_via_error = msg_via_error.expect("error message (error field path)");
+        assert!(
+            msg_via_error.contains(vault_path),
+            "Vault path should appear in debug output (error field path): {msg_via_error}"
+        );
+        assert!(
+            msg_via_error.contains("stacker secrets set npm_credentials"),
+            "Debug output should still include the remediation command: {msg_via_error}"
+        );
+    }
+
+    #[test]
+    fn agent_command_error_message_adds_proxy_route_diagnostics_for_npm_create_failed() {
+        let info = AgentCommandInfo {
+            command_id: "cmd_proxy".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "completed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: Some(serde_json::json!({
+                "status": "error",
+                "error_code": "npm_create_failed",
+                "message": "Failed to create proxy host: 500 Internal Server Error - Internal Error",
+                "domain_names": ["status.stacker.my"],
+                "forward_port": 3000
+            })),
+            error: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        let message = agent_command_error_message(&info).expect("error message");
+
+        assert!(message.contains("npm_create_failed"));
+        assert!(message.contains("Route diagnostics"));
+        assert!(message.contains("status.stacker.my"));
+        assert!(message.contains(
+            "stacker cloud firewall add --server-id <server-id> --public-ports 80/tcp,443/tcp"
+        ));
+        assert!(message.contains("--ssl"));
+    }
+
+    #[test]
+    fn agent_command_error_message_reads_structured_error_array() {
+        let info = AgentCommandInfo {
+            command_id: "cmd_3".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "completed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: Some(serde_json::json!({
+                "status": "error",
+                "message": "ignored"
+            })),
+            error: Some(serde_json::json!({
+                "errors": [{
+                    "code": "npm_error",
+                    "message": "NPM operation failed",
+                    "details": "Failed to connect to NPM"
+                }]
+            })),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        assert_eq!(
+            agent_command_error_message(&info),
+            Some("NPM operation failed (npm_error): Failed to connect to NPM".to_string())
+        );
+    }
+
+    #[test]
+    fn agent_command_error_message_ignores_successful_results() {
+        let info = AgentCommandInfo {
+            command_id: "cmd_3".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "health".to_string(),
+            status: "completed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: Some(serde_json::json!({
+                "status": "ok",
+                "message": "healthy"
+            })),
+            error: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        assert_eq!(agent_command_error_message(&info), None);
+    }
+
+    #[test]
+    fn configure_proxy_no_ssl_overrides_default_ssl() {
+        let command = AgentConfigureProxyCommand::new(
+            "coolify".to_string(),
+            "coolify.example.com".to_string(),
+            8000,
+            true,
+            true,
+            "create".to_string(),
+            true,
+            false,
+            None,
+        );
+
+        assert!(!command.ssl);
+    }
+
+    #[test]
+    fn resolve_registry_auth_for_agent_deploy_reads_env_overrides() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        std::fs::write(
+            temp_dir.path().join("stacker.yml"),
+            "name: syncopia\napp:\n  type: static\ndeploy:\n  target: server\n",
+        )
+        .expect("write stacker.yml");
+
+        let old_username = std::env::var("STACKER_DOCKER_USERNAME").ok();
+        let old_password = std::env::var("STACKER_DOCKER_PASSWORD").ok();
+        let old_registry = std::env::var("STACKER_DOCKER_REGISTRY").ok();
+
+        std::env::set_var("STACKER_DOCKER_USERNAME", "optimum");
+        std::env::set_var("STACKER_DOCKER_PASSWORD", "secret");
+        std::env::set_var("STACKER_DOCKER_REGISTRY", "docker.io");
+
+        let auth = resolve_registry_auth_for_agent_deploy(temp_dir.path()).expect("registry auth");
+        assert_eq!(auth.username, "optimum");
+        assert_eq!(auth.password, "secret");
+        assert_eq!(auth.registry, "docker.io");
+
+        match old_username {
+            Some(value) => std::env::set_var("STACKER_DOCKER_USERNAME", value),
+            None => std::env::remove_var("STACKER_DOCKER_USERNAME"),
+        }
+        match old_password {
+            Some(value) => std::env::set_var("STACKER_DOCKER_PASSWORD", value),
+            None => std::env::remove_var("STACKER_DOCKER_PASSWORD"),
+        }
+        match old_registry {
+            Some(value) => std::env::set_var("STACKER_DOCKER_REGISTRY", value),
+            None => std::env::remove_var("STACKER_DOCKER_REGISTRY"),
+        }
     }
 }

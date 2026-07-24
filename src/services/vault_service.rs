@@ -8,6 +8,7 @@
 
 use anyhow::Result;
 use reqwest::Client;
+use reqwest::Identity;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -95,8 +96,20 @@ impl VaultService {
     pub fn from_settings(
         settings: &crate::configuration::VaultSettings,
     ) -> Result<Self, VaultError> {
-        let http_client = Client::builder()
-            .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        let mut builder = Client::builder().timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS));
+
+        if let (Some(cert), Some(key)) = (&settings.client_cert, &settings.client_key) {
+            match Identity::from_pkcs8_pem(cert.as_bytes(), key.as_bytes()) {
+                Ok(identity) => {
+                    builder = builder.identity(identity);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load mTLS identity for Vault service: {}", e);
+                }
+            }
+        }
+
+        let http_client = builder
             .build()
             .map_err(|e| VaultError::Other(format!("Failed to create HTTP client: {}", e)))?;
 
@@ -120,6 +133,8 @@ impl VaultService {
     /// - `VAULT_ADDRESS`: Base URL (e.g., https://vault.try.direct)
     /// - `VAULT_TOKEN`: Authentication token
     /// - `VAULT_CONFIG_PATH_PREFIX`: KV mount/prefix (e.g., secret/debug)
+    /// - `VAULT_CLIENT_CERT`: Client certificate PEM for mTLS
+    /// - `VAULT_CLIENT_KEY`: Client key PEM for mTLS
     pub fn from_env() -> Result<Option<Self>, VaultError> {
         let base_url = std::env::var("VAULT_ADDRESS").ok();
         let token = std::env::var("VAULT_TOKEN").ok();
@@ -129,12 +144,28 @@ impl VaultService {
 
         match (base_url, token, prefix) {
             (Some(base), Some(tok), Some(pref)) => {
-                let http_client = Client::builder()
-                    .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
-                    .build()
-                    .map_err(|e| {
-                        VaultError::Other(format!("Failed to create HTTP client: {}", e))
-                    })?;
+                let mut builder =
+                    Client::builder().timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS));
+
+                let client_cert = std::env::var("VAULT_CLIENT_CERT").ok();
+                let client_key = std::env::var("VAULT_CLIENT_KEY").ok();
+                if let (Some(cert), Some(key)) = (&client_cert, &client_key) {
+                    match Identity::from_pkcs8_pem(cert.as_bytes(), key.as_bytes()) {
+                        Ok(identity) => {
+                            builder = builder.identity(identity);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to load mTLS identity for Vault service from env: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+
+                let http_client = builder.build().map_err(|e| {
+                    VaultError::Other(format!("Failed to create HTTP client: {}", e))
+                })?;
 
                 tracing::debug!("Vault service initialized with base_url={}", base);
 
@@ -183,6 +214,184 @@ impl VaultService {
             "{}/v1/{}/{}/apps/{}/{}",
             self.base_url, self.prefix, deployment_hash, app_code, config_type
         )
+    }
+
+    fn secret_url(&self, logical_path: &str) -> String {
+        format!(
+            "{}/v1/{}",
+            self.base_url.trim_end_matches('/'),
+            logical_path.trim_matches('/')
+        )
+    }
+
+    pub fn service_secret_path(
+        &self,
+        user_id: &str,
+        project_id: i32,
+        app_code: &str,
+        name: &str,
+    ) -> String {
+        format!(
+            "{}/users/{}/projects/{}/apps/{}/secrets/{}",
+            self.prefix.trim_matches('/'),
+            user_id,
+            project_id,
+            app_code,
+            name
+        )
+    }
+
+    pub fn server_secret_path(&self, user_id: &str, server_id: i32, name: &str) -> String {
+        format!(
+            "{}/users/{}/servers/{}/secrets/{}",
+            self.prefix.trim_matches('/'),
+            user_id,
+            server_id,
+            name
+        )
+    }
+
+    pub fn status_panel_npm_credentials_path(&self, server_id: i32) -> String {
+        format!(
+            "{}/hosts/{}/npm_credentials",
+            self.prefix.trim_matches('/'),
+            server_id
+        )
+    }
+
+    pub async fn fetch_secret_value(&self, logical_path: &str) -> Result<String, VaultError> {
+        let response = self
+            .http_client
+            .get(self.secret_url(logical_path))
+            .header("X-Vault-Token", &self.token)
+            .send()
+            .await
+            .map_err(|e| VaultError::ConnectionFailed(e.to_string()))?;
+
+        if response.status() == 404 {
+            return Err(VaultError::NotFound(logical_path.to_string()));
+        }
+
+        if response.status() == 403 {
+            return Err(VaultError::Forbidden(logical_path.to_string()));
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(VaultError::Other(format!(
+                "Vault returned {}: {}",
+                status, body
+            )));
+        }
+
+        let vault_resp: VaultKvResponse = response
+            .json()
+            .await
+            .map_err(|e| VaultError::Other(format!("Failed to parse Vault response: {}", e)))?;
+
+        vault_resp
+            .data
+            .data
+            .get("value")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| VaultError::Other("value not found in Vault response".to_string()))
+    }
+
+    pub async fn store_secret_value(
+        &self,
+        logical_path: &str,
+        value: &str,
+    ) -> Result<(), VaultError> {
+        let payload = serde_json::json!({
+            "data": {
+                "value": value
+            }
+        });
+
+        let response = self
+            .http_client
+            .post(self.secret_url(logical_path))
+            .header("X-Vault-Token", &self.token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| VaultError::ConnectionFailed(e.to_string()))?;
+
+        if response.status() == 403 {
+            return Err(VaultError::Forbidden(logical_path.to_string()));
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(VaultError::Other(format!(
+                "Vault store failed with {}: {}",
+                status, body
+            )));
+        }
+
+        Ok(())
+    }
+
+    pub async fn store_structured_secret_value(
+        &self,
+        logical_path: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), VaultError> {
+        let payload = serde_json::json!({
+            "data": value
+        });
+
+        let response = self
+            .http_client
+            .post(self.secret_url(logical_path))
+            .header("X-Vault-Token", &self.token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| VaultError::ConnectionFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(VaultError::Other(format!(
+                "Failed to store secret at {}: {} - {}",
+                logical_path, status, body
+            )));
+        }
+
+        Ok(())
+    }
+
+    pub async fn delete_secret_value(&self, logical_path: &str) -> Result<(), VaultError> {
+        let response = self
+            .http_client
+            .delete(self.secret_url(logical_path))
+            .header("X-Vault-Token", &self.token)
+            .send()
+            .await
+            .map_err(|e| VaultError::ConnectionFailed(e.to_string()))?;
+
+        if response.status() == 404 || response.status() == 204 {
+            return Ok(());
+        }
+
+        if response.status() == 403 {
+            return Err(VaultError::Forbidden(logical_path.to_string()));
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(VaultError::Other(format!(
+                "Vault delete failed with {}: {}",
+                status, body
+            )));
+        }
+
+        Ok(())
     }
 
     /// Fetch app configuration from Vault
@@ -449,6 +658,8 @@ impl VaultService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Helper to extract config path components without creating a full VaultService
     fn parse_app_name(app_name: &str) -> (String, String) {
@@ -588,5 +799,101 @@ mod tests {
             .collect();
         assert!(names.contains(&"telegraf.conf"));
         assert!(names.contains(&"nginx.conf"));
+    }
+
+    fn test_vault_service(server: &MockServer) -> VaultService {
+        VaultService {
+            base_url: server.uri(),
+            token: "test-token".to_string(),
+            prefix: "agent".to_string(),
+            http_client: Client::builder()
+                .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+                .build()
+                .unwrap(),
+        }
+    }
+
+    #[test]
+    fn test_remote_secret_paths_use_kv_v1_layout() {
+        let service = VaultService {
+            base_url: "http://vault.example".to_string(),
+            token: "test-token".to_string(),
+            prefix: "agent".to_string(),
+            http_client: Client::builder().build().unwrap(),
+        };
+
+        assert_eq!(
+            service.service_secret_path("user-1", 42, "web", "S3_KEY"),
+            "agent/users/user-1/projects/42/apps/web/secrets/S3_KEY"
+        );
+        assert_eq!(
+            service.server_secret_path("user-1", 99, "HOST_TOKEN"),
+            "agent/users/user-1/servers/99/secrets/HOST_TOKEN"
+        );
+        assert_eq!(
+            service.status_panel_npm_credentials_path(99),
+            "agent/hosts/99/npm_credentials"
+        );
+        assert_eq!(
+            service.secret_url("agent/users/user-1/projects/42/apps/web/secrets/S3_KEY"),
+            "http://vault.example/v1/agent/users/user-1/projects/42/apps/web/secrets/S3_KEY"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_remote_secret_kv_v1_crud_uses_flat_v1_endpoints() {
+        let server = MockServer::start().await;
+        let service = test_vault_service(&server);
+        let logical_path = "agent/users/user-1/projects/42/apps/web/secrets/S3_KEY";
+
+        Mock::given(method("POST"))
+            .and(path(
+                "/v1/agent/users/user-1/projects/42/apps/web/secrets/S3_KEY",
+            ))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path(
+                "/v1/agent/users/user-1/projects/42/apps/web/secrets/S3_KEY",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "data": {
+                        "value": "supersecret"
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("DELETE"))
+            .and(path(
+                "/v1/agent/users/user-1/projects/42/apps/web/secrets/S3_KEY",
+            ))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        service
+            .store_secret_value(logical_path, "supersecret")
+            .await
+            .unwrap();
+        let fetched = service.fetch_secret_value(logical_path).await.unwrap();
+        assert_eq!(fetched, "supersecret");
+        service.delete_secret_value(logical_path).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].method.to_string(), "POST");
+        assert_eq!(requests[1].method.to_string(), "GET");
+        assert_eq!(requests[2].method.to_string(), "DELETE");
+        assert!(requests
+            .iter()
+            .all(|request| !request.url.path().contains("/data/")));
+        assert!(requests
+            .iter()
+            .all(|request| !request.url.path().contains("/metadata/")));
     }
 }

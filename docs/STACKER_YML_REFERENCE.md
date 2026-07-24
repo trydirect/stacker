@@ -1,6 +1,6 @@
 # stacker.yml Configuration Reference
 
-> **Stacker CLI v0.2.6** — The single-file deployment configuration for containerised applications.
+> **Stacker CLI v0.3** — The single-file deployment configuration for containerised applications.
 
 `stacker.yml` is the only file you need to add to your project. Stacker reads it to auto-generate Dockerfiles, docker-compose definitions, and deploy your application locally or to cloud infrastructure.
 
@@ -12,7 +12,7 @@
 - [Minimal Example](#minimal-example)
 - [Full Example](#full-example)
 - [Top-Level Fields](#top-level-fields)
-  - [name](#name) · [version](#version) · [organization](#organization)
+  - [name](#name) · [version](#version) · [organization](#organization) · [project](#project)
 - [app — Application Source](#app)
   - [type](#apptype) · [path](#apppath) · [dockerfile](#appdockerfile) · [image](#appimage) · [build](#appbuild) · [ports](#appports) · [volumes](#appvolumes) · [environment](#appenvironment)
 - [services — Sidecar Containers](#services)
@@ -20,6 +20,10 @@
   - [type](#proxytype) · [auto_detect](#proxyauto_detect) · [domains](#proxydomains) · [config](#proxyconfig)
 - [deploy — Deployment Target](#deploy)
   - [target](#deploytarget) · [compose_file](#deploycompose_file) · [cloud](#deploycloud) · [server](#deployserver)
+- [install — Marketplace Install Inputs](#install)
+- [environments — Named Environments](#environments)
+- [volumes — Named Volumes](#volumes)
+- [config_contract — Service Config Contracts](#config_contract)
 - [ai — AI Assistant](#ai)
 - [monitoring — Health & Metrics](#monitoring)
   - [status_panel](#monitoringstatus_panel) · [healthcheck](#monitoringhealthcheck) · [metrics](#monitoringmetrics)
@@ -33,7 +37,7 @@
   - [SSH Key Management](#stacker-ssh-key--ssh-key-management)
   - [Service Template Catalog](#stacker-service--service-template-catalog)
   - [Agent Control](#stacker-agent--agent-control)
-  - [Firewall Management](#firewall-management--iptables)
+  - [Firewall Management](#firewall-management)
 - [Recipes](#recipes)
 - [FAQ](#faq)
 
@@ -48,6 +52,9 @@ curl -fsSL https://stacker.try.direct/install.sh | bash
 # 2. Initialize in your project directory
 cd my-project
 stacker init
+
+# 2a. Or generate from any GitHub repo (no clone required)
+stacker init --from-github owner/repo
 
 # 3. Review the generated config
 cat stacker.yml
@@ -90,6 +97,9 @@ name: my-saas-app
 version: "2.0"
 organization: acme-corp
 
+project:
+  identity: my-saas-app
+
 app:
   type: node
   path: ./src
@@ -113,11 +123,17 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: "CMD pg_isready -U app"
+      interval: 10s
+      timeout: 5s
+      retries: "5"
 
   - name: redis
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    command: redis-server --requirepass "${REDIS_PASSWORD}"
 
   - name: worker
     image: myapp-worker:latest
@@ -140,11 +156,24 @@ proxy:
 
 deploy:
   target: cloud
+  environment: production
   cloud:
     provider: hetzner
     region: fsn1
-    size: cpx21
+    size: cx23
     ssh_key: ~/.ssh/id_ed25519
+    public_ports:
+      - "80"
+      - "443"
+      - "8080"
+
+environments:
+  production:
+    compose_file: docker/production/compose.yml
+    env_file: .env
+  staging:
+    compose_file: docker/staging/compose.yml
+    env_file: .env.staging
 
 ai:
   enabled: true
@@ -169,6 +198,9 @@ hooks:
   pre_build: ./scripts/pre-build.sh
   post_deploy: ./scripts/post-deploy.sh
   on_failure: ./scripts/notify-failure.sh
+
+volumes:
+  pgdata: {}
 
 env_file: .env
 
@@ -211,6 +243,23 @@ Organisation slug. Used for scoping cloud deployments and linking to your TryDir
 ```yaml
 organization: acme-corp
 ```
+
+### `project`
+
+*Optional* · `object` · Default: none
+
+Project-level metadata. Currently carries a single `identity` field used to pin a deployment to a specific project slug in the TryDirect backend, overriding name-based resolution.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `identity` | `string` | no | — | Stable project identifier (slug) for multi-deployment projects |
+
+```yaml
+project:
+  identity: my-saas-app
+```
+
+> **When to use:** Set `project.identity` when you rename a project or when multiple `stacker.yml` files must refer to the same backend project. Without it, the backend resolves project identity from `name`.
 
 ---
 
@@ -358,6 +407,45 @@ Additional containers deployed alongside your main application — databases, ca
 | `environment` | `map<string, string>` | no | `{}` | Environment variables |
 | `volumes` | `string[]` | no | `[]` | Volume mounts (`"name:/path"` or `"./host:/container"`) |
 | `depends_on` | `string[]` | no | `[]` | Services this depends on (started first) |
+| `command` | `string` | no | — | Override the container's default command / entrypoint |
+| `healthcheck` | `object` | no | — | Docker health check for this service |
+
+#### `services[].command`
+
+Overrides the Docker image's default `CMD`. The value is passed verbatim to `docker-compose.yml` as the `command:` key, so you can use shell syntax.
+
+```yaml
+services:
+  - name: redis
+    image: redis:7-alpine
+    command: redis-server --save 20 1 --loglevel warning --requirepass "${REDIS_PASSWORD}"
+```
+
+#### `services[].healthcheck`
+
+Docker health check configuration. Mapped directly to the compose `healthcheck:` block. Used by `depends_on` condition-based startup ordering and by the Status Panel agent for container readiness checks.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `test` | `string` | — | Health check command (e.g. `"CMD pg_isready -U postgres"`) |
+| `interval` | `string` | `30s` | Time between checks |
+| `timeout` | `string` | `30s` | Maximum time per check |
+| `retries` | `string \| integer` | `3` | Number of failures before unhealthy |
+
+```yaml
+services:
+  - name: postgres
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: "${DB_PASSWORD}"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: "CMD-SHELL pg_isready -U postgres"
+      interval: 10s
+      timeout: 5s
+      retries: "5"
+```
 
 ```yaml
 services:
@@ -501,6 +589,8 @@ deploy:
   target: local
 ```
 
+> **Pipe mode**: The `deploy.target` value also affects how `stacker pipe` commands behave. When target is `local`, pipes are created without a `deployment_hash` and execute against local Docker containers (`docker exec`). Use `stacker target` to switch modes at runtime without editing `stacker.yml`. See the [DAG Pipes CLI Guide — Local Mode](./DAG_PIPES_PART1_CLI_GUIDE.md#local-mode-experimental) for details.
+
 ### `deploy.compose_file`
 
 *Optional* · `string` (path) · Default: none
@@ -511,6 +601,25 @@ Use a custom docker-compose file instead of the auto-generated one. Stacker will
 deploy:
   target: local
   compose_file: ./docker-compose.prod.yml
+```
+
+### `deploy.environment`
+
+*Optional* · `string` · Default: none
+
+The active named environment (profile) to use for this deployment. Must match a key defined under the top-level [`environments`](#environments) section. When set, Stacker resolves the `compose_file` and `env_file` from that environment block instead of the global defaults.
+
+```yaml
+deploy:
+  target: local
+  environment: production
+```
+
+Switch environments at runtime without editing `stacker.yml`:
+
+```bash
+stacker env production        # persist active env for this project
+stacker deploy --env staging  # one-shot override
 ```
 
 ### `deploy.cloud`
@@ -525,12 +634,44 @@ Cloud infrastructure provisioning settings. Stacker uses Terraform/Ansible under
 | `region` | `string` | no | Provider default | Data center region |
 | `size` | `string` | no | Provider default | Server size/type |
 | `ssh_key` | `string` (path) | no | none | Path to SSH private key |
+| `public_ports` | `string[]` | no | `[]` | Ports to open in the cloud-provider firewall after provisioning |
+| `orchestrator` | `enum` | no | `local` | Deployment orchestration mode (`local` or `remote`) |
+| `key` | `string` | no | none | Vault key reference used to authenticate with the provider |
+
+**`deploy.cloud.public_ports`**
+
+A list of host ports (or `port/protocol` pairs) that Stacker opens in the cloud-provider firewall immediately after the server is provisioned. Without this, the firewall only allows SSH (port 22). Use `stacker cloud firewall add` to open ports post-deploy without re-deploying.
+
+```yaml
+deploy:
+  target: cloud
+  cloud:
+    provider: hetzner
+    region: fsn1
+    size: cpx22
+    public_ports:
+      - "8000"        # HTTP app port
+      - "80"          # Nginx proxy
+      - "8053/tcp"    # DNS over TCP
+      - "8053/udp"    # DNS over UDP
+```
+
+**`deploy.cloud.orchestrator`**
+
+Controls where the deployment orchestration runs:
+
+| Value | Description |
+|-------|-------------|
+| `local` | Default — Terraform/Ansible runs on the local machine |
+| `remote` | Orchestration is handed off to the TryDirect Install Service |
+
+Remote orchestration is used for marketplace-managed deploys (`stacker install`). Most projects use the default `local` mode.
 
 **Supported cloud providers:**
 
 | Value | Provider | Example Regions | Example Sizes |
 |-------|----------|----------------|---------------|
-| `hetzner` | Hetzner Cloud | `fsn1`, `nbg1`, `hel1` | `cpx21`, `cpx31`, `cpx41` |
+| `hetzner` | Hetzner Cloud | `fsn1`, `nbg1`, `hel1` | `cx23`, `cx33`, `cx43` |
 | `digitalocean` | DigitalOcean | `nyc1`, `sfo3`, `ams3` | `s-1vcpu-1gb`, `s-2vcpu-4gb` |
 | `aws` | Amazon Web Services | `us-east-1`, `eu-west-1` | `t3.micro`, `t3.small` |
 | `linode` | Linode (Akamai) | `us-east`, `eu-west` | `g6-nanode-1`, `g6-standard-2` |
@@ -542,7 +683,7 @@ deploy:
   cloud:
     provider: hetzner
     region: fsn1
-    size: cpx21
+    size: cx23
     ssh_key: ~/.ssh/id_ed25519
 ```
 
@@ -580,6 +721,14 @@ Docker registry credentials for pulling private images during cloud/server deplo
 
 Credentials can be specified in `stacker.yml` or via environment variables. Environment variables take precedence.
 
+For deployments managed by the Status agent, Stacker also persists this auth in
+its trusted secret storage and reuses it for later image refreshes such as
+`stacker agent deploy-app`. The agent performs the pull with a temporary Docker
+auth directory and immediate cleanup, so private-image redeploys do not depend
+on whatever `docker login` state happens to exist on the host. If no stored
+registry auth exists, Stacker keeps the current anonymous-pull behavior and may
+still redeploy successfully when the image is already cached locally.
+
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `username` | `string` | **yes** | — | Registry username |
@@ -600,14 +749,116 @@ deploy:
   cloud:
     provider: hetzner
     region: fsn1
-    size: cpx21
+    size: cx23
   registry:
     username: "${DOCKER_USERNAME}"
     password: "${DOCKER_PASSWORD}"
-    # server: "https://index.docker.io/v1/"  # Docker Hub (default)
+    # server: "docker.io"  # Docker Hub (default)
 ```
 
 > **Security tip:** Use environment variables or `${VAR}` syntax to keep credentials out of version control.
+
+---
+
+## `install`
+
+*Optional* · `object` · Default: none
+
+Install-specific inputs used by `stacker install <slug>`. These values are
+merged with CLI flags such as `--domain` and `--set`, then sent to Stacker API
+and Install Service as install render inputs.
+
+```yaml
+install:
+  inputs:
+    commonDomain: example.com
+    admin_email: admin@example.com
+```
+
+`commonDomain` is the Install Service base-domain field. For convenience,
+`base_domain` and the CLI flag `--domain example.com` are normalized to
+`commonDomain`.
+
+CLI overrides take precedence over this section:
+
+```bash
+stacker install wordpress --domain example.com --set admin_email=owner@example.com
+```
+
+---
+
+## `environments`
+
+*Optional* · `map<string, object>` · Default: `{}`
+
+Named environment profiles. Each key is an environment name (e.g. `production`, `staging`). When [`deploy.environment`](#deployenvironment) is set to a key, Stacker loads that profile's `compose_file` and `env_file` instead of the global defaults.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `compose_file` | `string` (path) | no | — | Compose file for this environment |
+| `env_file` | `string` (path) | no | — | `.env` file for this environment |
+
+```yaml
+environments:
+  production:
+    compose_file: docker/production/compose.yml
+    env_file: .env
+  staging:
+    compose_file: docker/staging/compose.yml
+    env_file: .env.staging
+```
+
+Combined with `deploy.environment`:
+
+```yaml
+deploy:
+  target: local
+  environment: production
+
+environments:
+  production:
+    compose_file: docker/production/compose.yml
+    env_file: .env
+```
+
+> **Note:** `stacker env <name>` persists the active environment to `.stacker/active-env` so subsequent commands (`stacker deploy`, `stacker agent deploy-app`, `stacker secrets push`) pick it up automatically.
+
+---
+
+## `volumes`
+
+*Optional* · `map<string, object>` · Default: `{}`
+
+Top-level named Docker volumes shared across services. Equivalent to the `volumes:` block in `docker-compose.yml`. Each key is the volume name; the value is a volume configuration object (typically empty `{}` for the default local driver).
+
+```yaml
+volumes:
+  ollama: {}
+  pgdata: {}
+  redis_data:
+    driver: local
+```
+
+Named volumes referenced in `app.volumes` or `services[].volumes` but not listed here are created implicitly by Docker Compose. Use this section when you need to configure the volume driver or share a volume name explicitly across services.
+
+---
+
+## `config_contract`
+
+*Optional* · `object` · Default: none
+
+Declares service-level configuration contracts — metadata consumed by the TryDirect Install Service and marketplace pipeline to validate and pre-populate service inputs. Not used during local deploys.
+
+```yaml
+config_contract:
+  services:
+    my-service:
+      required_env:
+        - DATABASE_URL
+        - SECRET_KEY
+```
+
+> This section is primarily written by `stacker install` and the marketplace generator. You rarely need to set it by hand.
 
 ---
 
@@ -624,7 +875,7 @@ AI/LLM assistant configuration. When enabled, `stacker ai ask` uses the configur
 | `model` | `string` | no | Provider default | Model name |
 | `api_key` | `string` | no* | none | API key (supports `${VAR}` syntax) |
 | `endpoint` | `string` | no | Provider default | Custom API endpoint URL |
-| `timeout` | `integer` | no | `300` | Request timeout in seconds (increase for slow models / weak hardware) |
+| `timeout` | `integer` | no | `300` | Request timeout in seconds. Set to `0` to disable the timeout entirely (useful for large local models). |
 | `tasks` | `string[]` | no | `[]` | Allowed AI task types |
 
 **Supported providers:**
@@ -689,6 +940,10 @@ monitoring:
   status_panel: true
 ```
 
+If you install the agent later with `stacker agent install`, the CLI does **not** modify local
+`stacker.yml` by default. Pass `--persist-config` to also write
+`monitoring.status_panel: true` back into the local config file.
+
 ### `monitoring.healthcheck`
 
 *Optional* · `object` · Default: none
@@ -746,7 +1001,111 @@ hooks:
   on_failure: ./scripts/alert-team.sh
 ```
 
-> Hook scripts must be executable (`chmod +x`).
+> Hook scripts run under `sh`, not the shebang. Use POSIX shell features or explicitly `exec` a different interpreter from inside the script.
+
+### Execution contract
+
+Everything below is enforced by the CLI at hook execution time, not by convention.
+
+#### Path resolution
+
+- Hook paths are relative to the project directory (the directory containing `stacker.yml`).
+- Absolute paths are **rejected**.
+- Paths containing `..` are **rejected** after canonicalization if the resolved path escapes the project directory.
+- Symlinks that point outside the project directory are **rejected** — the CLI uses `symlink_metadata`, not just `exists()`.
+- Missing scripts are **rejected**, with the resolved path in the error message.
+
+Rejection at the path-resolution stage means the executor is never invoked. Nothing runs.
+
+#### Content validation
+
+Before invocation, the script's contents are scanned against a fixed pattern set for known dangerous constructs. Any `[CRITICAL]` match refuses the hook. Current critical patterns include:
+
+- Remote script execution (`curl … | sh`, `bash <(curl …)`, base64 → shell)
+- Bash TCP/UDP redirects (`/dev/tcp/`, `/dev/udp/`) and `nc -e` / `ncat -e`
+- Recursive delete on root or home (`rm -rf /`, `rm -rf $HOME`, `rm -rf ~/`)
+- `chmod u+s` / `g+s` (setuid / setgid installation)
+- Python or Perl reverse-shell one-liners
+- References to `authorized_keys`, `pastebin.com`, `hastebin.com`
+- Known crypto miner names (xmrig, minerd, etc.)
+- Overly permissive chmod / privileged-container sudo
+
+`[WARNING]` matches (SSH key file references, `kill -9`, base64 blobs over 1 MiB, obfuscated `eval` chains) are logged to stderr but do not block execution.
+
+Scripts larger than 1 MiB are not scanned — the CLI logs a warning and refuses to run them without an explicit opt-in.
+
+#### Trust model
+
+Every loaded `stacker.yml` carries an in-memory `origin` marker derived from the file's leading comment block:
+
+| Origin                  | Marker line (top of file)                       | Default hook behaviour              |
+|-------------------------|-------------------------------------------------|--------------------------------------|
+| `UserAuthored`          | (no `# @stacker-origin: marketplace` present)   | Hooks run                            |
+| `MarketplaceGenerated`  | `# @stacker-origin: marketplace`                | Hooks **refused** unless opted in    |
+
+`stacker install <template>` writes the marker automatically. Delete the marker line after you have reviewed hooks in the file, and the CLI treats the file as user-authored on the next deploy.
+
+#### CLI flags
+
+| Flag                       | Effect                                                                                                |
+|----------------------------|-------------------------------------------------------------------------------------------------------|
+| *(none)*                   | Runs hooks for user-authored files. Refuses hooks for marketplace-generated files.                    |
+| `--allow-untrusted-hooks`  | Runs hooks even when the file carries the marketplace marker. Use only after reviewing every script.  |
+| `--no-hooks`               | Skips every hook regardless of provenance. CI-safe default.                                           |
+
+#### Runtime environment
+
+- `sh <script>` — always interpreted by POSIX `sh` regardless of shebang.
+- Working directory: the project directory.
+- Environment: **cleared**. Only `PATH` and `HOME` are re-exported. Cloud tokens, Docker registry credentials, `GH_TOKEN`, `OPENAI_API_KEY`, etc. **are not visible** to hook scripts. If a hook needs a secret, plumb it through explicitly.
+- Hard timeout: 5 minutes per hook. On timeout the child process is `kill`ed (not merely abandoned).
+- stdout and stderr are captured, ANSI escape sequences are stripped, and the combined output is capped at 1 MiB before being relayed to the terminal or embedded in error messages.
+
+#### Error behaviour
+
+Two distinct outcomes surface differently:
+
+| Cause                                                       | `pre_build`                | `post_deploy`                                                     | `on_failure`                                                             |
+|-------------------------------------------------------------|----------------------------|-------------------------------------------------------------------|--------------------------------------------------------------------------|
+| Path invalid / symlink escape / content critical / untrusted | Deploy **fails**           | Deploy **fails** — rejection is not silently downgraded to a warn | Original deploy error is preserved; rejection is chained into the message |
+| Script exits non-zero at runtime                             | Deploy **fails**           | Warning logged; deploy result stays **Ok**                        | Warning logged; original deploy error preserved                          |
+| Timeout (300 s)                                              | Deploy **fails**           | Warning logged; deploy result stays **Ok**                        | Warning logged; original deploy error preserved                          |
+
+This is a deliberate asymmetry: `pre_build` is a build-gating step, `post_deploy` and `on_failure` are best-effort notifications — but a *security rejection* of any of them is treated as a config-time bug, never a runtime blip.
+
+#### Full example
+
+```yaml
+# @stacker-origin: marketplace
+# Delete the line above once you have reviewed hooks in this file —
+# `stacker deploy` refuses to run hooks while the marker is present.
+
+name: my-app
+
+hooks:
+  pre_build: ./scripts/verify-lockfile.sh
+  post_deploy: ./scripts/warm-cache.sh
+  on_failure: ./scripts/alert-team.sh
+```
+
+Deploying this file without changes:
+
+```console
+$ stacker deploy
+Hook 'pre_build' rejected before execution: this stacker.yml was generated by the marketplace
+and has not been marked trusted. Review the hook script, then either remove the
+'# @stacker-origin: marketplace' marker line from the top of stacker.yml, or re-run with
+--allow-untrusted-hooks. Use --no-hooks to skip all hooks.
+```
+
+Options once you have reviewed the scripts:
+
+```console
+$ stacker deploy --allow-untrusted-hooks      # trust just this run
+$ stacker deploy --no-hooks                    # skip hooks entirely
+$ sed -i '/# @stacker-origin: marketplace/,/# `stacker deploy` refuses/d' stacker.yml
+$ stacker deploy                               # marker gone → file trusted going forward
+```
 
 ---
 
@@ -782,6 +1141,45 @@ MINIO_PASSWORD=admin123
 OPENAI_API_KEY=sk-...
 ```
 
+For remote deployments, Stacker renders the effective runtime env to the
+canonical host path `/home/trydirect/project/.env`. Generated compose files
+reference it as `env_file: .env`, relative to `docker-compose.yml`.
+
+Top-level `env_file` is a Stacker config input: it is loaded before
+`stacker.yml` is parsed so `${VAR}` placeholders can be resolved. It does not
+automatically inject variables into a container. Container injection is still
+controlled by Docker Compose `env_file` entries under each compose service.
+
+For app-only remote updates, `stacker agent deploy-app <app>` resolves the
+environment/profile from `--env`, then `.stacker/active-env`, then
+`deploy.environment`. If `<app>/docker/<env>/compose.yml` exists, Stacker uses
+the app-local service definition for that app and resolves its `env_file`
+entries relative to that compose file, then merges the service definition back
+into the full project-level compose before sending it to the agent. This keeps
+other services in the remote `docker-compose.yml` intact without requiring
+env/config files referenced only by unrelated project-level services. A
+service-local file such as `<app>/docker/prod/.env` is uploaded to the remote
+config bundle, and Vault-rendered service secrets for that app are appended to
+that same remote `.env` before the Status agent writes it. When the same target
+is updated again, Stacker refreshes the existing `# stacker-render ...` block
+instead of duplicating prior rendered secret sections. If Stacker cannot render
+the target runtime env, command creation fails instead of deploying a raw
+app-local `.env` without the remote secrets.
+
+The rendered runtime env is built from these layers, lowest to highest:
+
+1. Base app env and local authoring inputs.
+2. Server-scope secrets, only for services that opt in with
+   `inherit_server_secrets: true`.
+3. Service-scope secrets for the selected service/app target.
+4. Compose `environment:` keys, which Docker Compose applies above `env_file`.
+
+User-provided runtime env keys must match `^[A-Z_][A-Z0-9_]*$`. Keys beginning
+with `STACKER_`, `DOCKER_`, `VAULT_`, or `AGENT_` are reserved and rejected.
+Use `stacker config show --resolved` to inspect the local env source path,
+remote runtime path, config hash/version metadata, and contributing layers
+without printing secret values.
+
 ---
 
 ## Environment Variable Interpolation
@@ -815,7 +1213,7 @@ ai:
 
 ## Auto-Detection
 
-When you run `stacker init` without specifying `--app-type`, Stacker scans your project directory and looks for these marker files:
+When you run `stacker init` without specifying `--app-type`, Stacker scans the workspace and looks for these marker files:
 
 | Files Found | Detected Type |
 |-------------|---------------|
@@ -826,7 +1224,39 @@ When you run `stacker init` without specifying `--app-type`, Stacker scans your 
 | `composer.json` | `php` |
 | `index.html`, `*.html` | `static` |
 
-Detection priority is top-to-bottom. If none of these files are found, it defaults to `static`.
+Detection priority is top-to-bottom. If none of these files are found, it defaults to `custom`.
+
+For monorepo-style projects, `stacker init` now:
+
+- Recursively scans nested directories for app candidates with marker files and/or Dockerfiles
+- Detects aggregate Docker Compose stacks, including `include:` chains
+- Selects one primary app for the generated `app:` section
+- Reuses a detected aggregate compose file by setting `deploy.compose_file`
+- Imports image-backed compose sidecars into the generated `services:` list
+- **Infers healthchecks** for infrastructure images (postgres → `pg_isready`, redis → `redis-cli ping`, mysql/mariadb → `mysqladmin ping`, mongo → `mongosh`, rabbitmq → `rabbitmq-diagnostics`, elasticsearch → `_cluster/health`)
+- Emits warning comments when scan data suggests a required local bootstrap asset or generator is missing
+
+### Remote GitHub repository detection
+
+`stacker init --from-github <url>` applies the same detection pipeline to a
+remote repository. Use `--with-ai` to get a richer config — the AI scans the
+repo's README, compose files, and source to infer ports, env vars, and service
+relationships that simple file detection alone cannot discover.
+
+```bash
+stacker init --from-github owner/repo --with-ai        # AI-powered (recommended)
+stacker init --from-github owner/repo                    # template-based fallback
+stacker init -g https://github.com/ArchiveBox/ArchiveBox
+```
+
+Stacker shallow-clones the repo into a temp directory, runs detection
+(or AI analysis), and writes the generated `stacker.yml` to your current
+directory. When environment variables are discovered in the repo's compose
+files or by the AI, `.env.example` and `scripts/generate-secrets.sh` are
+also generated.
+
+Build-only compose services are still reported in the generated file comments, but they are not
+imported into `services:` because the current schema requires an explicit `image`.
 
 ---
 
@@ -914,12 +1344,14 @@ Stacker validates your configuration both syntactically (YAML structure) and sem
 | `E001` | Cloud deployment requires `deploy.cloud.provider` | `deploy.cloud.provider` |
 | `E002` | Server deployment requires `deploy.server.host` | `deploy.server.host` |
 | `E003` | Custom app type requires `app.image` or `app.dockerfile` | `app` |
+| `E004` | `deploy.environment` references an undefined environment key | `deploy.environment` / `environments` |
 
 ### Warnings (deployment may have issues)
 
 | Code | Rule | Field |
 |------|------|-------|
 | `W001` | Port conflict — multiple services bind the same host port | `services.ports` |
+| `W002` | Named volume referenced in `volumes` but not mounted by any service | `volumes` |
 
 ### Example output
 
@@ -936,30 +1368,38 @@ Configuration issues:
 
 | Command | Description |
 |---------|-------------|
-| `stacker init` | Initialize a new project — generates `stacker.yml` and `.stacker/` directory (Dockerfile + docker-compose.yml) |
-| `stacker deploy` | Build and deploy the stack (reuses existing `.stacker/` artifacts if present) |
+| `stacker init` | Initialize a new project — generates `stacker.yml` and `.stacker/` directory (Dockerfile + docker-compose.yml). Use `--from-github <url>` to generate config from a remote repo without cloning it first. |
+| `stacker deploy` | Build and deploy the stack; cloud deploys also install a local SSH backup key when possible |
 | `stacker status` | Show container status |
 | `stacker logs` | Show container logs |
+| `stacker secrets` | Manage local `.env` secrets or remote Vault-backed service/server secrets |
 | `stacker destroy` | Tear down the stack |
 | `stacker config validate` | Validate `stacker.yml` |
 | `stacker config show` | Display resolved configuration |
 | `stacker config fix` | Interactively fix missing required config fields |
+| `stacker config setup ai` | Configure `ai.*` settings without hand-editing YAML |
+| `stacker env` | Show or switch the active deploy environment/profile |
 | `stacker login` | Authenticate with TryDirect |
 | `stacker ai ask` | Ask the AI assistant a question |
 | `stacker proxy add` | Add a reverse-proxy domain entry |
 | `stacker proxy detect` | Detect running reverse proxies |
+| `stacker cloud firewall add` | Open cloud-provider firewall ports without SSH |
+| `stacker cloud firewall remove` | Remove Stacker-managed cloud-provider firewall rules |
+| `stacker cloud firewall list` | List cloud-provider firewall rules for a server |
 | `stacker ssh-key generate` | Generate a Vault-backed SSH key pair for a server |
 | `stacker ssh-key show` | Display the public SSH key for a server |
 | `stacker ssh-key upload` | Upload an existing SSH key pair for a server |
+| `stacker ssh-key inject` | Repair Vault-key trust using an already-working private key |
 | `stacker service add` | Add a service from the template catalog to `stacker.yml` |
 | `stacker service list` | List available service templates (20+ built-in) |
 | `stacker agent health` | Check Status Panel agent connectivity and health |
 | `stacker agent status` | Display agent snapshot — containers, versions, uptime |
 | `stacker agent logs <app>` | Retrieve container logs from the remote agent |
 | `stacker agent restart <app>` | Restart a container via the agent |
-| `stacker agent deploy-app` | Deploy or update an app container on the target server |
+| `stacker agent deploy-app` | Deploy or update an app container on the target server; use `--env <name>` to select an environment/profile |
 | `stacker agent remove-app` | Remove an app container (optional volume/image cleanup) |
-| `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent |
+| `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent; use `--no-ssl` for plain HTTP hosts |
+| `stacker agent configure-firewall` | Configure guest OS firewall rules via the Status Panel agent |
 | `stacker agent history` | Show recent agent command execution history |
 | `stacker agent exec` | Execute a raw agent command with JSON parameters |
 | `stacker update` | Check for CLI updates |
@@ -969,6 +1409,7 @@ Configuration issues:
 | Flag | Description |
 |------|-------------|
 | `--app-type <TYPE>` | Application type: `static`, `node`, `python`, `rust`, `go`, `php`, `custom` |
+| `--from-github <URL>` | Generate `stacker.yml` from a remote GitHub repository. Accepts `owner/repo` or full URL. Clones shallow into a temp dir, auto-detects the project type and compose services, then writes config to the current directory. Also generates `.env.example` and `scripts/generate-secrets.sh` when env vars are detected. Short flag: `-g`. |
 | `--with-proxy` | Include reverse-proxy (nginx) configuration |
 | `--with-ai` | Use AI to scan the project and generate a tailored `stacker.yml` |
 | `--ai-provider <PROVIDER>` | AI provider: `openai`, `anthropic`, `ollama`, `custom` (default: `ollama`) |
@@ -979,11 +1420,16 @@ Configuration issues:
 - `stacker.yml` — project configuration
 - `.stacker/Dockerfile` — generated Dockerfile (skipped if `app.image` or `app.dockerfile` is set)
 - `.stacker/docker-compose.yml` — generated compose definition (skipped if `deploy.compose_file` is set)
+- `.stacker/scenarios/qwen2.5-code/website-deploy/state.json` — saved only when the qwen website scenario bootstrap is accepted
 
 ```bash
 # Init
 stacker init                                          # Auto-detect project type
 stacker init --app-type node --with-proxy             # Explicit type + proxy
+stacker init --from-github ArchiveBox/ArchiveBox      # Generate from remote repo
+stacker init -g https://github.com/owner/repo          # Full URL with short flag
+stacker init --from-github owner/repo --with-ai        # AI-powered (recommended for remote repos)
+stacker init --from-github owner/repo --app-type node  # Force type for remote repo
 stacker init --with-ai                                # AI-powered generation (Ollama default)
 stacker init --with-ai --ai-model qwen2.5-coder       # Specify Ollama model
 stacker init --with-ai --ai-provider ollama --ai-model deepseek-r1
@@ -1001,6 +1447,12 @@ stacker init --with-ai --ai-provider anthropic --ai-model claude-sonnet-4-202505
 STACKER_AI_TIMEOUT=900 stacker init --with-ai  # 15 min timeout for slow models
 ```
 
+If the project is a simple HTML or Next.js website and the Ollama model is
+`qwen2.5-code` or `qwen2.5-coder`, Stacker can offer a website deployment
+scenario immediately after `stacker init --with-ai`. That bootstrap reads the
+generated config first, asks only for missing deploy inputs, and stores the
+scenario state under `.stacker/scenarios/qwen2.5-code/website-deploy/`.
+
 ### `stacker deploy` flags
 
 ```bash
@@ -1015,6 +1467,60 @@ stacker deploy --force-rebuild         # Force regenerate .stacker/ artifacts
 >
 > **Troubleshooting:** On deploy build/runtime failures, Stacker attempts AI-assisted diagnosis using your configured AI provider. If AI is unavailable, it prints fallback fix suggestions.
 > **Note:** `deploy` reuses existing `.stacker/Dockerfile` and `.stacker/docker-compose.yml` if present (e.g. from `stacker init`). Use `--force-rebuild` to regenerate them.
+> **SSH access:** After a successful cloud deploy, Stacker creates or reuses a
+> local backup key in the user-scoped Stacker config directory and authorizes its
+> public key on the server when possible. It prints a copy-paste-ready `ssh -i`
+> command; the Vault private key is not exported to the CLI.
+> **IP persistence:** If a cloud/server install pauses or fails after the
+> installer has reported an IP address, Stacker saves that discovered IP in the
+> local deployment context and persists it server-side when possible.
+
+### Remote secrets
+
+```bash
+# Discover deployable service/app targets for the current project
+stacker secrets apps
+
+# Store a Vault-backed secret for one service/app target
+stacker secrets set S3_BUCKET \
+  --scope service \
+  --service upload \
+  --body superbucket
+
+# Remote reads return metadata only, never plaintext values
+stacker secrets list --scope service --service upload --json
+stacker secrets get S3_BUCKET --scope service --service upload --json
+
+# Push stored remote secrets into the target's runtime env
+stacker secrets push --service upload
+stacker secrets push --service upload --env prod
+# Aliases: stacker secrets deploy --service upload
+#          stacker secrets apply --service upload
+```
+
+Service-scoped remote secrets target the codes listed by `stacker secrets apps`.
+Those codes include the main app, registered `stacker.yml` services, and
+supported image-backed services extracted from `deploy.compose_file` during
+cloud/server deploy preparation. A service secret is rendered only into the
+matching service/app target.
+
+Deleting a service-scoped secret removes it from the next rendered
+`/home/trydirect/project/.env`; stale values are not preserved. If the remote
+runtime env changed outside Stacker, Stacker refuses to overwrite it unless the
+operation is explicitly forced.
+
+`stacker secrets push --service <target>` is the explicit "apply stored secrets
+now" command. It renders the runtime env for that target and sends it to the
+Status agent; it does not create, update, or reveal secret values. Use
+`--env <name>` for one command, or `stacker env <name>` to persist the active
+environment/profile for later `stacker agent deploy-app` and
+`stacker secrets push` commands.
+
+MCP config inspection uses the same classification model. `get_app_env_vars`
+retains the legacy redacted object response but also emits
+`environment_entries[]`, where Vault-backed keys are marked with
+`secure=true` and `source="vault"` even if the variable name itself would not
+match older secret-name heuristics.
 
 ### Other commands
 
@@ -1039,10 +1545,13 @@ stacker destroy --confirm --volumes    # Also remove volumes
 stacker config validate                # Check stacker.yml
 stacker config validate --file prod.yml
 stacker config show                    # Display resolved config
+stacker config setup ai --provider ollama --endpoint http://localhost:11434 --model llama3 --task dockerfile --task troubleshoot
 
 # AI
 stacker ai ask "How can I optimise this Dockerfile?"
 stacker ai ask "Why is my container crashing?" --context ./logs.txt
+stacker ai ask "continue" --scenario website-deploy --step image-publish
+stacker ai --scenario website-deploy --step runtime-ops
 
 # Proxy
 stacker proxy add example.com --upstream http://app:3000 --ssl auto
@@ -1055,11 +1564,15 @@ stacker update --channel beta          # Check beta channel
 # Config
 stacker config fix                     # Interactively fix missing fields
 stacker config fix --file prod.yml     # Fix a specific config file
+stacker config setup ai                # Configure ai.* interactively
 ```
 
 ### `stacker ssh-key` — SSH Key Management
 
-Manage Vault-backed SSH keys for your deployed servers. Keys are stored securely in HashiCorp Vault.
+Manage Vault-backed SSH keys for your deployed servers. Server automation keys
+are stored securely in HashiCorp Vault. Cloud deploys also maintain a separate
+local backup key under the Stacker config directory so users can connect with a
+normal `ssh` command.
 
 ```bash
 # Generate a new SSH key pair for a server
@@ -1076,7 +1589,25 @@ stacker ssh-key show --server-id 42 --json         # JSON output
 stacker ssh-key upload --server-id 42 \
   --public-key ~/.ssh/id_rsa.pub \
   --private-key ~/.ssh/id_rsa
+
+# Repair a server that no longer trusts the Vault public key
+stacker ssh-key inject --server-id 42 --with-key ~/.ssh/existing-private-key
 ```
+
+`ssh-key generate` manages the server-side Vault key. `ssh-key inject` is a
+repair command: it uses `--with-key` as a bootstrap private key that already
+works on the server, then appends the Vault public key to `authorized_keys`. It
+does not install your local key on the server.
+
+Automatic cloud-deploy backup keys are stored outside the project directory:
+
+```text
+~/.config/stacker/ssh/server-42_ed25519
+~/.config/stacker/ssh/server-42_ed25519.pub
+```
+
+If `$XDG_CONFIG_HOME` is set, Stacker uses
+`$XDG_CONFIG_HOME/stacker/ssh/` instead.
 
 ### `stacker service` — Service Template Catalog
 
@@ -1134,12 +1665,20 @@ stacker agent remove-app --app my-app             # Remove container
 stacker agent remove-app --app my-app --remove-volumes --remove-images
 
 # Reverse proxy
+# Managed Status Panel + Nginx Proxy Manager deploys auto-seed default Vault credentials.
+# Update or repair those credentials with:
+# stacker secrets set npm_credentials --scope server --server-id <server-id> --body-file ./npm_credentials.json
 stacker agent configure-proxy --app my-app --domain app.example.com --ssl
+stacker agent configure-proxy --app my-app --domain app.local --no-ssl
 
 # History & raw commands
 stacker agent history                             # Recent command history
 stacker agent exec --command-type health          # Raw command
 stacker agent exec --command-type stacker.exec --params '{"container":"app","command":"ls -la"}'
+
+# Install Status Panel on an existing deployed server
+stacker agent install                             # Remote install only; leaves local stacker.yml unchanged
+stacker agent install --persist-config            # Also write monitoring.status_panel=true to local stacker.yml
 
 # Target a specific deployment
 stacker agent status --deployment abc123def
@@ -1175,7 +1714,40 @@ stacker ai --write
 > add elasticsearch and kibana for logging
 ```
 
-### Firewall Management (iptables)
+### Firewall Management
+
+Stacker has two firewall surfaces:
+
+| Command | Scope | Requires SSH/agent |
+|---------|-------|--------------------|
+| `stacker cloud firewall` | Cloud-provider firewall such as Hetzner Cloud Firewall | No SSH required |
+| `stacker agent configure-firewall` | Guest OS firewall rules on the deployed server | Requires Status Panel agent |
+
+#### Cloud provider firewall
+
+Use `stacker cloud firewall` when a provider firewall blocks a public app port
+after deployment. For example, Coolify publishes port `8000`, so this opens the
+Hetzner Cloud Firewall without SSH-ing to the server:
+
+```bash
+stacker cloud firewall add --public-ports 8000/tcp
+stacker cloud firewall add --server-id 42 --public-ports 8000/tcp
+stacker cloud firewall remove --server-id 42 --public-ports 8000/tcp
+stacker cloud firewall list --server-id 42
+```
+
+The CLI sends a provider-neutral `stacker.cloud_firewall.v1` message to Stacker
+API. Stacker validates server/cloud ownership, hydrates cloud credentials
+server-side, then publishes `install.firewall.{provider}.v1` to Install Service.
+The CLI never receives cloud provider tokens.
+
+Existing protocol note: the Status Panel agent schema already defines a
+`FirewallPortRule` shape (`port`, `protocol`, `source`, `comment`) and cloud
+deploy already sends `client_public_ports`/`ports_list` for initial provisioning.
+Those are reused where appropriate, but `stacker.cloud_firewall.v1` is the
+canonical post-deploy provider firewall protocol.
+
+#### Guest OS firewall (iptables)
 
 Stacker provides MCP tools for configuring iptables firewall rules on target servers. Rules can be derived from Ansible role port definitions or specified manually.
 
@@ -1319,7 +1891,7 @@ deploy:
   cloud:
     provider: hetzner
     region: fsn1
-    size: cpx21
+    size: cx23
     ssh_key: ~/.ssh/id_ed25519
 ```
 
@@ -1424,6 +1996,9 @@ A: Yes. Set `deploy.compose_file: ./docker-compose.yml` and Stacker will use it 
 
 **Q: What cloud providers are supported?**
 A: Hetzner, DigitalOcean, AWS, Linode, and Vultr. You must `stacker login` first and have the appropriate API keys configured in your TryDirect account.
+
+**Q: Can I have more than one agent for a project?**
+A: Yes. A Stacker project can have multiple deployments, and each deployment runs its own Status Panel agent. For example, the same project can have separate staging and production deployments on different servers. When you run agent commands without `--deployment <hash>`, the CLI resolves the target in this order: explicit `--deployment`, local deployment lock, then project name from `stacker.yml` (which resolves to the most recently active deployment). To target a specific agent in a multi-deployment project, pass `--deployment <hash>` explicitly.
 
 ---
 

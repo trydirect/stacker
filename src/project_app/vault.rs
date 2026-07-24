@@ -1,6 +1,108 @@
 use crate::configuration::{DeploymentSettings, VaultSettings};
+use crate::forms::project::RegistryForm;
+use crate::forms::status_panel::RegistryAuthCommandRequest;
 use crate::helpers::project::builder::generate_single_app_compose;
 use crate::services::{AppConfig, VaultService};
+
+pub(crate) const REGISTRY_AUTH_VAULT_KEY: &str = "_registry_auth";
+
+pub(crate) fn registry_auth_from_form(
+    registry: &RegistryForm,
+) -> Option<RegistryAuthCommandRequest> {
+    let username = registry.docker_username.as_deref()?.trim();
+    let password = registry.docker_password.as_deref()?.trim();
+    if username.is_empty() || password.is_empty() {
+        return None;
+    }
+
+    let server = registry
+        .docker_registry
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("docker.io");
+
+    Some(RegistryAuthCommandRequest {
+        registry: server.to_string(),
+        username: username.to_string(),
+        password: password.to_string(),
+    })
+}
+
+pub(crate) fn registry_auth_to_vault_config(
+    auth: &RegistryAuthCommandRequest,
+) -> Result<AppConfig, serde_json::Error> {
+    Ok(AppConfig {
+        content: serde_json::to_string(auth)?,
+        content_type: "application/json".to_string(),
+        destination_path: "/app/.registry-auth.json".to_string(),
+        file_mode: "0600".to_string(),
+        owner: None,
+        group: None,
+    })
+}
+
+pub(crate) fn parse_registry_auth_config(
+    config: &AppConfig,
+) -> Result<RegistryAuthCommandRequest, serde_json::Error> {
+    serde_json::from_str(&config.content)
+}
+
+pub(crate) async fn store_registry_auth_to_vault(
+    deployment_hash: &str,
+    registry: &RegistryForm,
+    vault_settings: &VaultSettings,
+) {
+    let Some(auth) = registry_auth_from_form(registry) else {
+        return;
+    };
+
+    store_registry_auth_command_to_vault(deployment_hash, &auth, vault_settings).await;
+}
+
+pub(crate) async fn store_registry_auth_command_to_vault(
+    deployment_hash: &str,
+    auth: &RegistryAuthCommandRequest,
+    vault_settings: &VaultSettings,
+) {
+    if auth.username.trim().is_empty() || auth.password.trim().is_empty() {
+        return;
+    }
+
+    let vault = match VaultService::from_settings(vault_settings) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to initialize Vault for registry auth storage: {}",
+                e
+            );
+            return;
+        }
+    };
+
+    let config = match registry_auth_to_vault_config(&auth) {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::warn!("Failed to serialize registry auth for Vault: {}", e);
+            return;
+        }
+    };
+
+    match vault
+        .store_app_config(deployment_hash, REGISTRY_AUTH_VAULT_KEY, &config)
+        .await
+    {
+        Ok(_) => tracing::info!(
+            deployment_hash = %deployment_hash,
+            "Stored registry auth in Vault for later agent pulls"
+        ),
+        Err(e) => tracing::warn!(
+            deployment_hash = %deployment_hash,
+            error = %e,
+            "Failed to store registry auth in Vault"
+        ),
+    }
+}
 
 /// Extract compose content and config files from parameters and store to Vault
 /// Used when deployment_id is not available but config_files contains compose/configs
@@ -34,7 +136,7 @@ pub(crate) async fn store_configs_to_vault_from_params(
             let file_name = get_str(file, "name").unwrap_or("");
             let content = get_str(file, "content").unwrap_or("");
 
-            if is_env_filename(file_name) {
+            if is_legacy_env_file(file) {
                 env_content = Some(content.to_string());
                 continue;
             }
@@ -216,6 +318,59 @@ pub(crate) async fn store_configs_to_vault_from_params(
 
 fn is_env_filename(file_name: &str) -> bool {
     matches!(file_name, ".env" | "env")
+}
+
+fn is_legacy_env_file(file: &serde_json::Value) -> bool {
+    let Some(file_name) = get_str(file, "name") else {
+        return false;
+    };
+    if !is_env_filename(file_name) {
+        return false;
+    }
+
+    let destination = get_str(file, "destination_path")
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    !matches!(
+        destination,
+        Some(path) if path.starts_with("/opt/stacker/deployments/")
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_auth_from_form_defaults_registry_to_docker_io() {
+        let registry = RegistryForm {
+            docker_username: Some("optimum".to_string()),
+            docker_password: Some("secret".to_string()),
+            docker_registry: None,
+        };
+
+        let auth = registry_auth_from_form(&registry).expect("registry auth should resolve");
+        assert_eq!(auth.registry, "docker.io");
+        assert_eq!(auth.username, "optimum");
+        assert_eq!(auth.password, "secret");
+    }
+
+    #[test]
+    fn registry_auth_vault_config_round_trips() {
+        let auth = RegistryAuthCommandRequest {
+            registry: "docker.io".to_string(),
+            username: "optimum".to_string(),
+            password: "secret".to_string(),
+        };
+
+        let config = registry_auth_to_vault_config(&auth).expect("vault config should serialize");
+        assert_eq!(config.content_type, "application/json");
+        assert_eq!(config.file_mode, "0600");
+
+        let parsed = parse_registry_auth_config(&config).expect("vault config should parse");
+        assert_eq!(parsed, auth);
+    }
 }
 
 fn is_compose_file(file_name: &str, content_type: &str) -> bool {

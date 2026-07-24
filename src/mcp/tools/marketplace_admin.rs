@@ -147,6 +147,7 @@ impl ToolHandler for AdminApproveTemplateTool {
             &context.user.id,
             "approved",
             params.reason.as_deref(),
+            None,
         )
         .await
         .map_err(|e| format!("Database error: {}", e))?;
@@ -216,6 +217,7 @@ impl ToolHandler for AdminRejectTemplateTool {
             &context.user.id,
             "rejected",
             Some(&params.reason),
+            None,
         )
         .await
         .map_err(|e| format!("Database error: {}", e))?;
@@ -352,11 +354,7 @@ impl ToolHandler for AdminListTemplateReviewsTool {
             "reviews": reviews,
         });
 
-        tracing::info!(
-            "Admin listed {} reviews for template {}",
-            reviews.len(),
-            id
-        );
+        tracing::info!("Admin listed {} reviews for template {}", reviews.len(), id);
 
         Ok(ToolContent::Text {
             text: serde_json::to_string(&result).unwrap(),

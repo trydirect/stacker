@@ -244,8 +244,16 @@ class ScrollAnimator {
       { threshold: 0.1, rootMargin: '0px 0px -50px 0px' }
     );
 
+    const vh = window.innerHeight;
     document.querySelectorAll('[data-animate]').forEach((el) => {
-      this.observer.observe(el);
+      const rect = (el as HTMLElement).getBoundingClientRect();
+      if (rect.top < vh) {
+        // Element is already in the viewport — show it immediately
+        const delay = parseInt((el as HTMLElement).dataset.delay || '0', 10);
+        setTimeout(() => (el as HTMLElement).classList.add('is-visible'), delay);
+      } else {
+        this.observer.observe(el);
+      }
     });
   }
 }

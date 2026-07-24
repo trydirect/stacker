@@ -1,5 +1,6 @@
 use crate::models;
 use sqlx::PgPool;
+use sqlx::Row;
 use tracing::Instrument;
 
 pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::Project>, String> {
@@ -48,6 +49,34 @@ pub async fn fetch_by_user(pool: &PgPool, user_id: &str) -> Result<Vec<models::P
     })
 }
 
+pub async fn fetch_shared_by_user(
+    pool: &PgPool,
+    user_id: &str,
+) -> Result<Vec<models::SharedProjectSummary>, String> {
+    let query_span = tracing::info_span!("Fetch shared projects by user id.");
+    sqlx::query_as::<_, models::SharedProjectSummary>(
+        r#"
+        SELECT
+            p.id,
+            p.name,
+            pm.role,
+            pm.created_at AS shared_at
+        FROM project_member pm
+        JOIN project p ON p.id = pm.project_id
+        WHERE pm.user_id = $1
+        ORDER BY pm.created_at DESC, p.id DESC
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to fetch shared projects, error: {:?}", err);
+        "".to_string()
+    })
+}
+
 pub async fn fetch_one_by_name(
     pool: &PgPool,
     name: &str,
@@ -84,25 +113,37 @@ pub async fn insert(
     mut project: models::Project,
 ) -> Result<models::Project, String> {
     let query_span = tracing::info_span!("Saving new project into the database");
-    sqlx::query!(
+    sqlx::query(
         r#"
-        INSERT INTO project (stack_id, user_id, name, metadata, created_at, updated_at, request_json)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO project (
+            stack_id,
+            user_id,
+            name,
+            metadata,
+            created_at,
+            updated_at,
+            request_json,
+            source_template_id,
+            template_version
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING id;
         "#,
-        project.stack_id,
-        project.user_id,
-        project.name,
-        project.metadata,
-        project.created_at,
-        project.updated_at,
-        project.request_json,
     )
+    .bind(project.stack_id)
+    .bind(project.user_id.clone())
+    .bind(project.name.clone())
+    .bind(project.metadata.clone())
+    .bind(project.created_at)
+    .bind(project.updated_at)
+    .bind(project.request_json.clone())
+    .bind(project.source_template_id)
+    .bind(project.template_version.clone())
     .fetch_one(pool)
     .instrument(query_span)
     .await
     .map(move |result| {
-        project.id = result.id;
+        project.id = result.get("id");
         project
     })
     .map_err(|e| {
@@ -116,8 +157,7 @@ pub async fn update(
     mut project: models::Project,
 ) -> Result<models::Project, String> {
     let query_span = tracing::info_span!("Updating project");
-    sqlx::query_as!(
-        models::Project,
+    sqlx::query(
         r#"
         UPDATE project
         SET 
@@ -126,29 +166,36 @@ pub async fn update(
             name=$4,
             metadata=$5,
             request_json=$6,
+            source_template_id=$7,
+            template_version=$8,
             updated_at=NOW() at time zone 'utc'
         WHERE id = $1
-        RETURNING *
         "#,
-        project.id,
-        project.stack_id,
-        project.user_id,
-        project.name,
-        project.metadata,
-        project.request_json
     )
-    .fetch_one(pool)
+    .bind(project.id)
+    .bind(project.stack_id)
+    .bind(project.user_id.clone())
+    .bind(project.name.clone())
+    .bind(project.metadata.clone())
+    .bind(project.request_json.clone())
+    .bind(project.source_template_id)
+    .bind(project.template_version.clone())
+    .execute(pool)
     .instrument(query_span)
     .await
-    .map(|result| {
-        tracing::info!("Project {} has been saved to database", project.id);
-        project.updated_at = result.updated_at;
-        project
-    })
     .map_err(|err| {
         tracing::error!("Failed to execute query: {:?}", err);
         "".to_string()
-    })
+    })?;
+
+    fetch(pool, project.id)
+        .await
+        .and_then(|result| result.ok_or_else(|| "Project not found after update".to_string()))
+        .map(|saved| {
+            tracing::info!("Project {} has been saved to database", project.id);
+            project.updated_at = saved.updated_at;
+            project
+        })
 }
 
 #[tracing::instrument(name = "Delete user's project.")]

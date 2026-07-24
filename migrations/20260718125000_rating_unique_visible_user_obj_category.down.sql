@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS rating_visible_user_obj_category_unique;

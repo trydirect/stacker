@@ -12,32 +12,52 @@ Data piping connects containerized apps in a deployment, routing data from one s
 |  pipe create     |       |  validate params  |       |  curl endpoints  |
 |  pipe trigger    |       |  store results    |       |  capture samples |
 |  pipe history    |       |  persist history  |       |  execute pipes   |
+|  pipe deploy     |       |  promote local→   |       |                  |
 +------------------+       +------------------+       +------------------+
+        |
+        | (local mode — no agent needed)
+        v
++------------------+
+|  Local Docker    |
+|  docker ps       |
+|  docker exec     |
++------------------+
 ```
 
 **Three components work together:**
 
 1. **CLI** (`stacker pipe`) - user-facing commands
 2. **Server** (`/api/v1/pipes`) - REST API, validation, persistence
-3. **Agent** (status-panel) - runs on the deployment, probes containers, executes pipe triggers
+3. **Agent** (status-panel) - runs on the deployment, probes app/container endpoints, executes pipe triggers
+
+> **Local mode**: When `stacker target local` is active, scan starts with Docker discovery (`docker ps` + `docker inspect`) and then probes matched containers for endpoints/resources locally — no remote agent required. Pipes are stored with `is_local=true` and no `deployment_hash`.
+
+> **Scan semantics**: local scan is **container-first**; remote scan is **app-first** with optional `--container` narrowing.
 
 ## Quick Start
 
 ### 1. Scan for connectable endpoints
 
 ```bash
-# Discover what APIs wordpress exposes
-stacker pipe scan wordpress
+# Local target: discover endpoints/resources from running containers
+stacker pipe scan
 
-# With sample response capture (shows actual data)
-stacker pipe scan wordpress --capture-samples
+# Filter local containers by name, then probe them
+stacker pipe scan --containers wordpress
+
+# Remote target: probe a deployed app for endpoints
+stacker pipe scan --app wordpress --capture-samples
 
 # Scan specific protocols
-stacker pipe scan wordpress --protocols openapi,html_forms,rest
+stacker pipe scan --app wordpress --protocols openapi,html_forms,rest
 ```
 
 Output:
 ```
+  Containers matched: 1
+    local-wordpress-1 [blog] wordpress:latest
+      addresses: 172.18.0.8:80
+
   App: wordpress
   Protocols detected: openapi
 
@@ -138,7 +158,9 @@ stacker pipe deactivate <pipe-id>
 ### Templates vs Instances
 
 - **Template** - reusable pipe definition: source app type, target app type, endpoint paths, field mapping. Can be shared publicly.
-- **Instance** - deployment-specific activation of a template: ties to a `deployment_hash`, tracks status, trigger counts, errors.
+- **Instance** - activation of a template tied to a deployment or local context:
+  - **Remote instance** — bound to a `deployment_hash`, executed via the status agent on the cloud server.
+  - **Local instance** — no `deployment_hash`, `is_local=true`, executed via `docker exec` against local containers. Created when `stacker target local` is active.
 
 ### Field Mapping
 
@@ -192,8 +214,8 @@ When `--capture-samples` is enabled during scanning, the agent:
 
 ```bash
 # 1. Scan both services
-stacker pipe scan wordpress --capture-samples
-stacker pipe scan mailchimp --capture-samples
+stacker pipe scan --app wordpress --capture-samples
+stacker pipe scan --app mailchimp --capture-samples
 
 # 2. Create the pipe
 stacker pipe create wordpress mailchimp
@@ -257,10 +279,12 @@ All endpoints require authentication. Pipe instance access is verified through d
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/pipes/instances` | Create instance |
+| POST | `/api/v1/pipes/instances` | Create instance (`deployment_hash` optional for local) |
 | GET | `/api/v1/pipes/instances/{deployment_hash}` | List instances for deployment |
+| GET | `/api/v1/pipes/instances/local` | List local instances for current user |
 | GET | `/api/v1/pipes/instances/detail/{id}` | Get instance |
 | PUT | `/api/v1/pipes/instances/{id}/status` | Update status (draft/active/paused/error) |
+| POST | `/api/v1/pipes/instances/{id}/deploy` | Promote local instance to remote deployment |
 | DELETE | `/api/v1/pipes/instances/{id}` | Delete instance |
 
 ### Executions
@@ -275,7 +299,7 @@ All endpoints require authentication. Pipe instance access is verified through d
 
 | Command | Direction | Description |
 |---------|-----------|-------------|
-| `probe_endpoints` | Server -> Agent | Discover API endpoints on a container |
+| `probe_endpoints` | Server -> Agent | Discover API endpoints for an app, optionally narrowed to a container |
 | `activate_pipe` | Server -> Agent | Start webhook listener or poll scheduler |
 | `deactivate_pipe` | Server -> Agent | Stop listener/scheduler |
 | `trigger_pipe` | Server -> Agent | One-shot pipe execution |
@@ -307,3 +331,68 @@ Agent reports result: {success, source_data, mapped_data, target_response}
 Server persists result in pipe_executions table
 Server increments trigger_count (and error_count if failed)
 ```
+
+## AI-Assisted Matching
+
+Stacker supports two field matching modes when creating pipes:
+
+### Deterministic Mode (default)
+The original 4-layer matching algorithm:
+1. **Exact match** — identical field names
+2. **Case-insensitive** — `Email` matches `email`
+3. **Semantic aliases** — `mail` matches `email` (from built-in alias groups)
+4. **Type-aware suffix** — `user_email` matches `email` (strips common prefixes)
+
+Always available, works offline, returns confidence=1.0 for all matches.
+
+### AI Mode
+Uses the configured LLM provider (OpenAI, Anthropic, or Ollama) for semantic matching:
+- Understands field semantics beyond string patterns (e.g., `wp_author_contact` → `subscriber_email`)
+- Returns per-field confidence scores (0.0–1.0)
+- Suggests field transformations (e.g., `concat($.first_name, ' ', $.last_name)` → `full_name`)
+- Proposes which pipe connections make sense between two apps
+- Falls back to deterministic matching if AI call fails
+
+### Mode Selection
+
+| Condition | Mode Used |
+|-----------|-----------|
+| `--no-ai` flag | Deterministic |
+| `--ai` flag | AI (error if not configured) |
+| `ai.enabled=true` in `stacker.yml` | AI |
+| No AI config | Deterministic |
+| `--manual` flag | No auto-matching (manual selection only) |
+
+### CLI Flags
+
+```bash
+# Use AI matching (requires ai: section in stacker.yml)
+stacker pipe create wordpress slack --ai
+
+# Force deterministic matching even if AI is configured
+stacker pipe create wordpress slack --no-ai
+
+# Skip auto-matching entirely
+stacker pipe create wordpress slack --manual
+```
+
+### Configuration
+
+AI matching uses the same `ai:` section in `stacker.yml` as other AI features:
+
+```yaml
+ai:
+  enabled: true
+  provider: openai    # openai | anthropic | ollama
+  model: gpt-4o
+  api_key: sk-...
+  # endpoint: http://localhost:11434  # for Ollama
+```
+
+When AI mode is active during pipe creation:
+1. Both apps are scanned for endpoints (unchanged)
+2. AI suggests which endpoint pairs to connect (ranked by confidence)
+3. User selects from AI suggestions or picks manually
+4. AI matches fields between selected endpoints with confidence scores
+5. User confirms or edits the mapping
+6. Matching metadata (mode, model, confidence, transformations) is stored in the template config

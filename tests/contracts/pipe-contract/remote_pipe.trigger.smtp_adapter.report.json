@@ -1,0 +1,42 @@
+{
+  "type": "trigger_pipe",
+  "deployment_hash": "dep-123",
+  "pipe_instance_id": "pipe-adapter-1",
+  "success": true,
+  "source_data": {
+    "subject": "Incident opened",
+    "body": {
+      "text": "CPU usage exceeded threshold"
+    }
+  },
+  "mapped_data": {
+    "subject": "Incident opened",
+    "body_text": "CPU usage exceeded threshold"
+  },
+  "target_response": {
+    "transport": "smtp",
+    "adapter": "smtp",
+    "status": null,
+    "delivered": true,
+    "body": {
+      "host": "smtp.example.com",
+      "port": 587,
+      "tls": true,
+      "subject": "Incident opened",
+      "to": ["ops@example.com"],
+      "from": "alerts@example.com",
+      "message_id": "msg-123",
+      "accepted_recipients": 1
+    }
+  },
+  "triggered_at": "2026-05-22T08:00:00Z",
+  "trigger_type": "manual",
+  "lifecycle": {
+    "state": "active",
+    "activated_at": "2026-05-22T07:59:00Z",
+    "last_triggered_at": "2026-05-22T08:00:00Z",
+    "last_error": null,
+    "trigger_count": 1,
+    "last_updated_at": "2026-05-22T08:00:00Z"
+  }
+}

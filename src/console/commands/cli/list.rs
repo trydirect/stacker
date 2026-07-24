@@ -1,8 +1,7 @@
-use crate::cli::credentials::CredentialsManager;
-use crate::cli::error::CliError;
 use crate::cli::progress;
-use crate::cli::stacker_client::{self, StackerClient};
+use crate::cli::runtime::CliRuntime;
 use crate::console::commands::CallableTrait;
+use std::fmt::Write as _;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // list projects
@@ -24,19 +23,10 @@ impl ListProjectsCommand {
 impl CallableTrait for ListProjectsCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let json = self.json;
+        let ctx = CliRuntime::new("list projects")?;
 
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("list projects")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
-
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-            let projects = client.list_projects().await?;
+        ctx.block_on(async {
+            let projects = ctx.client.list_projects().await?;
 
             if projects.is_empty() {
                 eprintln!("No projects found.");
@@ -91,19 +81,10 @@ impl ListServersCommand {
 impl CallableTrait for ListServersCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let json = self.json;
+        let ctx = CliRuntime::new("list servers")?;
 
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("list servers")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
-
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-            let servers = client.list_servers().await?;
+        ctx.block_on(async {
+            let servers = ctx.client.list_servers().await?;
 
             if servers.is_empty() {
                 eprintln!("No servers found.");
@@ -156,29 +137,24 @@ pub struct ListDeploymentsCommand {
 
 impl ListDeploymentsCommand {
     pub fn new(json: bool, project_id: Option<i32>, limit: Option<i64>) -> Self {
-        Self { json, project_id, limit }
+        Self {
+            json,
+            project_id,
+            limit,
+        }
     }
 }
 
 impl CallableTrait for ListDeploymentsCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let json = self.json;
-
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("list deployments")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
+        let ctx = CliRuntime::new("list deployments")?;
 
         let project_id = self.project_id;
         let limit = self.limit;
 
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-            let deployments = client.list_deployments(project_id, limit).await?;
+        ctx.block_on(async {
+            let deployments = ctx.client.list_deployments(project_id, limit).await?;
 
             if deployments.is_empty() {
                 eprintln!("No deployments found.");
@@ -188,24 +164,7 @@ impl CallableTrait for ListDeploymentsCommand {
             if json {
                 println!("{}", serde_json::to_string_pretty(&deployments)?);
             } else {
-                println!(
-                    "{:<6} {:<10} {:<10} {:<47} {:<12}",
-                    "ID", "PROJECT", "STATUS", "DEPLOYMENT HASH", "CREATED"
-                );
-                println!("{}", "─".repeat(90));
-
-                for d in &deployments {
-                    println!(
-                        "{:<6} {:<10} {} {:<8} {:<47} {:<12}",
-                        d.id,
-                        d.project_id,
-                        progress::status_icon(&d.status),
-                        truncate(&d.status, 7),
-                        &d.deployment_hash,
-                        truncate(&d.created_at, 10),
-                    );
-                }
-
+                print!("{}", render_deployments_table(&deployments));
                 eprintln!("\n{} deployment(s) total.", deployments.len());
             }
 
@@ -235,19 +194,10 @@ impl ListSshKeysCommand {
 impl CallableTrait for ListSshKeysCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let json = self.json;
+        let ctx = CliRuntime::new("list ssh-keys")?;
 
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("list ssh-keys")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
-
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-            let servers = client.list_servers().await?;
+        ctx.block_on(async {
+            let servers = ctx.client.list_servers().await?;
 
             if servers.is_empty() {
                 eprintln!("No servers found (SSH keys are managed per-server).");
@@ -281,7 +231,10 @@ impl CallableTrait for ListSshKeysCommand {
                 let mut active_count = 0;
                 for s in &servers {
                     let status_icon = match s.key_status.as_str() {
-                        "active" => { active_count += 1; "✓ active" },
+                        "active" => {
+                            active_count += 1;
+                            "✓ active"
+                        }
                         "pending" => "◷ pending",
                         "failed" => "✗ failed",
                         _ => "  none",
@@ -291,7 +244,9 @@ impl CallableTrait for ListSshKeysCommand {
                         s.id,
                         truncate(&s.name.clone().unwrap_or_else(|| "-".to_string()), 18),
                         s.srv_ip.clone().unwrap_or_else(|| "-".to_string()),
-                        s.ssh_port.map(|p| p.to_string()).unwrap_or_else(|| "22".to_string()),
+                        s.ssh_port
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| "22".to_string()),
                         s.ssh_user.clone().unwrap_or_else(|| "root".to_string()),
                         status_icon,
                         &s.connection_mode,
@@ -322,6 +277,36 @@ fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
+fn render_deployments_table(
+    deployments: &[crate::cli::stacker_client::DeploymentStatusInfo],
+) -> String {
+    let mut table = String::new();
+    let _ = writeln!(
+        &mut table,
+        "{:<6} {:<10} {:<16} {:<47} {:<20}",
+        "ID", "PROJECT", "STATUS", "DEPLOYMENT HASH", "CREATED"
+    );
+    let _ = writeln!(&mut table, "{}", "─".repeat(104));
+
+    for deployment in deployments {
+        let _ = writeln!(
+            &mut table,
+            "{:<6} {:<10} {:<16} {:<47} {:<20}",
+            deployment.id,
+            deployment.project_id,
+            format!(
+                "{} {}",
+                progress::status_icon(&deployment.status),
+                deployment.status
+            ),
+            deployment.deployment_hash,
+            deployment.created_at,
+        );
+    }
+
+    table
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // list clouds
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -343,24 +328,19 @@ impl ListCloudsCommand {
 impl CallableTrait for ListCloudsCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let json = self.json;
+        let ctx = CliRuntime::new("list clouds")?;
 
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("list clouds")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
-
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-            let clouds = client.list_clouds().await?;
+        ctx.block_on(async {
+            let clouds = ctx.client.list_clouds().await?;
 
             if clouds.is_empty() {
                 eprintln!("No saved cloud credentials found.");
-                eprintln!("Cloud credentials are saved automatically when you deploy with env vars,");
-                eprintln!("or via: stacker deploy --target cloud (with HCLOUD_TOKEN, etc. exported).");
+                eprintln!(
+                    "Cloud credentials are saved automatically when you deploy with env vars,"
+                );
+                eprintln!(
+                    "or via: stacker deploy --target cloud (with HCLOUD_TOKEN, DIGITALOCEAN_TOKEN, LINODE_TOKEN, VULTR_API_KEY, or AWS credentials exported)."
+                );
                 return Ok(());
             }
 
@@ -408,5 +388,32 @@ impl CallableTrait for ListCloudsCommand {
 
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::stacker_client::DeploymentStatusInfo;
+
+    #[test]
+    fn render_deployments_table_keeps_full_status_and_timestamp() {
+        let deployments = vec![DeploymentStatusInfo {
+            id: 114,
+            project_id: 229,
+            deployment_hash: "deployment_5cc15f7d-8c87-464a-a7c5-ee6116201f22".to_string(),
+            status: "completed".to_string(),
+            status_message: Some("done".to_string()),
+            created_at: "2026-05-06 00:35:31".to_string(),
+            updated_at: "2026-05-06 00:36:31".to_string(),
+        }];
+
+        let rendered = render_deployments_table(&deployments);
+
+        assert!(rendered.contains("✓ completed"));
+        assert!(rendered.contains("2026-05-06 00:35:31"));
+        assert!(rendered.contains("deployment_5cc15f7d-8c87-464a-a7c5-ee6116201f22"));
+        assert!(!rendered.contains("comple…"));
+        assert!(!rendered.contains("2026-05-0…"));
     }
 }

@@ -1,0 +1,117 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "cloud-provider-env-vars",
+  "description": "Canonical cloud credential environment variable names shared across TryDirect services and CLIs.",
+  "_owner": "trydirect/config",
+  "_consumers": [
+    "stacker",
+    "try.direct.install.service",
+    "blog",
+    "try.direct.admin.frontend"
+  ],
+  "_notes": [
+    "Service code and user-facing help must use only the canonical names and aliases listed here.",
+    "Deprecated ad-hoc aliases must not be reintroduced in individual services."
+  ],
+  "providers": {
+    "hetzner": {
+      "providerCode": "htz",
+      "credentialStyle": "token",
+      "installField": "cloud_token",
+      "acceptedTokenEnvOrder": [
+        "STACKER_CLOUD_TOKEN",
+        "STACKER_HETZNER_TOKEN",
+        "HCLOUD_TOKEN"
+      ],
+      "preferredTokenEnv": "HCLOUD_TOKEN",
+      "cliExample": "HCLOUD_TOKEN=<token> stacker deploy --target cloud",
+      "deprecatedEnv": [
+        "HETZNER_TOKEN"
+      ]
+    },
+    "digitalocean": {
+      "providerCode": "do",
+      "credentialStyle": "token",
+      "installField": "cloud_token",
+      "acceptedTokenEnvOrder": [
+        "STACKER_CLOUD_TOKEN",
+        "STACKER_DIGITALOCEAN_TOKEN",
+        "DIGITALOCEAN_TOKEN"
+      ],
+      "preferredTokenEnv": "DIGITALOCEAN_TOKEN",
+      "cliExample": "DIGITALOCEAN_TOKEN=<token> stacker deploy --target cloud",
+      "deprecatedEnv": [
+        "DO_API_TOKEN"
+      ]
+    },
+    "linode": {
+      "providerCode": "lo",
+      "credentialStyle": "token",
+      "installField": "cloud_token",
+      "acceptedTokenEnvOrder": [
+        "STACKER_CLOUD_TOKEN",
+        "STACKER_LINODE_TOKEN",
+        "LINODE_TOKEN"
+      ],
+      "preferredTokenEnv": "LINODE_TOKEN",
+      "cliExample": "LINODE_TOKEN=<token> stacker deploy --target cloud",
+      "deprecatedEnv": []
+    },
+    "vultr": {
+      "providerCode": "vu",
+      "credentialStyle": "token",
+      "installField": "cloud_token",
+      "acceptedTokenEnvOrder": [
+        "STACKER_CLOUD_TOKEN",
+        "STACKER_VULTR_TOKEN",
+        "VULTR_API_KEY"
+      ],
+      "preferredTokenEnv": "VULTR_API_KEY",
+      "cliExample": "VULTR_API_KEY=<key> stacker deploy --target cloud",
+      "deprecatedEnv": [
+        "VULTR_TOKEN"
+      ]
+    },
+    "aws": {
+      "providerCode": "aws",
+      "credentialStyle": "key_secret",
+      "installKeyField": "cloud_key",
+      "installSecretField": "cloud_secret",
+      "acceptedKeyEnvOrder": [
+        "STACKER_CLOUD_KEY",
+        "AWS_ACCESS_KEY_ID"
+      ],
+      "acceptedSecretEnvOrder": [
+        "STACKER_CLOUD_SECRET",
+        "AWS_SECRET_ACCESS_KEY"
+      ],
+      "cliExample": "AWS_ACCESS_KEY_ID=<key> AWS_SECRET_ACCESS_KEY=<secret> stacker deploy --target cloud",
+      "deprecatedEnv": []
+    },
+    "contabo": {
+      "providerCode": "cnt",
+      "credentialStyle": "multi_field",
+      "acceptedFieldEnvOrder": {
+        "cloud_key": [
+          "STACKER_CONTABO_CLIENT_ID"
+        ],
+        "cloud_token": [
+          "STACKER_CONTABO_CLIENT_SECRET"
+        ],
+        "cloud_user": [
+          "STACKER_CONTABO_API_USER"
+        ],
+        "cloud_password": [
+          "STACKER_CONTABO_API_PASSWORD"
+        ]
+      },
+      "cliExample": "STACKER_CONTABO_CLIENT_ID=<id> STACKER_CONTABO_CLIENT_SECRET=<secret> STACKER_CONTABO_API_USER=<user> STACKER_CONTABO_API_PASSWORD=<password> stacker deploy --target cloud",
+      "deprecatedEnv": [
+        "CNT_CLIENT_ID",
+        "CNT_CLIENT_SECRET",
+        "CNT_API_USER",
+        "CNT_API_PASSWORD"
+      ]
+    }
+  }
+}

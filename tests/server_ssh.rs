@@ -10,10 +10,7 @@ use wiremock::{Mock, ResponseTemplate};
 
 /// Vault path pattern for SSH keys: /v1/secret/users/{user_id}/ssh_keys/{server_id}
 fn vault_ssh_path_regex(user_id: &str, server_id: i32) -> String {
-    format!(
-        r"/v1/secret/users/{}/ssh_keys/{}",
-        user_id, server_id
-    )
+    format!(r"/v1/secret/users/{}/ssh_keys/{}", user_id, server_id)
 }
 
 /// Successful Vault GET response body for a KV v1 SSH key read.
@@ -24,6 +21,15 @@ fn vault_key_response(public_key: &str, private_key: &str) -> serde_json::Value 
             "private_key": private_key
         }
     })
+}
+
+async fn set_server_ip(pool: &sqlx::PgPool, server_id: i32, ip: &str) {
+    sqlx::query("UPDATE server SET srv_ip = $1 WHERE id = $2")
+        .bind(ip)
+        .bind(server_id)
+        .execute(pool)
+        .await
+        .expect("Failed to update test server IP");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -50,7 +56,10 @@ async fn test_get_public_key_vault_path_null_returns_400() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .get(&format!("{}/server/{}/ssh-key/public", &app.address, server_id))
+        .get(format!(
+            "{}/server/{}/ssh-key/public",
+            &app.address, server_id
+        ))
         .header("Authorization", "Bearer test-token")
         .send()
         .await
@@ -60,8 +69,11 @@ async fn test_get_public_key_vault_path_null_returns_400() {
     let body: Value = resp.json().await.unwrap();
     let msg = body["message"].as_str().unwrap_or("");
     assert!(
-        msg.to_lowercase().contains("vault") || msg.to_lowercase().contains("regenerate") || msg.to_lowercase().contains("delete"),
-        "Error message should mention Vault or remediation: {}", msg
+        msg.to_lowercase().contains("vault")
+            || msg.to_lowercase().contains("regenerate")
+            || msg.to_lowercase().contains("delete"),
+        "Error message should mention Vault or remediation: {}",
+        msg
     );
     // Vault server must NOT have been called (no vault_key_path to use)
     assert_eq!(app.vault_server.received_requests().await.unwrap().len(), 0);
@@ -94,18 +106,26 @@ async fn test_get_public_key_vault_returns_404_propagates_as_404() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .get(&format!("{}/server/{}/ssh-key/public", &app.address, server_id))
+        .get(format!(
+            "{}/server/{}/ssh-key/public",
+            &app.address, server_id
+        ))
         .header("Authorization", "Bearer test-token")
         .send()
         .await
         .expect("request failed");
 
-    assert_eq!(resp.status().as_u16(), 404, "Should be 404 when Vault returns 404");
+    assert_eq!(
+        resp.status().as_u16(),
+        404,
+        "Should be 404 when Vault returns 404"
+    );
     let body: Value = resp.json().await.unwrap();
     let msg = body["message"].as_str().unwrap_or("");
     assert!(
         msg.to_lowercase().contains("vault") || msg.to_lowercase().contains("regenerate"),
-        "Error message should mention Vault: {}", msg
+        "Error message should mention Vault: {}",
+        msg
     );
 }
 
@@ -118,18 +138,15 @@ async fn test_get_public_key_no_active_key_returns_404() {
         None => return,
     };
     let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
-    let server_id = common::create_test_server(
-        &app.db_pool,
-        "test_user_id",
-        project_id,
-        "none",
-        None,
-    )
-    .await;
+    let server_id =
+        common::create_test_server(&app.db_pool, "test_user_id", project_id, "none", None).await;
 
     let client = reqwest::Client::new();
     let resp = client
-        .get(&format!("{}/server/{}/ssh-key/public", &app.address, server_id))
+        .get(format!(
+            "{}/server/{}/ssh-key/public",
+            &app.address, server_id
+        ))
         .header("Authorization", "Bearer test-token")
         .send()
         .await
@@ -159,18 +176,19 @@ async fn test_get_public_key_success() {
 
     Mock::given(method("GET"))
         .and(path_regex(vault_ssh_path_regex("test_user_id", server_id)))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(vault_key_response(
-                expected_pub_key,
-                "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----",
-            )),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(vault_key_response(
+            expected_pub_key,
+            "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----",
+        )))
         .mount(&app.vault_server)
         .await;
 
     let client = reqwest::Client::new();
     let resp = client
-        .get(&format!("{}/server/{}/ssh-key/public", &app.address, server_id))
+        .get(format!(
+            "{}/server/{}/ssh-key/public",
+            &app.address, server_id
+        ))
         .header("Authorization", "Bearer test-token")
         .send()
         .await
@@ -198,14 +216,8 @@ async fn test_generate_key_vault_down_returns_private_key_inline() {
         None => return,
     };
     let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
-    let server_id = common::create_test_server(
-        &app.db_pool,
-        "test_user_id",
-        project_id,
-        "none",
-        None,
-    )
-    .await;
+    let server_id =
+        common::create_test_server(&app.db_pool, "test_user_id", project_id, "none", None).await;
 
     // Vault is down — POST returns 500
     Mock::given(method("POST"))
@@ -216,13 +228,20 @@ async fn test_generate_key_vault_down_returns_private_key_inline() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(&format!("{}/server/{}/ssh-key/generate", &app.address, server_id))
+        .post(format!(
+            "{}/server/{}/ssh-key/generate",
+            &app.address, server_id
+        ))
         .header("Authorization", "Bearer test-token")
         .send()
         .await
         .expect("request failed");
 
-    assert_eq!(resp.status().as_u16(), 200, "Generate should succeed even when Vault is down");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "Generate should succeed even when Vault is down"
+    );
     let body: Value = resp.json().await.unwrap();
 
     // Private key must be returned inline so user can save it
@@ -259,14 +278,8 @@ async fn test_generate_key_success_stores_in_vault_no_private_key_exposed() {
         None => return,
     };
     let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
-    let server_id = common::create_test_server(
-        &app.db_pool,
-        "test_user_id",
-        project_id,
-        "none",
-        None,
-    )
-    .await;
+    let server_id =
+        common::create_test_server(&app.db_pool, "test_user_id", project_id, "none", None).await;
 
     // Vault is up — POST returns 204
     Mock::given(method("POST"))
@@ -277,7 +290,10 @@ async fn test_generate_key_success_stores_in_vault_no_private_key_exposed() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(&format!("{}/server/{}/ssh-key/generate", &app.address, server_id))
+        .post(format!(
+            "{}/server/{}/ssh-key/generate",
+            &app.address, server_id
+        ))
         .header("Authorization", "Bearer test-token")
         .send()
         .await
@@ -291,7 +307,10 @@ async fn test_generate_key_success_stores_in_vault_no_private_key_exposed() {
         body["item"]["private_key"].is_null() || !body["item"]["private_key"].is_string(),
         "Private key must NOT be returned when Vault stored it successfully"
     );
-    assert!(body["item"]["public_key"].is_string(), "Public key must be present");
+    assert!(
+        body["item"]["public_key"].is_string(),
+        "Public key must be present"
+    );
 
     // DB: vault_key_path must be set
     let row = sqlx::query("SELECT key_status, vault_key_path FROM server WHERE id = $1")
@@ -328,7 +347,10 @@ async fn test_generate_key_already_active_returns_400() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(&format!("{}/server/{}/ssh-key/generate", &app.address, server_id))
+        .post(format!(
+            "{}/server/{}/ssh-key/generate",
+            &app.address, server_id
+        ))
         .header("Authorization", "Bearer test-token")
         .send()
         .await
@@ -369,7 +391,7 @@ async fn test_delete_key_clears_vault_and_db() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .delete(&format!("{}/server/{}/ssh-key", &app.address, server_id))
+        .delete(format!("{}/server/{}/ssh-key", &app.address, server_id))
         .header("Authorization", "Bearer test-token")
         .send()
         .await
@@ -397,24 +419,167 @@ async fn test_delete_key_none_returns_400() {
         None => return,
     };
     let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
-    let server_id = common::create_test_server(
-        &app.db_pool,
-        "test_user_id",
-        project_id,
-        "none",
-        None,
-    )
-    .await;
+    let server_id =
+        common::create_test_server(&app.db_pool, "test_user_id", project_id, "none", None).await;
 
     let client = reqwest::Client::new();
     let resp = client
-        .delete(&format!("{}/server/{}/ssh-key", &app.address, server_id))
+        .delete(format!("{}/server/{}/ssh-key", &app.address, server_id))
         .header("Authorization", "Bearer test-token")
         .send()
         .await
         .expect("request failed");
 
     assert_eq!(resp.status().as_u16(), 400);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests: POST /server/{id}/ssh-key/authorize-public-key
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_authorize_public_key_invalid_public_key_returns_400_before_vault() {
+    let app = match common::spawn_app_with_vault().await {
+        Some(a) => a,
+        None => return,
+    };
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+    let server_id = common::create_test_server(
+        &app.db_pool,
+        "test_user_id",
+        project_id,
+        "active",
+        Some("secret/users/test_user_id/ssh_keys/1"),
+    )
+    .await;
+    set_server_ip(&app.db_pool, server_id, "203.0.113.10").await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!(
+            "{}/server/{}/ssh-key/authorize-public-key",
+            &app.address, server_id
+        ))
+        .header("Authorization", "Bearer test-token")
+        .json(&json!({"public_key": "not-a-public-key"}))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: Value = resp.json().await.unwrap();
+    let msg = body["message"].as_str().unwrap_or("");
+    assert!(msg.to_lowercase().contains("invalid public key"));
+    assert_eq!(app.vault_server.received_requests().await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_authorize_public_key_vault_path_null_returns_400_before_vault() {
+    let app = match common::spawn_app_with_vault().await {
+        Some(a) => a,
+        None => return,
+    };
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+    let server_id =
+        common::create_test_server(&app.db_pool, "test_user_id", project_id, "active", None).await;
+    let (public_key, _) = stacker::helpers::VaultClient::generate_ssh_keypair().unwrap();
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!(
+            "{}/server/{}/ssh-key/authorize-public-key",
+            &app.address, server_id
+        ))
+        .header("Authorization", "Bearer test-token")
+        .json(&json!({"public_key": public_key}))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: Value = resp.json().await.unwrap();
+    let msg = body["message"].as_str().unwrap_or("");
+    assert!(msg.to_lowercase().contains("vault"));
+    assert_eq!(app.vault_server.received_requests().await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_authorize_public_key_missing_server_ip_returns_400_before_vault() {
+    let app = match common::spawn_app_with_vault().await {
+        Some(a) => a,
+        None => return,
+    };
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+    let server_id = common::create_test_server(
+        &app.db_pool,
+        "test_user_id",
+        project_id,
+        "active",
+        Some("secret/users/test_user_id/ssh_keys/1"),
+    )
+    .await;
+    let (public_key, _) = stacker::helpers::VaultClient::generate_ssh_keypair().unwrap();
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!(
+            "{}/server/{}/ssh-key/authorize-public-key",
+            &app.address, server_id
+        ))
+        .header("Authorization", "Bearer test-token")
+        .json(&json!({"public_key": public_key}))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: Value = resp.json().await.unwrap();
+    let msg = body["message"].as_str().unwrap_or("");
+    assert!(msg.to_lowercase().contains("ip"));
+    assert_eq!(app.vault_server.received_requests().await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_authorize_public_key_vault_read_failure_does_not_leak_private_key() {
+    let app = match common::spawn_app_with_vault().await {
+        Some(a) => a,
+        None => return,
+    };
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+    let server_id = common::create_test_server(
+        &app.db_pool,
+        "test_user_id",
+        project_id,
+        "active",
+        Some("secret/users/test_user_id/ssh_keys/1"),
+    )
+    .await;
+    set_server_ip(&app.db_pool, server_id, "203.0.113.10").await;
+    let (public_key, _) = stacker::helpers::VaultClient::generate_ssh_keypair().unwrap();
+
+    Mock::given(method("GET"))
+        .and(path_regex(vault_ssh_path_regex("test_user_id", server_id)))
+        .respond_with(ResponseTemplate::new(500).set_body_string("vault unavailable"))
+        .mount(&app.vault_server)
+        .await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!(
+            "{}/server/{}/ssh-key/authorize-public-key",
+            &app.address, server_id
+        ))
+        .header("Authorization", "Bearer test-token")
+        .json(&json!({"public_key": public_key}))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: Value = resp.json().await.unwrap();
+    let body_text = body.to_string();
+    assert!(!body_text.contains("PRIVATE KEY"));
+    assert!(!body_text.contains("vault unavailable"));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -431,24 +596,27 @@ async fn test_ssh_key_endpoints_require_auth() {
     let client = reqwest::Client::new();
 
     let endpoints: &[(&str, &str)] = &[
-        ("GET",    "/server/1/ssh-key/public"),
-        ("POST",   "/server/1/ssh-key/generate"),
+        ("GET", "/server/1/ssh-key/public"),
+        ("POST", "/server/1/ssh-key/generate"),
+        ("POST", "/server/1/ssh-key/authorize-public-key"),
         ("DELETE", "/server/1/ssh-key"),
     ];
 
     for (verb, path) in endpoints {
         let req = match *verb {
-            "GET"    => client.get(&format!("{}{}", &app.address, path)),
-            "POST"   => client.post(&format!("{}{}", &app.address, path)),
-            "DELETE" => client.delete(&format!("{}{}", &app.address, path)),
-            _        => unreachable!(),
+            "GET" => client.get(format!("{}{}", &app.address, path)),
+            "POST" => client.post(format!("{}{}", &app.address, path)),
+            "DELETE" => client.delete(format!("{}{}", &app.address, path)),
+            _ => unreachable!(),
         };
         let resp = req.send().await.expect("request failed");
         let status = resp.status().as_u16();
         assert!(
             status == 400 || status == 401 || status == 403 || status == 404,
             "{} {} without auth should return 400/401/403, got {}",
-            verb, path, status
+            verb,
+            path,
+            status
         );
     }
 }

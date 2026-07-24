@@ -5,7 +5,6 @@ use common::{USER_A_ID, USER_A_TOKEN, USER_B_TOKEN};
 /// Chat endpoints use (user_id, project_id) as the lookup key.
 /// Isolation is enforced server-side: the handler always uses the authenticated
 /// user's ID, so User B cannot see or mutate User A's chat history.
-
 const TEST_PROJECT_ID: i32 = 9999;
 
 async fn insert_chat(pool: &sqlx::PgPool, user_id: &str, project_id: i32) {
@@ -122,7 +121,10 @@ async fn test_update_chat_rejects_other_user() {
     let messages = body["item"]["messages"]
         .as_array()
         .expect("messages should be an array");
-    assert_eq!(messages[0]["content"], "hello", "User A's chat must remain unchanged");
+    assert_eq!(
+        messages[0]["content"], "hello",
+        "User A's chat must remain unchanged"
+    );
 }
 
 #[tokio::test]

@@ -5,7 +5,6 @@ use sqlx::Row;
 
 /// Rating edit/delete endpoints check `rating.user_id == user.id`.
 /// Non-owner attempts return 404 (the handler treats missing-or-not-owned as "not found").
-
 async fn insert_rating(pool: &sqlx::PgPool, user_id: &str) -> i32 {
     let rec = sqlx::query(
         "INSERT INTO rating (user_id, obj_id, rating, comment, category) \

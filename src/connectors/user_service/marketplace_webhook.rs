@@ -16,9 +16,9 @@ use crate::connectors::ConnectorError;
 use crate::models;
 
 /// Marketplace webhook payload sent to User Service
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MarketplaceWebhookPayload {
-    /// Action type: "template_approved", "template_updated", or "template_rejected"
+    /// Action type for the marketplace sync webhook.
     pub action: String,
 
     /// Stacker template UUID (as string)
@@ -69,6 +69,10 @@ pub struct MarketplaceWebhookPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tech_stack: Option<serde_json::Value>,
 
+    /// Infrastructure compatibility metadata for deployment validation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub infrastructure_requirements: Option<serde_json::Value>,
+
     /// Creator display name
     #[serde(skip_serializing_if = "Option::is_none")]
     pub creator_name: Option<String>,
@@ -88,6 +92,50 @@ pub struct MarketplaceWebhookPayload {
     /// Minimum plan required to deploy
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required_plan_name: Option<String>,
+
+    /// Reviewer feedback for update-required notifications.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_reason: Option<String>,
+
+    /// Suggested next step for the creator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_action_hint: Option<String>,
+
+    /// Creator email when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vendor_email: Option<String>,
+
+    /// Full stack/compose definition from the latest template version. This is
+    /// the field the User Service caches so `/applications` can serve a
+    /// deployable definition (install-service Flow 4). Present on
+    /// approved/published actions; `None` for metadata-only actions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stack_definition: Option<serde_json::Value>,
+
+    /// How to interpret `stack_definition` — `"yaml"` (compose string) or a
+    /// legacy/JSON object form (`None`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub definition_format: Option<String>,
+
+    /// Extra config files shipped with the template version (name + content),
+    /// when the version defines any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_files: Option<serde_json::Value>,
+
+    /// Version string of the federated definition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// Returns the JSON value only when it carries content — filters out `null`,
+/// `[]`, and `{}` so empty `config_files` don't bloat the webhook.
+fn non_empty_json(value: &serde_json::Value) -> Option<serde_json::Value> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::Array(a) if a.is_empty() => None,
+        serde_json::Value::Object(o) if o.is_empty() => None,
+        other => Some(other.clone()),
+    }
 }
 
 /// Response from User Service webhook endpoint
@@ -172,6 +220,7 @@ impl MarketplaceWebhookSender {
         template: &models::marketplace::StackTemplate,
         vendor_id: &str,
         category_code: Option<String>,
+        latest_version: Option<&models::marketplace::StackTemplateVersion>,
     ) -> Result<WebhookResponse, ConnectorError> {
         let span = tracing::info_span!(
             "send_template_approved_webhook",
@@ -181,6 +230,10 @@ impl MarketplaceWebhookSender {
 
         let payload = MarketplaceWebhookPayload {
             action: "template_approved".to_string(),
+            stack_definition: latest_version.map(|v| v.stack_definition.clone()),
+            definition_format: latest_version.and_then(|v| v.definition_format.clone()),
+            config_files: latest_version.and_then(|v| non_empty_json(&v.config_files)),
+            version: latest_version.map(|v| v.version.clone()),
             stack_template_id: template.id.to_string(),
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),
@@ -206,11 +259,87 @@ impl MarketplaceWebhookSender {
             } else {
                 None
             },
+            infrastructure_requirements: if template.infrastructure_requirements
+                != serde_json::json!({})
+            {
+                Some(template.infrastructure_requirements.clone())
+            } else {
+                None
+            },
             creator_name: template.creator_name.clone(),
             deploy_count: template.deploy_count,
             view_count: template.view_count,
             approved_at: template.approved_at.map(|dt| dt.to_rfc3339()),
             required_plan_name: template.required_plan_name.clone(),
+            review_reason: None,
+            next_action_hint: None,
+            vendor_email: None,
+        };
+
+        self.send_webhook(&payload).instrument(span).await
+    }
+
+    /// Send template published webhook to User Service.
+    /// Creates/updates the product and triggers the creator approval notification.
+    pub async fn send_template_published(
+        &self,
+        template: &models::marketplace::StackTemplate,
+        vendor_id: &str,
+        category_code: Option<String>,
+        latest_version: Option<&models::marketplace::StackTemplateVersion>,
+    ) -> Result<WebhookResponse, ConnectorError> {
+        let span = tracing::info_span!(
+            "send_template_published_webhook",
+            template_id = %template.id,
+            vendor_id = vendor_id
+        );
+
+        let payload = MarketplaceWebhookPayload {
+            action: "template_published".to_string(),
+            stack_definition: latest_version.map(|v| v.stack_definition.clone()),
+            definition_format: latest_version.and_then(|v| v.definition_format.clone()),
+            config_files: latest_version.and_then(|v| non_empty_json(&v.config_files)),
+            version: latest_version.map(|v| v.version.clone()),
+            stack_template_id: template.id.to_string(),
+            external_id: template.id.to_string(),
+            code: Some(template.slug.clone()),
+            name: Some(template.name.clone()),
+            description: template
+                .short_description
+                .clone()
+                .or_else(|| template.long_description.clone()),
+            price: template.price,
+            billing_cycle: template.billing_cycle.clone(),
+            currency: template.currency.clone(),
+            vendor_user_id: Some(vendor_id.to_string()),
+            vendor_name: template.creator_name.clone(),
+            category: category_code,
+            tags: if let serde_json::Value::Array(_) = template.tags {
+                Some(template.tags.clone())
+            } else {
+                None
+            },
+            long_description: template.long_description.clone(),
+            tech_stack: if template.tech_stack != serde_json::json!({}) {
+                Some(template.tech_stack.clone())
+            } else {
+                None
+            },
+            infrastructure_requirements: if template.infrastructure_requirements
+                != serde_json::json!({})
+            {
+                Some(template.infrastructure_requirements.clone())
+            } else {
+                None
+            },
+            creator_name: template.creator_name.clone(),
+            deploy_count: template.deploy_count,
+            view_count: template.view_count,
+            approved_at: template.approved_at.map(|dt| dt.to_rfc3339()),
+            required_plan_name: template.required_plan_name.clone(),
+            review_reason: None,
+            next_action_hint: None,
+            vendor_email: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -231,6 +360,10 @@ impl MarketplaceWebhookSender {
 
         let payload = MarketplaceWebhookPayload {
             action: "template_updated".to_string(),
+            stack_definition: None,
+            definition_format: None,
+            config_files: None,
+            version: None,
             stack_template_id: template.id.to_string(),
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),
@@ -256,11 +389,219 @@ impl MarketplaceWebhookSender {
             } else {
                 None
             },
+            infrastructure_requirements: if template.infrastructure_requirements
+                != serde_json::json!({})
+            {
+                Some(template.infrastructure_requirements.clone())
+            } else {
+                None
+            },
             creator_name: template.creator_name.clone(),
             deploy_count: template.deploy_count,
             view_count: template.view_count,
             approved_at: template.approved_at.map(|dt| dt.to_rfc3339()),
             required_plan_name: template.required_plan_name.clone(),
+            review_reason: None,
+            next_action_hint: None,
+            vendor_email: None,
+        };
+
+        self.send_webhook(&payload).instrument(span).await
+    }
+
+    /// Send template submitted webhook to User Service.
+    /// Notifies the creator that their stack entered marketplace review.
+    pub async fn send_template_submitted(
+        &self,
+        template: &models::marketplace::StackTemplate,
+        vendor_id: &str,
+        category_code: Option<String>,
+    ) -> Result<WebhookResponse, ConnectorError> {
+        let span = tracing::info_span!(
+            "send_template_submitted_webhook",
+            template_id = %template.id,
+            vendor_id = vendor_id
+        );
+
+        let payload = MarketplaceWebhookPayload {
+            action: "template_submitted".to_string(),
+            stack_definition: None,
+            definition_format: None,
+            config_files: None,
+            version: None,
+            stack_template_id: template.id.to_string(),
+            external_id: template.id.to_string(),
+            code: Some(template.slug.clone()),
+            name: Some(template.name.clone()),
+            description: template
+                .short_description
+                .clone()
+                .or_else(|| template.long_description.clone()),
+            price: template.price,
+            billing_cycle: template.billing_cycle.clone(),
+            currency: template.currency.clone(),
+            vendor_user_id: Some(vendor_id.to_string()),
+            vendor_name: template.creator_name.clone(),
+            category: category_code,
+            tags: if let serde_json::Value::Array(_) = template.tags {
+                Some(template.tags.clone())
+            } else {
+                None
+            },
+            long_description: template.long_description.clone(),
+            tech_stack: if template.tech_stack != serde_json::json!({}) {
+                Some(template.tech_stack.clone())
+            } else {
+                None
+            },
+            infrastructure_requirements: if template.infrastructure_requirements
+                != serde_json::json!({})
+            {
+                Some(template.infrastructure_requirements.clone())
+            } else {
+                None
+            },
+            creator_name: template.creator_name.clone(),
+            deploy_count: template.deploy_count,
+            view_count: template.view_count,
+            approved_at: template.approved_at.map(|dt| dt.to_rfc3339()),
+            required_plan_name: template.required_plan_name.clone(),
+            review_reason: None,
+            next_action_hint: None,
+            vendor_email: None,
+        };
+
+        self.send_webhook(&payload).instrument(span).await
+    }
+
+    /// Send template update-required webhook to User Service.
+    pub async fn send_template_needs_changes(
+        &self,
+        template: &models::marketplace::StackTemplate,
+        vendor_id: &str,
+        review_reason: Option<&str>,
+        next_action_hint: &str,
+    ) -> Result<WebhookResponse, ConnectorError> {
+        let span = tracing::info_span!(
+            "send_template_needs_changes_webhook",
+            template_id = %template.id,
+            vendor_id = vendor_id
+        );
+
+        let payload = MarketplaceWebhookPayload {
+            action: "template_needs_changes".to_string(),
+            stack_definition: None,
+            definition_format: None,
+            config_files: None,
+            version: None,
+            stack_template_id: template.id.to_string(),
+            external_id: template.id.to_string(),
+            code: Some(template.slug.clone()),
+            name: Some(template.name.clone()),
+            description: template
+                .short_description
+                .clone()
+                .or_else(|| template.long_description.clone()),
+            price: template.price,
+            billing_cycle: template.billing_cycle.clone(),
+            currency: template.currency.clone(),
+            vendor_user_id: Some(vendor_id.to_string()),
+            vendor_name: template.creator_name.clone(),
+            category: template.category_code.clone(),
+            tags: if let serde_json::Value::Array(_) = template.tags {
+                Some(template.tags.clone())
+            } else {
+                None
+            },
+            long_description: template.long_description.clone(),
+            tech_stack: if template.tech_stack != serde_json::json!({}) {
+                Some(template.tech_stack.clone())
+            } else {
+                None
+            },
+            infrastructure_requirements: if template.infrastructure_requirements
+                != serde_json::json!({})
+            {
+                Some(template.infrastructure_requirements.clone())
+            } else {
+                None
+            },
+            creator_name: template.creator_name.clone(),
+            deploy_count: template.deploy_count,
+            view_count: template.view_count,
+            approved_at: template.approved_at.map(|dt| dt.to_rfc3339()),
+            required_plan_name: template.required_plan_name.clone(),
+            review_reason: review_reason.map(str::to_string),
+            next_action_hint: Some(next_action_hint.to_string()),
+            vendor_email: None,
+        };
+
+        self.send_webhook(&payload).instrument(span).await
+    }
+
+    /// Send template review-rejected webhook to User Service.
+    /// This notifies the creator without invoking marketplace removal behavior.
+    pub async fn send_template_review_rejected(
+        &self,
+        template: &models::marketplace::StackTemplate,
+        vendor_id: &str,
+        review_reason: Option<&str>,
+    ) -> Result<WebhookResponse, ConnectorError> {
+        let span = tracing::info_span!(
+            "send_template_review_rejected_webhook",
+            template_id = %template.id,
+            vendor_id = vendor_id
+        );
+
+        let payload = MarketplaceWebhookPayload {
+            action: "template_review_rejected".to_string(),
+            stack_definition: None,
+            definition_format: None,
+            config_files: None,
+            version: None,
+            stack_template_id: template.id.to_string(),
+            external_id: template.id.to_string(),
+            code: Some(template.slug.clone()),
+            name: Some(template.name.clone()),
+            description: template
+                .short_description
+                .clone()
+                .or_else(|| template.long_description.clone()),
+            price: template.price,
+            billing_cycle: template.billing_cycle.clone(),
+            currency: template.currency.clone(),
+            vendor_user_id: Some(vendor_id.to_string()),
+            vendor_name: template.creator_name.clone(),
+            category: template.category_code.clone(),
+            tags: if let serde_json::Value::Array(_) = template.tags {
+                Some(template.tags.clone())
+            } else {
+                None
+            },
+            long_description: template.long_description.clone(),
+            tech_stack: if template.tech_stack != serde_json::json!({}) {
+                Some(template.tech_stack.clone())
+            } else {
+                None
+            },
+            infrastructure_requirements: if template.infrastructure_requirements
+                != serde_json::json!({})
+            {
+                Some(template.infrastructure_requirements.clone())
+            } else {
+                None
+            },
+            creator_name: template.creator_name.clone(),
+            deploy_count: template.deploy_count,
+            view_count: template.view_count,
+            approved_at: template.approved_at.map(|dt| dt.to_rfc3339()),
+            required_plan_name: template.required_plan_name.clone(),
+            review_reason: review_reason.map(str::to_string),
+            next_action_hint: Some(
+                "Review the feedback, update the stack, and submit a new revision when it is ready."
+                    .to_string(),
+            ),
+            vendor_email: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -279,6 +620,10 @@ impl MarketplaceWebhookSender {
 
         let payload = MarketplaceWebhookPayload {
             action: "template_rejected".to_string(),
+            stack_definition: None,
+            definition_format: None,
+            config_files: None,
+            version: None,
             stack_template_id: stack_template_id.to_string(),
             external_id: stack_template_id.to_string(),
             code: None,
@@ -293,11 +638,79 @@ impl MarketplaceWebhookSender {
             tags: None,
             long_description: None,
             tech_stack: None,
+            infrastructure_requirements: None,
             creator_name: None,
             deploy_count: None,
             view_count: None,
             approved_at: None,
             required_plan_name: None,
+            review_reason: None,
+            next_action_hint: None,
+            vendor_email: None,
+        };
+
+        self.send_webhook(&payload).instrument(span).await
+    }
+
+    /// Send template unpublished webhook to User Service.
+    /// This deactivates the marketplace listing but preserves the subscription record.
+    pub async fn send_template_unpublished(
+        &self,
+        template: &models::marketplace::StackTemplate,
+        vendor_id: &str,
+    ) -> Result<WebhookResponse, ConnectorError> {
+        let span = tracing::info_span!(
+            "send_template_unpublished_webhook",
+            template_id = %template.id,
+            vendor_id = vendor_id
+        );
+
+        let payload = MarketplaceWebhookPayload {
+            action: "template_unpublished".to_string(),
+            stack_definition: None,
+            definition_format: None,
+            config_files: None,
+            version: None,
+            stack_template_id: template.id.to_string(),
+            external_id: template.id.to_string(),
+            code: Some(template.slug.clone()),
+            name: Some(template.name.clone()),
+            description: template
+                .short_description
+                .clone()
+                .or_else(|| template.long_description.clone()),
+            price: template.price,
+            billing_cycle: template.billing_cycle.clone(),
+            currency: template.currency.clone(),
+            vendor_user_id: Some(vendor_id.to_string()),
+            vendor_name: template.creator_name.clone(),
+            category: template.category_code.clone(),
+            tags: if let serde_json::Value::Array(_) = template.tags {
+                Some(template.tags.clone())
+            } else {
+                None
+            },
+            long_description: template.long_description.clone(),
+            tech_stack: if template.tech_stack != serde_json::json!({}) {
+                Some(template.tech_stack.clone())
+            } else {
+                None
+            },
+            infrastructure_requirements: if template.infrastructure_requirements
+                != serde_json::json!({})
+            {
+                Some(template.infrastructure_requirements.clone())
+            } else {
+                None
+            },
+            creator_name: template.creator_name.clone(),
+            deploy_count: template.deploy_count,
+            view_count: template.view_count,
+            approved_at: template.approved_at.map(|dt| dt.to_rfc3339()),
+            required_plan_name: template.required_plan_name.clone(),
+            review_reason: None,
+            next_action_hint: None,
+            vendor_email: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -423,6 +836,11 @@ mod tests {
             view_count: None,
             approved_at: None,
             required_plan_name: None,
+            review_reason: None,
+            next_action_hint: None,
+            vendor_email: None,
+            infrastructure_requirements: None,
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&payload).expect("Failed to serialize");
@@ -458,6 +876,11 @@ mod tests {
             view_count: None,
             approved_at: None,
             required_plan_name: None,
+            review_reason: None,
+            next_action_hint: None,
+            vendor_email: None,
+            infrastructure_requirements: None,
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&payload).expect("Failed to serialize");
@@ -489,6 +912,11 @@ mod tests {
             view_count: None,
             approved_at: None,
             required_plan_name: None,
+            review_reason: None,
+            next_action_hint: None,
+            vendor_email: None,
+            infrastructure_requirements: None,
+            ..Default::default()
         };
 
         assert_eq!(payload.action, "template_approved");
@@ -520,6 +948,11 @@ mod tests {
             view_count: None,
             approved_at: None,
             required_plan_name: None,
+            review_reason: None,
+            next_action_hint: None,
+            vendor_email: None,
+            infrastructure_requirements: None,
+            ..Default::default()
         };
 
         assert_eq!(payload.action, "template_updated");
@@ -551,6 +984,11 @@ mod tests {
             view_count: None,
             approved_at: None,
             required_plan_name: None,
+            review_reason: None,
+            next_action_hint: None,
+            vendor_email: None,
+            infrastructure_requirements: None,
+            ..Default::default()
         };
 
         assert_eq!(payload.action, "template_approved");
@@ -646,6 +1084,11 @@ mod tests {
             view_count: Some(1337),
             approved_at: Some("2026-02-11T10:00:00Z".to_string()),
             required_plan_name: Some("starter".to_string()),
+            review_reason: None,
+            next_action_hint: None,
+            vendor_email: None,
+            infrastructure_requirements: None,
+            ..Default::default()
         };
 
         // Verify all fields are accessible
@@ -679,11 +1122,167 @@ mod tests {
             view_count: None,
             approved_at: None,
             required_plan_name: None,
+            review_reason: None,
+            next_action_hint: None,
+            vendor_email: None,
+            infrastructure_requirements: None,
+            ..Default::default()
         };
 
         // Should serialize without errors even with all optional fields as None
         let json = serde_json::to_string(&payload).expect("Should serialize");
         assert!(json.contains("template_rejected"));
         assert!(json.contains("external_id"));
+    }
+
+    #[test]
+    fn non_empty_json_filters_empty_values() {
+        assert!(non_empty_json(&serde_json::json!(null)).is_none());
+        assert!(non_empty_json(&serde_json::json!([])).is_none());
+        assert!(non_empty_json(&serde_json::json!({})).is_none());
+        assert!(non_empty_json(&serde_json::json!([{ "name": "docker-compose.yml" }])).is_some());
+        assert!(non_empty_json(&serde_json::json!({ "k": "v" })).is_some());
+    }
+
+    #[test]
+    fn payload_omits_definition_fields_when_none() {
+        let payload = MarketplaceWebhookPayload {
+            action: "template_updated".to_string(),
+            stack_template_id: "id".to_string(),
+            external_id: "id".to_string(),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert!(json.get("stack_definition").is_none());
+        assert!(json.get("definition_format").is_none());
+        assert!(json.get("config_files").is_none());
+        assert!(json.get("version").is_none());
+    }
+
+    #[test]
+    fn payload_includes_definition_fields_when_present() {
+        let payload = MarketplaceWebhookPayload {
+            action: "template_approved".to_string(),
+            stack_template_id: "id".to_string(),
+            external_id: "id".to_string(),
+            stack_definition: Some(serde_json::json!("services:\n  app: {}")),
+            definition_format: Some("yaml".to_string()),
+            version: Some("2.0.0".to_string()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["stack_definition"], "services:\n  app: {}");
+        assert_eq!(json["definition_format"], "yaml");
+        assert_eq!(json["version"], "2.0.0");
+    }
+
+    /// End-to-end: `send_template_published` must POST the federated
+    /// `stack_definition` (compose) to `/marketplace/sync` so the User Service
+    /// can cache a deployable definition.
+    #[tokio::test]
+    async fn send_template_published_federates_stack_definition() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/marketplace/sync"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "message": "ok",
+                "product_id": "p1"
+            })))
+            .mount(&server)
+            .await;
+
+        let sender = MarketplaceWebhookSender::new(WebhookSenderConfig {
+            base_url: server.uri(),
+            bearer_token: "test-token".to_string(),
+            timeout_secs: 5,
+            retry_attempts: 1,
+        });
+
+        let template = models::marketplace::StackTemplate {
+            id: uuid::Uuid::new_v4(),
+            slug: "n8n".to_string(),
+            name: "n8n".to_string(),
+            creator_user_id: "vendor-1".to_string(),
+            ..Default::default()
+        };
+        let version = models::marketplace::StackTemplateVersion {
+            template_id: template.id,
+            version: "1.0.0".to_string(),
+            stack_definition: serde_json::json!(
+                "version: '3.8'\nservices:\n  n8n:\n    image: n8nio/n8n:latest"
+            ),
+            definition_format: Some("yaml".to_string()),
+            // Empty config_files must be filtered out of the webhook body.
+            config_files: serde_json::json!([]),
+            ..Default::default()
+        };
+
+        let resp = sender
+            .send_template_published(&template, "vendor-1", None, Some(&version))
+            .await
+            .expect("webhook should succeed");
+        assert!(resp.success);
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("requests should be recorded");
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+
+        assert_eq!(body["action"], "template_published");
+        assert_eq!(body["definition_format"], "yaml");
+        assert!(body["stack_definition"]
+            .as_str()
+            .unwrap()
+            .contains("n8nio/n8n:latest"));
+        assert_eq!(body["version"], "1.0.0");
+        // Empty config_files omitted.
+        assert!(body.get("config_files").is_none());
+    }
+
+    /// Metadata-only actions must NOT carry a definition.
+    #[tokio::test]
+    async fn send_template_updated_does_not_federate_definition() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/marketplace/sync"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true
+            })))
+            .mount(&server)
+            .await;
+
+        let sender = MarketplaceWebhookSender::new(WebhookSenderConfig {
+            base_url: server.uri(),
+            bearer_token: "t".to_string(),
+            timeout_secs: 5,
+            retry_attempts: 1,
+        });
+
+        let template = models::marketplace::StackTemplate {
+            id: uuid::Uuid::new_v4(),
+            slug: "n8n".to_string(),
+            name: "n8n".to_string(),
+            creator_user_id: "vendor-1".to_string(),
+            ..Default::default()
+        };
+
+        sender
+            .send_template_updated(&template, "vendor-1", None)
+            .await
+            .expect("webhook should succeed");
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["action"], "template_updated");
+        assert!(body.get("stack_definition").is_none());
     }
 }

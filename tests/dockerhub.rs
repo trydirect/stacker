@@ -5,10 +5,8 @@ use docker_compose_types::ComposeVolume;
 mod common;
 use stacker::forms::project::DockerImage;
 // use stacker::helpers::project::dctypes::{ComposeVolume, SingleValue};
-use serde_yaml;
 use stacker::forms::project::Volume;
 
-const DOCKER_USERNAME: &str = "trydirect";
 const DOCKER_PASSWORD: &str = "**********";
 //  Unit Test
 
@@ -57,6 +55,7 @@ const DOCKER_PASSWORD: &str = "**********";
 // }
 
 #[tokio::test]
+#[ignore = "requires real DockerHub credentials (DOCKER_PASSWORD); run manually with --include-ignored"]
 async fn test_docker_hub_successful_login() {
     if common::spawn_app().await.is_none() {
         return;
@@ -71,11 +70,13 @@ async fn test_docker_hub_successful_login() {
         dockerhub_name: Some(String::from("nginx-waf")),
         dockerhub_image: None,
         dockerhub_password: Some(String::from(DOCKER_PASSWORD)),
+        dockerhub_tag: None,
     };
-    assert_eq!(di.is_active().await.unwrap(), true);
+    assert!(di.is_active().await.unwrap());
 }
 
 #[tokio::test]
+#[ignore = "requires real DockerHub credentials (DOCKER_PASSWORD); run manually with --include-ignored"]
 async fn test_docker_private_exists() {
     if common::spawn_app().await.is_none() {
         return;
@@ -85,8 +86,9 @@ async fn test_docker_private_exists() {
         dockerhub_name: Some(String::from("nginx-waf")),
         dockerhub_image: None,
         dockerhub_password: Some(String::from(DOCKER_PASSWORD)),
+        dockerhub_tag: None,
     };
-    assert_eq!(di.is_active().await.unwrap(), true);
+    assert!(di.is_active().await.unwrap());
 }
 
 #[tokio::test]
@@ -99,8 +101,9 @@ async fn test_public_repo_is_accessible() {
         dockerhub_name: Some(String::from("nginx")),
         dockerhub_image: None,
         dockerhub_password: Some(String::from("")),
+        dockerhub_tag: None,
     };
-    assert_eq!(di.is_active().await.unwrap(), true);
+    assert!(di.is_active().await.unwrap());
 }
 #[tokio::test]
 async fn test_docker_non_existent_repo() {
@@ -112,9 +115,10 @@ async fn test_docker_non_existent_repo() {
         dockerhub_name: Some(String::from("nonexistent")), //repo
         dockerhub_image: None, // namesps/reponame:tag full docker image string
         dockerhub_password: Some(String::from("")),
+        dockerhub_tag: None,
     };
     println!("{}", di.is_active().await.unwrap());
-    assert_eq!(di.is_active().await.unwrap(), false);
+    assert!(!di.is_active().await.unwrap());
 }
 
 #[tokio::test]
@@ -127,8 +131,9 @@ async fn test_docker_non_existent_repo_empty_namespace() {
         dockerhub_name: Some(String::from("nonexistent")), //repo
         dockerhub_image: None, // namesps/reponame:tag full docker image string
         dockerhub_password: Some(String::from("")),
+        dockerhub_tag: None,
     };
-    assert_eq!(di.is_active().await.unwrap(), true);
+    assert!(di.is_active().await.unwrap());
 }
 
 #[tokio::test]

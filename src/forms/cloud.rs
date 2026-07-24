@@ -30,7 +30,13 @@ impl CloudForm {
     #[tracing::instrument(name = "impl CloudForm::decode()", skip_all)]
     pub(crate) fn decode(secret: &mut Secret, encrypted_value: String) -> String {
         // tracing::error!("encrypted_value {:?}", &encrypted_value);
-        let b64_decoded = Secret::b64_decode(&encrypted_value).unwrap();
+        let b64_decoded = match Secret::b64_decode(&encrypted_value) {
+            Ok(decoded) => decoded,
+            Err(err) => {
+                tracing::error!("🟥 Could not decode {:?},{:?}", secret.field, err);
+                return "".to_owned();
+            }
+        };
         // tracing::error!("decoded {:?}", &b64_decoded);
         match secret.decrypt(b64_decoded) {
             Ok(decoded) => decoded,
@@ -196,5 +202,20 @@ impl Into<CloudForm> for models::Cloud {
 
         form.save_token = self.save_token;
         form
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cloud_form_decode_invalid_base64_returns_empty() {
+        let mut secret = Secret::new();
+        secret.field = "cloud_token".to_string();
+
+        let decoded = CloudForm::decode(&mut secret, "not-valid-base64".to_string());
+
+        assert_eq!(decoded, "");
     }
 }

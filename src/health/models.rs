@@ -91,4 +91,11 @@ impl HealthCheckResponse {
     pub fn is_healthy(&self) -> bool {
         self.status == ComponentStatus::Healthy
     }
+
+    /// Returns true when the service can handle requests, even if some optional
+    /// dependencies are unavailable (Degraded). Only Unhealthy (core DB down)
+    /// returns false here.
+    pub fn is_operational(&self) -> bool {
+        self.status != ComponentStatus::Unhealthy
+    }
 }

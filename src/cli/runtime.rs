@@ -6,7 +6,7 @@
 
 use crate::cli::credentials::{CredentialsManager, FileCredentialStore, StoredCredentials};
 use crate::cli::error::CliError;
-use crate::cli::stacker_client::{self, StackerClient};
+use crate::cli::stacker_client::StackerClient;
 
 /// Pre-built CLI execution context: credentials + async runtime + HTTP client.
 ///
@@ -29,7 +29,17 @@ impl CliRuntime {
     pub fn new(feature: &str) -> Result<Self, CliError> {
         let cred_manager = CredentialsManager::<FileCredentialStore>::with_default_store();
         let creds = cred_manager.require_valid_token(feature)?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL;
+        let env_server_url = std::env::var("STACKER_URL").ok();
+        let base_url = creds
+            .server_url
+            .as_deref()
+            .or(env_server_url.as_deref())
+            .map(crate::cli::install_runner::normalize_stacker_server_url)
+            .ok_or_else(|| {
+                CliError::ConfigValidation(
+                    "No Stacker API URL configured. Re-run `stacker login --auth-url <user-service-url> --server-url <stacker-api-url>` or set STACKER_URL.".to_string(),
+                )
+            })?;
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -38,7 +48,7 @@ impl CliRuntime {
                 CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
             })?;
 
-        let client = StackerClient::new(base_url, &creds.access_token);
+        let client = StackerClient::new(&base_url, &creds.access_token);
 
         Ok(Self { creds, client, rt })
     }

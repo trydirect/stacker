@@ -49,11 +49,17 @@ pub struct RoleVariable {
 async fn fetch_roles_from_db(context: &ToolContext) -> Result<Vec<AnsibleRole>, String> {
     let user_service_url = &context.settings.user_service_url;
     let endpoint = format!("{}{}", user_service_url, POSTGREST_ROLE_ENDPOINT);
-    
+
     let client = reqwest::Client::new();
     let response = client
         .get(&endpoint)
-        .header("Authorization", format!("Bearer {}", context.user.access_token.as_deref().unwrap_or("")))
+        .header(
+            "Authorization",
+            format!(
+                "Bearer {}",
+                context.user.access_token.as_deref().unwrap_or("")
+            ),
+        )
         .send()
         .await
         .map_err(|e| format!("Failed to fetch roles from database: {}", e))?;
@@ -93,13 +99,13 @@ async fn fetch_roles_from_db(context: &ToolContext) -> Result<Vec<AnsibleRole>, 
 /// Scan filesystem for available roles
 fn scan_roles_from_filesystem() -> Result<Vec<String>, String> {
     let roles_path = Path::new(ROLES_BASE_PATH);
-    
+
     if !roles_path.exists() {
         return Err(format!("Roles directory not found: {}", ROLES_BASE_PATH));
     }
 
     let mut roles = vec![];
-    
+
     if let Ok(entries) = std::fs::read_dir(roles_path) {
         for entry in entries.flatten() {
             if let Ok(file_type) = entry.file_type() {
@@ -114,7 +120,7 @@ fn scan_roles_from_filesystem() -> Result<Vec<String>, String> {
             }
         }
     }
-    
+
     roles.sort();
     Ok(roles)
 }
@@ -122,7 +128,7 @@ fn scan_roles_from_filesystem() -> Result<Vec<String>, String> {
 /// Get detailed information about a specific role from filesystem
 fn get_role_details_from_fs(role_name: &str) -> Result<AnsibleRole, String> {
     let role_path = PathBuf::from(ROLES_BASE_PATH).join(role_name);
-    
+
     if !role_path.exists() {
         return Err(format!("Role '{}' not found in filesystem", role_name));
     }
@@ -134,7 +140,10 @@ fn get_role_details_from_fs(role_name: &str) -> Result<AnsibleRole, String> {
         private_ports: vec![],
         variables: HashMap::new(),
         dependencies: vec![],
-        supported_os: vec!["ubuntu", "debian"].into_iter().map(|s| s.to_string()).collect(), // default
+        supported_os: vec!["ubuntu", "debian"]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect(), // default
     };
 
     // Parse README.md for description
@@ -144,11 +153,12 @@ fn get_role_details_from_fs(role_name: &str) -> Result<AnsibleRole, String> {
             // Extract first non-empty line after "Role Name" or "Description"
             for line in content.lines() {
                 let trimmed = line.trim();
-                if !trimmed.is_empty() 
+                if !trimmed.is_empty()
                     && !trimmed.starts_with('#')
                     && !trimmed.starts_with('=')
                     && !trimmed.starts_with('-')
-                    && trimmed.len() > 10 {
+                    && trimmed.len() > 10
+                {
                     role.description = Some(trimmed.to_string());
                     break;
                 }
@@ -187,16 +197,16 @@ fn parse_yaml_variable(line: &str) -> Option<(String, String)> {
     if trimmed.starts_with('#') || trimmed.starts_with("---") || trimmed.is_empty() {
         return None;
     }
-    
+
     if let Some(colon_pos) = trimmed.find(':') {
         let key = trimmed[..colon_pos].trim();
         let value = trimmed[colon_pos + 1..].trim();
-        
+
         if !key.is_empty() && !value.is_empty() {
             return Some((key.to_string(), value.to_string()));
         }
     }
-    
+
     None
 }
 
@@ -213,12 +223,15 @@ impl ToolHandler for ListAvailableRolesTool {
                 db_roles
             }
             Err(db_err) => {
-                tracing::warn!("Database fetch failed ({}), falling back to filesystem", db_err);
-                
+                tracing::warn!(
+                    "Database fetch failed ({}), falling back to filesystem",
+                    db_err
+                );
+
                 // Fallback to filesystem scan
                 let role_names = scan_roles_from_filesystem()?;
                 tracing::info!("Scanned {} roles from filesystem", role_names.len());
-                
+
                 role_names
                     .into_iter()
                     .map(|name| AnsibleRole {
@@ -506,9 +519,11 @@ impl ToolHandler for DeployRoleTool {
         // TODO: Implement actual Ansible playbook execution
         // This would interface with the Install Service or execute ansible-playbook directly
         // For now, return a placeholder response
-        
+
         let ssh_user = params.ssh_user.unwrap_or_else(|| "root".to_string());
-        let ssh_key = params.ssh_key_path.unwrap_or_else(|| "/root/.ssh/id_rsa".to_string());
+        let ssh_key = params
+            .ssh_key_path
+            .unwrap_or_else(|| "/root/.ssh/id_rsa".to_string());
 
         let result = json!({
             "status": "queued",

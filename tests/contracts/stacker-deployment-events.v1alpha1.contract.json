@@ -1,0 +1,42 @@
+{
+  "title": "stacker-deployment-events-v1alpha1",
+  "_owner": "stacker",
+  "version": "v1alpha1",
+  "response": {
+    "type": "object",
+    "required": [
+      "schemaVersion",
+      "deploymentHash",
+      "events"
+    ],
+    "properties": {
+      "schemaVersion": { "type": "string", "const": "v1alpha1" },
+      "deploymentHash": { "type": "string" },
+      "events": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "sequence",
+            "kind",
+            "classification",
+            "occurredAt",
+            "summary"
+          ],
+          "properties": {
+            "sequence": { "type": "integer" },
+            "kind": { "type": "string" },
+            "classification": { "type": "string" },
+            "occurredAt": { "type": "string", "format": "date-time" },
+            "summary": { "type": "string" },
+            "commandId": { "type": "string" },
+            "commandType": { "type": "string" },
+            "status": { "type": "string" },
+            "retryable": { "type": "boolean" },
+            "remediationClass": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

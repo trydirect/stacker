@@ -6,9 +6,11 @@
 mod common;
 
 use common::{
-    create_test_deployment, create_test_project, spawn_app_two_users, USER_A_ID, USER_A_TOKEN,
-    USER_B_TOKEN,
+    create_test_deployment, create_test_project, spawn_app_two_users,
+    spawn_app_two_users_with_user_service, USER_A_ID, USER_A_TOKEN, USER_B_TOKEN,
 };
+use wiremock::matchers::{header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Helper: insert a command directly into the DB for testing.
 async fn insert_test_command(
@@ -30,6 +32,31 @@ async fn insert_test_command(
     cmd_id
 }
 
+async fn insert_test_agent(
+    pool: &sqlx::PgPool,
+    deployment_hash: &str,
+    capabilities: serde_json::Value,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO agents (
+            deployment_hash,
+            capabilities,
+            status,
+            last_heartbeat,
+            created_at,
+            updated_at
+        )
+        VALUES ($1, $2, 'online', NOW(), NOW(), NOW())
+        "#,
+    )
+    .bind(deployment_hash)
+    .bind(capabilities)
+    .execute(pool)
+    .await
+    .expect("Failed to insert test agent");
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Enqueue — User B should NOT enqueue on User A's deployment
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -47,10 +74,7 @@ async fn test_enqueue_command_rejects_other_user() {
 
     // User B tries to enqueue a command on User A's deployment
     let resp = client
-        .post(format!(
-            "{}/api/v1/agent/commands/enqueue",
-            &app.address
-        ))
+        .post(format!("{}/api/v1/agent/commands/enqueue", &app.address))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .json(&serde_json::json!({
             "deployment_hash": "dep-a-001",
@@ -79,10 +103,7 @@ async fn test_owner_can_enqueue_on_own_deployment() {
     let _dep_id = create_test_deployment(&app.db_pool, USER_A_ID, project_id, "dep-own-001").await;
 
     let resp = client
-        .post(format!(
-            "{}/api/v1/agent/commands/enqueue",
-            &app.address
-        ))
+        .post(format!("{}/api/v1/agent/commands/enqueue", &app.address))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .json(&serde_json::json!({
             "deployment_hash": "dep-own-001",
@@ -98,6 +119,162 @@ async fn test_owner_can_enqueue_on_own_deployment() {
         "Owner should be able to enqueue. Got: {}",
         resp.status()
     );
+}
+
+#[tokio::test]
+async fn test_pipe_enqueue_rejects_agent_without_pipes_capability() {
+    let Some(app) = spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let project_id = create_test_project(&app.db_pool, USER_A_ID).await;
+    let _dep_id =
+        create_test_deployment(&app.db_pool, USER_A_ID, project_id, "dep-pipe-cap-001").await;
+
+    insert_test_agent(
+        &app.db_pool,
+        "dep-pipe-cap-001",
+        serde_json::json!(["docker", "compose", "logs"]),
+    )
+    .await;
+
+    let resp = client
+        .post(format!("{}/api/v1/agent/commands/enqueue", &app.address))
+        .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
+        .json(&serde_json::json!({
+            "deployment_hash": "dep-pipe-cap-001",
+            "command_type": "activate_pipe",
+            "parameters": {
+                "pipe_instance_id": "11111111-1111-1111-1111-111111111111",
+                "target_url": "https://example.com/hook",
+                "trigger_type": "webhook"
+            }
+        }))
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(
+        resp.status(),
+        400,
+        "Pipe enqueue should be rejected when agent lacks pipes capability. Got: {}",
+        resp.status()
+    );
+
+    let body: serde_json::Value = resp.json().await.expect("Response should be JSON");
+    let body_text = body.to_string();
+    assert!(
+        body_text.contains("does not support pipe commands"),
+        "Expected pipe capability error, got: {}",
+        body_text
+    );
+}
+
+#[tokio::test]
+async fn test_capabilities_rejects_unauthenticated() {
+    let Some(app) = spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let project_id = create_test_project(&app.db_pool, USER_A_ID).await;
+    let _dep_id = create_test_deployment(&app.db_pool, USER_A_ID, project_id, "dep-cap-anon").await;
+    insert_test_agent(
+        &app.db_pool,
+        "dep-cap-anon",
+        serde_json::json!(["docker", "compose", "logs"]),
+    )
+    .await;
+
+    let resp = client
+        .get(format!(
+            "{}/api/v1/deployments/dep-cap-anon/capabilities",
+            &app.address
+        ))
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(
+        resp.status(),
+        403,
+        "Capabilities should not be visible anonymously. Got: {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+async fn test_capabilities_rejects_other_user() {
+    let Some(app) = spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let project_id = create_test_project(&app.db_pool, USER_A_ID).await;
+    let _dep_id =
+        create_test_deployment(&app.db_pool, USER_A_ID, project_id, "dep-cap-owner").await;
+    insert_test_agent(
+        &app.db_pool,
+        "dep-cap-owner",
+        serde_json::json!(["docker", "compose", "logs"]),
+    )
+    .await;
+
+    let resp = client
+        .get(format!(
+            "{}/api/v1/deployments/dep-cap-owner/capabilities",
+            &app.address
+        ))
+        .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(
+        resp.status(),
+        404,
+        "Capabilities for another user's deployment should be hidden. Got: {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+async fn test_owner_can_read_deployment_capabilities() {
+    let Some(app) = spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let project_id = create_test_project(&app.db_pool, USER_A_ID).await;
+    let _dep_id = create_test_deployment(&app.db_pool, USER_A_ID, project_id, "dep-cap-own").await;
+    insert_test_agent(
+        &app.db_pool,
+        "dep-cap-own",
+        serde_json::json!(["docker", "compose", "logs", "pipes"]),
+    )
+    .await;
+
+    let resp = client
+        .get(format!(
+            "{}/api/v1/deployments/dep-cap-own/capabilities",
+            &app.address
+        ))
+        .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(
+        resp.status(),
+        200,
+        "Owner should read deployment capabilities. Got: {}",
+        resp.status()
+    );
+
+    let body: serde_json::Value = resp.json().await.expect("Response should be JSON");
+    assert_eq!(body["deployment_hash"], "dep-cap-own");
+    assert_eq!(body["features"]["pipes"], true);
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -117,10 +294,7 @@ async fn test_list_commands_rejects_other_user() {
 
     // User B tries to list User A's commands
     let resp = client
-        .get(format!(
-            "{}/api/v1/commands/dep-cmd-a",
-            &app.address
-        ))
+        .get(format!("{}/api/v1/commands/dep-cmd-a", &app.address))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .send()
         .await
@@ -175,15 +349,11 @@ async fn test_owner_can_list_own_commands() {
     let client = reqwest::Client::new();
 
     let project_id = create_test_project(&app.db_pool, USER_A_ID).await;
-    let _dep_id =
-        create_test_deployment(&app.db_pool, USER_A_ID, project_id, "dep-cmd-own").await;
+    let _dep_id = create_test_deployment(&app.db_pool, USER_A_ID, project_id, "dep-cmd-own").await;
     let _cmd_id = insert_test_command(&app.db_pool, "dep-cmd-own", USER_A_ID).await;
 
     let resp = client
-        .get(format!(
-            "{}/api/v1/commands/dep-cmd-own",
-            &app.address
-        ))
+        .get(format!("{}/api/v1/commands/dep-cmd-own", &app.address))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
         .await
@@ -192,10 +362,7 @@ async fn test_owner_can_list_own_commands() {
     assert!(resp.status().is_success(), "Owner should list own commands");
     let body: serde_json::Value = resp.json().await.unwrap();
     let list = body["list"].as_array().expect("Expected list field");
-    assert!(
-        !list.is_empty(),
-        "Owner should see at least one command"
-    );
+    assert!(!list.is_empty(), "Owner should see at least one command");
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -210,10 +377,7 @@ async fn test_enqueue_rejects_unauthenticated() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .post(format!(
-            "{}/api/v1/agent/commands/enqueue",
-            &app.address
-        ))
+        .post(format!("{}/api/v1/agent/commands/enqueue", &app.address))
         // No Authorization header
         .json(&serde_json::json!({
             "deployment_hash": "dep-test",
@@ -223,10 +387,12 @@ async fn test_enqueue_rejects_unauthenticated() {
         .await
         .expect("Failed to send request");
 
+    // Unauthenticated requests are handled by the 'anonym' Casbin role, which
+    // Casbin denies with 403 (not 401).
     assert_eq!(
         resp.status(),
-        401,
-        "Unauthenticated enqueue should be 401. Got: {}",
+        403,
+        "Unauthenticated enqueue should be 403. Got: {}",
         resp.status()
     );
 }
@@ -239,18 +405,91 @@ async fn test_commands_list_rejects_unauthenticated() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .get(format!(
-            "{}/api/v1/commands/some-hash",
-            &app.address
-        ))
+        .get(format!("{}/api/v1/commands/some-hash", &app.address))
         .send()
         .await
         .expect("Failed to send request");
 
+    // Unauthenticated requests are handled by the 'anonym' Casbin role, which
+    // Casbin denies with 403 (not 401).
     assert_eq!(
         resp.status(),
-        401,
-        "Unauthenticated command list should be 401. Got: {}",
+        403,
+        "Unauthenticated command list should be 403. Got: {}",
         resp.status()
     );
+}
+
+#[tokio::test]
+async fn test_owner_can_enqueue_and_list_commands_for_legacy_installation_hash() {
+    let user_service = MockServer::start().await;
+    let auth_header = format!("Bearer {}", USER_A_TOKEN);
+    Mock::given(method("GET"))
+        .and(path("/api/1.0/installations"))
+        .and(header("authorization", auth_header.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "_items": [{
+                "_id": 13830,
+                "stack_code": "openclaw",
+                "status": "completed",
+                "cloud": "hetzner",
+                "deployment_hash": "legacy-dep-13830",
+                "domain": "openclawtest1.com",
+                "_created": "2026-04-13T10:00:00Z",
+                "_updated": "2026-04-13T10:05:00Z"
+            }]
+        })))
+        .mount(&user_service)
+        .await;
+
+    // hydrate_legacy_installation fetches the detail endpoint when _id is set
+    Mock::given(method("GET"))
+        .and(path("/api/1.0/installations/13830"))
+        .and(header("authorization", auth_header.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "_id": 13830,
+            "stack_code": "openclaw",
+            "status": "completed",
+            "cloud": "hetzner",
+            "deployment_hash": "legacy-dep-13830",
+            "domain": "openclawtest1.com",
+            "_created": "2026-04-13T10:00:00Z",
+            "_updated": "2026-04-13T10:05:00Z"
+        })))
+        .mount(&user_service)
+        .await;
+
+    let Some(app) = spawn_app_two_users_with_user_service(&user_service.uri()).await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let enqueue = client
+        .post(format!("{}/api/v1/agent/commands/enqueue", &app.address))
+        .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
+        .json(&serde_json::json!({
+            "deployment_hash": "legacy-dep-13830",
+            "command_type": "status"
+        }))
+        .send()
+        .await
+        .expect("Failed to enqueue legacy command");
+
+    assert_eq!(enqueue.status(), 201);
+
+    let list = client
+        .get(format!("{}/api/v1/commands/legacy-dep-13830", &app.address))
+        .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
+        .send()
+        .await
+        .expect("Failed to list legacy commands");
+
+    assert!(
+        list.status().is_success(),
+        "Owner should list legacy commands"
+    );
+    let body: serde_json::Value = list.json().await.expect("List response should be json");
+    let commands = body["list"].as_array().expect("Expected list field");
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0]["deployment_hash"], "legacy-dep-13830");
 }

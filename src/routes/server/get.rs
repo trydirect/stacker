@@ -41,7 +41,9 @@ pub async fn list(
     db::server::fetch_by_user_with_provider(pg_pool.get_ref(), user.id.as_ref())
         .await
         .map(|servers| JsonResponse::build().set_list(servers).ok("OK"))
-        .map_err(|_err| JsonResponse::<models::ServerWithProvider>::build().internal_server_error(""))
+        .map_err(|_err| {
+            JsonResponse::<models::ServerWithProvider>::build().internal_server_error("")
+        })
 }
 
 #[tracing::instrument(name = "Get servers by project.", skip_all)]

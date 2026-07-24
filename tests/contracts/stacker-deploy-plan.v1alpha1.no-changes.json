@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "v1alpha1",
+  "deploymentHash": "deployment_state_online",
+  "operation": "deploy",
+  "target": "cloud",
+  "fingerprint": "plan-no-changes",
+  "scope": {
+    "mode": "deployment",
+    "selectedApps": ["device-api", "upload"]
+  },
+  "hasChanges": false,
+  "actions": [],
+  "reasoning": [
+    "no drift detected for the selected scope",
+    "all selected apps are already synced with their current config versions"
+  ]
+}

@@ -39,17 +39,24 @@
 //! ```
 
 pub mod admin_service;
+pub mod app_service_catalog;
 pub mod config;
 pub mod dockerhub_service;
 pub mod errors;
+pub mod hetzner;
 pub mod install_service;
 pub mod user_service;
 
 pub use admin_service::{
     extract_bearer_token, parse_jwt_claims, user_from_jwt_claims, validate_jwt_expiration,
 };
-pub use config::{ConnectorConfig, EventsConfig, PaymentServiceConfig, UserServiceConfig};
+pub use config::{
+    ConnectorConfig, EventsConfig, InstallServiceConfig, PaymentServiceConfig, UserServiceConfig,
+};
 pub use errors::ConnectorError;
+pub use hetzner::{
+    HetznerCloudClient, HetznerCloudConnector, HetznerSnapshot, HetznerSnapshotTarget,
+};
 pub use install_service::{InstallServiceClient, InstallServiceConnector};
 pub use user_service::{
     CategoryInfo, DeploymentValidationError, DeploymentValidator, MarketplaceWebhookPayload,
@@ -59,8 +66,12 @@ pub use user_service::{
 };
 
 // Re-export init functions for convenient access
+pub use app_service_catalog::{
+    fetch_catalog as fetch_app_service_catalog, resolve_server_capacity, ServerCapacity,
+};
 pub use dockerhub_service::init as init_dockerhub;
 pub use dockerhub_service::{
     DockerHubClient, DockerHubConnector, NamespaceSummary, RepositorySummary, TagSummary,
 };
+pub use install_service::init as init_install_service;
 pub use user_service::init as init_user_service;

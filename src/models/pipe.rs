@@ -112,8 +112,10 @@ impl Default for PipeStatus {
 pub struct PipeInstance {
     pub id: Uuid,
     pub template_id: Option<Uuid>,
-    pub deployment_hash: String,
+    pub deployment_hash: Option<String>,
+    pub source_adapter: Option<JsonValue>,
     pub source_container: String,
+    pub target_adapter: Option<JsonValue>,
     pub target_container: Option<String>,
     pub target_url: Option<String>,
     pub field_mapping_override: Option<JsonValue>,
@@ -122,22 +124,21 @@ pub struct PipeInstance {
     pub last_triggered_at: Option<DateTime<Utc>>,
     pub trigger_count: i64,
     pub error_count: i64,
+    pub is_local: bool,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 impl PipeInstance {
-    pub fn new(
-        deployment_hash: String,
-        source_container: String,
-        created_by: String,
-    ) -> Self {
+    pub fn new(deployment_hash: String, source_container: String, created_by: String) -> Self {
         Self {
             id: Uuid::new_v4(),
             template_id: None,
-            deployment_hash,
+            deployment_hash: Some(deployment_hash),
+            source_adapter: None,
             source_container,
+            target_adapter: None,
             target_container: None,
             target_url: None,
             field_mapping_override: None,
@@ -146,6 +147,31 @@ impl PipeInstance {
             last_triggered_at: None,
             trigger_count: 0,
             error_count: 0,
+            is_local: false,
+            created_by,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    /// Create a local pipe instance (no deployment required).
+    pub fn new_local(source_container: String, created_by: String) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            template_id: None,
+            deployment_hash: None,
+            source_adapter: None,
+            source_container,
+            target_adapter: None,
+            target_container: None,
+            target_url: None,
+            field_mapping_override: None,
+            config_override: None,
+            status: PipeStatus::Draft.to_string(),
+            last_triggered_at: None,
+            trigger_count: 0,
+            error_count: 0,
+            is_local: true,
             created_by,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -159,6 +185,16 @@ impl PipeInstance {
 
     pub fn with_target_container(mut self, container: String) -> Self {
         self.target_container = Some(container);
+        self
+    }
+
+    pub fn with_source_adapter(mut self, adapter: JsonValue) -> Self {
+        self.source_adapter = Some(adapter);
+        self
+    }
+
+    pub fn with_target_adapter(mut self, adapter: JsonValue) -> Self {
+        self.target_adapter = Some(adapter);
         self
     }
 
@@ -186,7 +222,7 @@ impl PipeInstance {
 pub struct PipeExecution {
     pub id: Uuid,
     pub pipe_instance_id: Uuid,
-    pub deployment_hash: String,
+    pub deployment_hash: Option<String>,
     pub trigger_type: String,
     pub status: String,
     pub source_data: Option<JsonValue>,
@@ -195,6 +231,7 @@ pub struct PipeExecution {
     pub error: Option<String>,
     pub duration_ms: Option<i64>,
     pub replay_of: Option<Uuid>,
+    pub is_local: bool,
     pub created_by: String,
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -203,10 +240,11 @@ pub struct PipeExecution {
 impl PipeExecution {
     pub fn new(
         pipe_instance_id: Uuid,
-        deployment_hash: String,
+        deployment_hash: Option<String>,
         trigger_type: String,
         created_by: String,
     ) -> Self {
+        let is_local = deployment_hash.is_none();
         Self {
             id: Uuid::new_v4(),
             pipe_instance_id,
@@ -219,6 +257,7 @@ impl PipeExecution {
             error: None,
             duration_ms: None,
             replay_of: None,
+            is_local,
             created_by,
             started_at: Utc::now(),
             completed_at: None,
@@ -356,15 +395,29 @@ mod tests {
             "user456".to_string(),
         );
 
-        assert_eq!(instance.deployment_hash, "deploy_abc123");
+        assert_eq!(instance.deployment_hash, Some("deploy_abc123".to_string()));
         assert_eq!(instance.source_container, "wordpress_1");
         assert_eq!(instance.status, "draft");
+        assert!(!instance.is_local);
         assert!(instance.template_id.is_none());
+        assert!(instance.source_adapter.is_none());
+        assert!(instance.target_adapter.is_none());
         assert!(instance.target_container.is_none());
         assert!(instance.target_url.is_none());
         assert_eq!(instance.trigger_count, 0);
         assert_eq!(instance.error_count, 0);
         assert!(instance.last_triggered_at.is_none());
+    }
+
+    #[test]
+    fn test_pipe_instance_new_local() {
+        let instance = PipeInstance::new_local("my_postgres".to_string(), "user789".to_string());
+
+        assert!(instance.deployment_hash.is_none());
+        assert_eq!(instance.source_container, "my_postgres");
+        assert_eq!(instance.status, "draft");
+        assert!(instance.is_local);
+        assert_eq!(instance.created_by, "user789");
     }
 
     #[test]
@@ -376,12 +429,16 @@ mod tests {
             "user789".to_string(),
         )
         .with_template(template_id)
+        .with_source_adapter(json!({"code": "imap"}))
+        .with_target_adapter(json!({"code": "smtp"}))
         .with_target_container("mailchimp_1".to_string())
         .with_target_url("https://external.api/hook".to_string())
         .with_field_mapping_override(json!({"email": "$.custom_email"}))
         .with_config_override(json!({"timeout": 30}));
 
         assert_eq!(instance.template_id, Some(template_id));
+        assert_eq!(instance.source_adapter, Some(json!({"code": "imap"})));
+        assert_eq!(instance.target_adapter, Some(json!({"code": "smtp"})));
         assert_eq!(instance.target_container, Some("mailchimp_1".to_string()));
         assert_eq!(
             instance.target_url,
@@ -404,7 +461,12 @@ mod tests {
 
         let json_str = serde_json::to_string(&instance).unwrap();
         let deserialized: PipeInstance = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(deserialized.deployment_hash, "deploy_test");
+        assert_eq!(
+            deserialized.deployment_hash,
+            Some("deploy_test".to_string())
+        );
+        assert!(deserialized.source_adapter.is_none());
+        assert!(deserialized.target_adapter.is_none());
         assert_eq!(deserialized.source_container, "container_a");
         assert_eq!(deserialized.status, "draft");
     }
@@ -416,15 +478,16 @@ mod tests {
         let instance_id = Uuid::new_v4();
         let exec = PipeExecution::new(
             instance_id,
-            "deploy_abc".to_string(),
+            Some("deploy_abc".to_string()),
             "manual".to_string(),
             "user1".to_string(),
         );
 
         assert_eq!(exec.pipe_instance_id, instance_id);
-        assert_eq!(exec.deployment_hash, "deploy_abc");
+        assert_eq!(exec.deployment_hash, Some("deploy_abc".to_string()));
         assert_eq!(exec.trigger_type, "manual");
         assert_eq!(exec.status, "running");
+        assert!(!exec.is_local);
         assert_eq!(exec.created_by, "user1");
         assert!(exec.source_data.is_none());
         assert!(exec.mapped_data.is_none());
@@ -439,7 +502,7 @@ mod tests {
     fn test_pipe_execution_complete_success() {
         let exec = PipeExecution::new(
             Uuid::new_v4(),
-            "deploy_abc".to_string(),
+            Some("deploy_abc".to_string()),
             "webhook".to_string(),
             "user1".to_string(),
         )
@@ -465,7 +528,7 @@ mod tests {
     fn test_pipe_execution_complete_failure() {
         let exec = PipeExecution::new(
             Uuid::new_v4(),
-            "deploy_abc".to_string(),
+            Some("deploy_abc".to_string()),
             "poll".to_string(),
             "user1".to_string(),
         )
@@ -483,7 +546,7 @@ mod tests {
         let original_id = Uuid::new_v4();
         let exec = PipeExecution::new(
             Uuid::new_v4(),
-            "deploy_abc".to_string(),
+            Some("deploy_abc".to_string()),
             "replay".to_string(),
             "user1".to_string(),
         )
@@ -497,7 +560,7 @@ mod tests {
     fn test_pipe_execution_serialization() {
         let exec = PipeExecution::new(
             Uuid::new_v4(),
-            "deploy_test".to_string(),
+            Some("deploy_test".to_string()),
             "manual".to_string(),
             "user_test".to_string(),
         )
@@ -509,9 +572,71 @@ mod tests {
 
         let json_str = serde_json::to_string(&exec).unwrap();
         let deserialized: PipeExecution = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(deserialized.deployment_hash, "deploy_test");
+        assert_eq!(
+            deserialized.deployment_hash,
+            Some("deploy_test".to_string())
+        );
         assert_eq!(deserialized.trigger_type, "manual");
         assert_eq!(deserialized.status, "success");
         assert_eq!(deserialized.source_data, Some(json!({"key": "value"})));
+    }
+
+    #[test]
+    fn test_pipe_instance_local_no_hash_and_is_local_flag() {
+        let instance = PipeInstance::new_local("my-app".to_string(), "user1".to_string());
+        assert!(instance.is_local);
+        assert!(instance.deployment_hash.is_none());
+        assert_eq!(instance.source_container, "my-app");
+        assert_eq!(instance.created_by, "user1");
+        assert_eq!(instance.status, "draft");
+        assert_eq!(instance.trigger_count, 0);
+        assert_eq!(instance.error_count, 0);
+    }
+
+    #[test]
+    fn test_pipe_instance_new_remote_has_hash() {
+        let instance = PipeInstance::new(
+            "abc123hash".to_string(),
+            "my-app".to_string(),
+            "user1".to_string(),
+        );
+        assert!(!instance.is_local);
+        assert_eq!(instance.deployment_hash, Some("abc123hash".to_string()));
+    }
+
+    #[test]
+    fn test_pipe_instance_local_serialization_roundtrip() {
+        let instance = PipeInstance::new_local("my-app".to_string(), "user1".to_string());
+        let json_str = serde_json::to_string(&instance).unwrap();
+        let deserialized: PipeInstance = serde_json::from_str(&json_str).unwrap();
+        assert!(deserialized.is_local);
+        assert!(deserialized.deployment_hash.is_none());
+        assert_eq!(deserialized.source_container, "my-app");
+    }
+
+    #[test]
+    fn test_pipe_execution_local_no_hash() {
+        let exec = PipeExecution::new(
+            Uuid::new_v4(),
+            None,
+            "manual".to_string(),
+            "user1".to_string(),
+        );
+        assert!(exec.is_local);
+        assert!(exec.deployment_hash.is_none());
+        assert_eq!(exec.trigger_type, "manual");
+        assert_eq!(exec.status, "running");
+    }
+
+    #[test]
+    fn test_pipe_execution_remote_has_hash() {
+        let exec = PipeExecution::new(
+            Uuid::new_v4(),
+            Some("hash123".to_string()),
+            "webhook".to_string(),
+            "user1".to_string(),
+        );
+        assert!(!exec.is_local);
+        assert_eq!(exec.deployment_hash, Some("hash123".to_string()));
     }
 }

@@ -55,9 +55,20 @@ pub fn finish_error(pb: &ProgressBar, msg: &str) {
     pb.finish_with_message(format!("✗ {}", msg));
 }
 
+/// Finish a spinner with a warning marker.
+pub fn finish_warning(pb: &ProgressBar, msg: &str) {
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("  {msg}")
+            .expect("invalid template"),
+    );
+    pb.finish_with_message(format!("⚠ {}", msg));
+}
+
 /// Update the spinner message without stopping it.
 pub fn update_message(pb: &ProgressBar, msg: &str) {
     pb.set_message(msg.to_string());
+    pb.tick();
 }
 
 // ── Status icons ─────────────────────────────────────
@@ -65,11 +76,19 @@ pub fn update_message(pb: &ProgressBar, msg: &str) {
 /// Return a status icon for a deployment status string.
 pub fn status_icon(status: &str) -> &'static str {
     match status {
+        // Deployment statuses
         "completed" | "confirmed" => "✓",
         "failed" | "error" | "cancelled" => "✗",
         "in_progress" => "⟳",
         "pending" | "wait_start" => "◷",
         "paused" | "wait_resume" => "⏸",
+        // Agent statuses
+        "online" => "●",
+        "offline" | "disconnected" => "○",
+        // Container states (Docker)
+        "running" => "▶",
+        "exited" | "stopped" | "dead" => "■",
+        "restarting" | "created" => "⟳",
         _ => "?",
     }
 }
@@ -86,10 +105,7 @@ pub fn health_spinner(total_services: usize) -> ProgressBar {
 
 /// Update health check progress.
 pub fn update_health(pb: &ProgressBar, running: usize, total: usize) {
-    pb.set_message(format!(
-        "Container health: {}/{} running",
-        running, total
-    ));
+    pb.set_message(format!("Container health: {}/{} running", running, total));
 }
 
 #[cfg(test)]
@@ -103,6 +119,13 @@ mod tests {
         assert_eq!(status_icon("in_progress"), "⟳");
         assert_eq!(status_icon("pending"), "◷");
         assert_eq!(status_icon("paused"), "⏸");
+        // Agent statuses
+        assert_eq!(status_icon("online"), "●");
+        assert_eq!(status_icon("offline"), "○");
+        // Container states
+        assert_eq!(status_icon("running"), "▶");
+        assert_eq!(status_icon("exited"), "■");
+        assert_eq!(status_icon("restarting"), "⟳");
         assert_eq!(status_icon("unknown_status"), "?");
     }
 }

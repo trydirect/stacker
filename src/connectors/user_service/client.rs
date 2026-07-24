@@ -7,9 +7,24 @@ use uuid::Uuid;
 
 use super::connector::UserServiceConnector;
 use super::types::{
-    CategoryInfo, PlanDefinition, ProductInfo, StackResponse, UserPlanInfo, UserProfile,
+    AuthorizationHandle, BillingCapability, CategoryInfo, PlanDefinition, ProductInfo,
+    StackResponse, UserPlanInfo, UserProfile,
 };
 use super::utils::is_plan_higher_tier;
+
+/// Parse the `/oauth_server/api/me` response body.
+/// The endpoint returns `{"user": {...}}`
+/// at the top level — both shapes are accepted for forward/backward compatibility.
+pub(super) fn parse_user_profile_response(text: &str) -> Result<UserProfile, serde_json::Error> {
+    #[derive(Deserialize)]
+    struct Wrapper {
+        user: UserProfile,
+    }
+    if let Ok(wrapper) = serde_json::from_str::<Wrapper>(text) {
+        return Ok(wrapper.user);
+    }
+    serde_json::from_str::<UserProfile>(text)
+}
 
 /// HTTP-based User Service client
 pub struct UserServiceClient {
@@ -25,6 +40,7 @@ impl UserServiceClient {
         let timeout = std::time::Duration::from_secs(config.timeout_secs);
         let http_client = reqwest::Client::builder()
             .timeout(timeout)
+            .pool_max_idle_per_host(0)
             .build()
             .expect("Failed to create HTTP client");
 
@@ -241,17 +257,6 @@ impl UserServiceConnector for UserServiceClient {
             req = req.header("Authorization", auth);
         }
 
-        #[derive(serde::Deserialize)]
-        struct UserMeResponse {
-            #[serde(default)]
-            plan: Option<PlanInfo>,
-        }
-
-        #[derive(serde::Deserialize)]
-        struct PlanInfo {
-            name: Option<String>,
-        }
-
         let resp = req.send().instrument(span.clone()).await.map_err(|e| {
             tracing::error!("user_has_plan error: {:?}", e);
             ConnectorError::HttpError(format!("Failed to check plan: {}", e))
@@ -263,12 +268,16 @@ impl UserServiceConnector for UserServiceClient {
                     .text()
                     .await
                     .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
-                serde_json::from_str::<UserMeResponse>(&text)
-                    .map(|response| {
-                        let user_plan = response.plan.and_then(|p| p.name).unwrap_or_default();
-                        is_plan_higher_tier(&user_plan, required_plan_name)
-                    })
-                    .map_err(|_| ConnectorError::InvalidResponse(text))
+
+                let user_plan = parse_plan_from_me_response(&text).unwrap_or_default();
+                let result = is_plan_higher_tier(&user_plan, required_plan_name);
+                tracing::info!(
+                    "user_has_plan: extracted plan_name={:?}, required={}, result={}",
+                    user_plan,
+                    required_plan_name,
+                    result
+                );
+                Ok(result)
             }
             401 | 403 => {
                 tracing::debug!(parent: &span, "User not authenticated or authorized");
@@ -299,11 +308,17 @@ impl UserServiceConnector for UserServiceClient {
         #[derive(serde::Deserialize)]
         struct PlanInfoResponse {
             #[serde(default)]
+            user: Option<UserPlanPayload>,
+        }
+
+        #[derive(serde::Deserialize, Default)]
+        struct UserPlanPayload {
+            #[serde(alias = "_id")]
+            user_id: Option<String>,
+            #[serde(default)]
             plan: Option<String>,
             #[serde(default)]
             plan_name: Option<String>,
-            #[serde(default)]
-            user_id: Option<String>,
             #[serde(default)]
             description: Option<String>,
             #[serde(default)]
@@ -325,14 +340,17 @@ impl UserServiceConnector for UserServiceClient {
             .await
             .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
         serde_json::from_str::<PlanInfoResponse>(&text)
-            .map(|info| UserPlanInfo {
-                user_id: info.user_id.unwrap_or_else(|| user_id.to_string()),
-                plan_name: info.plan.or(info.plan_name).unwrap_or_default(),
-                plan_description: info.description,
-                tier: None,
-                active: info.active.unwrap_or(true),
-                started_at: None,
-                expires_at: None,
+            .map(|info| {
+                let user = info.user.unwrap_or_default();
+                UserPlanInfo {
+                    user_id: user.user_id.unwrap_or_else(|| user_id.to_string()),
+                    plan_name: user.plan.or(user.plan_name).unwrap_or_default(),
+                    plan_description: user.description,
+                    tier: None,
+                    active: user.active.unwrap_or(true),
+                    started_at: None,
+                    expires_at: None,
+                }
             })
             .map_err(|_| ConnectorError::InvalidResponse(text))
     }
@@ -403,7 +421,7 @@ impl UserServiceConnector for UserServiceClient {
             .text()
             .await
             .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
-        serde_json::from_str::<UserProfile>(&text).map_err(|e| {
+        parse_user_profile_response(&text).map_err(|e| {
             tracing::error!("Failed to parse user profile: {:?}", e);
             ConnectorError::InvalidResponse(text)
         })
@@ -597,4 +615,181 @@ impl UserServiceConnector for UserServiceClient {
             }
         }
     }
+
+    async fn search_marketplace_templates(
+        &self,
+        user_token: &str,
+        query: Option<&str>,
+        category: Option<&str>,
+        is_marketplace: Option<bool>,
+        page: Option<u32>,
+        max_results: Option<u32>,
+    ) -> Result<Vec<serde_json::Value>, ConnectorError> {
+        UserServiceClient::search_marketplace_templates(
+            self,
+            user_token,
+            query,
+            category,
+            is_marketplace,
+            page,
+            max_results,
+        )
+        .await
+    }
+
+    async fn get_catalog_application(
+        &self,
+        user_token: &str,
+        code: &str,
+    ) -> Result<Option<serde_json::Value>, ConnectorError> {
+        let app = UserServiceClient::fetch_app_catalog(self, user_token, code).await?;
+        app.map(|app| serde_json::to_value(app))
+            .transpose()
+            .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
+    }
+
+    async fn can_charge(&self, user_token: &str) -> Result<BillingCapability, ConnectorError> {
+        let url = format!("{}/api/1.0/marketplace/billing/can-charge", self.base_url);
+        let resp = self
+            .http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", user_token))
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await.map_err(ConnectorError::from)?;
+        if !status.is_success() {
+            return Err(map_billing_error_status(status.as_u16(), &text));
+        }
+        serde_json::from_str::<BillingCapability>(&text)
+            .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
+    }
+
+    async fn authorize_install_charge(
+        &self,
+        user_token: &str,
+        template_id: &Uuid,
+        amount_minor: i64,
+        currency: &str,
+        idempotency_key: &str,
+    ) -> Result<AuthorizationHandle, ConnectorError> {
+        let url = format!("{}/api/1.0/marketplace/billing/authorize", self.base_url);
+        let payload = serde_json::json!({
+            "template_id": template_id.to_string(),
+            "amount_minor": amount_minor,
+            "currency": currency,
+            "idempotency_key": idempotency_key,
+        });
+        let resp = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", user_token))
+            .header("Idempotency-Key", idempotency_key)
+            .json(&payload)
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await.map_err(ConnectorError::from)?;
+        if !status.is_success() {
+            return Err(map_billing_error_status(status.as_u16(), &text));
+        }
+        serde_json::from_str::<AuthorizationHandle>(&text)
+            .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
+    }
+
+    async fn capture_install_charge(
+        &self,
+        auth_token: &str,
+        authorization_id: &str,
+        deployment_hash: &str,
+    ) -> Result<AuthorizationHandle, ConnectorError> {
+        let url = format!("{}/api/1.0/marketplace/billing/capture", self.base_url);
+        let payload = serde_json::json!({
+            "authorization_id": authorization_id,
+            "deployment_hash": deployment_hash,
+        });
+        let resp = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", auth_token))
+            .json(&payload)
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await.map_err(ConnectorError::from)?;
+        if !status.is_success() {
+            return Err(map_billing_error_status(status.as_u16(), &text));
+        }
+        serde_json::from_str::<AuthorizationHandle>(&text)
+            .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
+    }
+
+    async fn void_install_charge(
+        &self,
+        auth_token: &str,
+        authorization_id: &str,
+        reason: &str,
+    ) -> Result<(), ConnectorError> {
+        let url = format!("{}/api/1.0/marketplace/billing/void", self.base_url);
+        let payload = serde_json::json!({
+            "authorization_id": authorization_id,
+            "reason": reason,
+        });
+        let resp = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", auth_token))
+            .json(&payload)
+            .send()
+            .await?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let text = resp.text().await.unwrap_or_default();
+        Err(map_billing_error_status(status.as_u16(), &text))
+    }
+}
+
+/// Map a non-2xx billing response to the appropriate ConnectorError.
+/// Split out so all four billing methods share the same error semantics.
+fn map_billing_error_status(status: u16, body: &str) -> ConnectorError {
+    let body = body.to_string();
+    match status {
+        402 => ConnectorError::PaymentRequired(body),
+        409 => ConnectorError::Conflict(body),
+        401 | 403 => ConnectorError::Unauthorized(body),
+        404 => ConnectorError::NotFound(body),
+        429 => ConnectorError::RateLimited(body),
+        500..=599 => ConnectorError::ServiceUnavailable(body),
+        _ => ConnectorError::HttpError(format!("billing http {}: {}", status, body)),
+    }
+}
+
+/// Parse the `/oauth_server/api/me` response text and extract the user's plan name.
+/// Accepts both `{"user": {"plan": {"name": "..."}}}` (service-account token)
+/// and `{"plan": {"name": "..."}}` (user token) response shapes.
+fn parse_plan_from_me_response(text: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct PlanInfo {
+        name: Option<String>,
+    }
+    #[derive(serde::Deserialize)]
+    struct UserInfo {
+        #[serde(default)]
+        plan: Option<PlanInfo>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Wrapper {
+        user: UserInfo,
+    }
+
+    if let Ok(wrapper) = serde_json::from_str::<Wrapper>(text) {
+        return wrapper.user.plan.and_then(|p| p.name);
+    }
+
+    serde_json::from_str::<UserInfo>(text)
+        .ok()
+        .and_then(|u| u.plan)
+        .and_then(|p| p.name)
 }

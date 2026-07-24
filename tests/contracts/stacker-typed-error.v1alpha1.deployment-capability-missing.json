@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "v1alpha1",
+  "code": "deployment_capability_missing",
+  "message": "Deployment agent does not support compose logs",
+  "retryable": false,
+  "remediationClass": "capability",
+  "context": {
+    "deploymentHash": "deployment_demo",
+    "capability": "compose_logs"
+  }
+}

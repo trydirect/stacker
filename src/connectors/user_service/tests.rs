@@ -1,9 +1,10 @@
+use mockito::{Matcher, Server};
 use serde_json::json;
 use uuid::Uuid;
 
 use super::mock;
 use super::utils::is_plan_higher_tier;
-use super::{CategoryInfo, ProductInfo, UserProfile, UserServiceConnector};
+use super::{CategoryInfo, ProductInfo, UserProfile, UserServiceClient, UserServiceConnector};
 
 /// Test that get_user_profile returns user with products list
 #[tokio::test]
@@ -120,7 +121,10 @@ async fn test_mock_user_has_plan() {
         .unwrap();
     assert!(has_enterprise);
 
-    let has_basic = connector.user_has_plan("user_123", "basic", None).await.unwrap();
+    let has_basic = connector
+        .user_has_plan("user_123", "basic", None)
+        .await
+        .unwrap();
     assert!(has_basic);
 }
 
@@ -219,6 +223,196 @@ async fn test_mock_list_stacks() {
     assert_eq!(stacks[0].user_id, "user_123");
 }
 
+#[tokio::test]
+async fn test_get_installation_by_hash_uses_lightweight_route() {
+    let mut server = Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/install/by-deployment-hash/dep-hash-123")
+        .match_header("authorization", "Bearer test_token")
+        .match_header("accept", Matcher::Any)
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "_id": 13876,
+                "stack_code": "caddy",
+                "status": "completed",
+                "cloud": "htz",
+                "deployment_hash": "dep-hash-123",
+                "domain": "example.com",
+                "server_ip": "192.0.2.10",
+                "_created": "2026-04-25T08:53:54+00:00",
+                "_updated": "2026-04-25T08:54:04+00:00"
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let client = UserServiceClient::new_public(&server.url());
+    let installation = client
+        .get_installation_by_hash("test_token", "dep-hash-123")
+        .await
+        .unwrap();
+
+    assert_eq!(installation.id, Some(13876));
+    assert_eq!(installation.stack_code.as_deref(), Some("caddy"));
+    assert_eq!(
+        installation.deployment_hash.as_deref(),
+        Some("dep-hash-123")
+    );
+}
+
+#[tokio::test]
+async fn test_search_marketplace_templates_sends_query_upstream_and_filters_results() {
+    let mut server = Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/applications/")
+        .match_header("authorization", "Bearer test_token")
+        .match_query(Matcher::AllOf(vec![
+            Matcher::UrlEncoded("q".to_string(), "dify".to_string()),
+            Matcher::UrlEncoded("max_results".to_string(), "10".to_string()),
+        ]))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "_items": [
+                    {
+                        "name": "OpenClaw preconfigured",
+                        "code": "openclaw-preconfigured",
+                        "description": "Experimental OpenClaw setup",
+                        "is_from_marketplace": true
+                    },
+                    {
+                        "name": "Dify",
+                        "code": "dify",
+                        "description": "Dify AI workflow platform",
+                        "is_from_marketplace": true
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let client = UserServiceClient::new_public(&server.url());
+    let results = client
+        .search_marketplace_templates("test_token", Some("dify"), None, None, None, Some(10))
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("code").and_then(|value| value.as_str()),
+        Some("dify")
+    );
+}
+
+#[tokio::test]
+async fn test_get_installation_falls_back_to_legacy_install_route() {
+    let mut server = Server::new_async().await;
+    let _api_mock = server
+        .mock("GET", "/api/1.0/installations/66")
+        .match_header("authorization", "Bearer test_token")
+        .with_status(404)
+        .with_header("content-type", "application/json")
+        .with_body(json!({ "_status": "ERR" }).to_string())
+        .create_async()
+        .await;
+    let _legacy_mock = server
+        .mock("GET", "/install/66")
+        .match_header("authorization", "Bearer test_token")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "_status": "OK",
+                "installation": {
+                    "id": 66,
+                    "status": "completed",
+                    "deployment_hash": "dep-hash-66",
+                    "request_dump": {
+                        "stack_code": "coolify",
+                        "provider": "htz",
+                        "commonDomain": "example.com",
+                        "server_ip": "192.0.2.66"
+                    }
+                },
+                "agent_config": {
+                    "token": "agent-token"
+                }
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let client = UserServiceClient::new_public(&server.url());
+    let installation = client.get_installation("test_token", 66).await.unwrap();
+
+    assert_eq!(installation.id, Some(66));
+    assert_eq!(installation.stack_code.as_deref(), Some("coolify"));
+    assert_eq!(installation.cloud.as_deref(), Some("htz"));
+    assert_eq!(installation.domain.as_deref(), Some("example.com"));
+    assert_eq!(installation.server_ip.as_deref(), Some("192.0.2.66"));
+    assert!(installation.agent_config.is_some());
+}
+
+#[tokio::test]
+async fn test_get_subscription_plan_accepts_user_profile_fixture() {
+    let mut server = Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/oauth_server/api/me")
+        .match_header("authorization", "Bearer test_token")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "user": {
+                    "_id": "user-1",
+                    "owner": 410,
+                    "role": "root",
+                    "email": "user@example.com",
+                    "plan": {
+                        "supported_stacks": {},
+                        "date_end": null,
+                        "name": "Team",
+                        "code": "plan-individual-monthly",
+                        "includes": [
+                            { "code": "deploys-unlimited", "name": "Unlimited deploys" },
+                            { "code": "providers-all", "name": "All providers" },
+                            { "code": "support-email", "name": "Email support" }
+                        ],
+                        "team": "TryDirect Team",
+                        "billing_email": "billing@try.direct",
+                        "date_of_purchase": "08 January 2026",
+                        "currency": "USD",
+                        "price": "79.00",
+                        "period": "month",
+                        "date_start": "08 January 2026",
+                        "active": true,
+                        "billing_id": "sub_123"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let client = UserServiceClient::new_public(&server.url());
+    let plan = client.get_subscription_plan("test_token").await.unwrap();
+
+    assert_eq!(plan.name.as_deref(), Some("Team"));
+    assert_eq!(plan.code.as_deref(), Some("plan-individual-monthly"));
+    assert_eq!(plan.price.as_deref(), Some("79.00"));
+    assert_eq!(plan.currency.as_deref(), Some("USD"));
+    assert_eq!(plan.period.as_deref(), Some("month"));
+    assert!(plan.includes.unwrap().is_array());
+}
+
 /// Test plan hierarchy comparison
 #[test]
 fn test_is_plan_higher_tier_hierarchy() {
@@ -290,6 +484,34 @@ fn test_user_profile_deserialization() {
     assert_eq!(profile.products.len(), 2);
     assert_eq!(profile.products[0].code, "professional");
     assert_eq!(profile.products[1].external_id, Some(42));
+}
+
+/// Regression test: the user service returns `{"user": {...}}`. The HTTP
+/// layer must unwrap that envelope before deserializing into `UserProfile`.
+#[test]
+fn test_parse_user_profile_unwraps_user_envelope() {
+    use super::client::parse_user_profile_response;
+    let body = r#"{
+        "user": {
+            "email": "alice@example.com",
+            "plan": {"name": "Free"},
+            "products": []
+        }
+    }"#;
+    let profile = parse_user_profile_response(body).unwrap();
+    assert_eq!(profile.email, "alice@example.com");
+}
+
+#[test]
+fn test_parse_user_profile_accepts_unwrapped_body() {
+    use super::client::parse_user_profile_response;
+    let body = r#"{
+        "email": "bob@example.com",
+        "plan": null,
+        "products": []
+    }"#;
+    let profile = parse_user_profile_response(body).unwrap();
+    assert_eq!(profile.email, "bob@example.com");
 }
 
 /// Test ProductInfo with optional fields

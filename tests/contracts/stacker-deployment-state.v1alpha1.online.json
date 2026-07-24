@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "v1alpha1",
+  "project": {
+    "id": 17,
+    "identity": "syncopia",
+    "name": "Syncopia"
+  },
+  "deployment": {
+    "id": 31,
+    "deploymentHash": "deployment_state_online",
+    "status": "healthy",
+    "runtime": "runc"
+  },
+  "agent": {
+    "id": "89f4c7dd-f41c-4f43-ae0d-e164d8f2f77d",
+    "status": "online",
+    "version": "0.1.9",
+    "lastHeartbeat": "2026-05-17T08:00:00Z",
+    "capabilities": ["docker", "compose", "logs"],
+    "features": {
+      "compose": true,
+      "kataRuntime": false,
+      "backup": false,
+      "pipes": false,
+      "proxyCredentialsVault": true
+    }
+  },
+  "runtime": {
+    "composePath": "/home/trydirect/project/docker-compose.yml",
+    "envPath": "/home/trydirect/project/.env"
+  },
+  "apps": [
+    {
+      "code": "device-api",
+      "name": "Device API",
+      "enabled": true,
+      "configVersion": 3,
+      "vaultSyncVersion": 3,
+      "configHash": "cfg-device-api"
+    },
+    {
+      "code": "upload",
+      "name": "Upload",
+      "enabled": true,
+      "configVersion": 2,
+      "vaultSyncVersion": 2,
+      "configHash": "cfg-upload"
+    }
+  ],
+  "drift": {
+    "hasDrift": false,
+    "summary": "no drift detected"
+  },
+  "lastCommand": {
+    "type": "deploy_app",
+    "status": "success",
+    "finishedAt": "2026-05-17T08:05:00Z"
+  }
+}

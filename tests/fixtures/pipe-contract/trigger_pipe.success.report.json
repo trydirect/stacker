@@ -1,0 +1,31 @@
+{
+  "type": "trigger_pipe",
+  "deployment_hash": "dep-123",
+  "pipe_instance_id": "11111111-1111-1111-1111-111111111111",
+  "success": true,
+  "source_data": {
+    "user": {
+      "email": "dev@try.direct"
+    }
+  },
+  "mapped_data": {
+    "email": "dev@try.direct"
+  },
+  "target_response": {
+    "transport": "http",
+    "status": 200,
+    "delivered": true,
+    "body": {
+      "accepted": true
+    }
+  },
+  "triggered_at": "2026-01-01T00:10:00Z",
+  "trigger_type": "manual",
+  "lifecycle": {
+    "state": "active",
+    "activated_at": "2026-01-01T00:00:00Z",
+    "last_triggered_at": "2026-01-01T00:10:00Z",
+    "trigger_count": 1,
+    "last_updated_at": "2026-01-01T00:10:00Z"
+  }
+}

@@ -1,6 +1,12 @@
+use std::sync::Arc;
+
+use crate::configuration::Settings;
+use crate::connectors::user_service::UserServiceConnector;
 use crate::db;
+use crate::helpers::redact::{redact_sensitive_json_values, redact_yaml_string};
 use crate::helpers::JsonResponse;
-use actix_web::{get, web, HttpResponse, Responder, Result};
+use crate::models;
+use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder, Result};
 use sqlx::PgPool;
 
 #[tracing::instrument(name = "List approved templates (public)", skip_all)]
@@ -11,9 +17,11 @@ pub async fn list_handler(
 ) -> Result<impl Responder> {
     let category = query.category.as_deref();
     let tag = query.tag.as_deref();
+    let search = query.q.as_deref();
     let sort = query.sort.as_deref();
+    let limit = query.limit.map(i64::from);
 
-    db::marketplace::list_approved(pg_pool.get_ref(), category, tag, sort)
+    db::marketplace::list_approved(pg_pool.get_ref(), category, tag, search, sort, limit)
         .await
         .map_err(|err| {
             JsonResponse::<Vec<crate::models::StackTemplate>>::build().internal_server_error(err)
@@ -123,10 +131,7 @@ pub async fn download_stack_handler(
         .content_type("application/gzip")
         .insert_header((
             "Content-Disposition",
-            format!(
-                "attachment; filename=\"stack-{}.tar.gz\"",
-                purchase_token
-            ),
+            format!("attachment; filename=\"stack-{}.tar.gz\"", purchase_token),
         ))
         .body("stack archive placeholder"))
 }
@@ -135,7 +140,254 @@ pub async fn download_stack_handler(
 pub struct TemplateListQuery {
     pub category: Option<String>,
     pub tag: Option<String>,
+    pub q: Option<String>,
     pub sort: Option<String>, // recent|popular|rating
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct VendorPageQuery {
+    pub sort: Option<String>, // recent|popular|rating
+}
+
+#[tracing::instrument(name = "Get public vendor page", skip_all)]
+#[get("/{vendor}")]
+pub async fn vendor_detail_handler(
+    path: web::Path<(String,)>,
+    query: web::Query<VendorPageQuery>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let identifier = path.into_inner().0;
+    let vendor = db::marketplace::get_public_vendor_profile(pg_pool.get_ref(), &identifier)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| JsonResponse::<serde_json::Value>::build().not_found("Vendor not found"))?;
+
+    let templates = db::marketplace::list_approved_by_creator(
+        pg_pool.get_ref(),
+        &vendor.creator_user_id,
+        query.sort.as_deref(),
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    Ok(JsonResponse::build()
+        .set_item(models::PublicVendorPage { vendor, templates })
+        .ok("OK"))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct DeployCompleteRequest {
+    pub deployment_hash: String,
+    pub purchase_token: String,
+    pub server_ip: Option<String>,
+    pub stack_id: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PurchaseTokenValidationResponse {
+    valid: bool,
+    stack_id: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DeployCompleteResponse {
+    success: bool,
+    template_id: String,
+    deployment_hash: String,
+    deploy_count_incremented: bool,
+}
+
+fn require_stacker_service_auth(req: &HttpRequest) -> Result<()> {
+    let expected_token = std::env::var("STACKER_SERVICE_TOKEN").unwrap_or_default();
+    if expected_token.trim().is_empty() {
+        return Err(JsonResponse::<serde_json::Value>::build()
+            .internal_server_error("STACKER_SERVICE_TOKEN is not configured"));
+    }
+
+    let expected_bearer = format!("Bearer {}", expected_token);
+    let actual_service_header = req
+        .headers()
+        .get("x-stacker-service-token")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    let actual_header = req
+        .headers()
+        .get(actix_web::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+
+    if actual_service_header != expected_token && actual_header != expected_bearer {
+        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Invalid service token"));
+    }
+
+    Ok(())
+}
+
+async fn validate_purchase_token_with_user_service(
+    settings: &Settings,
+    purchase_token: &str,
+) -> Result<PurchaseTokenValidationResponse> {
+    let service_token = std::env::var("STACKER_SERVICE_TOKEN").unwrap_or_default();
+    let endpoint = format!(
+        "{}/marketplace/purchase-token/validate",
+        settings.user_service_url.trim_end_matches('/')
+    );
+
+    let response = reqwest::Client::new()
+        .post(endpoint)
+        .bearer_auth(service_token)
+        .json(&serde_json::json!({ "token": purchase_token }))
+        .send()
+        .await
+        .map_err(|err| {
+            tracing::error!("purchase-token validation request failed: {:?}", err);
+            JsonResponse::<serde_json::Value>::build()
+                .internal_server_error("Purchase token validation request failed")
+        })?;
+
+    if !response.status().is_success() {
+        tracing::warn!(
+            "purchase-token validation rejected by User Service: status={}",
+            response.status()
+        );
+        return Err(JsonResponse::<serde_json::Value>::build()
+            .forbidden("Purchase token validation failed"));
+    }
+
+    let payload = response
+        .json::<PurchaseTokenValidationResponse>()
+        .await
+        .map_err(|err| {
+            tracing::error!(
+                "purchase-token validation response decode failed: {:?}",
+                err
+            );
+            JsonResponse::<serde_json::Value>::build()
+                .internal_server_error("Invalid purchase token validation response")
+        })?;
+
+    if !payload.valid {
+        return Err(
+            JsonResponse::<serde_json::Value>::build().forbidden("Purchase token is not valid")
+        );
+    }
+
+    Ok(payload)
+}
+
+#[tracing::instrument(name = "Marketplace deploy complete callback", skip_all)]
+#[post("/deploy-complete")]
+pub async fn deploy_complete_handler(
+    req: HttpRequest,
+    body: web::Json<DeployCompleteRequest>,
+    pg_pool: web::Data<PgPool>,
+    settings: web::Data<Settings>,
+    user_service: web::Data<Arc<dyn UserServiceConnector>>,
+) -> Result<impl Responder> {
+    require_stacker_service_auth(&req)?;
+
+    let payload = body.into_inner();
+    tracing::info!(
+        deployment_hash = %payload.deployment_hash,
+        stack_id = %payload.stack_id,
+        server_ip = ?payload.server_ip,
+        "marketplace deploy-complete callback received"
+    );
+    if payload.deployment_hash.trim().is_empty()
+        || payload.purchase_token.trim().is_empty()
+        || payload.stack_id.trim().is_empty()
+    {
+        return Err(JsonResponse::<serde_json::Value>::build()
+            .bad_request("deployment_hash, purchase_token, and stack_id are required"));
+    }
+
+    let validation =
+        validate_purchase_token_with_user_service(settings.get_ref(), &payload.purchase_token)
+            .await?;
+    let validated_stack_id = validation.stack_id.unwrap_or_default();
+    if validated_stack_id != payload.stack_id {
+        return Err(JsonResponse::<serde_json::Value>::build()
+            .forbidden("stack_id does not match the validated purchase token"));
+    }
+
+    let template_id = uuid::Uuid::parse_str(&validated_stack_id)
+        .map_err(|_| JsonResponse::<serde_json::Value>::build().bad_request("Invalid stack_id"))?;
+    let deploy_count_incremented = db::marketplace::record_deploy_complete_once(
+        pg_pool.get_ref(),
+        &template_id,
+        &payload.deployment_hash,
+        payload.server_ip.as_deref(),
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    let Some(deploy_count_incremented) = deploy_count_incremented else {
+        return Err(
+            JsonResponse::<serde_json::Value>::build().not_found("Marketplace template not found")
+        );
+    };
+
+    // Per-install billing: capture the previously-authorized charge now that
+    // the deploy has confirmed successful. Lookup is by deployment_hash on the
+    // authorization row (populated at install time); non-per_install rows
+    // simply won't match and this becomes a no-op. Non-fatal on capture
+    // failure — the sweeper reconciles stragglers.
+    match db::marketplace_billing::find_by_deployment_hash(
+        pg_pool.get_ref(),
+        &payload.deployment_hash,
+    )
+    .await
+    {
+        Ok(Some(auth_row)) if auth_row.status == "authorized" => {
+            let service_token = std::env::var("STACKER_SERVICE_TOKEN").unwrap_or_default();
+            match user_service
+                .capture_install_charge(
+                    &service_token,
+                    &auth_row.authorization_id,
+                    &payload.deployment_hash,
+                )
+                .await
+            {
+                Ok(_handle) => {
+                    if let Err(err) = db::marketplace_billing::mark_captured(
+                        pg_pool.get_ref(),
+                        &auth_row.authorization_id,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            "mark_captured DB write failed for {}: {}",
+                            auth_row.authorization_id,
+                            err
+                        );
+                    }
+                }
+                Err(err) => tracing::warn!(
+                    "capture_install_charge failed for {} (deploy already succeeded, sweeper will retry): {}",
+                    auth_row.authorization_id,
+                    err
+                ),
+            }
+        }
+        Ok(_) => {} // no per_install authorization for this deployment
+        Err(err) => tracing::warn!(
+            "find_by_deployment_hash failed for {}: {}",
+            payload.deployment_hash,
+            err
+        ),
+    }
+
+    let response = DeployCompleteResponse {
+        success: true,
+        template_id: template_id.to_string(),
+        deployment_hash: payload.deployment_hash,
+        deploy_count_incremented,
+    };
+
+    Ok(JsonResponse::build()
+        .set_item(response)
+        .ok("Deploy complete processed"))
 }
 
 #[tracing::instrument(name = "Get template by slug (public)", skip_all)]
@@ -148,14 +400,65 @@ pub async fn detail_handler(
 
     match db::marketplace::get_by_slug_with_latest(pg_pool.get_ref(), &slug).await {
         Ok((template, version)) => {
+            // Increment view_count when template is viewed
+            let _ = db::marketplace::increment_view_count(pg_pool.get_ref(), &template.id).await;
+
             let mut payload = serde_json::json!({
                 "template": template,
             });
-            if let Some(ver) = version {
+            if let Some(mut ver) = version {
+                if ver.definition_format.as_deref() == Some("yaml") {
+                    if let serde_json::Value::String(yaml) = &ver.stack_definition {
+                        ver.stack_definition = serde_json::Value::String(redact_yaml_string(yaml));
+                    }
+                } else {
+                    redact_sensitive_json_values(&mut ver.stack_definition);
+                }
                 payload["latest_version"] = serde_json::to_value(ver).unwrap();
             }
             Ok(JsonResponse::build().set_item(Some(payload)).ok("OK"))
         }
-        Err(err) => Err(JsonResponse::<serde_json::Value>::build().not_found(err)),
+        Err(db::marketplace::SlugLookupError::Internal) => {
+            Err(JsonResponse::<serde_json::Value>::build()
+                .internal_server_error("Internal Server Error"))
+        }
+        Err(db::marketplace::SlugLookupError::NotFound) => {
+            Err(JsonResponse::<serde_json::Value>::build()
+                .not_found(format!("Template '{}' not found", slug)))
+        }
     }
+}
+
+/// Increment view_count for a marketplace template
+#[tracing::instrument(name = "Increment template view count", skip_all)]
+#[get("/{id}/increment-view-count")]
+pub async fn increment_view_count_handler(
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let template_id_str = path.into_inner().0;
+    let template_id = uuid::Uuid::parse_str(&template_id_str)
+        .map_err(|_| JsonResponse::<serde_json::Value>::build().bad_request("Invalid UUID"))?;
+
+    db::marketplace::increment_view_count(pg_pool.get_ref(), &template_id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))
+        .map(|_| JsonResponse::<serde_json::Value>::build().ok("View count incremented"))
+}
+
+/// Increment deploy_count for a marketplace template
+#[tracing::instrument(name = "Increment template deploy count", skip_all)]
+#[get("/{id}/increment-deploy-count")]
+pub async fn increment_deploy_count_handler(
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let template_id_str = path.into_inner().0;
+    let template_id = uuid::Uuid::parse_str(&template_id_str)
+        .map_err(|_| JsonResponse::<serde_json::Value>::build().bad_request("Invalid UUID"))?;
+
+    db::marketplace::increment_deploy_count(pg_pool.get_ref(), &template_id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))
+        .map(|_| JsonResponse::<serde_json::Value>::build().ok("Deploy count incremented"))
 }

@@ -91,7 +91,7 @@ pub async fn agent_audit_query_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::agent_audit_log::{AuditBatchItem, AuditBatchRequest};
+    use crate::models::agent_audit_log::AuditBatchRequest;
 
     #[test]
     fn test_audit_batch_request_deserializes() {

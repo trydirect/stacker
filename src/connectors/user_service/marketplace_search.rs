@@ -22,6 +22,18 @@ impl UserServiceClient {
         if let Some(max_results) = max_results {
             query_parts.push(format!("max_results={}", max_results));
         }
+        if let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) {
+            query_parts.push(format!("q={}", urlencoding::encode(query)));
+        }
+        if let Some(category) = category
+            .map(str::trim)
+            .filter(|category| !category.is_empty())
+        {
+            query_parts.push(format!("category={}", urlencoding::encode(category)));
+        }
+        if let Some(is_marketplace) = is_marketplace {
+            query_parts.push(format!("is_from_marketplace={}", is_marketplace));
+        }
 
         if !query_parts.is_empty() {
             url.push('?');

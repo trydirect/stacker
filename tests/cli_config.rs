@@ -86,6 +86,45 @@ deploy:
 }
 
 #[test]
+fn test_config_show_resolved_displays_paths_without_values() {
+    let dir = TempDir::new().unwrap();
+    let config = r#"
+name: resolved-test
+version: "1.0"
+env_file: docker/prod/.env
+env:
+  S3_BUCKET: superbucket
+app:
+  type: static
+  path: "."
+deploy:
+  target: server
+"#;
+    fs::write(dir.path().join("stacker.yml"), config).unwrap();
+
+    stacker_cmd()
+        .current_dir(dir.path())
+        .args(["config", "show", "--resolved"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("local_env_file: docker/prod/.env"))
+        .stdout(predicate::str::contains(
+            "remote_runtime_env_file: /home/trydirect/project/.env",
+        ))
+        .stdout(predicate::str::contains("compose_env_file: .env"))
+        .stdout(predicate::str::contains(
+            "config_hash: unavailable_until_deploy",
+        ))
+        .stdout(predicate::str::contains("runtime_env_contract_version: v1"))
+        .stdout(predicate::str::contains(
+            "runtime_env_contract_order: lowest_to_highest",
+        ))
+        .stdout(predicate::str::contains("name: base"))
+        .stdout(predicate::str::contains("name: compose"))
+        .stdout(predicate::str::contains("superbucket").not());
+}
+
+#[test]
 fn test_config_show_missing_file_returns_error() {
     let dir = TempDir::new().unwrap();
 
@@ -96,11 +135,11 @@ fn test_config_show_missing_file_returns_error() {
         .failure();
 }
 
-      #[test]
-      fn test_config_example_prints_full_reference() {
-          let dir = TempDir::new().unwrap();
+#[test]
+fn test_config_example_prints_full_reference() {
+    let dir = TempDir::new().unwrap();
 
-          stacker_cmd()
+    stacker_cmd()
         .current_dir(dir.path())
         .args(["config", "example"])
         .assert()
@@ -109,4 +148,4 @@ fn test_config_show_missing_file_returns_error() {
         .stdout(predicate::str::contains("monitoring:"))
         .stdout(predicate::str::contains("hooks:"))
         .stdout(predicate::str::contains("deploy:"));
-      }
+}

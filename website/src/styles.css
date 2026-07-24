@@ -226,6 +226,7 @@ code {
   width: 36px;
   height: 36px;
   object-fit: contain;
+  vertical-align: middle;
 }
 
 .nav__logo-text {
@@ -509,6 +510,10 @@ code {
   font-family: var(--font-mono);
   font-size: 0.875rem;
   line-height: 1.8;
+}
+
+.hero__terminal .terminal__body {
+  min-height: 200px;
 }
 
 .terminal--compact .terminal__body {

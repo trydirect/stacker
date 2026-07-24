@@ -25,6 +25,10 @@ pub struct User {
     pub email: String,
     #[serde(rename = "email_confirmed")]
     pub email_confirmed: bool,
+    #[serde(default, alias = "mfaVerified", alias = "mfa_verified")]
+    pub mfa_verified: Option<bool>,
+    #[serde(default, alias = "twoFactorVerified", alias = "two_factor_verified")]
+    pub two_factor_verified: Option<bool>,
     pub social: Option<bool>,
     pub website: Option<String>,
     pub currency: Value,
@@ -135,6 +139,8 @@ impl TryInto<UserModel> for UserForm {
             email: self.user.email,
             email_confirmed: self.user.email_confirmed,
             role: self.user.role,
+            mfa_verified: self.user.mfa_verified.unwrap_or(false)
+                || self.user.two_factor_verified.unwrap_or(false),
             access_token: None,
         })
     }

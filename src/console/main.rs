@@ -93,10 +93,24 @@ enum StackerCommands {
         org: Option<String>,
         #[arg(long)]
         domain: Option<String>,
-        /// API base URL (default: https://api.try.direct)
-        #[arg(long = "auth-url", visible_alias = "api-url")]
+        /// User Service auth URL (or set STACKER_AUTH_URL)
+        #[arg(long = "auth-url")]
         auth_url: Option<String>,
+        /// Stacker API base URL (or set STACKER_URL)
+        #[arg(long = "server-url", visible_alias = "api-url")]
+        server_url: Option<String>,
+        /// Authenticate via browser OAuth2 flow (opens a sign-in URL)
+        #[arg(long)]
+        browser: bool,
+        /// OAuth provider code for browser login: gc (Google), gh (GitHub), … (default: gc)
+        #[arg(long, value_name = "PROVIDER")]
+        provider: Option<String>,
+        /// Log in with username/password instead of browser OAuth (skips browser flow)
+        #[arg(short = 'u', long, value_name = "EMAIL")]
+        user: Option<String>,
     },
+    /// Show the saved login and current project's recorded deploy identity
+    Whoami {},
     /// Initialize a new stacker project (stacker.yml + Dockerfile)
     Init {
         #[arg(long, value_name = "TYPE")]
@@ -107,6 +121,12 @@ enum StackerCommands {
         with_ai: bool,
         #[arg(long)]
         with_cloud: bool,
+        /// Generate stacker.yml from a GitHub repository (owner/repo or full URL)
+        #[arg(short = 'g', long, value_name = "URL")]
+        from_github: Option<String>,
+        /// Overwrite existing stacker.yml if present
+        #[arg(short = 'f', long)]
+        force: bool,
         /// AI provider: openai, anthropic, ollama, custom (default: ollama)
         #[arg(long, value_name = "PROVIDER")]
         ai_provider: Option<String>,
@@ -116,6 +136,9 @@ enum StackerCommands {
         /// AI API key (or set OPENAI_API_KEY / ANTHROPIC_API_KEY env var)
         #[arg(long, value_name = "KEY")]
         ai_api_key: Option<String>,
+        /// AI endpoint URL (e.g. http://localhost:11434 for Ollama)
+        #[arg(long, value_name = "URL")]
+        ai_endpoint: Option<String>,
     },
     /// Build & deploy the stack
     Deploy {
@@ -130,6 +153,9 @@ enum StackerCommands {
         /// Project name on the Stacker server
         #[arg(long, value_name = "NAME")]
         project: Option<String>,
+        /// Deployment environment/profile to use
+        #[arg(long = "env", visible_alias = "environment", value_name = "NAME")]
+        environment: Option<String>,
         /// Name of saved cloud credential to reuse
         #[arg(long, value_name = "KEY_NAME")]
         key: Option<String>,
@@ -139,6 +165,12 @@ enum StackerCommands {
         /// Name of saved server to reuse
         #[arg(long, value_name = "SERVER_NAME")]
         server: Option<String>,
+    },
+    /// Attach this directory to an existing deployment from the dashboard
+    Connect {
+        /// Handoff token or full handoff URL copied from the dashboard
+        #[arg(long, value_name = "TOKEN_OR_URL")]
+        handoff: String,
     },
     /// Show container logs
     Logs {
@@ -162,6 +194,13 @@ enum StackerCommands {
     Destroy {
         #[arg(long)]
         volumes: bool,
+        #[arg(long, short = 'y')]
+        confirm: bool,
+    },
+    /// Roll back a marketplace deployment to a prior template version
+    Rollback {
+        #[arg(long, value_name = "VERSION")]
+        version: String,
         #[arg(long, short = 'y')]
         confirm: bool,
     },
@@ -202,6 +241,9 @@ enum StackerConfigCommands {
     Show {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
+        /// Show paths, hash/version metadata, and contributing layers without values
+        #[arg(long)]
+        resolved: bool,
     },
     /// Print a full commented `stacker.yml` reference example
     Example,
@@ -231,10 +273,47 @@ enum StackerConfigCommands {
 
 #[derive(Debug, Subcommand)]
 enum StackerConfigSetupCommands {
+    /// Register a server (intranet or remote) as the deploy target
+    Server {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Server IP address or hostname (e.g. 192.168.100.245)
+        #[arg(long, value_name = "IP")]
+        ip: Option<String>,
+        /// SSH user (default: root)
+        #[arg(long, value_name = "USER")]
+        user: Option<String>,
+        /// SSH port (default: 22)
+        #[arg(long, value_name = "PORT")]
+        port: Option<u16>,
+        /// Path to SSH private key
+        #[arg(long, value_name = "PATH")]
+        key: Option<String>,
+    },
     /// Configure cloud deployment defaults in stacker.yml
     Cloud {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
+    },
+    /// Configure AI defaults in stacker.yml
+    Ai {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// AI provider: openai, anthropic, ollama, custom
+        #[arg(long, value_name = "PROVIDER")]
+        provider: Option<String>,
+        /// AI endpoint, e.g. http://localhost:11434 for Ollama
+        #[arg(long, value_name = "URL")]
+        endpoint: Option<String>,
+        /// AI model name, e.g. llama3.1
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
+        /// AI request timeout in seconds
+        #[arg(long, value_name = "SECONDS")]
+        timeout: Option<u64>,
+        /// AI task name. Repeat or use comma-separated values.
+        #[arg(long = "task", value_name = "TASK")]
+        tasks: Vec<String>,
     },
     /// Advanced/debug: generate remote orchestrator payload and wire stacker.yml
     RemotePayload {
@@ -269,8 +348,14 @@ enum StackerProxyCommands {
         domain: String,
         #[arg(long)]
         upstream: Option<String>,
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
         ssl: Option<String>,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        deployment: Option<String>,
     },
     /// Detect existing reverse-proxy containers
     Detect {
@@ -294,7 +379,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     get_command(command)?.call()
 }
 
-fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::CallableTrait>, String> {
+fn get_command(
+    command: Commands,
+) -> Result<Box<dyn stacker::console::commands::CallableTrait>, String> {
     match command {
         Commands::AppClient { command } => match command {
             AppClientCommands::New { user_id } => Ok(Box::new(
@@ -341,22 +428,42 @@ fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::
                 org,
                 domain,
                 auth_url,
+                server_url,
+                browser,
+                provider,
+                user,
             } => Ok(Box::new(
-                stacker::console::commands::cli::login::LoginCommand::new(org, domain, auth_url),
+                stacker::console::commands::cli::login::LoginCommand::new(
+                    org,
+                    domain,
+                    auth_url,
+                    server_url,
+                    browser,
+                    provider,
+                    user,
+                ),
+            )),
+            StackerCommands::Whoami {} => Ok(Box::new(
+                stacker::console::commands::cli::whoami::WhoamiCommand::new(),
             )),
             StackerCommands::Init {
                 app_type,
                 with_proxy,
                 with_ai,
                 with_cloud,
+                from_github,
+                force,
                 ai_provider,
                 ai_model,
                 ai_api_key,
+                ai_endpoint,
             } => Ok(Box::new(
                 stacker::console::commands::cli::init::InitCommand::new(
                     app_type, with_proxy, with_ai, with_cloud,
                 )
-                .with_ai_options(ai_provider, ai_model, ai_api_key),
+                .with_from_github(from_github)
+                .with_force(force)
+                .with_ai_options(ai_provider, ai_model, ai_api_key, ai_endpoint),
             )),
             StackerCommands::Deploy {
                 target,
@@ -364,6 +471,7 @@ fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::
                 dry_run,
                 force_rebuild,
                 project,
+                environment,
                 key,
                 key_id,
                 server,
@@ -375,7 +483,11 @@ fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::
                     force_rebuild,
                 )
                 .with_remote_overrides(project, key, server)
+                .with_environment(environment)
                 .with_key_id(key_id),
+            )),
+            StackerCommands::Connect { handoff } => Ok(Box::new(
+                stacker::console::commands::cli::connect::ConnectCommand::new(handoff),
             )),
             StackerCommands::Logs {
                 service,
@@ -393,12 +505,15 @@ fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::
             StackerCommands::Destroy { volumes, confirm } => Ok(Box::new(
                 stacker::console::commands::cli::destroy::DestroyCommand::new(volumes, confirm),
             )),
+            StackerCommands::Rollback { version, confirm } => Ok(Box::new(
+                stacker::console::commands::cli::rollback::RollbackCommand::new(version, confirm),
+            )),
             StackerCommands::Config { command: cfg_cmd } => match cfg_cmd {
                 StackerConfigCommands::Validate { file } => Ok(Box::new(
                     stacker::console::commands::cli::config::ConfigValidateCommand::new(file),
                 )),
-                StackerConfigCommands::Show { file } => Ok(Box::new(
-                    stacker::console::commands::cli::config::ConfigShowCommand::new(file),
+                StackerConfigCommands::Show { file, resolved } => Ok(Box::new(
+                    stacker::console::commands::cli::config::ConfigShowCommand::new(file, resolved),
                 )),
                 StackerConfigCommands::Example => Ok(Box::new(
                     stacker::console::commands::cli::config::ConfigExampleCommand::new(),
@@ -413,8 +528,25 @@ fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::
                     stacker::console::commands::cli::config::ConfigUnlockCommand::new(file),
                 )),
                 StackerConfigCommands::Setup { command } => match command {
+                    StackerConfigSetupCommands::Server { file, ip, user, port, key } => Ok(Box::new(
+                        stacker::console::commands::cli::config::ConfigSetupServerCommand::new(
+                            file, ip, user, port, key,
+                        ),
+                    )),
                     StackerConfigSetupCommands::Cloud { file } => Ok(Box::new(
                         stacker::console::commands::cli::config::ConfigSetupCloudCommand::new(file),
+                    )),
+                    StackerConfigSetupCommands::Ai {
+                        file,
+                        provider,
+                        endpoint,
+                        model,
+                        timeout,
+                        tasks,
+                    } => Ok(Box::new(
+                        stacker::console::commands::cli::config::ConfigSetupAiCommand::new(
+                            file, provider, endpoint, model, timeout, tasks,
+                        ),
                     )),
                     StackerConfigSetupCommands::RemotePayload { file, out } => Ok(Box::new(
                         stacker::console::commands::cli::config::ConfigSetupRemotePayloadCommand::new(file, out),
@@ -423,7 +555,7 @@ fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::
             },
             StackerCommands::Ai { command: ai_cmd, write } => match ai_cmd {
                 None => Ok(Box::new(
-                    stacker::console::commands::cli::ai::AiChatCommand::new(write),
+                    stacker::console::commands::cli::ai::AiChatCommand::new(write, None, None),
                 )),
                 Some(StackerAiCommands::Ask {
                     question,
@@ -443,9 +575,12 @@ fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::
                     domain,
                     upstream,
                     ssl,
+                    force,
+                    json,
+                    deployment,
                 } => Ok(Box::new(
                     stacker::console::commands::cli::proxy::ProxyAddCommand::new(
-                        domain, upstream, ssl,
+                        domain, upstream, ssl, force, json, deployment,
                     ),
                 )),
                 StackerProxyCommands::Detect { json, deployment } => Ok(Box::new(

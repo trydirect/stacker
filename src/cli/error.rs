@@ -2,6 +2,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use crate::cli::config_parser::DeployTarget;
+use crate::services::TypedErrorEnvelope;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // CliError — unified error hierarchy for all CLI operations
@@ -10,27 +11,60 @@ use crate::cli::config_parser::DeployTarget;
 #[derive(Debug)]
 pub enum CliError {
     // Config errors
-    ConfigNotFound { path: PathBuf },
-    ConfigParseFailed { source: serde_yaml::Error },
+    ConfigNotFound {
+        path: PathBuf,
+    },
+    ConfigParseFailed {
+        source: serde_yaml::Error,
+    },
     ConfigValidation(String),
-    EnvVarNotFound { var_name: String },
+    EnvVarNotFound {
+        var_name: String,
+    },
 
     // Detection errors
-    DetectionFailed { path: PathBuf, reason: String },
+    DetectionFailed {
+        path: PathBuf,
+        reason: String,
+    },
 
     // Generator errors
     GeneratorError(String),
-    DockerfileExists { path: PathBuf },
+    DockerfileExists {
+        path: PathBuf,
+    },
 
     // Deployment errors
-    DeployFailed { target: DeployTarget, reason: String },
-    LoginRequired { feature: String },
+    DeployFailed {
+        target: DeployTarget,
+        reason: String,
+    },
+    /// A deploy hook (`pre_build`, `post_deploy`, `on_failure`) was
+    /// rejected BEFORE execution by the security scanner or the trust
+    /// policy — path traversal, malicious content pattern, or
+    /// marketplace-untrusted origin without `--allow-untrusted-hooks`.
+    ///
+    /// This is distinct from `DeployFailed` on purpose: the deploy
+    /// pipeline treats runtime hook failures (non-zero exit code) as
+    /// best-effort warnings, but security rejections MUST propagate so
+    /// a hostile stacker.yml can't turn a successful deploy into a
+    /// silent security-check bypass. See `Phase 6b` in the audit.
+    HookRejected {
+        hook_name: String,
+        reason: String,
+    },
+    LoginRequired {
+        feature: String,
+    },
     CloudProviderMissing,
     ServerHostMissing,
 
     // Runtime errors
     ContainerRuntimeUnavailable,
-    CommandFailed { command: String, exit_code: i32 },
+    CommandFailed {
+        command: String,
+        exit_code: i32,
+    },
 
     // Auth errors
     AuthFailed(String),
@@ -38,21 +72,38 @@ pub enum CliError {
 
     // AI errors
     AiNotConfigured,
-    AiProviderError { provider: String, message: String },
+    AiProviderError {
+        provider: String,
+        message: String,
+    },
 
     // Proxy errors
     ProxyConfigFailed(String),
 
+    // Feature-scoped command errors
+    FeatureFailed {
+        feature: String,
+        reason: String,
+    },
+
     // Secrets/env errors
-    EnvFileNotFound { path: std::path::PathBuf },
-    SecretKeyNotFound { key: String },
+    EnvFileNotFound {
+        path: std::path::PathBuf,
+    },
+    SecretKeyNotFound {
+        key: String,
+    },
 
     // Marketplace errors
     MarketplaceFailed(String),
 
     // Agent errors
-    AgentNotFound { deployment_hash: String },
-    AgentOffline { deployment_hash: String },
+    AgentNotFound {
+        deployment_hash: String,
+    },
+    AgentOffline {
+        deployment_hash: String,
+    },
     AgentCommandTimeout {
         command_id: String,
         /// Human-readable label for the command (e.g. "Fetching containers")
@@ -61,10 +112,14 @@ pub enum CliError {
         last_status: String,
         deployment_hash: String,
     },
-    AgentCommandFailed { command_id: String, error: String },
+    AgentCommandFailed {
+        command_id: String,
+        error: String,
+    },
 
     // IO errors
     Io(std::io::Error),
+    Typed(TypedErrorEnvelope),
 }
 
 impl fmt::Display for CliError {
@@ -101,6 +156,9 @@ impl fmt::Display for CliError {
             }
             Self::DeployFailed { target, reason } => {
                 write!(f, "Deployment to {target} failed: {reason}")
+            }
+            Self::HookRejected { hook_name, reason } => {
+                write!(f, "Hook '{hook_name}' rejected before execution: {reason}")
             }
             Self::LoginRequired { feature } => {
                 write!(f, "Login required for {feature}. Run: stacker login")
@@ -144,6 +202,9 @@ impl fmt::Display for CliError {
             }
             Self::ProxyConfigFailed(msg) => {
                 write!(f, "Proxy configuration failed: {msg}")
+            }
+            Self::FeatureFailed { feature, reason } => {
+                write!(f, "{feature} failed: {reason}")
             }
             Self::EnvFileNotFound { path } => {
                 write!(f, "Env file not found: {}", path.display())
@@ -208,6 +269,9 @@ impl fmt::Display for CliError {
             Self::Io(err) => {
                 write!(f, "I/O error: {err}")
             }
+            Self::Typed(envelope) => {
+                write!(f, "{}", envelope.to_json())
+            }
         }
     }
 }
@@ -226,6 +290,12 @@ impl From<serde_yaml::Error> for CliError {
     }
 }
 
+impl From<TypedErrorEnvelope> for CliError {
+    fn from(envelope: TypedErrorEnvelope) -> Self {
+        Self::Typed(envelope)
+    }
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // ValidationIssue — structured validation results
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -241,7 +311,11 @@ pub struct ValidationIssue {
 impl fmt::Display for ValidationIssue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.field {
-            Some(field) => write!(f, "[{}] {}: {} ({})", self.severity, self.code, self.message, field),
+            Some(field) => write!(
+                f,
+                "[{}] {}: {} ({})",
+                self.severity, self.code, self.message, field
+            ),
             None => write!(f, "[{}] {}: {}", self.severity, self.code, self.message),
         }
     }
@@ -292,10 +366,7 @@ mod tests {
             msg.contains("Configuration file not found"),
             "Expected 'Configuration file not found' in: {msg}"
         );
-        assert!(
-            msg.contains("/tmp/stacker.yml"),
-            "Expected path in: {msg}"
-        );
+        assert!(msg.contains("/tmp/stacker.yml"), "Expected path in: {msg}");
     }
 
     #[test]
@@ -304,10 +375,7 @@ mod tests {
             var_name: "DB_PASSWORD".to_string(),
         };
         let msg = format!("{err}");
-        assert!(
-            msg.contains("DB_PASSWORD"),
-            "Expected var name in: {msg}"
-        );
+        assert!(msg.contains("DB_PASSWORD"), "Expected var name in: {msg}");
     }
 
     #[test]
@@ -400,7 +468,10 @@ mod tests {
         assert!(msg.contains("[error]"), "Expected severity in: {msg}");
         assert!(msg.contains("E001"), "Expected code in: {msg}");
         assert!(msg.contains("port conflict"), "Expected message in: {msg}");
-        assert!(msg.contains("services[0].ports"), "Expected field in: {msg}");
+        assert!(
+            msg.contains("services[0].ports"),
+            "Expected field in: {msg}"
+        );
     }
 
     #[test]

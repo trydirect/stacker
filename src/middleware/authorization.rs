@@ -50,7 +50,6 @@ pub async fn try_new(db_connection_address: String) -> Result<CasbinService, Err
 
     Ok(casbin_service)
 }
-
 fn start_policy_reloader(
     casbin_service: CasbinService,
     policy_pool: PgPool,

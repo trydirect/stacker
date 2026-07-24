@@ -2,7 +2,6 @@ mod common;
 
 /// IDOR security tests for /cloud endpoints.
 /// Verify that User B cannot list, read, update, or delete User A's cloud credentials.
-
 #[tokio::test]
 async fn test_list_clouds_only_returns_own() {
     let Some(app) = common::spawn_app_two_users().await else {
@@ -12,13 +11,14 @@ async fn test_list_clouds_only_returns_own() {
     // User A creates 2 clouds, User B creates 1
     let _ca1 = common::create_test_cloud(&app.db_pool, common::USER_A_ID, "a-htz", "htz").await;
     let _ca2 = common::create_test_cloud(&app.db_pool, common::USER_A_ID, "a-aws", "aws").await;
-    let _cb1 = common::create_test_cloud(&app.db_pool, common::USER_B_ID, "b-do", "digitalocean").await;
+    let _cb1 =
+        common::create_test_cloud(&app.db_pool, common::USER_B_ID, "b-do", "digitalocean").await;
 
     let client = reqwest::Client::new();
 
     // User A lists → sees exactly 2
     let resp = client
-        .get(&format!("{}/cloud", &app.address))
+        .get(format!("{}/cloud", &app.address))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
@@ -30,7 +30,7 @@ async fn test_list_clouds_only_returns_own() {
 
     // User B lists → sees exactly 1
     let resp = client
-        .get(&format!("{}/cloud", &app.address))
+        .get(format!("{}/cloud", &app.address))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -52,7 +52,7 @@ async fn test_get_cloud_rejects_other_user() {
 
     // User B tries to GET User A's cloud → 404
     let resp = client
-        .get(&format!("{}/cloud/{}", &app.address, cloud_id))
+        .get(format!("{}/cloud/{}", &app.address, cloud_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -75,7 +75,7 @@ async fn test_update_cloud_rejects_other_user() {
 
     // User B tries to PUT User A's cloud → 400 (bad_request = IDOR guard)
     let resp = client
-        .put(&format!("{}/cloud/{}", &app.address, cloud_id))
+        .put(format!("{}/cloud/{}", &app.address, cloud_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .header("Content-Type", "application/json")
         .body(r#"{"provider":"htz","cloud_token":"stolen","save_token":true}"#)
@@ -100,7 +100,7 @@ async fn test_delete_cloud_rejects_other_user() {
 
     // User B tries to DELETE User A's cloud → 400 (bad_request = IDOR guard)
     let resp = client
-        .delete(&format!("{}/cloud/{}", &app.address, cloud_id))
+        .delete(format!("{}/cloud/{}", &app.address, cloud_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -123,7 +123,7 @@ async fn test_owner_can_access_own_cloud() {
 
     // User A GETs own cloud → 200
     let resp = client
-        .get(&format!("{}/cloud/{}", &app.address, cloud_id))
+        .get(format!("{}/cloud/{}", &app.address, cloud_id))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await

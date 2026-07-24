@@ -9,6 +9,8 @@ pub struct LinkAgentRequest {
     pub session_token: String,
     pub deployment_id: String,
     pub server_fingerprint: serde_json::Value,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -17,6 +19,17 @@ pub struct LinkAgentResponse {
     pub agent_token: String,
     pub deployment_hash: String,
     pub dashboard_url: Option<String>,
+}
+
+fn normalized_status_panel_capabilities(capabilities: &[String]) -> serde_json::Value {
+    let mut normalized = capabilities.to_vec();
+    if !normalized
+        .iter()
+        .any(|capability| capability == "status_panel")
+    {
+        normalized.push("status_panel".to_string());
+    }
+    serde_json::json!(normalized)
 }
 
 /// Generate a secure random agent token (86 characters)
@@ -59,25 +72,24 @@ pub async fn link_handler(
         })?;
 
     // 2. Verify user owns the requested deployment
-    let deployment = db::deployment::fetch_by_deployment_hash(
-        api_pool.get_ref(),
-        &payload.deployment_id,
-    )
-    .await
-    .map_err(|e| {
-        helpers::JsonResponse::<LinkAgentResponse>::build()
-            .internal_server_error(format!("Database error: {}", e))
-    })?;
+    let deployment =
+        db::deployment::fetch_by_deployment_hash(api_pool.get_ref(), &payload.deployment_id)
+            .await
+            .map_err(|e| {
+                helpers::JsonResponse::<LinkAgentResponse>::build()
+                    .internal_server_error(format!("Database error: {}", e))
+            })?;
 
     let deployment = deployment.ok_or_else(|| {
-        helpers::JsonResponse::<LinkAgentResponse>::build()
-            .not_found("Deployment not found")
+        helpers::JsonResponse::<LinkAgentResponse>::build().not_found("Deployment not found")
     })?;
 
-    // Check ownership: deployment.user_id must match the authenticated user
-    if deployment.user_id.as_deref() != Some(&profile.email) {
+    // Check ownership: deployment.user_id stores the queue_key (profile.id),
+    // not the email. See UserProfile.id doc comment in types.rs.
+    if deployment.user_id.as_deref() != Some(&profile.id) {
         tracing::warn!(
             user = %profile.email,
+            user_id = %profile.id,
             deployment_user = ?deployment.user_id,
             deployment_hash = %payload.deployment_id,
             "User attempted to link to deployment they don't own"
@@ -91,8 +103,7 @@ pub async fn link_handler(
         db::agent::fetch_by_deployment_hash(agent_pool.as_ref(), &deployment.deployment_hash)
             .await
             .map_err(|e| {
-                helpers::JsonResponse::<LinkAgentResponse>::build()
-                    .internal_server_error(e)
+                helpers::JsonResponse::<LinkAgentResponse>::build().internal_server_error(e)
             })?;
 
     let (agent, agent_token) = if let Some(mut existing) = existing_agent {
@@ -103,11 +114,11 @@ pub async fn link_handler(
 
         // Update system_info with new fingerprint
         existing.system_info = Some(payload.server_fingerprint.clone());
+        existing.capabilities = Some(normalized_status_panel_capabilities(&payload.capabilities));
         let existing = db::agent::update(agent_pool.as_ref(), existing)
             .await
             .map_err(|e| {
-                helpers::JsonResponse::<LinkAgentResponse>::build()
-                    .internal_server_error(e)
+                helpers::JsonResponse::<LinkAgentResponse>::build().internal_server_error(e)
             })?;
 
         // Fetch existing token from Vault or regenerate
@@ -133,15 +144,14 @@ pub async fn link_handler(
         // Create new agent
         let mut agent = models::Agent::new(deployment.deployment_hash.clone());
         agent.system_info = Some(payload.server_fingerprint.clone());
-        agent.capabilities = Some(serde_json::json!(["status_panel"]));
+        agent.capabilities = Some(normalized_status_panel_capabilities(&payload.capabilities));
 
         let agent_token = generate_agent_token();
 
         let saved_agent = db::agent::insert(agent_pool.as_ref(), agent)
             .await
             .map_err(|e| {
-                helpers::JsonResponse::<LinkAgentResponse>::build()
-                    .internal_server_error(e)
+                helpers::JsonResponse::<LinkAgentResponse>::build().internal_server_error(e)
             })?;
 
         // Store token in Vault
@@ -206,4 +216,31 @@ pub async fn link_handler(
             deployment.id
         )),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalized_status_panel_capabilities;
+
+    #[test]
+    fn normalizes_status_panel_capabilities_without_duplicates() {
+        let normalized = normalized_status_panel_capabilities(&[
+            "docker".to_string(),
+            "status_panel".to_string(),
+            "npm_credential_source=vault".to_string(),
+        ]);
+
+        let capabilities: Vec<String> =
+            serde_json::from_value(normalized).expect("capability array");
+        assert_eq!(
+            capabilities
+                .iter()
+                .filter(|cap| *cap == "status_panel")
+                .count(),
+            1
+        );
+        assert!(capabilities
+            .iter()
+            .any(|cap| cap == "npm_credential_source=vault"));
+    }
 }

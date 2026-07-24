@@ -98,7 +98,14 @@ deploy:
 
     stacker_cmd()
         .current_dir(dir.path())
-        .args(["deploy", "--target", "local", "--file", "custom.yml", "--dry-run"])
+        .args([
+            "deploy",
+            "--target",
+            "local",
+            "--file",
+            "custom.yml",
+            "--dry-run",
+        ])
         .assert()
         .success();
 }
@@ -106,6 +113,7 @@ deploy:
 #[test]
 fn test_deploy_cloud_without_credentials_fails() {
     let dir = TempDir::new().unwrap();
+    let empty_config_home = TempDir::new().unwrap();
     let config = r#"
 name: cloud-app
 version: "1.0"
@@ -124,10 +132,15 @@ deploy:
 
     stacker_cmd()
         .current_dir(dir.path())
+        .env("XDG_CONFIG_HOME", empty_config_home.path())
+        .env("HOME", empty_config_home.path())
         .args(["deploy", "--target", "cloud"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("login").or(predicate::str::contains("credential").or(predicate::str::contains("Login"))));
+        .stderr(
+            predicate::str::contains("login")
+                .or(predicate::str::contains("credential").or(predicate::str::contains("Login"))),
+        );
 }
 
 #[test]

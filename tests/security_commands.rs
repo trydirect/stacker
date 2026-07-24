@@ -8,14 +8,10 @@ use reqwest::StatusCode;
 
 /// Seed a deployment and insert a command for the given user.
 /// Returns (deployment_hash, command_id).
-async fn seed_deployment_with_command(
-    pool: &sqlx::PgPool,
-    user_id: &str,
-) -> (String, String) {
+async fn seed_deployment_with_command(pool: &sqlx::PgPool, user_id: &str) -> (String, String) {
     let project_id = common::create_test_project(pool, user_id).await;
     let hash = format!("dpl-{}", uuid::Uuid::new_v4());
-    let _deployment_id =
-        common::create_test_deployment(pool, user_id, project_id, &hash).await;
+    let _deployment_id = common::create_test_deployment(pool, user_id, project_id, &hash).await;
 
     let command_id = format!("cmd-{}", uuid::Uuid::new_v4());
     sqlx::query(
@@ -39,7 +35,9 @@ async fn seed_deployment_with_command(
 /// Currently the endpoint performs no ownership check on the deployment.
 #[tokio::test]
 async fn test_list_commands_rejects_other_user() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let (hash_a, _cmd_id) = seed_deployment_with_command(&app.db_pool, common::USER_A_ID).await;
@@ -72,7 +70,9 @@ async fn test_list_commands_rejects_other_user() {
 /// User B should NOT be able to fetch a specific command from User A's deployment.
 #[tokio::test]
 async fn test_get_command_detail_rejects_other_user() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let (hash_a, cmd_id) = seed_deployment_with_command(&app.db_pool, common::USER_A_ID).await;
@@ -98,7 +98,9 @@ async fn test_get_command_detail_rejects_other_user() {
 
 #[tokio::test]
 async fn test_owner_can_list_own_commands() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let (hash_a, cmd_id) = seed_deployment_with_command(&app.db_pool, common::USER_A_ID).await;
@@ -115,7 +117,8 @@ async fn test_owner_can_list_own_commands() {
     let body: serde_json::Value = resp.json().await.unwrap();
     let list = body["list"].as_array().expect("list should be an array");
     assert!(
-        list.iter().any(|c| c["command_id"].as_str() == Some(&cmd_id)),
+        list.iter()
+            .any(|c| c["command_id"].as_str() == Some(&cmd_id)),
         "Owner should see their own command in the list"
     );
 

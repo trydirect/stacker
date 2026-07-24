@@ -5,6 +5,7 @@ use actix_web::{delete, get, post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Request body for uploading an existing SSH key pair
 #[derive(Debug, Deserialize)]
@@ -35,6 +36,25 @@ pub struct GenerateKeyResponseWithPrivate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub private_key: Option<String>,
     pub fingerprint: Option<String>,
+    pub message: String,
+}
+
+/// Request body for authorizing a caller-provided public key on the server
+#[derive(Debug, Deserialize)]
+pub struct AuthorizePublicKeyRequest {
+    pub public_key: String,
+    pub user: Option<String>,
+    pub port: Option<u16>,
+}
+
+/// Response for public key authorization
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AuthorizePublicKeyResponse {
+    pub server_id: i32,
+    pub srv_ip: String,
+    pub ssh_user: String,
+    pub ssh_port: u16,
+    pub authorized: bool,
     pub message: String,
 }
 
@@ -107,7 +127,10 @@ pub async fn generate_key(
             (Some(path), "active", "SSH key generated and stored in Vault successfully. Copy the public key to your server's authorized_keys.".to_string(), false)
         }
         Err(e) => {
-            tracing::warn!("Failed to store SSH key in Vault (continuing without Vault): {}", e);
+            tracing::warn!(
+                "Failed to store SSH key in Vault (continuing without Vault): {}",
+                e
+            );
             (None, "active", format!("SSH key generated successfully, but could not be stored in Vault ({}). Please save the private key shown below - it will not be shown again!", e), true)
         }
     };
@@ -119,7 +142,11 @@ pub async fn generate_key(
 
     let response = GenerateKeyResponseWithPrivate {
         public_key: public_key.clone(),
-        private_key: if include_private_key { Some(private_key) } else { None },
+        private_key: if include_private_key {
+            Some(private_key)
+        } else {
+            None
+        },
         fingerprint: None, // TODO: Calculate fingerprint
         message,
     };
@@ -239,6 +266,116 @@ pub async fn get_public_key(
     Ok(JsonResponse::build().set_item(Some(response)).ok("OK"))
 }
 
+/// Authorize a caller-provided public key on the remote server.
+///
+/// POST /server/{id}/ssh-key/authorize-public-key
+///
+/// The caller sends only public key material. Stacker retrieves the server's
+/// Vault-managed private key and uses it server-side to append the provided
+/// public key to `authorized_keys` idempotently.
+#[tracing::instrument(name = "Authorize public SSH key for server.", skip_all)]
+#[post("/{id}/ssh-key/authorize-public-key")]
+pub async fn authorize_public_key(
+    path: web::Path<(i32,)>,
+    form: web::Json<AuthorizePublicKeyRequest>,
+    user: web::ReqData<Arc<models::User>>,
+    pg_pool: web::Data<PgPool>,
+    vault_client: web::Data<VaultClient>,
+) -> Result<impl Responder> {
+    use crate::helpers::ssh_client;
+
+    let server_id = path.0;
+    let server = verify_server_ownership(pg_pool.get_ref(), server_id, &user.id).await?;
+
+    if server.key_status != "active" {
+        return Err(
+            JsonResponse::<AuthorizePublicKeyResponse>::build().bad_request(format!(
+                "SSH key status is '{}', not active",
+                server.key_status
+            )),
+        );
+    }
+
+    if server.vault_key_path.is_none() {
+        return Err(JsonResponse::<AuthorizePublicKeyResponse>::build().bad_request(
+            "SSH key is not stored in Vault. Regenerate the server SSH key before authorizing a backup key.",
+        ));
+    }
+
+    let public_key = form.public_key.trim();
+    ssh_key::PublicKey::from_openssh(public_key).map_err(|e| {
+        JsonResponse::<AuthorizePublicKeyResponse>::build()
+            .bad_request(format!("Invalid public key format: {}", e))
+    })?;
+
+    let srv_ip = server
+        .srv_ip
+        .as_deref()
+        .filter(|ip| !ip.trim().is_empty())
+        .ok_or_else(|| {
+            JsonResponse::<AuthorizePublicKeyResponse>::build()
+                .bad_request("Server IP address not configured")
+        })?
+        .to_string();
+
+    let private_key = vault_client
+        .get_ref()
+        .fetch_ssh_key(&user.id, server_id)
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                "Failed to fetch SSH key from Vault while authorizing backup key: {}",
+                e
+            );
+            JsonResponse::<AuthorizePublicKeyResponse>::build()
+                .bad_request("SSH key could not be retrieved from secure storage")
+        })?;
+
+    let ssh_user = form
+        .user
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| server.ssh_user.clone())
+        .unwrap_or_else(|| "root".to_string());
+    let ssh_port = form
+        .port
+        .unwrap_or_else(|| server.ssh_port.unwrap_or(22) as u16);
+
+    ssh_client::authorize_public_key(
+        &srv_ip,
+        ssh_port,
+        &ssh_user,
+        &private_key,
+        public_key,
+        Duration::from_secs(4),
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!(
+            "Failed to authorize backup public key for server {}: {}",
+            server_id,
+            e
+        );
+        JsonResponse::<AuthorizePublicKeyResponse>::build()
+            .bad_request(format!("Failed to authorize public key on server: {}", e))
+    })?;
+
+    let response = AuthorizePublicKeyResponse {
+        server_id,
+        srv_ip,
+        ssh_user,
+        ssh_port,
+        authorized: true,
+        message: "Public key authorized successfully".to_string(),
+    };
+
+    Ok(JsonResponse::build()
+        .set_item(Some(response))
+        .ok("Public key authorized"))
+}
+
 /// Response for SSH validation with full system check
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ValidateResponse {
@@ -286,7 +423,7 @@ pub struct ValidateResponse {
 
 /// Validate SSH connection for a server
 /// POST /server/{id}/ssh-key/validate
-/// 
+///
 /// This endpoint:
 /// 1. Verifies the server exists and belongs to the user
 /// 2. Checks the SSH key is active and retrieves it from Vault
@@ -359,7 +496,10 @@ pub async fn validate_key(
     {
         Ok(key) => key,
         Err(e) => {
-            tracing::warn!("Failed to fetch SSH key from Vault during validation: {}", e);
+            tracing::warn!(
+                "Failed to fetch SSH key from Vault during validation: {}",
+                e
+            );
             let response = ValidateResponse {
                 valid: false,
                 server_id,
@@ -382,7 +522,10 @@ pub async fn validate_key(
 
     // Get SSH connection parameters
     let ssh_port = server.ssh_port.unwrap_or(22) as u16;
-    let ssh_user = server.ssh_user.clone().unwrap_or_else(|| "root".to_string());
+    let ssh_user = server
+        .ssh_user
+        .clone()
+        .unwrap_or_else(|| "root".to_string());
 
     // Perform SSH connection and system check
     let check_result = ssh_client::check_server(
@@ -399,7 +542,9 @@ pub async fn validate_key(
     let message = if valid {
         check_result.summary()
     } else {
-        check_result.error.unwrap_or_else(|| "SSH validation failed".to_string())
+        check_result
+            .error
+            .unwrap_or_else(|| "SSH validation failed".to_string())
     };
 
     let response = ValidateResponse {
@@ -410,7 +555,11 @@ pub async fn validate_key(
         connected: check_result.connected,
         authenticated: check_result.authenticated,
         // Include vault public key in response when auth fails (helps debug key mismatch)
-        vault_public_key: if !check_result.authenticated { vault_public_key } else { None },
+        vault_public_key: if !check_result.authenticated {
+            vault_public_key
+        } else {
+            None
+        },
         username: check_result.username,
         disk_total_gb: check_result.disk_total_gb,
         disk_available_gb: check_result.disk_available_gb,

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -221,6 +221,14 @@ pub struct AppSource {
     /// section (app-level wins on conflict).
     #[serde(default)]
     pub environment: HashMap<String, String>,
+
+    /// Override the container CMD.  Maps to `command:` in docker-compose.
+    #[serde(default)]
+    pub command: Option<String>,
+
+    /// Docker compose healthcheck for this service.
+    #[serde(default)]
+    pub healthcheck: Option<ComposeHealthcheck>,
 }
 
 fn default_app_path() -> PathBuf {
@@ -241,6 +249,29 @@ fn default_build_context() -> String {
     ".".to_string()
 }
 
+fn default_health_timeout_compose() -> String {
+    "30s".to_string()
+}
+
+fn default_health_retries_compose() -> u32 {
+    3
+}
+
+/// Docker compose healthcheck definition for a service.
+///
+/// This is distinct from `MonitoringConfig::healthcheck`, which is an
+/// app-level HTTP endpoint polling configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ComposeHealthcheck {
+    pub test: String,
+    #[serde(default = "default_health_interval")]
+    pub interval: String,
+    #[serde(default = "default_health_timeout_compose")]
+    pub timeout: String,
+    #[serde(default = "default_health_retries_compose")]
+    pub retries: u32,
+}
+
 /// Additional container service alongside the app.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceDefinition {
@@ -258,6 +289,14 @@ pub struct ServiceDefinition {
 
     #[serde(default)]
     pub depends_on: Vec<String>,
+
+    /// Override the container CMD.  Maps to `command:` in docker-compose.
+    #[serde(default)]
+    pub command: Option<String>,
+
+    /// Docker compose healthcheck for this service.
+    #[serde(default)]
+    pub healthcheck: Option<ComposeHealthcheck>,
 }
 
 fn deserialize_services<'de, D>(deserializer: D) -> Result<Vec<ServiceDefinition>, D::Error>
@@ -268,8 +307,9 @@ where
 
     match value {
         serde_yaml::Value::Null => Ok(Vec::new()),
-        serde_yaml::Value::Sequence(_) => serde_yaml::from_value(value)
-            .map_err(serde::de::Error::custom),
+        serde_yaml::Value::Sequence(_) => {
+            serde_yaml::from_value(value).map_err(serde::de::Error::custom)
+        }
         serde_yaml::Value::Mapping(map) => {
             let mut services = Vec::new();
 
@@ -362,6 +402,41 @@ pub struct RegistryConfig {
     pub server: Option<String>,
 }
 
+/// Per-target deployment profile in multi-target configs.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DeployProfileConfig {
+    #[serde(default)]
+    pub environment: Option<String>,
+
+    #[serde(default)]
+    pub compose_file: Option<PathBuf>,
+
+    #[serde(default)]
+    pub deployment_hash: Option<String>,
+
+    #[serde(default)]
+    pub cloud: Option<CloudConfig>,
+
+    #[serde(default)]
+    pub server: Option<ServerConfig>,
+
+    #[serde(default)]
+    pub registry: Option<RegistryConfig>,
+}
+
+impl DeployProfileConfig {
+    fn inferred_target(&self, profile_name: &str) -> Result<DeployTarget, CliError> {
+        match (self.server.is_some(), self.cloud.is_some()) {
+            (true, true) => Err(CliError::ConfigValidation(format!(
+                "deploy.targets.{profile_name} cannot define both 'server' and 'cloud'"
+            ))),
+            (true, false) => Ok(DeployTarget::Server),
+            (false, true) => Ok(DeployTarget::Cloud),
+            (false, false) => Ok(DeployTarget::Local),
+        }
+    }
+}
+
 /// Deployment target configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DeployConfig {
@@ -369,7 +444,13 @@ pub struct DeployConfig {
     pub target: DeployTarget,
 
     #[serde(default)]
+    pub environment: Option<String>,
+
+    #[serde(default)]
     pub compose_file: Option<PathBuf>,
+
+    #[serde(default)]
+    pub deployment_hash: Option<String>,
 
     #[serde(default)]
     pub cloud: Option<CloudConfig>,
@@ -380,6 +461,119 @@ pub struct DeployConfig {
     /// Docker registry credentials for pulling private images.
     #[serde(default)]
     pub registry: Option<RegistryConfig>,
+
+    /// Default named target when `deploy.targets` is used.
+    #[serde(default)]
+    pub default_target: Option<String>,
+
+    /// Named deploy profiles. When present, commands resolve one target profile
+    /// to the legacy single-target shape before executing.
+    #[serde(default)]
+    pub targets: BTreeMap<String, DeployProfileConfig>,
+}
+
+impl DeployConfig {
+    pub fn uses_named_targets(&self) -> bool {
+        !self.targets.is_empty()
+    }
+
+    fn parse_legacy_target_override(value: &str) -> Result<DeployTarget, CliError> {
+        let json = format!("\"{}\"", value.trim().to_lowercase());
+        serde_json::from_str::<DeployTarget>(&json).map_err(|_| {
+            CliError::ConfigValidation(format!(
+                "Unknown deploy target '{}'. Valid targets: local, cloud, server",
+                value
+            ))
+        })
+    }
+
+    fn resolve_named_target_name(&self, requested: Option<&str>) -> Result<String, CliError> {
+        if let Some(requested_name) = requested.map(str::trim).filter(|value| !value.is_empty()) {
+            if self.targets.contains_key(requested_name) {
+                return Ok(requested_name.to_string());
+            }
+
+            return Err(CliError::ConfigValidation(format!(
+                "Unknown deploy target profile '{}'. Available targets: {}",
+                requested_name,
+                self.targets.keys().cloned().collect::<Vec<_>>().join(", ")
+            )));
+        }
+
+        if let Some(default_target) = self
+            .default_target
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if self.targets.contains_key(default_target) {
+                return Ok(default_target.to_string());
+            }
+
+            return Err(CliError::ConfigValidation(format!(
+                "deploy.default_target '{}' does not match any entry in deploy.targets",
+                default_target
+            )));
+        }
+
+        if self.targets.len() == 1 {
+            return Ok(self
+                .targets
+                .keys()
+                .next()
+                .expect("single target must have a name")
+                .clone());
+        }
+
+        Err(CliError::ConfigValidation(
+            "deploy.default_target is required when deploy.targets defines multiple entries"
+                .to_string(),
+        ))
+    }
+
+    pub fn resolve(&self, requested: Option<&str>) -> Result<DeployConfig, CliError> {
+        if !self.uses_named_targets() {
+            let mut resolved = self.clone();
+            if let Some(target_name) = requested.map(str::trim).filter(|value| !value.is_empty()) {
+                resolved.target = Self::parse_legacy_target_override(target_name)?;
+            }
+            return Ok(resolved);
+        }
+
+        let profile_name = self.resolve_named_target_name(requested)?;
+        let profile = self.targets.get(&profile_name).expect("target exists");
+        let inferred_target = profile.inferred_target(&profile_name)?;
+
+        Ok(DeployConfig {
+            target: inferred_target,
+            environment: profile
+                .environment
+                .clone()
+                .or_else(|| self.environment.clone()),
+            compose_file: profile.compose_file.clone(),
+            deployment_hash: profile.deployment_hash.clone(),
+            cloud: profile.cloud.clone(),
+            server: profile.server.clone(),
+            registry: profile.registry.clone(),
+            default_target: self.default_target.clone(),
+            targets: self.targets.clone(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EnvironmentConfig {
+    #[serde(default)]
+    pub compose_file: Option<PathBuf>,
+
+    #[serde(default)]
+    pub env_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct InstallConfig {
+    #[serde(default)]
+    pub inputs: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Cloud provider settings for cloud deployments.
@@ -416,6 +610,12 @@ pub struct CloudConfig {
     /// When set, the CLI passes the server_id to the deploy form so it is reused.
     #[serde(default)]
     pub server: Option<String>,
+
+    /// Public ports to open in the cloud provider firewall after deployment.
+    /// Each entry is a port number or "port/protocol" string (e.g. "8000" or "8000/tcp").
+    /// These are sent to the Install Service to configure provider-level firewall rules.
+    #[serde(default)]
+    pub public_ports: Vec<String>,
 }
 
 /// Remote server settings for server deployments.
@@ -535,9 +735,57 @@ pub struct ProjectConfig {
     pub identity: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ConfigContract {
+    #[serde(default)]
+    pub services: BTreeMap<String, TargetConfigContract>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TargetConfigContract {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub optional: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secret: Vec<String>,
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // StackerConfig — the root configuration type
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Marker comment written to the top of any stacker.yml that was generated
+/// or rendered by the marketplace (rather than authored by the user). Its
+/// presence flips `StackerConfig::origin` to `MarketplaceGenerated`, which
+/// gates hook execution — see `HookPolicy` and `run_hook`.
+///
+/// The user can safely delete this comment after reviewing the file; once
+/// gone, the file is treated as user-authored (trusted) again.
+pub const MARKETPLACE_ORIGIN_MARKER: &str = "# @stacker-origin: marketplace";
+
+/// Provenance of a `StackerConfig`. Used by hook execution to decide whether
+/// to require the `--allow-untrusted-hooks` flag before running any shell
+/// hook (`pre_build`, `post_deploy`, `on_failure`).
+///
+/// `UserAuthored` is the default because programmatic construction and
+/// hand-written stacker.yml files represent code the user reviewed.
+/// `MarketplaceGenerated` is set explicitly by `from_file`/`from_str` when
+/// the file contains [`MARKETPLACE_ORIGIN_MARKER`], and by the marketplace
+/// install command when it writes a fresh file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigOrigin {
+    UserAuthored,
+    MarketplaceGenerated,
+}
+
+impl Default for ConfigOrigin {
+    fn default() -> Self {
+        Self::UserAuthored
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
 pub struct StackerConfig {
@@ -567,6 +815,12 @@ pub struct StackerConfig {
     pub deploy: DeployConfig,
 
     #[serde(default)]
+    pub install: InstallConfig,
+
+    #[serde(default)]
+    pub environments: BTreeMap<String, EnvironmentConfig>,
+
+    #[serde(default)]
     pub ai: AiConfig,
 
     #[serde(default, alias = "monitors")]
@@ -580,9 +834,38 @@ pub struct StackerConfig {
 
     #[serde(default)]
     pub env: HashMap<String, String>,
+
+    #[serde(default)]
+    pub config_contract: ConfigContract,
+
+    /// Provenance of this config. Not serialized — computed at load time.
+    ///
+    /// Defaults to `UserAuthored`. `from_file`/`from_str` flip to
+    /// `MarketplaceGenerated` if the raw text starts with
+    /// [`MARKETPLACE_ORIGIN_MARKER`].
+    #[serde(skip)]
+    pub origin: ConfigOrigin,
+
+    /// Whether the source config explicitly declared an `app:` section.
+    ///
+    /// `app` is a non-optional field with serde defaults, so a config that
+    /// omits `app:` still deserializes to a default `AppSource`. This flag
+    /// distinguishes "user/template actually declared an app to build" from
+    /// "app was defaulted in". Set at load time by `from_file`/`from_str`
+    /// (raw key present) and by `ConfigBuilder` (app setters used). The compose
+    /// generator uses it to avoid synthesizing a phantom `app` service for
+    /// services-only configs. Not serialized.
+    #[serde(skip)]
+    pub app_present: bool,
 }
 
 impl StackerConfig {
+    /// Whether hooks in this config may be executed without an explicit
+    /// `--allow-untrusted-hooks` flag.
+    pub fn is_trusted(&self) -> bool {
+        matches!(self.origin, ConfigOrigin::UserAuthored)
+    }
+
     /// Load config from a file path, resolving `${VAR}` environment variable
     /// references and validating the result.
     ///
@@ -598,10 +881,14 @@ impl StackerConfig {
         }
 
         let raw_content = std::fs::read_to_string(path)?;
+        let origin = detect_origin_from_raw(&raw_content);
         let mut parsed: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
         let env_file_vars = load_env_file_vars_from_yaml(path, &raw_content);
         resolve_env_placeholders_in_value(&mut parsed, &env_file_vars)?;
-        let config: StackerConfig = serde_yaml::from_value(parsed)?;
+        let app_present = parsed.get("app").is_some();
+        let mut config = deserialize_config_value(parsed)?;
+        config.origin = origin;
+        config.app_present = app_present;
         Ok(config)
     }
 
@@ -619,16 +906,71 @@ impl StackerConfig {
         }
 
         let raw_content = std::fs::read_to_string(path)?;
-        let config: StackerConfig = serde_yaml::from_str(&raw_content)?;
+        let origin = detect_origin_from_raw(&raw_content);
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
+        let app_present = parsed.get("app").is_some();
+        let mut config = deserialize_config_value(parsed)?;
+        config.origin = origin;
+        config.app_present = app_present;
         Ok(config)
     }
 
     /// Load config from a YAML string (useful for tests).
     pub fn from_str(yaml: &str) -> Result<Self, CliError> {
+        let origin = detect_origin_from_raw(yaml);
         let mut parsed: serde_yaml::Value = serde_yaml::from_str(yaml)?;
         resolve_env_placeholders_in_value(&mut parsed, &HashMap::new())?;
-        let config: StackerConfig = serde_yaml::from_value(parsed)?;
+        let app_present = parsed.get("app").is_some();
+        let mut config = deserialize_config_value(parsed)?;
+        config.origin = origin;
+        config.app_present = app_present;
         Ok(config)
+    }
+
+    /// Return a cloned config with `deploy` flattened to one selected target.
+    ///
+    /// Legacy configs keep working as before. Multi-target configs resolve one
+    /// named profile into the existing single-target fields.
+    pub fn with_resolved_deploy_target(&self, requested: Option<&str>) -> Result<Self, CliError> {
+        let mut config = self.clone();
+        config.deploy = self.deploy.resolve(requested)?;
+        Ok(config)
+    }
+
+    pub fn selected_environment(&self, override_environment: Option<&str>) -> Option<String> {
+        override_environment
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| self.deploy.environment.clone())
+    }
+
+    pub fn resolve_environment_config(
+        &self,
+        override_environment: Option<&str>,
+    ) -> Result<Option<(String, EnvironmentConfig)>, CliError> {
+        let Some(environment) = self.selected_environment(override_environment) else {
+            return Ok(None);
+        };
+
+        let configured = self.environments.get(&environment).cloned();
+        let compose_file = configured
+            .as_ref()
+            .and_then(|config| config.compose_file.clone())
+            .or_else(|| self.deploy.compose_file.clone())
+            .or_else(|| Some(PathBuf::from(format!("docker/{environment}/compose.yml"))));
+        let env_file = configured
+            .as_ref()
+            .and_then(|config| config.env_file.clone())
+            .or_else(|| self.env_file.clone());
+
+        Ok(Some((
+            environment,
+            EnvironmentConfig {
+                compose_file,
+                env_file,
+            },
+        )))
     }
 
     /// Validate cross-field semantic constraints beyond serde deserialization.
@@ -636,48 +978,83 @@ impl StackerConfig {
     pub fn validate_semantics(&self) -> Vec<ValidationIssue> {
         let mut issues = Vec::new();
 
-        // Cloud target requires a provider
-        if self.deploy.target == DeployTarget::Cloud && self.deploy.cloud.is_none() {
-            issues.push(ValidationIssue {
-                severity: Severity::Error,
-                code: "E001".to_string(),
-                message: "Cloud provider configuration is required for cloud deployment".to_string(),
-                field: Some("deploy.cloud.provider".to_string()),
-            });
-        }
-
-        // Server target requires a host
-        if self.deploy.target == DeployTarget::Server {
-            if self.deploy.server.is_none() {
+        if self.deploy.uses_named_targets() {
+            if self.deploy.targets.len() > 1
+                && self
+                    .deploy
+                    .default_target
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_none()
+            {
                 issues.push(ValidationIssue {
                     severity: Severity::Error,
-                    code: "E002".to_string(),
-                    message: "Server host is required for server deployment".to_string(),
-                    field: Some("deploy.server.host".to_string()),
+                    code: "E004".to_string(),
+                    message: "deploy.default_target is required when deploy.targets defines multiple entries".to_string(),
+                    field: Some("deploy.default_target".to_string()),
                 });
             }
-        }
 
-        if self.deploy.target == DeployTarget::Cloud {
-            if let Some(cloud) = &self.deploy.cloud {
-                if cloud.orchestrator == CloudOrchestrator::Remote {
-                    let identity_empty = self
-                        .project
-                        .identity
-                        .as_ref()
-                        .map(|v| v.trim().is_empty())
-                        .unwrap_or(true);
-
-                    if identity_empty {
-                        issues.push(ValidationIssue {
-                            severity: Severity::Info,
-                            code: "I001".to_string(),
-                            message: "project.identity is not set; remote deploy will use default stack_code 'custom-stack'".to_string(),
-                            field: Some("project.identity".to_string()),
-                        });
-                    }
+            if let Some(default_target) = self
+                .deploy
+                .default_target
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                if !self.deploy.targets.contains_key(default_target) {
+                    issues.push(ValidationIssue {
+                        severity: Severity::Error,
+                        code: "E005".to_string(),
+                        message: format!(
+                            "deploy.default_target '{}' does not match any entry in deploy.targets",
+                            default_target
+                        ),
+                        field: Some("deploy.default_target".to_string()),
+                    });
                 }
             }
+
+            for (name, profile) in &self.deploy.targets {
+                let field_prefix = format!("deploy.targets.{name}");
+                match profile.inferred_target(name) {
+                    Ok(target) => {
+                        let deploy = DeployConfig {
+                            target,
+                            environment: profile.environment.clone(),
+                            compose_file: profile.compose_file.clone(),
+                            deployment_hash: profile.deployment_hash.clone(),
+                            cloud: profile.cloud.clone(),
+                            server: profile.server.clone(),
+                            registry: profile.registry.clone(),
+                            default_target: None,
+                            targets: BTreeMap::new(),
+                        };
+                        validate_deploy_semantics(
+                            &mut issues,
+                            &self.project,
+                            &deploy,
+                            Some(field_prefix),
+                        );
+                    }
+                    Err(_) => issues.push(ValidationIssue {
+                        severity: Severity::Error,
+                        code: "E006".to_string(),
+                        message: format!(
+                            "deploy.targets.{name} cannot define both 'server' and 'cloud'"
+                        ),
+                        field: Some(field_prefix),
+                    }),
+                }
+            }
+        } else {
+            validate_deploy_semantics(
+                &mut issues,
+                &self.project,
+                &self.deploy,
+                Some("deploy".into()),
+            );
         }
 
         // Custom app type with no image and no dockerfile
@@ -720,6 +1097,152 @@ impl StackerConfig {
         }
 
         issues
+    }
+}
+
+/// Inspect the raw text of a stacker.yml (or a `from_str` input) and decide
+/// whether it was authored by the user or generated by the marketplace.
+///
+/// A file counts as marketplace-generated if any of the leading comment
+/// lines contains [`MARKETPLACE_ORIGIN_MARKER`]. Blank lines are skipped so
+/// the marker can appear after a shebang-style banner. Once the scan hits
+/// a non-comment non-blank line, further lines are ignored — the marker
+/// must live at the top of the file.
+fn detect_origin_from_raw(raw: &str) -> ConfigOrigin {
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix('#') {
+            if rest
+                .trim()
+                .eq_ignore_ascii_case(MARKETPLACE_ORIGIN_MARKER.trim_start_matches('#').trim())
+            {
+                return ConfigOrigin::MarketplaceGenerated;
+            }
+            continue;
+        }
+        break;
+    }
+    ConfigOrigin::UserAuthored
+}
+
+fn deserialize_config_value(parsed: serde_yaml::Value) -> Result<StackerConfig, CliError> {
+    let rendered = serde_yaml::to_string(&parsed)?;
+    let deserializer = serde_yaml::Deserializer::from_str(&rendered);
+
+    serde_path_to_error::deserialize::<_, StackerConfig>(deserializer).map_err(|err| {
+        let field_path = err.path().to_string();
+        let source = err.into_inner();
+        let message = format_config_parse_message(&field_path, &source);
+        CliError::ConfigParseFailed {
+            source: <serde_yaml::Error as serde::de::Error>::custom(message),
+        }
+    })
+}
+
+fn format_config_parse_message(field_path: &str, source: &serde_yaml::Error) -> String {
+    let source_message = source.to_string();
+    let normalized_field = if field_path.is_empty() || field_path == "." {
+        None
+    } else {
+        Some(field_path)
+    };
+
+    if let Some(field) = normalized_field {
+        if source_message.contains("expected path string") {
+            let example = if field == "app.path" {
+                "`.` or `./app`"
+            } else {
+                "`./path/to/file`"
+            };
+
+            if source_message.contains("invalid type: unit value") {
+                return format!(
+                    "invalid empty path at `{field}`. Remove the key or set it to a quoted path string like {example}"
+                );
+            }
+
+            return format!(
+                "invalid path at `{field}`. Expected a quoted path string like {example}. Original parser error: {source_message}"
+            );
+        }
+
+        return format!("invalid value at `{field}`: {source_message}");
+    }
+
+    source_message
+}
+
+fn validate_deploy_semantics(
+    issues: &mut Vec<ValidationIssue>,
+    project: &ProjectConfig,
+    deploy: &DeployConfig,
+    field_prefix: Option<String>,
+) {
+    let field = |suffix: &str| -> String {
+        match &field_prefix {
+            Some(prefix) => format!("{prefix}.{suffix}"),
+            None => suffix.to_string(),
+        }
+    };
+
+    if deploy.target == DeployTarget::Cloud && deploy.cloud.is_none() {
+        issues.push(ValidationIssue {
+            severity: Severity::Error,
+            code: "E001".to_string(),
+            message: "Cloud provider configuration is required for cloud deployment".to_string(),
+            field: Some(field("cloud.provider")),
+        });
+    }
+
+    if deploy.target == DeployTarget::Server && deploy.server.is_none() {
+        issues.push(ValidationIssue {
+            severity: Severity::Error,
+            code: "E002".to_string(),
+            message: "Server host is required for server deployment".to_string(),
+            field: Some(field("server.host")),
+        });
+    }
+
+    if deploy.target == DeployTarget::Cloud {
+        if let Some(cloud) = &deploy.cloud {
+            if cloud.orchestrator == CloudOrchestrator::Remote {
+                let identity_empty = project
+                    .identity
+                    .as_ref()
+                    .map(|v| v.trim().is_empty())
+                    .unwrap_or(true);
+
+                if identity_empty {
+                    issues.push(ValidationIssue {
+                        severity: Severity::Info,
+                        code: "I001".to_string(),
+                        message: "project.identity is not set; remote deploy will use default stack_code 'custom-stack'".to_string(),
+                        field: Some("project.identity".to_string()),
+                    });
+                }
+            }
+
+            // Validate public_ports format up front so invalid entries are
+            // surfaced by `stacker config validate` instead of being silently
+            // dropped during cloud firewall provisioning. Bare numbers and
+            // "port/proto" specs are both accepted.
+            for port in &cloud.public_ports {
+                if let Err(err) = crate::forms::firewall::normalize_public_port(port) {
+                    issues.push(ValidationIssue {
+                        severity: Severity::Error,
+                        code: "E005".to_string(),
+                        message: format!(
+                            "Invalid public_ports entry '{}': {}. Expected a port number or \"port/protocol\" (e.g. \"8000\" or \"8000/tcp\").",
+                            port, err
+                        ),
+                        field: Some(field("cloud.public_ports")),
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -783,11 +1306,7 @@ fn load_env_file_vars_from_yaml(path: &Path, raw_content: &str) -> HashMap<Strin
 
 /// Extract the host port from a port mapping string like "8080:80" → "8080".
 fn extract_host_port(port_str: &str) -> String {
-    port_str
-        .split(':')
-        .next()
-        .unwrap_or(port_str)
-        .to_string()
+    port_str.split(':').next().unwrap_or(port_str).to_string()
 }
 
 /// Resolve `${VAR_NAME}` references in a string using process environment.
@@ -839,15 +1358,15 @@ fn resolve_env_vars_with_fallback(
         .collect();
 
     for (full_match, var_name) in captures {
-        let value = match std::env::var(&var_name) {
-            Ok(v) => v,
-            Err(_) => fallback_vars
-                .get(&var_name)
-                .cloned()
-                .ok_or_else(|| CliError::EnvVarNotFound {
-                    var_name: var_name.clone(),
+        let value =
+            match std::env::var(&var_name) {
+                Ok(v) => v,
+                Err(_) => fallback_vars.get(&var_name).cloned().ok_or_else(|| {
+                    CliError::EnvVarNotFound {
+                        var_name: var_name.clone(),
+                    }
                 })?,
-        };
+            };
         result = result.replace(&full_match, &value);
     }
 
@@ -868,6 +1387,7 @@ pub struct ConfigBuilder {
     app_path: Option<PathBuf>,
     app_image: Option<String>,
     app_dockerfile: Option<PathBuf>,
+    app_volumes: Vec<String>,
     build_args: HashMap<String, String>,
     services: Vec<ServiceDefinition>,
     proxy: Option<ProxyConfig>,
@@ -924,6 +1444,11 @@ impl ConfigBuilder {
 
     pub fn app_dockerfile<P: Into<PathBuf>>(mut self, path: P) -> Self {
         self.app_dockerfile = Some(path.into());
+        self
+    }
+
+    pub fn app_volumes(mut self, volumes: Vec<String>) -> Self {
+        self.app_volumes = volumes;
         self
     }
 
@@ -993,6 +1518,14 @@ impl ConfigBuilder {
             .name
             .ok_or_else(|| CliError::ConfigValidation("name is required".into()))?;
 
+        // Any app-related builder setter marks the app as explicitly declared,
+        // so the compose generator materializes it even alongside services.
+        let app_present = self.app_type.is_some()
+            || self.app_image.is_some()
+            || self.app_dockerfile.is_some()
+            || !self.app_volumes.is_empty()
+            || !self.build_args.is_empty();
+
         let build_config = if self.build_args.is_empty() {
             None
         } else {
@@ -1016,23 +1549,34 @@ impl ConfigBuilder {
                 image: self.app_image,
                 build: build_config,
                 ports: Vec::new(),
-                volumes: Vec::new(),
+                volumes: self.app_volumes,
                 environment: HashMap::new(),
+                command: None,
+                healthcheck: None,
             },
             services: self.services,
             proxy: self.proxy.unwrap_or_default(),
             deploy: DeployConfig {
                 target: self.deploy_target.unwrap_or_default(),
+                environment: None,
                 compose_file: None,
+                deployment_hash: None,
                 cloud: self.cloud,
                 server: self.server,
                 registry: self.registry,
+                default_target: None,
+                targets: BTreeMap::new(),
             },
+            install: InstallConfig::default(),
+            environments: BTreeMap::new(),
             ai: self.ai.unwrap_or_default(),
             monitoring: self.monitoring.unwrap_or_default(),
             hooks: self.hooks.unwrap_or_default(),
             env_file: self.env_file,
             env: self.env,
+            config_contract: ConfigContract::default(),
+            origin: ConfigOrigin::UserAuthored,
+            app_present,
         })
     }
 }
@@ -1065,6 +1609,30 @@ app:
         assert_eq!(config.deploy.target, DeployTarget::Local);
         assert!(!config.ai.enabled);
         assert!(!config.monitoring.status_panel);
+    }
+
+    #[test]
+    fn test_parse_install_inputs() {
+        let yaml = r#"
+name: wordpress-site
+install:
+  inputs:
+    commonDomain: example.com
+    admin_email: admin@example.com
+deploy:
+  target: cloud
+"#;
+
+        let config = StackerConfig::from_str(yaml).unwrap();
+
+        assert_eq!(
+            config.install.inputs.get("commonDomain"),
+            Some(&serde_json::json!("example.com"))
+        );
+        assert_eq!(
+            config.install.inputs.get("admin_email"),
+            Some(&serde_json::json!("admin@example.com"))
+        );
     }
 
     #[test]
@@ -1128,6 +1696,131 @@ env:
         assert_eq!(config.ai.provider, AiProviderType::Ollama);
         assert!(config.monitoring.status_panel);
         assert_eq!(config.env.get("APP_PORT").unwrap(), "3000");
+    }
+
+    #[test]
+    fn test_parse_multi_target_config_and_resolve_default() {
+        let yaml = r#"
+name: multi-target-app
+app:
+  type: static
+deploy:
+  default_target: dev-server
+  targets:
+    local:
+      compose_file: docker/local/compose.yml
+    dev-server:
+      server:
+        host: 10.0.0.8
+        user: deploy
+        ssh_key: ~/.ssh/id_ed25519
+"#;
+
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert!(config.deploy.uses_named_targets());
+        assert_eq!(config.deploy.targets.len(), 2);
+
+        let resolved = config.with_resolved_deploy_target(None).unwrap();
+        assert_eq!(resolved.deploy.target, DeployTarget::Server);
+        assert!(resolved.deploy.environment.is_none());
+        assert_eq!(
+            resolved
+                .deploy
+                .server
+                .as_ref()
+                .map(|server| server.host.as_str()),
+            Some("10.0.0.8")
+        );
+    }
+
+    #[test]
+    fn test_resolve_named_target_override() {
+        let yaml = r#"
+name: multi-target-app
+app:
+  type: static
+deploy:
+  default_target: local
+  targets:
+    local:
+      compose_file: docker/local/compose.yml
+    prod:
+      cloud:
+        provider: aws
+"#;
+
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let resolved = config.with_resolved_deploy_target(Some("prod")).unwrap();
+
+        assert_eq!(resolved.deploy.target, DeployTarget::Cloud);
+        assert_eq!(
+            resolved.deploy.cloud.as_ref().map(|cloud| cloud.provider),
+            Some(CloudProvider::Aws)
+        );
+        assert!(resolved.deploy.compose_file.is_none());
+    }
+
+    #[test]
+    fn test_parse_environment_config_and_default_selection() {
+        let yaml = r#"
+name: environment-app
+app:
+  type: static
+deploy:
+  target: cloud
+  environment: production
+environments:
+  production:
+    compose_file: docker/production/compose.yml
+    env_file: docker/production/.env
+"#;
+
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert_eq!(config.deploy.environment.as_deref(), Some("production"));
+        assert_eq!(
+            config
+                .environments
+                .get("production")
+                .and_then(|environment| environment.compose_file.as_ref()),
+            Some(&PathBuf::from("docker/production/compose.yml"))
+        );
+
+        let (environment, environment_config) = config
+            .resolve_environment_config(None)
+            .unwrap()
+            .expect("environment should resolve");
+        assert_eq!(environment, "production");
+        assert_eq!(
+            environment_config.compose_file,
+            Some(PathBuf::from("docker/production/compose.yml"))
+        );
+        assert_eq!(
+            environment_config.env_file,
+            Some(PathBuf::from("docker/production/.env"))
+        );
+    }
+
+    #[test]
+    fn test_environment_override_uses_conventional_compose_path() {
+        let yaml = r#"
+name: environment-app
+app:
+  type: static
+deploy:
+  target: cloud
+"#;
+
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let (environment, environment_config) = config
+            .resolve_environment_config(Some("staging"))
+            .unwrap()
+            .expect("environment should resolve");
+
+        assert_eq!(environment, "staging");
+        assert_eq!(
+            environment_config.compose_file,
+            Some(PathBuf::from("docker/staging/compose.yml"))
+        );
     }
 
     #[test]
@@ -1196,12 +1889,12 @@ app:
         assert_eq!(config.app.app_type, AppType::Static);
     }
 
-        #[test]
-        fn test_from_file_resolves_env_from_env_file() {
-                let dir = TempDir::new().unwrap();
-                fs::write(dir.path().join(".env"), "DOCKER_IMAGE=node:14-alpine\n").unwrap();
+    #[test]
+    fn test_from_file_resolves_env_from_env_file() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(".env"), "DOCKER_IMAGE=node:14-alpine\n").unwrap();
 
-                let yaml = r#"
+        let yaml = r#"
 name: env-file-test
 env_file: .env
 app:
@@ -1211,12 +1904,12 @@ app:
 deploy:
     target: local
 "#;
-                let config_path = dir.path().join("stacker.yml");
-                fs::write(&config_path, yaml).unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        fs::write(&config_path, yaml).unwrap();
 
-                let config = StackerConfig::from_file(&config_path).unwrap();
-                assert_eq!(config.app.image.as_deref(), Some("node:14-alpine"));
-        }
+        let config = StackerConfig::from_file(&config_path).unwrap();
+        assert_eq!(config.app.image.as_deref(), Some("node:14-alpine"));
+    }
 
     #[test]
     fn test_parse_invalid_app_type_returns_error() {
@@ -1263,9 +1956,9 @@ services:
         assert_eq!(config.services[2].ports.len(), 2);
     }
 
-        #[test]
-        fn test_parse_services_map() {
-                let yaml = r#"
+    #[test]
+    fn test_parse_services_map() {
+        let yaml = r#"
 name: svc-map-test
 services:
     web:
@@ -1277,15 +1970,21 @@ services:
         image: redis:7-alpine
 "#;
 
-                let config = StackerConfig::from_str(yaml).unwrap();
-                assert_eq!(config.services.len(), 2);
-                assert!(config.services.iter().any(|s| s.name == "web" && s.image == "nginx:alpine"));
-                assert!(config.services.iter().any(|s| s.name == "redis" && s.image == "redis:7-alpine"));
-        }
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert_eq!(config.services.len(), 2);
+        assert!(config
+            .services
+            .iter()
+            .any(|s| s.name == "web" && s.image == "nginx:alpine"));
+        assert!(config
+            .services
+            .iter()
+            .any(|s| s.name == "redis" && s.image == "redis:7-alpine"));
+    }
 
-        #[test]
-        fn test_parse_services_map_infers_name_from_key() {
-                let yaml = r#"
+    #[test]
+    fn test_parse_services_map_infers_name_from_key() {
+        let yaml = r#"
 name: svc-map-key-test
 services:
     web:
@@ -1293,11 +1992,11 @@ services:
         ports: ["8080:80"]
 "#;
 
-                let config = StackerConfig::from_str(yaml).unwrap();
-                assert_eq!(config.services.len(), 1);
-                assert_eq!(config.services[0].name, "web");
-                assert_eq!(config.services[0].image, "nginx:alpine");
-        }
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert_eq!(config.services.len(), 1);
+        assert_eq!(config.services[0].name, "web");
+        assert_eq!(config.services[0].image, "nginx:alpine");
+    }
 
     #[test]
     fn test_parse_proxy_domains() {
@@ -1380,6 +2079,23 @@ ai:
     }
 
     #[test]
+    fn test_config_invalid_path_reports_field_name() {
+        let yaml = r#"
+name: bad-path
+app:
+  type: custom
+  path: {}
+"#;
+        let err = StackerConfig::from_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("app.path"), "unexpected message: {msg}");
+        assert!(
+            msg.contains("quoted path string"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
     fn test_validate_semantics_cloud_without_provider() {
         let config = ConfigBuilder::new()
             .name("test")
@@ -1392,9 +2108,14 @@ ai:
             .iter()
             .filter(|i| i.severity == Severity::Error)
             .collect();
-        assert!(!errors.is_empty(), "Expected validation error for missing cloud provider");
         assert!(
-            errors.iter().any(|e| e.field.as_deref() == Some("deploy.cloud.provider")),
+            !errors.is_empty(),
+            "Expected validation error for missing cloud provider"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.field.as_deref() == Some("deploy.cloud.provider")),
             "Expected field reference to deploy.cloud.provider"
         );
     }
@@ -1412,7 +2133,10 @@ ai:
             .iter()
             .filter(|i| i.severity == Severity::Error)
             .collect();
-        assert!(!errors.is_empty(), "Expected validation error for missing server host");
+        assert!(
+            !errors.is_empty(),
+            "Expected validation error for missing server host"
+        );
         assert!(
             errors.iter().any(|e| e.message.contains("host")),
             "Expected 'host' mentioned in error"
@@ -1440,10 +2164,7 @@ services:
             .iter()
             .filter(|i| i.severity == Severity::Warning)
             .collect();
-        assert!(
-            !warnings.is_empty(),
-            "Expected warning about port conflict"
-        );
+        assert!(!warnings.is_empty(), "Expected warning about port conflict");
         assert!(
             warnings.iter().any(|w| w.message.contains("8080")),
             "Expected port 8080 in warning"
@@ -1486,6 +2207,55 @@ services:
     }
 
     #[test]
+    fn test_validate_semantics_multi_target_requires_default_for_multiple_profiles() {
+        let config = StackerConfig::from_str(
+            r#"
+name: multi-target-app
+app:
+  type: static
+deploy:
+  targets:
+    local:
+      compose_file: docker/local/compose.yml
+    prod:
+      server:
+        host: 10.0.0.8
+        user: deploy
+        ssh_key: ~/.ssh/id_ed25519
+"#,
+        )
+        .unwrap();
+
+        let issues = config.validate_semantics();
+        assert!(issues.iter().any(|issue| issue.code == "E004"));
+    }
+
+    #[test]
+    fn test_validate_semantics_multi_target_rejects_ambiguous_profile() {
+        let config = StackerConfig::from_str(
+            r#"
+name: multi-target-app
+app:
+  type: static
+deploy:
+  default_target: hybrid
+  targets:
+    hybrid:
+      cloud:
+        provider: aws
+      server:
+        host: 10.0.0.8
+        user: deploy
+        ssh_key: ~/.ssh/id_ed25519
+"#,
+        )
+        .unwrap();
+
+        let issues = config.validate_semantics();
+        assert!(issues.iter().any(|issue| issue.code == "E006"));
+    }
+
+    #[test]
     fn test_validate_semantics_remote_cloud_defaults_stack_code_without_project_identity() {
         let config = ConfigBuilder::new()
             .name("remote-app")
@@ -1494,12 +2264,13 @@ services:
                 provider: CloudProvider::Hetzner,
                 orchestrator: CloudOrchestrator::Remote,
                 region: Some("nbg1".to_string()),
-                size: Some("cpx11".to_string()),
+                size: Some("cx23".to_string()),
                 install_image: None,
                 remote_payload_file: None,
                 ssh_key: None,
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .build()
             .unwrap();
@@ -1513,12 +2284,75 @@ services:
             .iter()
             .filter(|i| i.severity == Severity::Info)
             .collect();
-        assert!(errors.is_empty(), "Expected no blocking errors, got: {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "Expected no blocking errors, got: {errors:?}"
+        );
         assert!(
             infos
                 .iter()
                 .any(|e| e.field.as_deref() == Some("project.identity")),
             "Expected project.identity informational hint"
+        );
+    }
+
+    #[test]
+    fn test_validate_semantics_cloud_public_ports_accepts_bare_number() {
+        let config = ConfigBuilder::new()
+            .name("ports-app")
+            .deploy_target(DeployTarget::Cloud)
+            .cloud(CloudConfig {
+                provider: CloudProvider::Hetzner,
+                orchestrator: CloudOrchestrator::Local,
+                region: Some("fsn1".to_string()),
+                size: Some("cpx21".to_string()),
+                install_image: None,
+                remote_payload_file: None,
+                ssh_key: None,
+                key: None,
+                server: None,
+                public_ports: vec!["8000".to_string(), "443/tcp".to_string()],
+            })
+            .build()
+            .unwrap();
+
+        let issues = config.validate_semantics();
+        let errors: Vec<_> = issues
+            .iter()
+            .filter(|i| i.severity == Severity::Error && i.code == "E005")
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "Bare port numbers and port/proto specs must be valid, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_semantics_cloud_public_ports_rejects_invalid() {
+        let config = ConfigBuilder::new()
+            .name("ports-app")
+            .deploy_target(DeployTarget::Cloud)
+            .cloud(CloudConfig {
+                provider: CloudProvider::Hetzner,
+                orchestrator: CloudOrchestrator::Local,
+                region: Some("fsn1".to_string()),
+                size: Some("cpx21".to_string()),
+                install_image: None,
+                remote_payload_file: None,
+                ssh_key: None,
+                key: None,
+                server: None,
+                public_ports: vec!["80/icmp".to_string(), "not-a-port".to_string()],
+            })
+            .build()
+            .unwrap();
+
+        let issues = config.validate_semantics();
+        let e005: Vec<_> = issues.iter().filter(|i| i.code == "E005").collect();
+        assert_eq!(
+            e005.len(),
+            2,
+            "Expected two E005 issues for invalid public_ports, got: {e005:?}"
         );
     }
 
@@ -1562,6 +2396,8 @@ services:
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
+                command: None,
+                healthcheck: None,
             })
             .deploy_target(DeployTarget::Cloud)
             .cloud(CloudConfig {
@@ -1574,6 +2410,7 @@ services:
                 ssh_key: None,
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .build()
             .unwrap();
@@ -1619,10 +2456,7 @@ services:
         assert_eq!(original.name, parsed.name);
         assert_eq!(original.app.app_type, parsed.app.app_type);
         assert_eq!(original.app.path, parsed.app.path);
-        assert_eq!(
-            original.env.get("PORT"),
-            parsed.env.get("PORT")
-        );
+        assert_eq!(original.env.get("PORT"), parsed.env.get("PORT"));
     }
 
     #[test]
@@ -1636,6 +2470,8 @@ services:
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
+                command: None,
+                healthcheck: None,
             })
             .add_service(ServiceDefinition {
                 name: "redis".to_string(),
@@ -1644,6 +2480,8 @@ services:
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
+                command: None,
+                healthcheck: None,
             })
             .add_service(ServiceDefinition {
                 name: "minio".to_string(),
@@ -1652,6 +2490,8 @@ services:
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
+                command: None,
+                healthcheck: None,
             })
             .build()
             .unwrap();

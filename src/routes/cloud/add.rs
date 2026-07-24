@@ -37,9 +37,8 @@ pub async fn add(
                  Check that SECURITY_KEY is set and is exactly 32 bytes.",
                 cloud.provider
             );
-            return Err(JsonResponse::<models::Cloud>::build().bad_request(
-                "Failed to encrypt cloud credentials. Please contact support.",
-            ));
+            return Err(JsonResponse::<models::Cloud>::build()
+                .bad_request("Failed to encrypt cloud credentials. Please contact support."));
         }
     }
 

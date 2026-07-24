@@ -7,6 +7,14 @@ use serde::Deserialize;
 use sqlx::PgPool;
 use std::sync::Arc;
 
+fn build_replay_trigger_params(original: &PipeExecution) -> serde_json::Value {
+    serde_json::json!({
+        "pipe_instance_id": original.pipe_instance_id.to_string(),
+        "input_data": original.source_data,
+        "trigger_type": "replay"
+    })
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PaginationQuery {
     #[serde(default = "default_limit")]
@@ -30,7 +38,7 @@ pub async fn list_executions_handler(
 ) -> Result<impl Responder> {
     let instance_id = path.into_inner();
 
-    // Fetch instance and verify ownership via deployment
+    // Fetch instance and verify ownership
     let instance = db::pipe::get_instance(pg_pool.get_ref(), &instance_id)
         .await
         .map_err(|err| JsonResponse::internal_server_error(err))?;
@@ -40,15 +48,7 @@ pub async fn list_executions_handler(
         None => return Err(JsonResponse::not_found("Pipe instance not found")),
     };
 
-    let deployment =
-        db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &instance.deployment_hash)
-            .await
-            .map_err(|err| JsonResponse::internal_server_error(err))?;
-
-    match &deployment {
-        Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
-        _ => return Err(JsonResponse::not_found("Pipe instance not found")),
-    }
+    super::verify_pipe_owner(pg_pool.get_ref(), &instance, &user.id).await?;
 
     let limit = query.limit.clamp(1, 100);
     let offset = query.offset.max(0);
@@ -84,25 +84,14 @@ pub async fn get_execution_handler(
 
     match execution {
         Some(exec) => {
-            // Verify ownership: execution -> instance -> deployment -> user
-            let instance =
-                db::pipe::get_instance(pg_pool.get_ref(), &exec.pipe_instance_id)
-                    .await
-                    .map_err(|err| JsonResponse::internal_server_error(err))?;
+            // Verify ownership: execution -> instance -> user
+            let instance = db::pipe::get_instance(pg_pool.get_ref(), &exec.pipe_instance_id)
+                .await
+                .map_err(|err| JsonResponse::internal_server_error(err))?;
 
             match instance {
                 Some(i) => {
-                    let deployment = db::deployment::fetch_by_deployment_hash(
-                        pg_pool.get_ref(),
-                        &i.deployment_hash,
-                    )
-                    .await
-                    .map_err(|err| JsonResponse::internal_server_error(err))?;
-
-                    match &deployment {
-                        Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
-                        _ => return Err(JsonResponse::not_found("Pipe execution not found")),
-                    }
+                    super::verify_pipe_owner(pg_pool.get_ref(), &i, &user.id).await?;
                 }
                 None => return Err(JsonResponse::not_found("Pipe execution not found")),
             }
@@ -139,7 +128,7 @@ pub async fn replay_execution_handler(
         None => return Err(JsonResponse::not_found("Pipe execution not found")),
     };
 
-    // Verify ownership via instance -> deployment -> user
+    // Verify ownership via instance -> user
     let instance = db::pipe::get_instance(pg_pool.get_ref(), &original.pipe_instance_id)
         .await
         .map_err(|err| JsonResponse::internal_server_error(err))?;
@@ -149,15 +138,7 @@ pub async fn replay_execution_handler(
         None => return Err(JsonResponse::not_found("Pipe instance not found")),
     };
 
-    let deployment =
-        db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &instance.deployment_hash)
-            .await
-            .map_err(|err| JsonResponse::internal_server_error(err))?;
-
-    match &deployment {
-        Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
-        _ => return Err(JsonResponse::not_found("Pipe execution not found")),
-    }
+    super::verify_pipe_owner(pg_pool.get_ref(), &instance, &user.id).await?;
 
     // Create a new execution record for the replay
     let replay_execution = PipeExecution::new(
@@ -175,37 +156,43 @@ pub async fn replay_execution_handler(
             JsonResponse::internal_server_error(err)
         })?;
 
-    // Enqueue trigger_pipe command with original source_data as input_data
-    let trigger_params = serde_json::json!({
-        "pipe_instance_id": original.pipe_instance_id.to_string(),
-        "input_data": original.source_data,
-    });
+    // Enqueue trigger_pipe command (only for remote pipes with a deployment)
+    let command_id = if let Some(hash) = &instance.deployment_hash {
+        let trigger_params = build_replay_trigger_params(&original);
 
-    let command_id_str = format!("cmd_{}", uuid::Uuid::new_v4());
-    let command = Command::new(
-        command_id_str.clone(),
-        instance.deployment_hash.clone(),
-        "trigger_pipe".to_string(),
-        user.id.clone(),
-    )
-    .with_priority(CommandPriority::Normal)
-    .with_parameters(trigger_params);
+        let command_id_str = format!("cmd_{}", uuid::Uuid::new_v4());
+        let command = Command::new(
+            command_id_str.clone(),
+            hash.clone(),
+            "trigger_pipe".to_string(),
+            user.id.clone(),
+        )
+        .with_priority(CommandPriority::Normal)
+        .with_parameters(trigger_params);
 
-    let command_id = match db::command::insert(agent_pool.as_ref(), &command).await {
-        Ok(saved) => {
-            let _ = db::command::add_to_queue(
-                agent_pool.as_ref(),
-                &saved.command_id,
-                &saved.deployment_hash,
-                &CommandPriority::Normal,
-            )
-            .await;
-            Some(saved.command_id)
+        match db::command::insert(agent_pool.as_ref(), &command).await {
+            Ok(saved) => {
+                let _ = db::command::add_to_queue(
+                    agent_pool.as_ref(),
+                    &saved.command_id,
+                    &saved.deployment_hash,
+                    &CommandPriority::Normal,
+                )
+                .await;
+                Some(saved.command_id)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to enqueue replay trigger_pipe command: {}", e);
+                None
+            }
         }
-        Err(e) => {
-            tracing::warn!("Failed to enqueue replay trigger_pipe command: {}", e);
-            None
-        }
+    } else {
+        // Local pipe — no agent dispatch
+        tracing::info!(
+            "Replay for local pipe instance {}, skipping agent dispatch",
+            instance.id
+        );
+        None
     };
 
     Ok(JsonResponse::build()
@@ -216,4 +203,28 @@ pub async fn replay_execution_handler(
             "status": replay_execution.status,
         })))
         .ok("Replay initiated"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_trigger_params_mark_replay_trigger_type() {
+        let execution = PipeExecution::new(
+            uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+            Some("dep-123".to_string()),
+            "manual".to_string(),
+            "user-1".to_string(),
+        )
+        .complete_success(
+            serde_json::json!({ "invoice_id": "inv-replay" }),
+            serde_json::json!({ "customer_id": "cust-1" }),
+            serde_json::json!({ "queued": true }),
+        );
+
+        let params = build_replay_trigger_params(&execution);
+        assert_eq!(params["trigger_type"], "replay");
+        assert_eq!(params["input_data"]["invoice_id"], "inv-replay");
+    }
 }

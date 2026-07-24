@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "runtime-env-contract",
+  "description": "Canonical runtime environment precedence contract shared across Stacker and downstream consumers.",
+  "_owner": "trydirect/config",
+  "_consumers": [
+    "stacker",
+    "status",
+    "try.direct.admin.frontend"
+  ],
+  "_notes": [
+    "Rendered runtime env payloads and inspection outputs must use these exact layer names and precedence values.",
+    "Clients must treat higher precedence layers as authoritative when the same key exists in multiple layers.",
+    "Inspection/help surfaces should expose the shared contract version and order instead of rewording the precedence rules independently."
+  ],
+  "version": "v1",
+  "order": "lowest_to_highest",
+  "layers": [
+    {
+      "name": "base",
+      "precedence": 1,
+      "appliesWhen": "Always",
+      "description": "App env and local authoring inputs provide the base runtime layer."
+    },
+    {
+      "name": "server",
+      "precedence": 2,
+      "appliesWhen": "Only when inherit_server_secrets=true",
+      "description": "Server-scope secrets overlay the base layer when the target opts in."
+    },
+    {
+      "name": "service",
+      "precedence": 3,
+      "appliesWhen": "When remote service secrets exist for the selected service/app target",
+      "description": "Service-scope secrets override lower layers for the selected target."
+    },
+    {
+      "name": "compose",
+      "precedence": 4,
+      "appliesWhen": "When the compose service defines environment: keys",
+      "description": "Compose environment keys win over env_file-derived layers at runtime."
+    }
+  ],
+  "inspectionOutputs": {
+    "runtimeEnvContractField": "runtime_env_contract",
+    "surfaces": [
+      "stacker REST app env/config reads",
+      "stacker MCP get_app_env_vars/get_app_config",
+      "stacker-cli config show --resolved"
+    ],
+    "remoteSecretMetadata": {
+      "source": "vault",
+      "secure": true
+    }
+  }
+}
