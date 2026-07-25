@@ -26,6 +26,49 @@ use tera::{Context as TeraContext, Tera};
 
 const RESERVED_ENV_PREFIXES: &[&str] = &["STACKER_", "DOCKER_", "VAULT_", "AGENT_"];
 
+/// Keys that Stacker injects into the runtime `.env` itself (bookkeeping, not
+/// user config). Drift confined to these keys must NOT block a redeploy —
+/// otherwise a freshly stamped `DEPLOYMENT_HASH` alone trips the drift guard on
+/// every deploy even though no user-meaningful config changed.
+const STACKER_OWNED_ENV_KEYS: &[&str] = &["DEPLOYMENT_HASH"];
+
+fn is_stacker_owned_env_key(key: &str) -> bool {
+    STACKER_OWNED_ENV_KEYS.contains(&key)
+        || RESERVED_ENV_PREFIXES
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+}
+
+/// Hash of an env body for drift detection. Comment/blank lines and
+/// Stacker-owned keys are dropped and the remaining keys sorted, so the hash
+/// reflects only user-meaningful runtime config. Used for both the stamped
+/// render hash and the on-disk comparison, keeping them consistent.
+fn hash_env_body_semantic(body: &str) -> String {
+    let mut entries: BTreeMap<&str, &str> = BTreeMap::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if is_stacker_owned_env_key(key) {
+            continue;
+        }
+        entries.insert(key, value);
+    }
+    let mut normalized = String::new();
+    for (key, value) in &entries {
+        normalized.push_str(key);
+        normalized.push('=');
+        normalized.push_str(value);
+        normalized.push('\n');
+    }
+    sha256_hex(normalized.as_bytes())
+}
+
 /// Rendered configuration bundle for a deployment
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigBundle {
@@ -117,7 +160,7 @@ pub fn render_env(input: EnvRenderInput) -> std::result::Result<RenderedEnv, Env
     validate_env(&environment)?;
 
     let body = format_env_body(&environment);
-    let hash = sha256_hex(body.as_bytes());
+    let hash = hash_env_body_semantic(&body);
     let header = format_header_stamp(input.version, &hash, input.generated_at, &inputs);
 
     Ok(RenderedEnv {
@@ -347,7 +390,7 @@ pub fn env_body_hash(content: &str) -> String {
         .strip_prefix("# stacker-render ")
         .and_then(|_| content.split_once('\n').map(|(_, body)| body))
         .unwrap_or(content);
-    sha256_hex(body.as_bytes())
+    hash_env_body_semantic(body)
 }
 
 fn parse_header_version(header: &str) -> Option<u64> {
@@ -1395,6 +1438,64 @@ mod tests {
                 actual_hash: _
             }) if expected_hash == "different"
         ));
+    }
+
+    #[test]
+    fn drift_ignores_stacker_owned_keys() {
+        // Two renders identical except for the Stacker-injected DEPLOYMENT_HASH
+        // must hash the same, so a fresh deployment hash alone is not drift.
+        let stale = render_env(EnvRenderInput {
+            base: HashMap::from([
+                ("KEY".to_string(), "value".to_string()),
+                ("DEPLOYMENT_HASH".to_string(), "deployment_old".to_string()),
+            ]),
+            ..EnvRenderInput::default()
+        })
+        .unwrap();
+        let fresh = render_env(EnvRenderInput {
+            base: HashMap::from([
+                ("KEY".to_string(), "value".to_string()),
+                ("DEPLOYMENT_HASH".to_string(), "deployment_new".to_string()),
+            ]),
+            ..EnvRenderInput::default()
+        })
+        .unwrap();
+
+        // Bookkeeping key is still written to the file...
+        assert!(stale.content.contains("DEPLOYMENT_HASH=deployment_old"));
+        assert!(fresh.content.contains("DEPLOYMENT_HASH=deployment_new"));
+        // ...but does not affect the drift hash.
+        assert_eq!(stale.hash, fresh.hash);
+
+        // On-disk (stale) content is accepted against the freshly rendered hash.
+        let check = check_env_drift(Some(&stale.content), Some(&fresh.hash), false).unwrap();
+        assert!(check.can_write);
+        assert!(!check.forced);
+    }
+
+    #[test]
+    fn drift_still_detects_user_key_changes() {
+        // A real user-meaningful difference must still be flagged as drift.
+        let on_disk = render_env(EnvRenderInput {
+            base: HashMap::from([
+                ("KEY".to_string(), "old".to_string()),
+                ("DEPLOYMENT_HASH".to_string(), "deployment_old".to_string()),
+            ]),
+            ..EnvRenderInput::default()
+        })
+        .unwrap();
+        let expected = render_env(EnvRenderInput {
+            base: HashMap::from([
+                ("KEY".to_string(), "new".to_string()),
+                ("DEPLOYMENT_HASH".to_string(), "deployment_new".to_string()),
+            ]),
+            ..EnvRenderInput::default()
+        })
+        .unwrap();
+
+        assert_ne!(on_disk.hash, expected.hash);
+        let result = check_env_drift(Some(&on_disk.content), Some(&expected.hash), false);
+        assert!(matches!(result, Err(EnvRenderError::DriftDetected { .. })));
     }
 
     #[test]
