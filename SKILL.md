@@ -436,6 +436,11 @@ stacker deploy --force-rebuild                # regenerate .stacker/ artefacts
 stacker deploy --env production               # one-shot environment override
 stacker deploy --no-hooks                     # skip all hooks (CI)
 
+# Surgical single-service deploy (positional SERVICE arg)
+stacker deploy stacker-website                # update ONE service, leave others running
+stacker deploy stacker-website --dry-run      # preview
+stacker deploy stacker-website --plan         # read-only deployment plan
+
 # Status & logs
 stacker status
 stacker status --json --watch
@@ -466,6 +471,35 @@ stacker ai ask --write "restart the postgres container"
 stacker ai --write                            # interactive chat with write mode
 ```
 
+### Surgical single-service deploy — `stacker deploy <SERVICE>`
+
+To update ONE service in a multi-service deployment without touching the others,
+pass the service name positionally to `deploy`. It reads the **local
+`docker-compose.yml`**, injects that one service definition into the remote
+compose, and starts only that container — other running services are not touched.
+Because it reuses your hand-maintained compose block, ports/networks/container
+names are preserved. (Definition: `service: Option<String>` arg on `Deploy` in
+`src/bin/stacker.rs`.)
+
+**Prefer this over `stacker agent deploy-app` for single-service updates.**
+`deploy-app` runs the server-side ConfigRenderer, which regenerates the WHOLE
+project `docker-compose.yml` + `.env` from the server project model (not your
+local compose). If the server model is incomplete it drops host ports, renames
+containers (breaking nginx-proxy-manager upstreams), and can emit an undefined
+external network; it backs up the old compose as
+`docker-compose.yml.stacker-bak-<ts>`.
+
+| | `stacker deploy <service>` | `stacker agent deploy-app <app>` |
+|---|---|---|
+| Service source | local `docker-compose.yml` | server-side ConfigRenderer |
+| Scope | injects only that service | re-renders full compose + `.env` |
+| Preserves ports/names/networks | yes | only if server model is complete |
+
+Both render the runtime `.env` and can trip the drift guard on
+`/home/trydirect/project/.env` (`Runtime env drift detected ... rerun with
+--force`). Reconcile the drift (diff remote vs local `.env`) before using
+`--force`; even forced, `deploy <service>` only injects the single service.
+
 ---
 
 ## Agent (Status Panel) Commands
@@ -483,6 +517,9 @@ stacker agent logs my-app --lines 200
 # Container lifecycle
 stacker agent restart my-app
 stacker agent deploy-app --app my-app --image myorg/myapp --tag v2.1
+# NOTE: deploy-app re-renders the WHOLE compose/.env server-side. For a
+# single-service update that preserves your local compose, use
+# `stacker deploy <service>` instead (see Deployment Lifecycle Commands).
 stacker agent remove-app --app my-app --remove-volumes
 
 # Proxy
