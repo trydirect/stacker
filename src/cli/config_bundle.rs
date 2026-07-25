@@ -74,6 +74,7 @@ pub fn build_config_bundle(
     compose_path: &Path,
     env_file: Option<&Path>,
     reference_base: &Path,
+    attach_agent_network: bool,
 ) -> Result<ConfigBundleArtifacts, CliError> {
     validate_environment_name(environment)?;
 
@@ -119,6 +120,16 @@ pub fn build_config_bundle(
         &mut compose_yaml,
         &mut collected,
     )?;
+
+    // Status-panel/agent deploys: put every project service on the shared
+    // external `default_network` the agent runs on, so it can reach containers
+    // by name/IP. Idempotent — services already on the network are untouched.
+    if attach_agent_network {
+        crate::cli::compose_service_sync::inject_shared_network_all_services(
+            &mut compose_yaml,
+            "default_network",
+        );
+    }
 
     let rewritten_compose = serde_yaml::to_string(&compose_yaml)
         .map_err(|err| validation_error(format!("failed to write remote compose: {err}")))?;
@@ -667,6 +678,7 @@ services:
             &compose_dir.join("compose.yml"),
             Some(&compose_dir.join(".env")),
             &compose_dir,
+            false,
         )
         .expect("bundle should be built");
 
@@ -740,6 +752,7 @@ services:
             &dir.path().join("docker-compose.yml"),
             None,
             dir.path(),
+            false,
         )
         .expect("bundle should be built");
 
@@ -782,6 +795,7 @@ services:
             &stacker_dir.join("docker-compose.yml"),
             None,
             dir.path(),
+            false,
         )
         .expect("bundle should be built for generated compose");
 
@@ -845,6 +859,7 @@ services:
             &compose_dir.join("compose.yml"),
             None,
             &compose_dir,
+            false,
         )
         .expect("directory mounts should not block the bundle");
 
@@ -862,6 +877,47 @@ services:
         assert!(remote.contains("./library:/romm/library"));
         assert!(remote.contains("./assets:/romm/assets:rw"));
         assert!(remote.contains("docker/production/romm.env:/romm/config/romm.env:ro"));
+    }
+
+    #[test]
+    fn build_config_bundle_attaches_agent_network_when_requested() {
+        let dir = TempDir::new().unwrap();
+        let compose_dir = dir.path().join("docker/production");
+        std::fs::create_dir_all(&compose_dir).unwrap();
+        std::fs::write(
+            compose_dir.join("compose.yml"),
+            r#"
+services:
+  app:
+    image: example/app:latest
+  db:
+    image: mysql:8
+"#,
+        )
+        .unwrap();
+
+        let artifacts = build_config_bundle(
+            dir.path(),
+            "production",
+            &compose_dir.join("compose.yml"),
+            None,
+            &compose_dir,
+            true,
+        )
+        .expect("bundle should be built");
+
+        let remote: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&artifacts.remote_compose_path).unwrap())
+                .unwrap();
+        // Every service joins default_network, declared external at the top level.
+        for svc in ["app", "db"] {
+            let nets = remote["services"][svc]["networks"].as_sequence().unwrap();
+            assert!(
+                nets.iter().any(|n| n.as_str() == Some("default_network")),
+                "service {svc} should join default_network"
+            );
+        }
+        assert_eq!(remote["networks"]["default_network"]["external"], true);
     }
 
     #[test]
@@ -887,6 +943,7 @@ services:
             &compose_dir.join("compose.yml"),
             None,
             &compose_dir,
+            false,
         )
         .unwrap_err();
 

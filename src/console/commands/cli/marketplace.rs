@@ -59,15 +59,16 @@ impl CallableTrait for MarketplaceTemplatesCommand {
         }
 
         println!(
-            "{:<24} {:<28} {:<14} {}",
-            "ITEM", "NAME", "PLAN", "DESCRIPTION"
+            "{:<24} {:<28} {:<20} {:<14} {}",
+            "ITEM", "NAME", "VENDOR", "PLAN", "DESCRIPTION"
         );
-        println!("{}", "\u{2500}".repeat(92));
+        println!("{}", "\u{2500}".repeat(114));
         for template in &templates {
             println!(
-                "{:<24} {:<28} {:<14} {}",
+                "{:<24} {:<28} {:<20} {:<14} {}",
                 truncate(&template.slug, 22),
                 truncate(&template.name, 26),
+                truncate(template.creator_name.as_deref().unwrap_or("-"), 18),
                 display_plan(template),
                 truncate(template.description.as_deref().unwrap_or(""), 26),
             );
@@ -83,10 +84,6 @@ impl CallableTrait for MarketplaceTemplatesCommand {
         Ok(())
     }
 }
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// marketplace find/install
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub struct MarketplaceFindCommand {
     query: String,
@@ -140,15 +137,16 @@ impl CallableTrait for MarketplaceFindCommand {
         }
 
         println!(
-            "{:<24} {:<28} {:<14} {}",
-            "ITEM", "NAME", "PLAN", "DESCRIPTION"
+            "{:<24} {:<28} {:<20} {:<14} {}",
+            "ITEM", "NAME", "VENDOR", "PLAN", "DESCRIPTION"
         );
-        println!("{}", "\u{2500}".repeat(92));
+        println!("{}", "\u{2500}".repeat(114));
         for template in &templates {
             println!(
-                "{:<24} {:<28} {:<14} {}",
+                "{:<24} {:<28} {:<20} {:<14} {}",
                 truncate(&template.slug, 22),
                 truncate(&template.name, 26),
+                truncate(template.creator_name.as_deref().unwrap_or("-"), 18),
                 display_plan(template),
                 truncate(template.description.as_deref().unwrap_or(""), 26),
             );
@@ -173,6 +171,11 @@ pub struct MarketplaceInstallCommand {
     json: bool,
     domain: Option<String>,
     set_values: Vec<String>,
+    key_name: Option<String>,
+    key_id: Option<i32>,
+    region: Option<String>,
+    size: Option<String>,
+    provider: Option<String>,
 }
 
 impl MarketplaceInstallCommand {
@@ -184,6 +187,11 @@ impl MarketplaceInstallCommand {
         json: bool,
         domain: Option<String>,
         set_values: Vec<String>,
+        key_name: Option<String>,
+        key_id: Option<i32>,
+        region: Option<String>,
+        size: Option<String>,
+        provider: Option<String>,
     ) -> Self {
         Self {
             template,
@@ -193,6 +201,71 @@ impl MarketplaceInstallCommand {
             json,
             domain,
             set_values,
+            key_name,
+            key_id,
+            region,
+            size,
+            provider,
+        }
+    }
+
+    /// Apply CLI overrides (--key, --key-id, --provider, --region, --size) to
+    /// the deploy form, regardless of whether the config was read from an
+    /// existing stacker.yml or auto-generated.
+    fn apply_cloud_overrides(&self, form: &mut serde_json::Value, ctx: &CliRuntime) {
+        // Resolve cloud credential name from --key or --key-id
+        let resolved_key_name: Option<String> = if let Some(id) = self.key_id {
+            ctx.block_on(async { ctx.client.list_clouds().await })
+                .ok()
+                .and_then(|cs| cs.into_iter().find(|c| c.id == id))
+                .map(|c| c.name)
+        } else {
+            self.key_name.clone().filter(|v| !v.trim().is_empty())
+        };
+
+        // Apply cloud credential name
+        if let Some(name) = resolved_key_name {
+            if let Some(cloud) = form.get_mut("cloud").and_then(|v| v.as_object_mut()) {
+                cloud.insert("name".into(), serde_json::json!(name));
+                cloud.insert("save_token".into(), serde_json::json!(false));
+            }
+        }
+
+        // Apply provider override
+        if let Some(provider) = self
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            if let Some(cloud) = form.get_mut("cloud").and_then(|v| v.as_object_mut()) {
+                let provider_code = crate::cli::install_runner::provider_code_for_remote(provider);
+                cloud.insert("provider".into(), serde_json::json!(provider_code));
+            }
+        }
+
+        // Apply region override
+        if let Some(region) = self
+            .region
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            if let Some(server) = form.get_mut("server").and_then(|v| v.as_object_mut()) {
+                server.insert("region".into(), serde_json::json!(region));
+            }
+        }
+
+        // Apply size override
+        if let Some(size) = self
+            .size
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            if let Some(server) = form.get_mut("server").and_then(|v| v.as_object_mut()) {
+                server.insert("server".into(), serde_json::json!(size));
+            }
         }
     }
 }
@@ -252,6 +325,7 @@ impl CallableTrait for MarketplaceInstallCommand {
                     serde_json::Value::String(self.template.clone()),
                 );
             }
+            self.apply_cloud_overrides(&mut form, &ctx);
             (Some(form), config.install.inputs, false)
         } else {
             // No local stacker.yml. If this is a catalog application, we cannot
@@ -276,6 +350,11 @@ impl CallableTrait for MarketplaceInstallCommand {
                         &self.template,
                         self.name.as_deref(),
                         self.domain.as_deref(),
+                        self.key_name.as_deref(),
+                        self.key_id,
+                        self.region.as_deref(),
+                        self.size.as_deref(),
+                        self.provider.as_deref(),
                     )
                     .await
                 })?;
@@ -293,19 +372,7 @@ impl CallableTrait for MarketplaceInstallCommand {
                         serde_json::Value::String(self.template.clone()),
                     );
                 }
-                if let Some(cloud) = config.deploy.cloud.as_ref() {
-                    if let Some(key) = cloud.key.as_deref() {
-                        if let Some(form_cloud) = form
-                            .get_mut("cloud")
-                            .and_then(|value| value.as_object_mut())
-                        {
-                            form_cloud.insert(
-                                "name".to_string(),
-                                serde_json::Value::String(key.to_string()),
-                            );
-                        }
-                    }
-                }
+                self.apply_cloud_overrides(&mut form, &ctx);
                 (Some(form), config.install.inputs, true)
             } else {
                 (None, Default::default(), false)
@@ -377,6 +444,15 @@ impl CallableTrait for MarketplaceInstallCommand {
             );
         }
 
+        // Idempotency key for the install request. Respect an env override so
+        // CI can pin it explicitly (a re-run with the same key collapses to
+        // the original authorization for per_install-billed templates).
+        // Otherwise generate a fresh one per invocation.
+        let idempotency_key = std::env::var("STACKER_INSTALL_IDEMPOTENCY_KEY")
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+            .unwrap_or_else(|| format!("cli-{}", uuid::Uuid::new_v4()));
+
         let response = ctx.block_on(async {
             ctx.client
                 .install_marketplace_template(
@@ -384,6 +460,7 @@ impl CallableTrait for MarketplaceInstallCommand {
                     self.name.as_deref(),
                     deploy_form,
                     install_inputs,
+                    &idempotency_key,
                 )
                 .await
         })?;
@@ -398,7 +475,7 @@ impl CallableTrait for MarketplaceInstallCommand {
                 "Installed '{}' as project #{} and started deployment #{}.",
                 response.template.slug, response.project.id, deployment_id
             );
-            println!("Track with: stacker deployments state {}", deployment_id);
+            println!("Track with: stacker deployment state");
             return Ok(());
         }
 
@@ -681,6 +758,11 @@ async fn generate_minimal_install_config(
     template: &str,
     name: Option<&str>,
     domain: Option<&str>,
+    key_name: Option<&str>,
+    key_id: Option<i32>,
+    region_override: Option<&str>,
+    size_override: Option<&str>,
+    provider_override: Option<&str>,
 ) -> Result<StackerConfig, CliError> {
     use crate::cli::config_parser::{CloudConfig, DeployTarget};
 
@@ -703,27 +785,57 @@ async fn generate_minimal_install_config(
     // the user to connect a cloud provider first instead of silently
     // falling back to local.
     let clouds = client.list_clouds().await?;
-    let cloud_info = clouds.into_iter().next().ok_or_else(|| {
-        CliError::ConfigValidation(
-            "No cloud connections found. Connect one with `stacker config cloud add` (or `stacker login`) and retry.".to_string(),
-        )
-    })?;
-    let provider = cloud_provider_from_code(&cloud_info.provider).ok_or_else(|| {
-        CliError::ConfigValidation(format!(
-            "Unsupported cloud provider '{}' on default cloud '{}'.",
-            cloud_info.provider, cloud_info.name
-        ))
+
+    // If --key or --key-id was provided, find the matching cloud credential.
+    // Otherwise fall back to the first available credential.
+    let cloud_info = if let Some(id) = key_id {
+        clouds.into_iter().find(|c| c.id == id).ok_or_else(|| {
+            CliError::ConfigValidation(format!(
+                "No cloud connection found with ID '{}'. See `stacker list clouds`.",
+                id
+            ))
+        })?
+    } else if let Some(name) = key_name.map(str::trim).filter(|v| !v.is_empty()) {
+        clouds
+            .into_iter()
+            .find(|c| c.name.eq_ignore_ascii_case(name))
+            .ok_or_else(|| {
+                CliError::ConfigValidation(format!(
+                    "No cloud connection found with name '{}'. See `stacker list clouds`.",
+                    name
+                ))
+            })?
+    } else {
+        clouds.into_iter().next().ok_or_else(|| {
+            CliError::ConfigValidation(
+                "No cloud connections found. Connect one with `stacker config cloud add` (or `stacker login`) and retry.".to_string(),
+            )
+        })?
+    };
+    // Resolve provider: --provider flag overrides the credential's provider
+    let provider_code = provider_override
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(&cloud_info.provider);
+    let provider = cloud_provider_from_code(provider_code).ok_or_else(|| {
+        CliError::ConfigValidation(format!("Unsupported cloud provider '{}'.", provider_code))
     })?;
     eprintln!(
         "Using cloud connection '{}' (provider: {}).",
-        cloud_info.name, cloud_info.provider
+        cloud_info.name, provider_code
     );
 
     let cloud_config = CloudConfig {
         provider,
         orchestrator: Default::default(),
-        region: None,
-        size: None,
+        region: region_override
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(String::from),
+        size: size_override
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(String::from),
         install_image: None,
         remote_payload_file: None,
         ssh_key: None,
@@ -731,6 +843,13 @@ async fn generate_minimal_install_config(
         server: None,
         public_ports: Vec::new(),
     };
+
+    if region_override.is_some() {
+        eprintln!("Using region '{}'.", region_override.unwrap());
+    }
+    if size_override.is_some() {
+        eprintln!("Using server size '{}'.", size_override.unwrap());
+    }
 
     // Auto-generated stacker.yml never reuses an existing server. A fresh
     // server is always provisioned on the resolved cloud. To reuse an
@@ -1017,16 +1136,13 @@ impl CallableTrait for MarketplaceLogsCommand {
 // ── helpers ──────────────────────────────────────────
 
 /// Format the plan/price column for display.
-/// Shows `required_plan_name` if set, otherwise formats `price` with currency,
-/// or "free" if neither indicates a paid template.
+///
+/// Mirrors the server-side `is_free` calculation in
+/// `services::marketplace_access` so the list column never disagrees with the
+/// install-time access check. A template is "free" only when `price` is
+/// zero/absent AND `required_plan_name` is absent/empty/"free"; anything else
+/// requires payment or a plan tier and must be displayed as such.
 fn display_plan(template: &MarketplaceTemplate) -> String {
-    if let Some(plan) = template
-        .required_plan_name
-        .as_deref()
-        .filter(|p| !p.is_empty())
-    {
-        return plan.to_string();
-    }
     if let Some(price) = template.price {
         if price > 0.0 {
             let cycle = template.billing_cycle.as_deref().unwrap_or("/mo");
@@ -1034,10 +1150,19 @@ fn display_plan(template: &MarketplaceTemplate) -> String {
                 "one_time" | "one-time" | "once" | "free" => "",
                 "monthly" | "month" | "/mo" => "/mo",
                 "yearly" | "year" | "/yr" => "/yr",
+                "per_install" | "per-install" => "/install",
                 other => other,
             };
             return format!("${:.2}{}", price, cycle);
         }
+    }
+    if let Some(plan) = template
+        .required_plan_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case("free"))
+    {
+        return plan.to_string();
     }
     "free".to_string()
 }
@@ -1055,7 +1180,7 @@ fn truncate(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_install_inputs_to_deploy_form, marketplace_template_matches_slug,
+        apply_install_inputs_to_deploy_form, display_plan, marketplace_template_matches_slug,
         resolve_install_inputs, response_stack_definition,
     };
     use crate::cli::stacker_client::{
@@ -1196,6 +1321,8 @@ mod tests {
             template: marketplace_template("dify"),
             latest_version,
             deployment_id: None,
+            authorization: None,
+            idempotency_key: None,
         }
     }
 
@@ -1212,7 +1339,71 @@ mod tests {
             price: None,
             billing_cycle: None,
             is_from_marketplace: None,
+            creator_name: None,
             stack_definition: None,
         }
+    }
+
+    // display_plan must mirror the server's `is_free` calculation in
+    // services::marketplace_access — showing "free" only when both `price`
+    // and `required_plan_name` indicate a free template. Otherwise the CLI
+    // listing lies to users and `stacker install` rejects with "must
+    // purchase this template before installing it".
+    #[test]
+    fn display_plan_shows_price_when_plan_is_free_but_price_is_positive() {
+        // Real production row for `umami`: price=10.0, plan="free" (any
+        // plan tier accepted, but still a $10 one-time purchase).
+        let mut t = marketplace_template("umami");
+        t.price = Some(10.0);
+        t.required_plan_name = Some("free".to_string());
+        t.billing_cycle = Some("one_time".to_string());
+
+        assert_eq!(display_plan(&t), "$10.00");
+    }
+
+    #[test]
+    fn display_plan_treats_empty_and_free_plan_names_as_free() {
+        let mut t = marketplace_template("x");
+        assert_eq!(display_plan(&t), "free");
+
+        t.required_plan_name = Some("".to_string());
+        assert_eq!(display_plan(&t), "free");
+
+        t.required_plan_name = Some("  ".to_string());
+        assert_eq!(display_plan(&t), "free");
+
+        t.required_plan_name = Some("FREE".to_string());
+        assert_eq!(display_plan(&t), "free");
+    }
+
+    #[test]
+    fn display_plan_shows_non_free_plan_when_price_is_zero_or_missing() {
+        let mut t = marketplace_template("x");
+        t.required_plan_name = Some("professional".to_string());
+        assert_eq!(display_plan(&t), "professional");
+
+        t.price = Some(0.0);
+        assert_eq!(display_plan(&t), "professional");
+    }
+
+    #[test]
+    fn display_plan_formats_price_with_billing_cycle() {
+        let mut t = marketplace_template("x");
+        t.price = Some(5.0);
+
+        t.billing_cycle = Some("monthly".to_string());
+        assert_eq!(display_plan(&t), "$5.00/mo");
+
+        t.billing_cycle = Some("yearly".to_string());
+        assert_eq!(display_plan(&t), "$5.00/yr");
+
+        t.billing_cycle = Some("one_time".to_string());
+        assert_eq!(display_plan(&t), "$5.00");
+
+        t.billing_cycle = Some("per_install".to_string());
+        assert_eq!(display_plan(&t), "$5.00/install");
+
+        t.billing_cycle = None;
+        assert_eq!(display_plan(&t), "$5.00/mo");
     }
 }

@@ -3282,12 +3282,15 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         } else {
             project_dir.to_path_buf()
         };
+        // Cloud/server deploys always run the status-panel agent, so put project
+        // services on the agent's shared network for reachability.
         let mut bundle = build_config_bundle(
             project_dir,
             bundle_env,
             &compose_path,
             config.env_file.as_deref(),
             &reference_base,
+            true,
         )?;
         bundle.synthesized_environment = synthesized_environment;
         eprintln!("  Config bundle: {}", bundle.archive_path.display());

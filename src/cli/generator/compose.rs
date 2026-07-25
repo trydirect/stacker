@@ -115,15 +115,23 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
         let mut named_volumes: Vec<String> = Vec::new();
 
         // --- Main app service ---
-        let app_service = build_app_service(config);
-        for vol in &app_service.volumes {
-            if let Some(named) = extract_named_volume(vol) {
-                if !named_volumes.contains(&named) {
-                    named_volumes.push(named);
+        // A marketplace-generated config describes its whole stack in
+        // `services:` — there is no local application to build. Synthesizing an
+        // `app` service there produces a phantom `build: .stacker/Dockerfile`
+        // whose context is never shipped to the remote host, failing the
+        // deploy with "lstat /home/.../.stacker: no such file or directory".
+        // Skip it unless the app section carries an explicit source.
+        if config_has_buildable_app(config) {
+            let app_service = build_app_service(config);
+            for vol in &app_service.volumes {
+                if let Some(named) = extract_named_volume(vol) {
+                    if !named_volumes.contains(&named) {
+                        named_volumes.push(named);
+                    }
                 }
             }
+            compose.services.push(app_service);
         }
-        compose.services.push(app_service);
 
         // --- Additional services (databases, caches, etc.) ---
         for svc_def in &config.services {
@@ -184,17 +192,55 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
 // Internal construction helpers (SRP: each builds one aspect)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Whether the config's `app` section should be materialized as a service.
+///
+/// `app` is a non-optional field, so every config carries a default `AppSource`
+/// even when none was declared. Synthesizing a service from that default yields
+/// a phantom `app` that builds from `.stacker/Dockerfile` — a context that
+/// doesn't exist for a services-only stack (a marketplace stack, or a
+/// hand-written `stacker.yml` with only `services:`), failing the remote deploy
+/// with "lstat .../.stacker: no such file or directory".
+///
+/// The app is materialized when:
+/// - it declares an explicit source (`image` / `dockerfile` / `build`), or
+/// - the source config actually declared an `app:` section (`app_present`), or
+/// - there are no services to deploy (keep it so the compose isn't empty).
+///
+/// This is origin-independent: it fixes both marketplace-generated and
+/// user-authored services-only configs.
+fn config_has_buildable_app(config: &StackerConfig) -> bool {
+    if config.app.image.is_some() || config.app.dockerfile.is_some() || config.app.build.is_some() {
+        return true;
+    }
+    if config.app_present {
+        return true;
+    }
+    config.services.is_empty()
+}
+
 fn build_app_service(config: &StackerConfig) -> ComposeService {
     let mut svc = ComposeService {
         name: "app".to_string(),
         ..Default::default()
     };
+    // The compose service (and its DNS name) stays `app` so intra-project
+    // references keep working, but the `my.stacker.service` label carries the
+    // project code so the status-panel agent can resolve this container by the
+    // app code it queries with (`stacker pipe scan --app <code>`). Previously
+    // this was hardcoded to "app" and never matched the project code.
+    let app_code = crate::helpers::stacker_labels::sanitize_service_code(
+        config
+            .project
+            .identity
+            .as_deref()
+            .unwrap_or(config.name.as_str()),
+    );
     crate::helpers::stacker_labels::insert_runtime_labels(
         &mut svc.labels,
         None::<String>,
         None,
         crate::helpers::stacker_labels::SCOPE_PROJECT,
-        "app",
+        &app_code,
         "app",
     );
 
@@ -484,7 +530,7 @@ impl fmt::Display for ComposeDefinition {
 mod tests {
     use super::*;
     use crate::cli::config_parser::{
-        AppSource, ConfigBuilder, DeployConfig, DomainConfig, ProxyConfig, SslMode,
+        AppSource, ConfigBuilder, ConfigOrigin, DeployConfig, DomainConfig, ProxyConfig, SslMode,
     };
     use std::collections::HashMap;
 
@@ -503,6 +549,29 @@ mod tests {
         assert_eq!(compose.services.len(), 1);
         assert_eq!(compose.services[0].name, "app");
         assert!(compose.services[0].ports.contains(&"80:80".to_string()));
+    }
+
+    #[test]
+    fn app_service_label_carries_project_code_not_hardcoded_app() {
+        let config = minimal_config(AppType::Static);
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let app = &compose.services[0];
+        // Service name and DNS stay "app" so intra-project references keep working.
+        assert_eq!(app.name, "app");
+        assert_eq!(
+            app.labels
+                .get(crate::helpers::stacker_labels::DNS)
+                .map(String::as_str),
+            Some("app")
+        );
+        // The agent-resolution label carries the project code, not "app", so
+        // `stacker pipe scan --app <code>` can resolve this container.
+        assert_eq!(
+            app.labels
+                .get(crate::helpers::stacker_labels::SERVICE)
+                .map(String::as_str),
+            Some("test-app")
+        );
     }
 
     #[test]
@@ -526,6 +595,116 @@ mod tests {
         let app = &compose.services[0];
         assert!(app.build_context.is_some());
         assert!(app.image.is_none());
+    }
+
+    fn service_names(config: &StackerConfig) -> Vec<String> {
+        ComposeDefinition::try_from(config)
+            .unwrap()
+            .services
+            .iter()
+            .map(|s| s.name.clone())
+            .collect()
+    }
+
+    // A services-only config with no `app:` section must NOT get a phantom
+    // `app` (which would build from an unshipped `.stacker/Dockerfile`). This
+    // holds regardless of origin — both a hand-written user config (e.g.
+    // screego) and a marketplace-generated one.
+    #[test]
+    fn services_only_config_without_app_section_omits_phantom_app() {
+        let yaml = "\
+name: screego
+services:
+  screego:
+    image: screego/server:latest
+    ports:
+      - \"5050:5050\"
+";
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert!(!config.app_present);
+        let names = service_names(&config);
+        assert!(
+            !names.contains(&"app".to_string()),
+            "services-only config must not synthesize an app service, got {:?}",
+            names
+        );
+        assert!(names.contains(&"screego".to_string()));
+    }
+
+    // Same shape, but marketplace-origin (the ghost case) — identical result.
+    #[test]
+    fn marketplace_services_only_config_omits_phantom_app() {
+        let yaml = "\
+# @stacker-origin: marketplace
+name: ghost
+services:
+  ghost:
+    image: ghost:5-alpine
+    ports:
+      - \"2368:2368\"
+";
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert_eq!(config.origin, ConfigOrigin::MarketplaceGenerated);
+        assert!(!config.app_present);
+        let names = service_names(&config);
+        assert!(!names.contains(&"app".to_string()));
+        assert!(names.contains(&"ghost".to_string()));
+    }
+
+    // An explicit `app:` section is always honored, even alongside services.
+    #[test]
+    fn config_with_declared_app_section_keeps_app() {
+        let yaml = "\
+name: myproj
+app:
+  type: node
+services:
+  db:
+    image: postgres:16
+";
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert!(config.app_present);
+        let names = service_names(&config);
+        assert!(
+            names.contains(&"app".to_string()),
+            "declared app must be kept: {:?}",
+            names
+        );
+        assert!(names.contains(&"db".to_string()));
+    }
+
+    // An explicit image source keeps the app even without an `app:` key path
+    // through the builder.
+    #[test]
+    fn config_with_explicit_app_image_keeps_app_service() {
+        let mut config = minimal_config(AppType::Static);
+        config.app_present = false; // simulate no declared app: section
+        config.app.image = Some("myorg/app:1.0".to_string());
+        config.services = vec![ServiceDefinition {
+            name: "db".to_string(),
+            image: "postgres:16".to_string(),
+            ports: vec![],
+            environment: HashMap::new(),
+            volumes: vec![],
+            depends_on: vec![],
+            command: None,
+            healthcheck: None,
+        }];
+
+        let names = service_names(&config);
+        assert!(names.contains(&"app".to_string()));
+        assert!(names.contains(&"db".to_string()));
+    }
+
+    // No services and no app declared: keep the fallback app so the compose is
+    // never empty.
+    #[test]
+    fn config_without_services_or_app_keeps_app_fallback() {
+        let yaml = "name: bare\n";
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert!(!config.app_present);
+        assert!(config.services.is_empty());
+        assert!(service_names(&config).contains(&"app".to_string()));
     }
 
     #[test]

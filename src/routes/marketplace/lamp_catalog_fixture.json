@@ -1,0 +1,202 @@
+{
+  "_id": 54,
+  "code": "lamp",
+  "name": "LAMP",
+  "kind": "stack",
+  "docker_image": "",
+  "services": [
+    {
+      "_id": 1,
+      "code": "mysql",
+      "name": "MySQL",
+      "role": null,
+      "type": "service",
+      "docker_image": "trydirect/mysql",
+      "default_ports": null,
+      "default_env": {
+        "MYSQL_HOST": "mysqldb",
+        "MYSQL_PORT": "3306",
+        "MYSQL_USER": "admin",
+        "MYSQL_DATABASE": "default",
+        "MYSQL_PASSWORD": "password-10",
+        "MYSQL_ROOT_PASSWORD": "password-10"
+      },
+      "default_config_files": []
+    },
+    {
+      "_id": 2,
+      "code": "nginx",
+      "name": "Nginx",
+      "role": null,
+      "type": "service",
+      "docker_image": "trydirect/nginx",
+      "default_ports": null,
+      "default_env": {},
+      "default_config_files": []
+    },
+    {
+      "_id": 9,
+      "code": "statuspanel",
+      "name": "Status Panel",
+      "role": "statuspanel",
+      "type": "feature",
+      "docker_image": "trydirect/status",
+      "default_ports": [
+        "5000"
+      ],
+      "default_env": {
+        "status_config_json": "status_config_json",
+        "ADMIN_IP_RANGE": "0.0.0.0/0",
+        "status_panel_password": "password-10",
+        "status_panel_port": "5000",
+        "status_panel_username": "admin"
+      },
+      "default_config_files": []
+    },
+    {
+      "_id": 12,
+      "code": "fail2ban",
+      "name": "Fail2ban",
+      "role": "fail2ban",
+      "type": "feature",
+      "docker_image": "trydirect/fail2ban",
+      "default_ports": null,
+      "default_env": {},
+      "default_config_files": []
+    },
+    {
+      "_id": 45,
+      "code": "redis",
+      "name": "Redis",
+      "role": null,
+      "type": "service",
+      "docker_image": "trydirect/redis",
+      "default_ports": null,
+      "default_env": {},
+      "default_config_files": []
+    },
+    {
+      "_id": 48,
+      "code": "smtp",
+      "name": "SMTP server",
+      "role": "smtp",
+      "type": "service",
+      "docker_image": "trydirect/smtp",
+      "default_ports": [
+        "25",
+        "465",
+        "587"
+      ],
+      "default_env": {
+        "SMTP_HOST": "smtp",
+        "SMTP_PORT": "25"
+      },
+      "default_config_files": []
+    },
+    {
+      "_id": 50,
+      "code": "mariadb",
+      "name": "MariaDB",
+      "role": null,
+      "type": "service",
+      "docker_image": "trydirect/mariadb",
+      "default_ports": null,
+      "default_env": {
+        "MYSQL_HOST": "mysqldb",
+        "MYSQL_PORT": "3306",
+        "MYSQL_USER": "admin",
+        "MYSQL_DATABASE": "default",
+        "MYSQL_PASSWORD": "password-10"
+      },
+      "default_config_files": []
+    },
+    {
+      "_id": 51,
+      "code": "apache",
+      "name": "Apache",
+      "role": null,
+      "type": "service",
+      "docker_image": "trydirect/apache",
+      "default_ports": null,
+      "default_env": {},
+      "default_config_files": []
+    },
+    {
+      "_id": 173,
+      "code": "phpmyadmin",
+      "name": "phpMyAdmin",
+      "role": null,
+      "type": "web",
+      "docker_image": "trydirect/phpmyadmin",
+      "default_ports": [
+        "8082"
+      ],
+      "default_env": {
+        "MYSQL_HOST": "db",
+        "phpmyadmin_login": "root"
+      },
+      "default_config_files": []
+    },
+    {
+      "_id": 181,
+      "code": "development_support",
+      "name": "Custom Optimization",
+      "role": null,
+      "type": "feature",
+      "docker_image": "trydirect/development_support",
+      "default_ports": null,
+      "default_env": {},
+      "default_config_files": []
+    },
+    {
+      "_id": 192,
+      "code": "portainer_ce_feature",
+      "name": "Portainer CE",
+      "role": "portainer-ce-feature",
+      "type": "feature",
+      "docker_image": "trydirect/portainer-ce",
+      "default_ports": [
+        "8000",
+        "9000"
+      ],
+      "default_env": {
+        "portainer_user": "admin",
+        "PORTAINER_URL": "${commonDomain}:9000",
+        "PORTAINER_PORT": "9000",
+        "portainer_password": "password-10"
+      },
+      "default_config_files": []
+    },
+    {
+      "_id": 205,
+      "code": "nginx_proxy_manager",
+      "name": "Nginx Proxy Manager",
+      "role": "nginx_proxy_manager",
+      "type": "feature",
+      "docker_image": "trydirect/nginx-proxy-manager",
+      "default_ports": [
+        "80",
+        "81",
+        "443"
+      ],
+      "default_env": {
+        "npm_as_feature": "true",
+        "nginx_pm_user": "admin@example.com",
+        "nginx_pm_password": "changeme",
+        "gitlab_port": "8889"
+      },
+      "default_config_files": []
+    },
+    {
+      "_id": 207,
+      "code": "mydumper",
+      "name": "MyDumper",
+      "role": "mydumper",
+      "type": "feature",
+      "docker_image": "mydumper",
+      "default_ports": null,
+      "default_env": {},
+      "default_config_files": []
+    }
+  ]
+}

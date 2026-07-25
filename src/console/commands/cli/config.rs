@@ -658,7 +658,10 @@ pub fn run_setup_ai(
     ])
 }
 
-pub fn run_setup_cloud_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
+pub fn run_setup_cloud_interactive(
+    config_path: &str,
+    available_clouds: Option<&[crate::cli::stacker_client::CloudInfo]>,
+) -> Result<Vec<String>, CliError> {
     let path = Path::new(config_path);
     if !path.exists() {
         return Err(CliError::ConfigNotFound {
@@ -727,6 +730,31 @@ pub fn run_setup_cloud_interactive(config_path: &str) -> Result<Vec<String>, Cli
     };
 
     apply_cloud_settings(&mut config, provider, region_opt, size_opt, ssh_key_opt);
+
+    // Prompt for saved cloud credential name (deploy.cloud.key).
+    // If available_clouds was provided, show the list of available credentials.
+    if let Some(clouds) = available_clouds {
+        if !clouds.is_empty() {
+            let names: Vec<&str> = clouds.iter().map(|c| c.name.as_str()).collect();
+            eprintln!("Available cloud credentials: {}", names.join(", "));
+        }
+    }
+    let key_default = config
+        .deploy
+        .cloud
+        .as_ref()
+        .and_then(|c| c.key.clone())
+        .unwrap_or_default();
+    let key_input = prompt_with_default(
+        "Cloud credential name (from `stacker list clouds`, leave empty to skip)",
+        &key_default,
+    )?;
+    if !key_input.trim().is_empty() {
+        if let Some(cloud) = config.deploy.cloud.as_mut() {
+            cloud.key = Some(key_input.trim().to_string());
+            applied.push(format!("Set deploy.cloud.key={}", key_input.trim()));
+        }
+    }
 
     let backup_path = format!("{}.bak", config_path);
     std::fs::copy(config_path, &backup_path)?;
@@ -1356,7 +1384,15 @@ impl ConfigSetupCloudCommand {
 impl CallableTrait for ConfigSetupCloudCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let path = resolve_config_path(&self.file);
-        let applied = run_setup_cloud_interactive(&path)?;
+        // Try to create a runtime to fetch available cloud credentials.
+        // Non-fatal if the user isn't logged in — the wizard will still work,
+        // just without showing the list of saved credentials.
+        let clouds: Option<Vec<crate::cli::stacker_client::CloudInfo>> =
+            crate::cli::runtime::CliRuntime::new("config setup cloud")
+                .ok()
+                .and_then(|ctx| ctx.block_on(async { ctx.client.list_clouds().await }).ok());
+        let clouds_ref = clouds.as_deref();
+        let applied = run_setup_cloud_interactive(&path, clouds_ref)?;
 
         eprintln!("✓ Updated {}", path);
         for item in applied {

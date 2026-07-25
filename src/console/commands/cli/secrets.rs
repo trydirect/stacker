@@ -1530,6 +1530,7 @@ mod tests {
             env: Default::default(),
             config_contract: Default::default(),
             origin: Default::default(),
+            app_present: false,
         };
 
         assert_eq!(

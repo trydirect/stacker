@@ -247,6 +247,8 @@ pub struct MarketplaceTemplate {
     pub price: Option<f64>,
     pub billing_cycle: Option<String>,
     pub is_from_marketplace: Option<bool>,
+    #[serde(default)]
+    pub creator_name: Option<String>,
     pub stack_definition: Option<serde_json::Value>,
 }
 
@@ -256,6 +258,25 @@ pub struct MarketplaceInstallResponse {
     pub template: MarketplaceTemplate,
     pub latest_version: serde_json::Value,
     pub deployment_id: Option<i32>,
+    /// Populated only when the template is billed per_install.
+    #[serde(default)]
+    pub authorization: Option<AuthorizationSummary>,
+    /// Populated only for per_install installs — server echoes the key it
+    /// actually used (may differ from what the client sent if the client
+    /// omitted one entirely).
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
+/// CLI-side mirror of the server's `AuthorizationSummary`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorizationSummary {
+    pub authorization_id: String,
+    pub status: String,
+    pub amount_minor: i64,
+    pub currency: String,
+    #[serde(default)]
+    pub expires_at: Option<String>,
 }
 
 /// Marketplace template info as returned by `/api/templates/mine`
@@ -1871,15 +1892,27 @@ impl StackerClient {
     }
 
     /// Create a Stacker project from a marketplace template.
+    ///
+    /// `idempotency_key` is threaded both as a body field and an
+    /// `Idempotency-Key` header — server accepts either but prefers the
+    /// header. For `per_install`-billed templates, retrying with the same
+    /// key collapses to the single authorization the first call created;
+    /// omitting it there is unsafe (a network blip after a successful
+    /// authorize would double-charge on retry).
     pub async fn install_marketplace_template(
         &self,
         slug: &str,
         name: Option<&str>,
         deploy_form: Option<serde_json::Value>,
         install_inputs: Option<serde_json::Map<String, serde_json::Value>>,
+        idempotency_key: &str,
     ) -> Result<MarketplaceInstallResponse, CliError> {
         let url = format!("{}/api/templates/{}/install", self.base_url, slug);
-        let mut body = serde_json::json!({ "name": name, "deploy": deploy_form });
+        let mut body = serde_json::json!({
+            "name": name,
+            "deploy": deploy_form,
+            "idempotency_key": idempotency_key,
+        });
         if let Some(install_inputs) = install_inputs {
             if let Some(obj) = body.as_object_mut() {
                 obj.insert(
@@ -1892,6 +1925,7 @@ impl StackerClient {
             .http
             .post(&url)
             .bearer_auth(&self.token)
+            .header("Idempotency-Key", idempotency_key)
             .json(&body)
             .send()
             .await
@@ -3937,7 +3971,7 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
         .unwrap_or_else(|| "nbg1".to_string());
     let server_size = cloud
         .and_then(|c| c.size.clone())
-        .unwrap_or_else(|| "cpx11".to_string());
+        .unwrap_or_else(|| "cx23".to_string());
     let os = match provider.as_str() {
         "do" => "docker-20-04", // DigitalOcean marketplace image with Docker pre-installed
         "htz" => "docker-ce",   // Hetzner snapshot with Docker CE pre-installed (Ubuntu 24.04)
@@ -4310,7 +4344,7 @@ mod tests {
                 provider: crate::cli::config_parser::CloudProvider::Hetzner,
                 orchestrator: crate::cli::config_parser::CloudOrchestrator::Remote,
                 region: Some("fsn1".to_string()),
-                size: Some("cpx11".to_string()),
+                size: Some("cx23".to_string()),
                 install_image: None,
                 remote_payload_file: None,
                 ssh_key: None,
@@ -4324,7 +4358,7 @@ mod tests {
         let form = build_deploy_form(&config);
         assert_eq!(form["cloud"]["provider"], "htz");
         assert_eq!(form["server"]["region"], "fsn1");
-        assert_eq!(form["server"]["server"], "cpx11");
+        assert_eq!(form["server"]["server"], "cx23");
         assert_eq!(form["stack"]["stack_code"], "myproject");
         // Auto-generated server name should start with the project name
         let name = form["server"]["name"].as_str().unwrap();

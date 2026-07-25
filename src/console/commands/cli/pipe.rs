@@ -2654,6 +2654,44 @@ fn run_remote_probe(
     request: &PipeDiscoveryRequest,
     description: &str,
 ) -> Result<AgentCommandInfo, Box<dyn std::error::Error>> {
+    let info = run_remote_probe_once(ctx, request, description)?;
+    if info.status != "completed" {
+        return Ok(info);
+    }
+
+    // Fallback: an app-scoped (`remote_app`) probe reaches only the app's
+    // published host port. When it resolves a container but finds nothing,
+    // retry directly against that container — the `direct_container` scope
+    // reaches the container's internal IP and discovers forms / REST endpoints
+    // the host-port probe misses (see the WordPress→Matomo pipe write-up).
+    if request.selector.container.is_none() {
+        if let Ok(report) = decode_probe_report(&info) {
+            if !report_has_findings(&report) {
+                if let Some(name) = pick_fallback_container(&report, &request.selector.selector) {
+                    eprintln!(
+                        "  No endpoints via the app's published port; retrying container '{}' directly…",
+                        name
+                    );
+                    let mut retry = request.clone();
+                    retry.selector.container = Some(name.clone());
+                    let retry_desc = format!("{} (container {} — direct probe)", description, name);
+                    let retry_info = run_remote_probe_once(ctx, &retry, &retry_desc)?;
+                    if agent_info_has_findings(&retry_info) {
+                        return Ok(retry_info);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(info)
+}
+
+fn run_remote_probe_once(
+    ctx: &CliRuntime,
+    request: &PipeDiscoveryRequest,
+    description: &str,
+) -> Result<AgentCommandInfo, Box<dyn std::error::Error>> {
     let deployment_hash = request.selector.deployment_hash.as_deref().ok_or_else(|| {
         CliError::ConfigValidation("Remote discovery requires a deployment hash".to_string())
     })?;
@@ -2681,6 +2719,34 @@ fn run_remote_probe(
         request,
     );
     with_probe_report(info, &report).map_err(Into::into)
+}
+
+/// True when a probe report discovered any endpoints, forms, or resources.
+fn report_has_findings(report: &ProbeEndpointsCommandReport) -> bool {
+    !report.endpoints.is_empty() || !report.forms.is_empty() || !report.resources.is_empty()
+}
+
+/// Same as [`report_has_findings`] but from a raw completed agent command.
+fn agent_info_has_findings(info: &AgentCommandInfo) -> bool {
+    info.status == "completed"
+        && decode_probe_report(info)
+            .map(|report| report_has_findings(&report))
+            .unwrap_or(false)
+}
+
+/// Choose which resolved container to re-probe directly. Prefers a container
+/// whose name references the app code, otherwise the first resolved container.
+fn pick_fallback_container(report: &ProbeEndpointsCommandReport, app_code: &str) -> Option<String> {
+    if report.containers.is_empty() {
+        return None;
+    }
+    let code = crate::helpers::stacker_labels::sanitize_service_code(app_code);
+    report
+        .containers
+        .iter()
+        .find(|container| container.name.contains(app_code) || container.name.contains(&code))
+        .or_else(|| report.containers.first())
+        .map(|container| container.name.clone())
 }
 
 fn synthetic_transport_target_report(
@@ -2838,6 +2904,47 @@ mod selectable_operation_tests {
             target_kind: Some("html_form".to_string()),
             probed_at: "2026-05-01T00:00:00Z".to_string(),
         }
+    }
+
+    fn probe_container(name: &str) -> crate::forms::status_panel::ProbeContainer {
+        crate::forms::status_panel::ProbeContainer {
+            name: name.to_string(),
+            image: String::new(),
+            network: String::new(),
+            ports: vec![],
+            addresses: vec![],
+        }
+    }
+
+    #[test]
+    fn direct_container_fallback_selects_app_named_container_when_empty() {
+        let mut report = sample_report(vec!["html_forms".to_string()]);
+
+        // A report with findings is not "empty" → no fallback needed.
+        assert!(report_has_findings(&report));
+
+        // Clear findings: now it's an empty app-scoped result.
+        report.forms.clear();
+        assert!(!report_has_findings(&report));
+
+        // With resolved containers, the fallback prefers the one whose name
+        // references the app code, else the first.
+        report.containers = vec![
+            probe_container("project-db-1"),
+            probe_container("project-wordpress-matomo-1"),
+        ];
+        assert_eq!(
+            pick_fallback_container(&report, "wordpress-matomo").as_deref(),
+            Some("project-wordpress-matomo-1")
+        );
+        assert_eq!(
+            pick_fallback_container(&report, "unrelated").as_deref(),
+            Some("project-db-1")
+        );
+
+        // No resolved containers → nothing to fall back to.
+        report.containers.clear();
+        assert!(pick_fallback_container(&report, "wordpress-matomo").is_none());
     }
 
     #[test]

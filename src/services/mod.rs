@@ -10,6 +10,7 @@ pub mod env_model;
 pub mod explain;
 pub mod grpc_pipe;
 pub mod handoff;
+pub mod install_authorization_sweeper;
 pub mod log_cache;
 pub mod marketplace_access;
 pub mod marketplace_assets;
