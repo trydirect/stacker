@@ -14,6 +14,8 @@ pub struct AuditRateLimitConfig {
     pub global_per_min: u32,
     /// Max request body size in KiB.
     pub max_body_kb: usize,
+    /// TTL for cached identical-input results (seconds). 0 disables caching.
+    pub cache_ttl_secs: u64,
 }
 
 impl Default for AuditRateLimitConfig {
@@ -23,6 +25,7 @@ impl Default for AuditRateLimitConfig {
             image_per_min: 5,
             global_per_min: 600,
             max_body_kb: 256,
+            cache_ttl_secs: 60,
         }
     }
 }
@@ -42,6 +45,10 @@ impl AuditRateLimitConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.max_body_kb),
+            cache_ttl_secs: std::env::var("AUDIT_CACHE_TTL_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.cache_ttl_secs),
         }
     }
 }

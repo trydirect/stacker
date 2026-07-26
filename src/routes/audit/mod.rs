@@ -38,11 +38,16 @@ fn register(cfg: &mut ServiceConfig) {
 /// `App::new().configure(|c| routes::audit::configure(c, redis, cfg))`.
 pub fn configure(cfg: &mut ServiceConfig, redis: Option<ConnectionManager>, rl: AuditRateLimitConfig) {
     let body_cap = rl.max_body_kb * 1024;
+    let state = web::Data::new(AuditState {
+        redis: redis.clone(),
+        cache_ttl: rl.cache_ttl_secs,
+    });
     match redis {
         Some(conn) => {
             cfg.service(
                 web::scope("/api/audit")
                     .app_data(web::PayloadConfig::new(body_cap))
+                    .app_data(state)
                     .wrap(AuditRateLimit::new(conn, rl))
                     .configure(register),
             );
@@ -51,35 +56,87 @@ pub fn configure(cfg: &mut ServiceConfig, redis: Option<ConnectionManager>, rl: 
             cfg.service(
                 web::scope("/api/audit")
                     .app_data(web::PayloadConfig::new(body_cap))
+                    .app_data(state)
                     .configure(register),
             );
         }
     }
 }
 
+/// Per-scope runtime for handlers: shared Redis (for result caching) + TTL.
+#[derive(Clone)]
+struct AuditState {
+    redis: Option<ConnectionManager>,
+    cache_ttl: u64,
+}
+
+fn json_response(body: String, cache: &str) -> HttpResponse {
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .insert_header(("X-Audit-Cache", cache))
+        .body(body)
+}
+
+/// Return a cached JSON response for identical input, else compute (sync engine),
+/// cache and return. `X-Audit-Cache: HIT|MISS|BYPASS`.
+async fn cached_json(
+    state: &AuditState,
+    checker: &str,
+    body: &[u8],
+    compute: impl FnOnce() -> String,
+) -> HttpResponse {
+    use crate::helpers::audit_cache::{cache_key, get, set};
+    let key = cache_key(checker, body);
+    if let Some(conn) = &state.redis {
+        let mut conn = conn.clone();
+        if let Some(hit) = get(&mut conn, &key).await {
+            return json_response(hit, "HIT");
+        }
+        let json = compute();
+        set(&mut conn, &key, &json, state.cache_ttl).await;
+        return json_response(json, "MISS");
+    }
+    json_response(compute(), "BYPASS")
+}
+
 #[post("/compose")]
-async fn compose(body: String) -> impl Responder {
-    HttpResponse::Ok().json(audit_compose(&body))
+async fn compose(body: String, state: web::Data<AuditState>) -> impl Responder {
+    cached_json(&state, "compose", body.as_bytes(), || {
+        serde_json::to_string(&audit_compose(&body)).unwrap_or_default()
+    })
+    .await
 }
 
 #[post("/dockerfile")]
-async fn dockerfile(body: String) -> impl Responder {
-    HttpResponse::Ok().json(audit_dockerfile(&body))
+async fn dockerfile(body: String, state: web::Data<AuditState>) -> impl Responder {
+    cached_json(&state, "dockerfile", body.as_bytes(), || {
+        serde_json::to_string(&audit_dockerfile(&body)).unwrap_or_default()
+    })
+    .await
 }
 
 #[post("/exposure")]
-async fn exposure(body: String) -> impl Responder {
-    HttpResponse::Ok().json(audit_exposure(&body))
+async fn exposure(body: String, state: web::Data<AuditState>) -> impl Responder {
+    cached_json(&state, "exposure", body.as_bytes(), || {
+        serde_json::to_string(&audit_exposure(&body)).unwrap_or_default()
+    })
+    .await
 }
 
 #[post("/readiness")]
-async fn readiness(body: String) -> impl Responder {
-    HttpResponse::Ok().json(audit_readiness(&body))
+async fn readiness(body: String, state: web::Data<AuditState>) -> impl Responder {
+    cached_json(&state, "readiness", body.as_bytes(), || {
+        serde_json::to_string(&audit_readiness(&body)).unwrap_or_default()
+    })
+    .await
 }
 
 #[post("/cost")]
-async fn cost(body: String) -> impl Responder {
-    HttpResponse::Ok().json(estimate_cost(&body, &DefaultPricing))
+async fn cost(body: String, state: web::Data<AuditState>) -> impl Responder {
+    cached_json(&state, "cost", body.as_bytes(), || {
+        serde_json::to_string(&estimate_cost(&body, &DefaultPricing)).unwrap_or_default()
+    })
+    .await
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,19 +145,37 @@ struct ImageQuery {
 }
 
 #[post("/image")]
-async fn image(query: web::Json<ImageQuery>) -> impl Responder {
+async fn image(query: web::Json<ImageQuery>, state: web::Data<AuditState>) -> impl Responder {
+    let image_ref = query.image.trim();
+    let key = crate::helpers::audit_cache::cache_key("image", image_ref.as_bytes());
+
+    // Cache hit avoids a Docker Hub round-trip (and a Trivy scan).
+    if let Some(conn) = &state.redis {
+        let mut conn = conn.clone();
+        if let Some(hit) = crate::helpers::audit_cache::get(&mut conn, &key).await {
+            return json_response(hit, "HIT");
+        }
+    }
+
     let meta = DockerHubMetadata;
-    match meta.fetch(&query.image).await {
+    let json = match meta.fetch(image_ref).await {
         Ok(info) => {
             let vulns = if info.exists {
-                scan_vulns(&query.image).await
+                scan_vulns(image_ref).await
             } else {
                 vec![]
             };
-            HttpResponse::Ok().json(audit_image(&info, &vulns))
+            serde_json::to_string(&audit_image(&info, &vulns)).unwrap_or_default()
         }
-        Err(err) => HttpResponse::BadGateway().json(serde_json::json!({ "error": err })),
+        // Registry/transport failures are not cached.
+        Err(err) => return HttpResponse::BadGateway().json(serde_json::json!({ "error": err })),
+    };
+
+    if let Some(conn) = &state.redis {
+        let mut conn = conn.clone();
+        crate::helpers::audit_cache::set(&mut conn, &key, &json, state.cache_ttl).await;
     }
+    json_response(json, "MISS")
 }
 
 /// Best-effort CVE scan. Opt-in via `AUDIT_TRIVY_ENABLED=1` (image scanning is

@@ -176,6 +176,21 @@ done
 # ... first 30 -> 200, then 429 with a Retry-After header.
 ```
 
+## Result caching
+
+Identical inputs are cached in Redis for `AUDIT_CACHE_TTL_SECS` (default 60s),
+keyed by `sha256(body)` per checker — the biggest win for `image` (skips the
+Docker Hub / Trivy work on a repeat). Every response carries an `X-Audit-Cache`
+header: `MISS` (computed + stored), `HIT` (served from cache), or `BYPASS`
+(Redis unavailable). Observe it:
+
+```bash
+curl -si -X POST "$BASE/api/audit/compose" -H 'Content-Type: text/plain' \
+  --data 'services: {}' | grep -i x-audit-cache      # MISS
+curl -si -X POST "$BASE/api/audit/compose" -H 'Content-Type: text/plain' \
+  --data 'services: {}' | grep -i x-audit-cache      # HIT
+```
+
 ## Pure-engine tests (no server needed)
 
 The engines are fully covered without HTTP/DB:
