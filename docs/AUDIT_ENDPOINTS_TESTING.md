@@ -148,6 +148,34 @@ Notes:
 
 ---
 
+## Rate limiting
+
+`/api/audit/*` is protected by a Redis-backed limiter (shared across replicas),
+fixed 60s windows:
+
+| Guard | Default | Response |
+|-------|---------|----------|
+| Body size | `AUDIT_MAX_BODY_KB=256` | `413 Payload Too Large` |
+| Per-IP, cheap checkers | `AUDIT_RATE_LIMIT_PER_MIN=30` | `429` + `Retry-After` |
+| Per-IP, `image` | `AUDIT_IMAGE_RATE_LIMIT_PER_MIN=5` | `429` + `Retry-After` |
+| Global ceiling | `AUDIT_GLOBAL_PER_MIN=600` | `503` + `Retry-After` |
+
+Client IP is taken from `X-Forwarded-For` via the proxy, so ensure the edge
+proxy sets it (nginx `proxy_set_header X-Forwarded-For …`) and is the only hop
+that can. If Redis is unreachable the limiter **fails open** (requests allowed;
+body cap still applies).
+
+Observe a 429 (cheap tier, 30/min):
+
+```bash
+for i in $(seq 1 32); do
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/audit/compose" \
+    -H 'Content-Type: text/plain' --data 'services: {}')
+  echo "req $i -> $code"
+done
+# ... first 30 -> 200, then 429 with a Retry-After header.
+```
+
 ## Pure-engine tests (no server needed)
 
 The engines are fully covered without HTTP/DB:

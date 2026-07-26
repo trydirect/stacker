@@ -6,9 +6,14 @@
 //! arbitrary host — no SSRF surface here) and leaves CVE scanning to a future
 //! `VulnScanner` (Trivy) integration.
 
-use actix_web::{post, web, HttpResponse, Responder, Scope};
+use actix_web::web::ServiceConfig;
+use actix_web::{post, web, HttpResponse, Responder};
 use async_trait::async_trait;
+use redis::aio::ConnectionManager;
 use serde::Deserialize;
+
+use crate::helpers::rate_limit::AuditRateLimitConfig;
+use crate::middleware::rate_limit::AuditRateLimit;
 
 use td_audit::compose::audit_compose;
 use td_audit::cost::{estimate_cost, DefaultPricing};
@@ -19,15 +24,37 @@ use td_audit::image::{
 };
 use td_audit::readiness::audit_readiness;
 
-/// Mountable scope: `App::new().service(routes::audit::scope())`.
-pub fn scope() -> Scope {
-    web::scope("/api/audit")
-        .service(compose)
+fn register(cfg: &mut ServiceConfig) {
+    cfg.service(compose)
         .service(dockerfile)
         .service(exposure)
         .service(readiness)
         .service(cost)
-        .service(image)
+        .service(image);
+}
+
+/// Mount `/api/audit/*` with a body-size cap and, when Redis is available, the
+/// shared per-IP/global rate limiter. Used as
+/// `App::new().configure(|c| routes::audit::configure(c, redis, cfg))`.
+pub fn configure(cfg: &mut ServiceConfig, redis: Option<ConnectionManager>, rl: AuditRateLimitConfig) {
+    let body_cap = rl.max_body_kb * 1024;
+    match redis {
+        Some(conn) => {
+            cfg.service(
+                web::scope("/api/audit")
+                    .app_data(web::PayloadConfig::new(body_cap))
+                    .wrap(AuditRateLimit::new(conn, rl))
+                    .configure(register),
+            );
+        }
+        None => {
+            cfg.service(
+                web::scope("/api/audit")
+                    .app_data(web::PayloadConfig::new(body_cap))
+                    .configure(register),
+            );
+        }
+    }
 }
 
 #[post("/compose")]

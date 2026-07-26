@@ -29,3 +29,4 @@ pub mod stacker_labels;
 pub use dockerhub::*;
 
 pub use cloud::*;
+pub mod rate_limit;
