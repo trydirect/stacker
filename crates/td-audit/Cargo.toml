@@ -17,3 +17,12 @@ semver = "1"
 default = []
 # Placeholder for a future browser build of the paste-only checkers.
 wasm = []
+
+[dev-dependencies]
+cucumber = "0.22"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+# BDD acceptance tests (Gherkin), matching the workspace convention.
+[[test]]
+name = "bdd"
+harness = false
