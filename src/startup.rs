@@ -162,6 +162,7 @@ pub async fn run(
             .app_data(oauth_http_client.clone())
             .app_data(oauth_cache.clone())
             .app_data(payout_provider.clone())
+            .service(crate::routes::audit::scope())
             .service(
                 web::scope("/health_check")
                     .service(routes::health_check)

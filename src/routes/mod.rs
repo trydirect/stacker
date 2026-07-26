@@ -1,4 +1,5 @@
 pub(crate) mod agent;
+pub mod audit;
 pub mod client;
 pub(crate) mod command;
 pub(crate) mod deployment;
