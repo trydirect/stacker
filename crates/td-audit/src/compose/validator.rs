@@ -70,6 +70,16 @@ const SECRET_PATTERNS: &[(&str, &str)] = &[
     ),
 ];
 
+/// True if `text` contains anything matching a known hardcoded-secret pattern.
+/// Shared with the Dockerfile linter so both use one secret catalog.
+pub fn contains_hardcoded_secret(text: &str) -> bool {
+    SECRET_PATTERNS.iter().any(|(pattern, _)| {
+        Regex::new(pattern)
+            .map(|re| re.is_match(text))
+            .unwrap_or(false)
+    })
+}
+
 /// Patterns for hardcoded credentials (passwords, default creds)
 const CRED_PATTERNS: &[(&str, &str)] = &[
     (

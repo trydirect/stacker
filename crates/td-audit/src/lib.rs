@@ -12,3 +12,8 @@ pub mod schema;
 pub mod score;
 
 pub mod compose;
+pub mod cost;
+pub mod dockerfile;
+pub mod exposure;
+pub mod image;
+pub mod readiness;

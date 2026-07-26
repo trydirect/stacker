@@ -10,3 +10,6 @@ pub use validator::*;
 
 mod audit;
 pub use audit::audit_compose;
+
+pub mod model;
+pub use model::{parse_compose, ComposeModel, ComposeService, ParseError, PortMapping};
