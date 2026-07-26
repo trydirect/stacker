@@ -115,6 +115,38 @@ pub fn audit_image(info: &ImageInfo, vulns: &[Vulnerability]) -> AuditReport {
     build_report("image", findings, cta())
 }
 
+/// Parse `trivy image --format json` output into vulnerabilities. Tolerant:
+/// unknown/garbage input yields an empty list (best-effort scanning).
+pub fn parse_trivy_report(json: &str) -> Vec<Vulnerability> {
+    let value: serde_json::Value = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let mut out = Vec::new();
+    let results = value.get("Results").and_then(|r| r.as_array());
+    for result in results.into_iter().flatten() {
+        let vulns = result.get("Vulnerabilities").and_then(|v| v.as_array());
+        for vuln in vulns.into_iter().flatten() {
+            let id = vuln
+                .get("VulnerabilityID")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if id.is_empty() {
+                continue;
+            }
+            let severity = match vuln.get("Severity").and_then(|v| v.as_str()).unwrap_or("") {
+                "CRITICAL" => VulnSeverity::Critical,
+                "HIGH" => VulnSeverity::High,
+                "MEDIUM" => VulnSeverity::Medium,
+                _ => VulnSeverity::Low,
+            };
+            out.push(Vulnerability { id, severity });
+        }
+    }
+    out
+}
+
 fn plural(n: usize) -> &'static str {
     if n == 1 {
         "y"
@@ -179,6 +211,34 @@ mod tests {
         assert!(r.findings.iter().any(|f| f.id == "image.vulns_critical" && f.severity == Severity::Critical));
         assert!(r.findings.iter().any(|f| f.id == "image.vulns_high"));
         assert_eq!(r.grade, Grade::F);
+    }
+
+    #[test]
+    fn parses_trivy_report_and_grades_from_it() {
+        let trivy = r#"{
+          "Results": [
+            { "Target": "redis (alpine 3.20)",
+              "Vulnerabilities": [
+                { "VulnerabilityID": "CVE-2024-0001", "Severity": "CRITICAL" },
+                { "VulnerabilityID": "CVE-2024-0002", "Severity": "HIGH" },
+                { "VulnerabilityID": "CVE-2024-0003", "Severity": "LOW" }
+              ] }
+          ]
+        }"#;
+        let vulns = parse_trivy_report(trivy);
+        assert_eq!(vulns.len(), 3);
+        assert_eq!(vulns[0].id, "CVE-2024-0001");
+        assert_eq!(vulns[0].severity, Critical);
+
+        let r = audit_image(&info(true, true, true), &vulns);
+        assert!(r.findings.iter().any(|f| f.id == "image.vulns_critical"));
+        assert_eq!(r.grade, Grade::F);
+    }
+
+    #[test]
+    fn trivy_garbage_is_empty_not_an_error() {
+        assert!(parse_trivy_report("not json").is_empty());
+        assert!(parse_trivy_report("{}").is_empty());
     }
 
     #[test]

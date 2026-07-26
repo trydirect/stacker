@@ -14,7 +14,9 @@ use td_audit::compose::audit_compose;
 use td_audit::cost::{estimate_cost, DefaultPricing};
 use td_audit::dockerfile::audit_dockerfile;
 use td_audit::exposure::audit_exposure;
-use td_audit::image::{audit_image, ImageInfo, ImageMetadata};
+use td_audit::image::{
+    audit_image, parse_trivy_report, ImageInfo, ImageMetadata, VulnScanner, Vulnerability,
+};
 use td_audit::readiness::audit_readiness;
 
 /// Mountable scope: `App::new().service(routes::audit::scope())`.
@@ -62,9 +64,66 @@ struct ImageQuery {
 async fn image(query: web::Json<ImageQuery>) -> impl Responder {
     let meta = DockerHubMetadata;
     match meta.fetch(&query.image).await {
-        // CVE scanning (Trivy) is a follow-up; grade on metadata for now.
-        Ok(info) => HttpResponse::Ok().json(audit_image(&info, &[])),
+        Ok(info) => {
+            let vulns = if info.exists {
+                scan_vulns(&query.image).await
+            } else {
+                vec![]
+            };
+            HttpResponse::Ok().json(audit_image(&info, &vulns))
+        }
         Err(err) => HttpResponse::BadGateway().json(serde_json::json!({ "error": err })),
+    }
+}
+
+/// Best-effort CVE scan. Opt-in via `AUDIT_TRIVY_ENABLED=1` (image scanning is
+/// heavy, so it stays off until deliberately enabled) and bounded by a timeout;
+/// any failure degrades gracefully to "metadata only" rather than erroring.
+async fn scan_vulns(image_ref: &str) -> Vec<Vulnerability> {
+    if std::env::var("AUDIT_TRIVY_ENABLED").ok().as_deref() != Some("1") {
+        return vec![];
+    }
+    let timeout = std::time::Duration::from_secs(120);
+    match tokio::time::timeout(timeout, TrivyScanner.scan(image_ref)).await {
+        Ok(Ok(vulns)) => vulns,
+        Ok(Err(e)) => {
+            tracing::warn!("trivy scan failed for {image_ref}: {e}");
+            vec![]
+        }
+        Err(_) => {
+            tracing::warn!("trivy scan timed out for {image_ref}");
+            vec![]
+        }
+    }
+}
+
+/// [`VulnScanner`] backed by the `trivy` CLI (`trivy image … --format json`).
+struct TrivyScanner;
+
+#[async_trait]
+impl VulnScanner for TrivyScanner {
+    async fn scan(&self, image_ref: &str) -> Result<Vec<Vulnerability>, String> {
+        let output = tokio::process::Command::new("trivy")
+            .args([
+                "image",
+                "--quiet",
+                "--scanners",
+                "vuln",
+                "--format",
+                "json",
+                image_ref,
+            ])
+            .output()
+            .await
+            .map_err(|e| format!("trivy not available: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "trivy exited with {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(parse_trivy_report(&String::from_utf8_lossy(&output.stdout)))
     }
 }
 
