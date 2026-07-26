@@ -7065,6 +7065,7 @@ dependencies = [
  "sqlx-adapter",
  "ssh-key 0.6.7",
  "tar",
+ "td-audit",
  "tempfile",
  "tera",
  "thiserror 1.0.69",
@@ -7257,6 +7258,19 @@ dependencies = [
  "p12-keystore",
  "rustls-connector",
  "rustls-pemfile 2.2.0",
+]
+
+[[package]]
+name = "td-audit"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "regex",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

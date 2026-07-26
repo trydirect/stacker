@@ -10,3 +10,5 @@
 
 pub mod schema;
 pub mod score;
+
+pub mod compose;
