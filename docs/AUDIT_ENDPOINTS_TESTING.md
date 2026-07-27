@@ -191,6 +191,16 @@ curl -si -X POST "$BASE/api/audit/compose" -H 'Content-Type: text/plain' \
   --data 'services: {}' | grep -i x-audit-cache      # HIT
 ```
 
+## Metrics
+
+Prometheus counters (exposed on the server's `/metrics`):
+
+- `audit_rate_limit_total{tier,decision}` — `tier` ∈ `cheap|image`, `decision` ∈ `allow|throttle|overload`.
+- `audit_cache_total{checker,result}` — `result` ∈ `hit|miss|bypass`.
+
+Cache hit-rate = `audit_cache_total{result="hit"} / sum(audit_cache_total)`;
+throttle rate = `audit_rate_limit_total{decision!="allow"} / sum(...)`.
+
 ## Pure-engine tests (no server needed)
 
 The engines are fully covered without HTTP/DB:

@@ -94,6 +94,15 @@ where
             let decision =
                 evaluate(&mut redis, &ip, tier, window, limit, cfg.global_per_min, retry).await;
 
+            let decision_label = match &decision {
+                Decision::Allow => "allow",
+                Decision::Throttled { .. } => "throttle",
+                Decision::Overloaded { .. } => "overload",
+            };
+            crate::metrics::AUDIT_RATE_LIMIT_TOTAL
+                .with_label_values(&[tier.as_str(), decision_label])
+                .inc();
+
             match decision {
                 Decision::Allow => Ok(service.call(req).await?.map_into_left_body()),
                 Decision::Throttled { retry_after } => {

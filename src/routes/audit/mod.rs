@@ -90,13 +90,22 @@ async fn cached_json(
     if let Some(conn) = &state.redis {
         let mut conn = conn.clone();
         if let Some(hit) = get(&mut conn, &key).await {
+            record_cache(checker, "hit");
             return json_response(hit, "HIT");
         }
         let json = compute();
         set(&mut conn, &key, &json, state.cache_ttl).await;
+        record_cache(checker, "miss");
         return json_response(json, "MISS");
     }
+    record_cache(checker, "bypass");
     json_response(compute(), "BYPASS")
+}
+
+fn record_cache(checker: &str, result: &str) {
+    crate::metrics::AUDIT_CACHE_TOTAL
+        .with_label_values(&[checker, result])
+        .inc();
 }
 
 #[post("/compose")]
@@ -153,6 +162,7 @@ async fn image(query: web::Json<ImageQuery>, state: web::Data<AuditState>) -> im
     if let Some(conn) = &state.redis {
         let mut conn = conn.clone();
         if let Some(hit) = crate::helpers::audit_cache::get(&mut conn, &key).await {
+            record_cache("image", "hit");
             return json_response(hit, "HIT");
         }
     }
@@ -174,6 +184,9 @@ async fn image(query: web::Json<ImageQuery>, state: web::Data<AuditState>) -> im
     if let Some(conn) = &state.redis {
         let mut conn = conn.clone();
         crate::helpers::audit_cache::set(&mut conn, &key, &json, state.cache_ttl).await;
+        record_cache("image", "miss");
+    } else {
+        record_cache("image", "bypass");
     }
     json_response(json, "MISS")
 }
