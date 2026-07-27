@@ -68,47 +68,85 @@ pub fn audit_image(info: &ImageInfo, vulns: &[Vulnerability]) -> AuditReport {
 
     if !info.pinned {
         findings.push(
-            Finding::new("image.unpinned_tag", Severity::Warning, "Image uses an unpinned tag (`latest` or none)")
-                .with_target(&info.reference)
-                .with_remediation("Pin a specific version tag, ideally a digest, for reproducible pulls."),
+            Finding::new(
+                "image.unpinned_tag",
+                Severity::Warning,
+                "Image uses an unpinned tag (`latest` or none)",
+            )
+            .with_target(&info.reference)
+            .with_remediation(
+                "Pin a specific version tag, ideally a digest, for reproducible pulls.",
+            ),
         );
     }
 
     if !info.official {
         findings.push(
-            Finding::new("image.unverified_publisher", Severity::Info, "Not an official or verified image")
-                .with_target(&info.reference)
-                .with_remediation("Prefer official (`library/*`) or verified-publisher images where possible."),
+            Finding::new(
+                "image.unverified_publisher",
+                Severity::Info,
+                "Not an official or verified image",
+            )
+            .with_target(&info.reference)
+            .with_remediation(
+                "Prefer official (`library/*`) or verified-publisher images where possible.",
+            ),
         );
     }
 
-    if info.last_updated_days.map(|d| d > STALE_DAYS).unwrap_or(false) {
+    if info
+        .last_updated_days
+        .map(|d| d > STALE_DAYS)
+        .unwrap_or(false)
+    {
         findings.push(
-            Finding::new("image.stale", Severity::Info, "Image has not been updated in over a year")
-                .with_target(&info.reference)
-                .with_remediation("Check for a maintained tag; stale images accumulate unpatched CVEs."),
+            Finding::new(
+                "image.stale",
+                Severity::Info,
+                "Image has not been updated in over a year",
+            )
+            .with_target(&info.reference)
+            .with_remediation(
+                "Check for a maintained tag; stale images accumulate unpatched CVEs.",
+            ),
         );
     }
 
     let count = |sev: VulnSeverity| vulns.iter().filter(|v| v.severity == sev).count();
-    let (crit, high, med) = (count(VulnSeverity::Critical), count(VulnSeverity::High), count(VulnSeverity::Medium));
+    let (crit, high, med) = (
+        count(VulnSeverity::Critical),
+        count(VulnSeverity::High),
+        count(VulnSeverity::Medium),
+    );
     if crit > 0 {
         findings.push(
-            Finding::new("image.vulns_critical", Severity::Critical, format!("{crit} critical vulnerabilit{}", plural(crit)))
-                .with_target(&info.reference)
-                .with_remediation("Rebuild on a patched base image or a slimmer/hardened variant."),
+            Finding::new(
+                "image.vulns_critical",
+                Severity::Critical,
+                format!("{crit} critical vulnerabilit{}", plural(crit)),
+            )
+            .with_target(&info.reference)
+            .with_remediation("Rebuild on a patched base image or a slimmer/hardened variant."),
         );
     }
     if high > 0 {
         findings.push(
-            Finding::new("image.vulns_high", Severity::Warning, format!("{high} high-severity vulnerabilit{}", plural(high)))
-                .with_target(&info.reference),
+            Finding::new(
+                "image.vulns_high",
+                Severity::Warning,
+                format!("{high} high-severity vulnerabilit{}", plural(high)),
+            )
+            .with_target(&info.reference),
         );
     }
     if med > 0 {
         findings.push(
-            Finding::new("image.vulns_medium", Severity::Info, format!("{med} medium-severity vulnerabilit{}", plural(med)))
-                .with_target(&info.reference),
+            Finding::new(
+                "image.vulns_medium",
+                Severity::Info,
+                format!("{med} medium-severity vulnerabilit{}", plural(med)),
+            )
+            .with_target(&info.reference),
         );
     }
 
@@ -196,19 +234,37 @@ mod tests {
     #[test]
     fn unpinned_and_unofficial_are_flagged() {
         let r = audit_image(&info(true, false, false), &[]);
-        assert!(r.findings.iter().any(|f| f.id == "image.unpinned_tag" && f.severity == Severity::Warning));
-        assert!(r.findings.iter().any(|f| f.id == "image.unverified_publisher" && f.severity == Severity::Info));
+        assert!(r
+            .findings
+            .iter()
+            .any(|f| f.id == "image.unpinned_tag" && f.severity == Severity::Warning));
+        assert!(r
+            .findings
+            .iter()
+            .any(|f| f.id == "image.unverified_publisher" && f.severity == Severity::Info));
     }
 
     #[test]
     fn critical_cve_makes_it_fail() {
         let vulns = vec![
-            Vulnerability { id: "CVE-1".into(), severity: Critical },
-            Vulnerability { id: "CVE-2".into(), severity: High },
-            Vulnerability { id: "CVE-3".into(), severity: Medium },
+            Vulnerability {
+                id: "CVE-1".into(),
+                severity: Critical,
+            },
+            Vulnerability {
+                id: "CVE-2".into(),
+                severity: High,
+            },
+            Vulnerability {
+                id: "CVE-3".into(),
+                severity: Medium,
+            },
         ];
         let r = audit_image(&info(true, true, true), &vulns);
-        assert!(r.findings.iter().any(|f| f.id == "image.vulns_critical" && f.severity == Severity::Critical));
+        assert!(r
+            .findings
+            .iter()
+            .any(|f| f.id == "image.vulns_critical" && f.severity == Severity::Critical));
         assert!(r.findings.iter().any(|f| f.id == "image.vulns_high"));
         assert_eq!(r.grade, Grade::F);
     }
@@ -246,6 +302,9 @@ mod tests {
         let mut i = info(true, true, true);
         i.last_updated_days = Some(400);
         let r = audit_image(&i, &[]);
-        assert!(r.findings.iter().any(|f| f.id == "image.stale" && f.severity == Severity::Info));
+        assert!(r
+            .findings
+            .iter()
+            .any(|f| f.id == "image.stale" && f.severity == Severity::Info));
     }
 }

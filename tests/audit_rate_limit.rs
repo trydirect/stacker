@@ -63,5 +63,8 @@ async fn compose_endpoint_throttles_after_limit() {
 
     // per_min = 3 -> first three allowed, fourth throttled.
     assert_eq!(&statuses[..3], &[200, 200, 200], "statuses: {statuses:?}");
-    assert_eq!(statuses[3], 429, "expected 429 on the 4th request, got {statuses:?}");
+    assert_eq!(
+        statuses[3], 429,
+        "expected 429 on the 4th request, got {statuses:?}"
+    );
 }

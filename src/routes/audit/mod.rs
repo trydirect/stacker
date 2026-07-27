@@ -36,7 +36,11 @@ fn register(cfg: &mut ServiceConfig) {
 /// Mount `/api/audit/*` with a body-size cap and, when Redis is available, the
 /// shared per-IP/global rate limiter. Used as
 /// `App::new().configure(|c| routes::audit::configure(c, redis, cfg))`.
-pub fn configure(cfg: &mut ServiceConfig, redis: Option<ConnectionManager>, rl: AuditRateLimitConfig) {
+pub fn configure(
+    cfg: &mut ServiceConfig,
+    redis: Option<ConnectionManager>,
+    rl: AuditRateLimitConfig,
+) {
     let body_cap = rl.max_body_kb * 1024;
     let state = web::Data::new(AuditState {
         redis: redis.clone(),
@@ -275,7 +279,11 @@ impl ImageMetadata for DockerHubMetadata {
             resp.json::<serde_json::Value>()
                 .await
                 .ok()
-                .and_then(|v| v.get("last_updated").and_then(|d| d.as_str()).map(String::from))
+                .and_then(|v| {
+                    v.get("last_updated")
+                        .and_then(|d| d.as_str())
+                        .map(String::from)
+                })
                 .and_then(days_since_iso8601)
         } else {
             None

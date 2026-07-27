@@ -78,7 +78,10 @@ pub fn size_stack(yaml: &str) -> Result<StackSizing, String> {
 }
 
 /// Cheapest instance per provider that fits the sizing.
-pub fn cheapest_per_provider(sizing: &StackSizing, pricing: &dyn PricingSource) -> Vec<ProviderQuote> {
+pub fn cheapest_per_provider(
+    sizing: &StackSizing,
+    pricing: &dyn PricingSource,
+) -> Vec<ProviderQuote> {
     use std::collections::BTreeMap;
     let mut best: BTreeMap<String, ProviderQuote> = BTreeMap::new();
     for opt in pricing.instances() {
@@ -185,9 +188,27 @@ mod tests {
         }
         fn instances(&self) -> Vec<InstanceOption> {
             vec![
-                InstanceOption { provider: "hetzner".into(), name: "small".into(), vcpus: 2.0, memory_mb: 2048, monthly_usd: 5.0 },
-                InstanceOption { provider: "hetzner".into(), name: "big".into(), vcpus: 4.0, memory_mb: 8192, monthly_usd: 15.0 },
-                InstanceOption { provider: "aws".into(), name: "pricey".into(), vcpus: 2.0, memory_mb: 2048, monthly_usd: 20.0 },
+                InstanceOption {
+                    provider: "hetzner".into(),
+                    name: "small".into(),
+                    vcpus: 2.0,
+                    memory_mb: 2048,
+                    monthly_usd: 5.0,
+                },
+                InstanceOption {
+                    provider: "hetzner".into(),
+                    name: "big".into(),
+                    vcpus: 4.0,
+                    memory_mb: 8192,
+                    monthly_usd: 15.0,
+                },
+                InstanceOption {
+                    provider: "aws".into(),
+                    name: "pricey".into(),
+                    vcpus: 2.0,
+                    memory_mb: 2048,
+                    monthly_usd: 20.0,
+                },
             ]
         }
     }
@@ -230,13 +251,19 @@ services:
         assert_eq!(est.cheapest.as_ref().unwrap().provider, "hetzner");
         assert_eq!(est.cheapest.as_ref().unwrap().monthly_usd, 5.0);
         // Quotes are ascending by price.
-        assert!(est.quotes.windows(2).all(|w| w[0].monthly_usd <= w[1].monthly_usd));
+        assert!(est
+            .quotes
+            .windows(2)
+            .all(|w| w[0].monthly_usd <= w[1].monthly_usd));
     }
 
     #[test]
     fn default_pricing_covers_five_providers() {
-        let providers: std::collections::BTreeSet<_> =
-            DefaultPricing.instances().into_iter().map(|i| i.provider).collect();
+        let providers: std::collections::BTreeSet<_> = DefaultPricing
+            .instances()
+            .into_iter()
+            .map(|i| i.provider)
+            .collect();
         for p in ["hetzner", "digitalocean", "linode", "vultr", "aws"] {
             assert!(providers.contains(p), "missing provider {p}");
         }

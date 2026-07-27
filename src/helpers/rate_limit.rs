@@ -35,7 +35,10 @@ impl AuditRateLimitConfig {
     pub fn from_env() -> Self {
         let d = Self::default();
         let num = |key: &str, dflt: u32| {
-            std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(dflt)
+            std::env::var(key)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(dflt)
         };
         AuditRateLimitConfig {
             per_min: num("AUDIT_RATE_LIMIT_PER_MIN", d.per_min),
@@ -107,9 +110,13 @@ pub fn global_key(window: u64) -> String {
 pub enum Decision {
     Allow,
     /// Per-IP limit hit -> 429.
-    Throttled { retry_after: u64 },
+    Throttled {
+        retry_after: u64,
+    },
     /// Global ceiling hit -> 503.
-    Overloaded { retry_after: u64 },
+    Overloaded {
+        retry_after: u64,
+    },
 }
 
 /// Decide from the post-INCR counter values. `count_after_incr` is the IP
@@ -158,7 +165,10 @@ mod tests {
 
     #[test]
     fn keys_are_namespaced_and_windowed() {
-        assert_eq!(ip_key("1.2.3.4", Tier::Image, 7), "audit:rl:image:1.2.3.4:7");
+        assert_eq!(
+            ip_key("1.2.3.4", Tier::Image, 7),
+            "audit:rl:image:1.2.3.4:7"
+        );
         assert_eq!(global_key(7), "audit:rl:global:7");
     }
 
@@ -167,7 +177,10 @@ mod tests {
         // 30th request in the cheap window is still allowed.
         assert_eq!(decide(30, 30, 100, 600, 42), Decision::Allow);
         // 31st is throttled.
-        assert_eq!(decide(31, 30, 100, 600, 42), Decision::Throttled { retry_after: 42 });
+        assert_eq!(
+            decide(31, 30, 100, 600, 42),
+            Decision::Throttled { retry_after: 42 }
+        );
     }
 
     #[test]

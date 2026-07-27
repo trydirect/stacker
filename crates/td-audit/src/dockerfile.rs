@@ -60,8 +60,12 @@ pub fn audit_dockerfile(dockerfile: &str) -> AuditReport {
 
     if instrs.is_empty() {
         findings.push(
-            Finding::new("dockerfile.empty", Severity::Critical, "No Dockerfile instructions found")
-                .with_remediation("Provide a valid Dockerfile starting with a FROM instruction."),
+            Finding::new(
+                "dockerfile.empty",
+                Severity::Critical,
+                "No Dockerfile instructions found",
+            )
+            .with_remediation("Provide a valid Dockerfile starting with a FROM instruction."),
         );
         return build_report("dockerfile", findings, cta());
     }
@@ -86,33 +90,61 @@ pub fn audit_dockerfile(dockerfile: &str) -> AuditReport {
         .any(|i| i.keyword == "USER" && !i.args.trim().is_empty() && i.args.trim() != "root");
     if !has_user_nonroot {
         findings.push(
-            Finding::new("dockerfile.root_user", Severity::Warning, "Container runs as root")
-                .with_remediation("Add a non-root `USER` before the entrypoint."),
+            Finding::new(
+                "dockerfile.root_user",
+                Severity::Warning,
+                "Container runs as root",
+            )
+            .with_remediation("Add a non-root `USER` before the entrypoint."),
         );
     }
 
     // Secrets baked into ENV/ARG.
-    for i in instrs.iter().filter(|i| i.keyword == "ENV" || i.keyword == "ARG") {
+    for i in instrs
+        .iter()
+        .filter(|i| i.keyword == "ENV" || i.keyword == "ARG")
+    {
         if crate::compose::contains_hardcoded_secret(&i.args) {
             findings.push(
-                Finding::new("dockerfile.secret_in_env", Severity::Critical, "Possible hardcoded secret in ENV/ARG")
-                    .with_detail(format!("{} {}", i.keyword, mask(&i.args)))
-                    .with_remediation("Never bake secrets into images — pass them at runtime or via build secrets."),
+                Finding::new(
+                    "dockerfile.secret_in_env",
+                    Severity::Critical,
+                    "Possible hardcoded secret in ENV/ARG",
+                )
+                .with_detail(format!("{} {}", i.keyword, mask(&i.args)))
+                .with_remediation(
+                    "Never bake secrets into images — pass them at runtime or via build secrets.",
+                ),
             );
         }
     }
 
-    if instrs.iter().any(|i| i.keyword == "ADD" && looks_local(&i.args)) {
+    if instrs
+        .iter()
+        .any(|i| i.keyword == "ADD" && looks_local(&i.args))
+    {
         findings.push(
-            Finding::new("dockerfile.add_local", Severity::Info, "`ADD` used for local files")
-                .with_remediation("Prefer `COPY` for local files; reserve `ADD` for remote URLs / tar extraction."),
+            Finding::new(
+                "dockerfile.add_local",
+                Severity::Info,
+                "`ADD` used for local files",
+            )
+            .with_remediation(
+                "Prefer `COPY` for local files; reserve `ADD` for remote URLs / tar extraction.",
+            ),
         );
     }
 
     if !instrs.iter().any(|i| i.keyword == "HEALTHCHECK") {
         findings.push(
-            Finding::new("dockerfile.no_healthcheck", Severity::Info, "No HEALTHCHECK defined")
-                .with_remediation("Add a `HEALTHCHECK` so orchestrators can detect an unhealthy container."),
+            Finding::new(
+                "dockerfile.no_healthcheck",
+                Severity::Info,
+                "No HEALTHCHECK defined",
+            )
+            .with_remediation(
+                "Add a `HEALTHCHECK` so orchestrators can detect an unhealthy container.",
+            ),
         );
     }
 
@@ -148,7 +180,10 @@ mod tests {
     fn flags_unpinned_base_and_root() {
         let df = "FROM node\nCMD [\"node\", \"app.js\"]\n";
         let r = audit_dockerfile(df);
-        assert!(r.findings.iter().any(|f| f.id == "dockerfile.unpinned_base"));
+        assert!(r
+            .findings
+            .iter()
+            .any(|f| f.id == "dockerfile.unpinned_base"));
         assert!(r.findings.iter().any(|f| f.id == "dockerfile.root_user"));
     }
 
@@ -162,10 +197,13 @@ mod tests {
 
     #[test]
     fn secret_in_env_is_critical() {
-        let df = "FROM alpine:3.20\nUSER app\nHEALTHCHECK CMD true\nENV API_KEY=abcd1234efgh5678ijkl\n";
+        let df =
+            "FROM alpine:3.20\nUSER app\nHEALTHCHECK CMD true\nENV API_KEY=abcd1234efgh5678ijkl\n";
         let r = audit_dockerfile(df);
-        assert!(r.findings.iter().any(|f| f.id == "dockerfile.secret_in_env"
-            && f.severity == Severity::Critical));
+        assert!(r
+            .findings
+            .iter()
+            .any(|f| f.id == "dockerfile.secret_in_env" && f.severity == Severity::Critical));
     }
 
     #[test]

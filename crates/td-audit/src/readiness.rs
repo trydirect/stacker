@@ -11,8 +11,12 @@ use crate::score::build_report;
 pub fn audit_readiness(yaml: &str) -> AuditReport {
     let model = match parse_compose(yaml) {
         Err(e) => {
-            let f = Finding::new("readiness.unparsable", Severity::Critical, "Cannot parse compose")
-                .with_detail(e.to_string());
+            let f = Finding::new(
+                "readiness.unparsable",
+                Severity::Critical,
+                "Cannot parse compose",
+            )
+            .with_detail(e.to_string());
             return build_report("readiness", vec![f], cta());
         }
         Ok(m) => m,
@@ -35,7 +39,9 @@ pub fn audit_readiness(yaml: &str) -> AuditReport {
             findings.push(
                 Finding::new("readiness.no_healthcheck", Severity::Info, "No healthcheck")
                     .with_target(&svc.name)
-                    .with_remediation("Add a `healthcheck:` so unhealthy containers are detected and restarted."),
+                    .with_remediation(
+                        "Add a `healthcheck:` so unhealthy containers are detected and restarted.",
+                    ),
             );
         }
         if svc.memory_mb.is_none() {
@@ -65,9 +71,18 @@ mod tests {
     fn bare_service_flags_operational_gaps() {
         let yaml = "services:\n  web:\n    image: nginx:1.27-alpine\n";
         let r = audit_readiness(yaml);
-        assert!(r.findings.iter().any(|f| f.id == "readiness.no_restart_policy"));
-        assert!(r.findings.iter().any(|f| f.id == "readiness.no_healthcheck"));
-        assert!(r.findings.iter().any(|f| f.id == "readiness.no_memory_limit"));
+        assert!(r
+            .findings
+            .iter()
+            .any(|f| f.id == "readiness.no_restart_policy"));
+        assert!(r
+            .findings
+            .iter()
+            .any(|f| f.id == "readiness.no_healthcheck"));
+        assert!(r
+            .findings
+            .iter()
+            .any(|f| f.id == "readiness.no_memory_limit"));
         assert_eq!(r.checker, "readiness");
     }
 
@@ -104,7 +119,10 @@ services:
       API_KEY: "abcd1234efgh5678ijklmnop"
 "#;
         let r = audit_readiness(yaml);
-        assert!(r.findings.iter().any(|f| f.id == "exposure.sensitive_port_public"));
+        assert!(r
+            .findings
+            .iter()
+            .any(|f| f.id == "exposure.sensitive_port_public"));
         assert!(r.findings.iter().any(|f| f.id == "compose.no_secrets"));
     }
 }

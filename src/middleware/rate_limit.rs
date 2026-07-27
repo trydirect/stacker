@@ -91,8 +91,16 @@ where
             let tier = tier_for_path(&path);
             let limit = limit_for(&cfg, tier);
 
-            let decision =
-                evaluate(&mut redis, &ip, tier, window, limit, cfg.global_per_min, retry).await;
+            let decision = evaluate(
+                &mut redis,
+                &ip,
+                tier,
+                window,
+                limit,
+                cfg.global_per_min,
+                retry,
+            )
+            .await;
 
             let decision_label = match &decision {
                 Decision::Allow => "allow",
@@ -105,9 +113,12 @@ where
 
             match decision {
                 Decision::Allow => Ok(service.call(req).await?.map_into_left_body()),
-                Decision::Throttled { retry_after } => {
-                    Ok(reject(req, HttpResponse::TooManyRequests(), retry_after, "rate limit exceeded"))
-                }
+                Decision::Throttled { retry_after } => Ok(reject(
+                    req,
+                    HttpResponse::TooManyRequests(),
+                    retry_after,
+                    "rate limit exceeded",
+                )),
                 Decision::Overloaded { retry_after } => Ok(reject(
                     req,
                     HttpResponse::ServiceUnavailable(),
@@ -144,7 +155,11 @@ async fn evaluate(
 async fn incr_with_ttl(redis: &mut ConnectionManager, key: &str) -> redis::RedisResult<u64> {
     let count: u64 = redis::cmd("INCR").arg(key).query_async(redis).await?;
     if count == 1 {
-        let _: () = redis::cmd("EXPIRE").arg(key).arg(60).query_async(redis).await?;
+        let _: () = redis::cmd("EXPIRE")
+            .arg(key)
+            .arg(60)
+            .query_async(redis)
+            .await?;
     }
     Ok(count)
 }

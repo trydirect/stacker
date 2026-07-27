@@ -57,18 +57,22 @@ pub fn parse_memory_mb(v: &serde_json::Value) -> Option<u64> {
         return Some(n / (1024 * 1024)); // raw bytes
     }
     let s = v.as_str()?.trim().to_lowercase();
-    let (num, mult): (&str, u64) = if let Some(p) = s.strip_suffix("gb").or_else(|| s.strip_suffix('g')) {
-        (p, 1024)
-    } else if let Some(p) = s.strip_suffix("mb").or_else(|| s.strip_suffix('m')) {
-        (p, 1)
-    } else if let Some(p) = s.strip_suffix("kb").or_else(|| s.strip_suffix('k')) {
-        return p.trim().parse::<u64>().ok().map(|k| k / 1024);
-    } else if let Some(p) = s.strip_suffix('b') {
-        return p.trim().parse::<u64>().ok().map(|b| b / (1024 * 1024));
-    } else {
-        (s.as_str(), 1)
-    };
-    num.trim().parse::<f64>().ok().map(|n| (n * mult as f64) as u64)
+    let (num, mult): (&str, u64) =
+        if let Some(p) = s.strip_suffix("gb").or_else(|| s.strip_suffix('g')) {
+            (p, 1024)
+        } else if let Some(p) = s.strip_suffix("mb").or_else(|| s.strip_suffix('m')) {
+            (p, 1)
+        } else if let Some(p) = s.strip_suffix("kb").or_else(|| s.strip_suffix('k')) {
+            return p.trim().parse::<u64>().ok().map(|k| k / 1024);
+        } else if let Some(p) = s.strip_suffix('b') {
+            return p.trim().parse::<u64>().ok().map(|b| b / (1024 * 1024));
+        } else {
+            (s.as_str(), 1)
+        };
+    num.trim()
+        .parse::<f64>()
+        .ok()
+        .map(|n| (n * mult as f64) as u64)
 }
 
 fn parse_cpus(v: &serde_json::Value) -> Option<f64> {
@@ -84,7 +88,10 @@ fn parse_port_entry(entry: &serde_json::Value) -> Option<PortMapping> {
     if let Some(obj) = entry.as_object() {
         let container_port = obj.get("target").and_then(port_num)?;
         return Some(PortMapping {
-            host_ip: obj.get("host_ip").and_then(|v| v.as_str()).map(String::from),
+            host_ip: obj
+                .get("host_ip")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             host_port: obj.get("published").and_then(port_num),
             container_port,
             protocol: obj
@@ -165,9 +172,15 @@ pub fn parse_compose(yaml: &str) -> Result<ComposeModel, ParseError> {
             ports,
             cpus,
             memory_mb,
-            restart: svc.get("restart").and_then(|v| v.as_str()).map(String::from),
+            restart: svc
+                .get("restart")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             has_healthcheck: svc.get("healthcheck").is_some(),
-            privileged: svc.get("privileged").and_then(|v| v.as_bool()).unwrap_or(false),
+            privileged: svc
+                .get("privileged")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
         });
     }
     services.sort_by(|a, b| a.name.cmp(&b.name));
@@ -201,7 +214,8 @@ mod tests {
         let p = parse_port_entry(&json!("80")).unwrap();
         assert_eq!(p.container_port, 80);
         // long form
-        let p = parse_port_entry(&json!({"target":80,"published":8080,"host_ip":"0.0.0.0"})).unwrap();
+        let p =
+            parse_port_entry(&json!({"target":80,"published":8080,"host_ip":"0.0.0.0"})).unwrap();
         assert_eq!((p.host_port, p.container_port), (Some(8080), 80));
         assert!(p.is_public());
     }
@@ -234,6 +248,9 @@ services:
 
     #[test]
     fn missing_services_is_error() {
-        assert!(matches!(parse_compose("version: '3'").unwrap_err(), ParseError::NoServices));
+        assert!(matches!(
+            parse_compose("version: '3'").unwrap_err(),
+            ParseError::NoServices
+        ));
     }
 }

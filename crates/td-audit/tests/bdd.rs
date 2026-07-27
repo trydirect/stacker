@@ -19,7 +19,9 @@ struct AuditWorld {
 
 impl AuditWorld {
     fn report(&self) -> &AuditReport {
-        self.report.as_ref().expect("a checker must run before assertions")
+        self.report
+            .as_ref()
+            .expect("a checker must run before assertions")
     }
 }
 
@@ -42,7 +44,10 @@ fn grade_from(letter: &str) -> Grade {
 }
 
 fn fixture(subdir: &str, name: &str) -> String {
-    let path = format!("{}/tests/fixtures/{subdir}/{name}", env!("CARGO_MANIFEST_DIR"));
+    let path = format!(
+        "{}/tests/fixtures/{subdir}/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    );
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("fixture {path} unreadable: {e}"))
 }
 
@@ -117,7 +122,10 @@ async fn then_finding(world: &mut AuditWorld, severity: String, id: String) {
     let sev = severity_from(&severity);
     let report = world.report();
     assert!(
-        report.findings.iter().any(|f| f.id == id && f.severity == sev),
+        report
+            .findings
+            .iter()
+            .any(|f| f.id == id && f.severity == sev),
         "expected a {severity} finding '{id}', got: {:?}",
         report.findings
     );
@@ -127,7 +135,10 @@ async fn then_finding(world: &mut AuditWorld, severity: String, id: String) {
 async fn then_no_critical(world: &mut AuditWorld) {
     let report = world.report();
     assert!(
-        report.findings.iter().all(|f| f.severity != Severity::Critical),
+        report
+            .findings
+            .iter()
+            .all(|f| f.severity != Severity::Critical),
         "unexpected critical finding: {:?}",
         report.findings
     );

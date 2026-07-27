@@ -43,16 +43,22 @@ impl fmt::Display for DockerImage {
         let dh_repo_name = self.dockerhub_name.as_deref().unwrap_or("");
         let dh_tag = self.dockerhub_tag.as_deref().unwrap_or("");
 
-        let nmspc = if !dh_nmspc.is_empty() {
-            format!("{}/", dh_nmspc)
+        // When `dockerhub_image` is set, it is the authoritative full image
+        // reference (e.g. `mailu/admin`, `ghcr.io/owner/repo:tag`).  Use it
+        // directly without prepending the namespace — the image string already
+        // carries any registry/namespace prefix.
+        //
+        // Fall back to assembling from `dockerhub_user`/`dockerhub_name` only
+        // when `dockerhub_image` is absent.
+        let (nmspc, body) = if !dh_image.is_empty() {
+            (String::new(), dh_image)
         } else {
-            String::new()
-        };
-
-        let body = if !dh_repo_name.is_empty() {
-            dh_repo_name
-        } else {
-            dh_image
+            let nmspc = if !dh_nmspc.is_empty() {
+                format!("{}/", dh_nmspc)
+            } else {
+                String::new()
+            };
+            (nmspc, dh_repo_name)
         };
 
         // Don't double-add a tag if the body (name or image) already carries
@@ -233,6 +239,46 @@ mod tests {
             dockerhub_tag: Some("1.27".to_string()),
         };
         assert_eq!(format!("{}", img), "nginx:1.27");
+    }
+
+    #[test]
+    fn test_display_image_takes_precedence_over_name_when_both_set() {
+        // Regression: marketplace catalog may store a wrong `dockerhub_name`
+        // (e.g. "mailuadmin" — namespace concatenated without "/") alongside
+        // a correct `dockerhub_image` ("mailu/admin").  Display must prefer
+        // the full image reference.
+        let img = DockerImage {
+            dockerhub_user: None,
+            dockerhub_name: Some("mailuadmin".to_string()),
+            dockerhub_image: Some("mailu/admin".to_string()),
+            dockerhub_password: None,
+            dockerhub_tag: None,
+        };
+        assert_eq!(format!("{}", img), "mailu/admin");
+    }
+
+    #[test]
+    fn test_display_image_with_namespace_takes_precedence_over_wrong_name() {
+        let img = DockerImage {
+            dockerhub_user: Some("mailu".to_string()),
+            dockerhub_name: Some("mailuadmin".to_string()),
+            dockerhub_image: Some("mailu/admin".to_string()),
+            dockerhub_password: None,
+            dockerhub_tag: None,
+        };
+        assert_eq!(format!("{}", img), "mailu/admin");
+    }
+
+    #[test]
+    fn test_display_image_with_tag_takes_precedence_over_name() {
+        let img = DockerImage {
+            dockerhub_user: None,
+            dockerhub_name: Some("mailuadmin".to_string()),
+            dockerhub_image: Some("mailu/admin:2024.06".to_string()),
+            dockerhub_password: None,
+            dockerhub_tag: None,
+        };
+        assert_eq!(format!("{}", img), "mailu/admin:2024.06");
     }
 
     #[test]

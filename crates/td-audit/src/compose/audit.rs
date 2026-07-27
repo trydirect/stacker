@@ -95,11 +95,18 @@ mod tests {
     fn clean_compose_has_no_critical_findings() {
         let report = audit_compose(CLEAN);
         assert!(
-            report.findings.iter().all(|f| f.severity != Severity::Critical),
+            report
+                .findings
+                .iter()
+                .all(|f| f.severity != Severity::Critical),
             "clean compose should have no critical findings, got: {:?}",
             report.findings
         );
-        assert!(report.score >= 80, "clean compose should score well, got {}", report.score);
+        assert!(
+            report.score >= 80,
+            "clean compose should score well, got {}",
+            report.score
+        );
     }
 
     #[test]

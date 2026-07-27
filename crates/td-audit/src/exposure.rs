@@ -23,7 +23,10 @@ const SENSITIVE_PORTS: &[(u32, &str)] = &[
 ];
 
 fn sensitive_label(port: u32) -> Option<&'static str> {
-    SENSITIVE_PORTS.iter().find(|(p, _)| *p == port).map(|(_, l)| *l)
+    SENSITIVE_PORTS
+        .iter()
+        .find(|(p, _)| *p == port)
+        .map(|(_, l)| *l)
 }
 
 fn audit_service(svc: &ComposeService) -> Vec<Finding> {
@@ -72,8 +75,12 @@ pub fn audit_exposure(yaml: &str) -> AuditReport {
     let model = match parse_compose(yaml) {
         Ok(m) => m,
         Err(e) => {
-            let f = Finding::new("exposure.unparsable", Severity::Critical, "Cannot parse compose")
-                .with_detail(e.to_string());
+            let f = Finding::new(
+                "exposure.unparsable",
+                Severity::Critical,
+                "Cannot parse compose",
+            )
+            .with_detail(e.to_string());
             return build_report("exposure", vec![f], cta());
         }
     };
@@ -102,9 +109,12 @@ services:
     ports: ["5432:5432"]
 "#;
         let r = audit_exposure(yaml);
-        assert!(r.findings.iter().any(|f| f.id == "exposure.sensitive_port_public"
-            && f.severity == Severity::Critical
-            && f.target.as_deref() == Some("db")));
+        assert!(r
+            .findings
+            .iter()
+            .any(|f| f.id == "exposure.sensitive_port_public"
+                && f.severity == Severity::Critical
+                && f.target.as_deref() == Some("db")));
         assert_eq!(r.grade, Grade::F);
     }
 
