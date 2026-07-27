@@ -478,10 +478,8 @@ impl CallableTrait for MarketplaceInstallCommand {
             if let Some(ref hash) = response.deployment_hash {
                 println!("Track with: stacker deployment state --deployment {}", hash);
             } else {
-                println!(
-                    "Track with: stacker deployment state --project {}",
-                    response.project.id
-                );
+                // Fallback: use project name to find latest deployment
+                println!("Track with: stacker deployment state");
             }
             return Ok(());
         }

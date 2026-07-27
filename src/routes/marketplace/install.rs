@@ -1085,8 +1085,26 @@ async fn install_stack_template(
     // Fetch deployment_hash if a deployment was created
     let deployment_hash = if let Some(deploy_id) = deployment_id {
         match db::deployment::fetch(pg_pool, deploy_id).await {
-            Ok(Some(deployment)) => Some(deployment.deployment_hash),
-            _ => None,
+            Ok(Some(deployment)) => {
+                tracing::info!(
+                    "Fetched deployment_hash '{}' for deployment_id {}",
+                    deployment.deployment_hash,
+                    deploy_id
+                );
+                Some(deployment.deployment_hash)
+            }
+            Ok(None) => {
+                tracing::warn!("Deployment not found for deployment_id {}", deploy_id);
+                None
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to fetch deployment for deployment_id {}: {}",
+                    deploy_id,
+                    err
+                );
+                None
+            }
         }
     } else {
         None
@@ -1196,8 +1214,26 @@ async fn install_catalog_application(
     // Fetch deployment_hash if a deployment was created
     let deployment_hash = if let Some(deploy_id) = deployment_id {
         match db::deployment::fetch(pg_pool, deploy_id).await {
-            Ok(Some(deployment)) => Some(deployment.deployment_hash),
-            _ => None,
+            Ok(Some(deployment)) => {
+                tracing::info!(
+                    "Fetched deployment_hash '{}' for deployment_id {}",
+                    deployment.deployment_hash,
+                    deploy_id
+                );
+                Some(deployment.deployment_hash)
+            }
+            Ok(None) => {
+                tracing::warn!("Deployment not found for deployment_id {}", deploy_id);
+                None
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to fetch deployment for deployment_id {}: {}",
+                    deploy_id,
+                    err
+                );
+                None
+            }
         }
     } else {
         None

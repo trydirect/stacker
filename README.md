@@ -9,6 +9,12 @@
 
 **Build, deploy, and manage containerised applications with a single config file.**
 
+<br>
+
+<img alt="Deploying Directus (Node + Postgres) to an existing server with Stacker" src="docs/demos/directus-deploy.gif" width="720">
+
+<sub>Real deploy — Directus + Postgres to a live server in one command. See <a href="https://github.com/trydirect/stacker-project-examples/tree/main/stacker-projects/directus">stacker-project-examples/directus</a>.</sub>
+
 </div>
 
 Stacker is a platform for turning any project into a deployable Docker stack. Add a `stacker.yml` to your repo, and Stacker generates Dockerfiles, docker-compose definitions, reverse-proxy configs, and deploys locally or to cloud providers — optionally with AI assistance.
