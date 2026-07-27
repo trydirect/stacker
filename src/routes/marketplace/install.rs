@@ -39,6 +39,8 @@ pub struct InstallTemplateResponse {
     pub latest_version: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployment_id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployment_hash: Option<String>,
     /// Present only for `per_install` installs. Echoes the authorization
     /// state so the CLI (and any HTTP-level retry) can reconcile.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1080,11 +1082,22 @@ async fn install_stack_template(
         _ => (None, None),
     };
 
+    // Fetch deployment_hash if a deployment was created
+    let deployment_hash = if let Some(deploy_id) = deployment_id {
+        match db::deployment::fetch(pg_pool, deploy_id).await {
+            Ok(Some(deployment)) => Some(deployment.deployment_hash),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     Ok(InstallTemplateResponse {
         project,
         template: serde_json::to_value(template).unwrap_or_else(|_| serde_json::json!({})),
         latest_version: ver_value,
         deployment_id,
+        deployment_hash,
         authorization,
         idempotency_key,
     })
@@ -1180,6 +1193,16 @@ async fn install_catalog_application(
     )
     .await?;
 
+    // Fetch deployment_hash if a deployment was created
+    let deployment_hash = if let Some(deploy_id) = deployment_id {
+        match db::deployment::fetch(pg_pool, deploy_id).await {
+            Ok(Some(deployment)) => Some(deployment.deployment_hash),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     Ok(InstallTemplateResponse {
         authorization: None,
         idempotency_key: None,
@@ -1191,6 +1214,7 @@ async fn install_catalog_application(
             "rendered_by": "install_service"
         }),
         deployment_id,
+        deployment_hash,
     })
 }
 
@@ -1546,7 +1570,11 @@ mod tests {
 
         let compose = synthesize_catalog_compose(&value, "lamp")
             .expect("full payload must synthesize a multi-service compose");
-        for img in ["trydirect/mysql", "trydirect/apache", "trydirect/nginx-proxy-manager"] {
+        for img in [
+            "trydirect/mysql",
+            "trydirect/apache",
+            "trydirect/nginx-proxy-manager",
+        ] {
             assert!(compose.contains(img), "compose missing {img}:\n{compose}");
         }
     }
@@ -1598,8 +1626,8 @@ mod tests {
             ]
         }"#;
 
-        let app: crate::connectors::user_service::app::Application =
-            serde_json::from_str(raw).expect("catalog stack payload must deserialize into Application");
+        let app: crate::connectors::user_service::app::Application = serde_json::from_str(raw)
+            .expect("catalog stack payload must deserialize into Application");
         let value = serde_json::to_value(&app).expect("Application must reserialize");
 
         // The critical invariant: services[] survives the typed round-trip.

@@ -458,10 +458,7 @@ async fn check_json_number(world: &mut StepWorld, path: String, expected: u64) {
             let actual = n.as_u64().expect("Expected unsigned integer");
             assert_eq!(actual, expected, "At JSON path '{}'", path);
         }
-        other => panic!(
-            "Expected number {} at '{}', got: {}",
-            expected, path, other
-        ),
+        other => panic!("Expected number {} at '{}', got: {}", expected, path, other),
     }
 }
 

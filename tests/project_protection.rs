@@ -20,7 +20,10 @@ async fn test_new_project_default_unprotected() {
         .expect("request failed");
     assert_eq!(resp.status(), 200, "create project should succeed");
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["item"]["is_protected"], false, "new project should default to is_protected=false");
+    assert_eq!(
+        body["item"]["is_protected"], false,
+        "new project should default to is_protected=false"
+    );
 }
 
 #[tokio::test]
@@ -32,7 +35,10 @@ async fn test_enable_protection_via_patch() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .patch(format!("{}/project/{}/protection", &app.address, project_id))
+        .patch(format!(
+            "{}/project/{}/protection",
+            &app.address, project_id
+        ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
         .send()
@@ -53,7 +59,10 @@ async fn test_delete_protected_project_returns_403() {
 
     // Enable protection
     let resp = client
-        .patch(format!("{}/project/{}/protection", &app.address, project_id))
+        .patch(format!(
+            "{}/project/{}/protection",
+            &app.address, project_id
+        ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
         .send()
@@ -67,10 +76,17 @@ async fn test_delete_protected_project_returns_403() {
         .send()
         .await
         .expect("request failed");
-    assert_eq!(resp.status(), 403, "deleting protected project should return 403");
+    assert_eq!(
+        resp.status(),
+        403,
+        "deleting protected project should return 403"
+    );
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["is_protected"], true);
-    assert!(body["reasons"].is_object(), "response should include reasons");
+    assert!(
+        body["reasons"].is_object(),
+        "response should include reasons"
+    );
 }
 
 #[tokio::test]
@@ -86,7 +102,11 @@ async fn test_delete_unprotected_project_succeeds() {
         .send()
         .await
         .expect("request failed");
-    assert_eq!(resp.status(), 200, "deleting unprotected project should succeed");
+    assert_eq!(
+        resp.status(),
+        200,
+        "deleting unprotected project should succeed"
+    );
 }
 
 #[tokio::test]
@@ -99,7 +119,10 @@ async fn test_disable_protection_requires_name() {
 
     // Enable protection
     let resp = client
-        .patch(format!("{}/project/{}/protection", &app.address, project_id))
+        .patch(format!(
+            "{}/project/{}/protection",
+            &app.address, project_id
+        ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
         .send()
@@ -109,13 +132,20 @@ async fn test_disable_protection_requires_name() {
 
     // Try to disable without confirmation_name — should fail
     let resp = client
-        .patch(format!("{}/project/{}/protection", &app.address, project_id))
+        .patch(format!(
+            "{}/project/{}/protection",
+            &app.address, project_id
+        ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": false}"#)
         .send()
         .await
         .expect("request failed");
-    assert_eq!(resp.status(), 400, "disabling without name should return 400");
+    assert_eq!(
+        resp.status(),
+        400,
+        "disabling without name should return 400"
+    );
 }
 
 #[tokio::test]
@@ -128,7 +158,10 @@ async fn test_disable_protection_wrong_name_rejected() {
 
     // Enable protection
     let resp = client
-        .patch(format!("{}/project/{}/protection", &app.address, project_id))
+        .patch(format!(
+            "{}/project/{}/protection",
+            &app.address, project_id
+        ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
         .send()
@@ -138,7 +171,10 @@ async fn test_disable_protection_wrong_name_rejected() {
 
     // Try to disable with wrong name
     let resp = client
-        .patch(format!("{}/project/{}/protection", &app.address, project_id))
+        .patch(format!(
+            "{}/project/{}/protection",
+            &app.address, project_id
+        ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": false, "confirmation_name": "wrong-name"}"#)
         .send()
@@ -157,7 +193,10 @@ async fn test_disable_protection_correct_name_succeeds() {
 
     // Enable protection
     let resp = client
-        .patch(format!("{}/project/{}/protection", &app.address, project_id))
+        .patch(format!(
+            "{}/project/{}/protection",
+            &app.address, project_id
+        ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
         .send()
@@ -167,7 +206,10 @@ async fn test_disable_protection_correct_name_succeeds() {
 
     // Disable with correct name ("Test Project" is the name from create_test_project)
     let resp = client
-        .patch(format!("{}/project/{}/protection", &app.address, project_id))
+        .patch(format!(
+            "{}/project/{}/protection",
+            &app.address, project_id
+        ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": false, "confirmation_name": "Test Project"}"#)
         .send()
@@ -203,20 +245,16 @@ async fn test_protection_shows_deployment_and_server_counts() {
         )
         .await;
     }
-    common::create_test_server(
-        &app.db_pool,
-        common::USER_A_ID,
-        project_id,
-        "active",
-        None,
-    )
-    .await;
+    common::create_test_server(&app.db_pool, common::USER_A_ID, project_id, "active", None).await;
 
     let client = reqwest::Client::new();
 
     // Enable protection
     let resp = client
-        .patch(format!("{}/project/{}/protection", &app.address, project_id))
+        .patch(format!(
+            "{}/project/{}/protection",
+            &app.address, project_id
+        ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
         .send()
@@ -246,14 +284,21 @@ async fn test_idor_cannot_toggle_other_users_protection() {
 
     // User B tries to enable protection on User A's project
     let resp = client
-        .patch(format!("{}/project/{}/protection", &app.address, project_id))
+        .patch(format!(
+            "{}/project/{}/protection",
+            &app.address, project_id
+        ))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
         .send()
         .await
         .expect("request failed");
-    assert_eq!(resp.status(), 404, "User B must not toggle User A's protection");
+    assert_eq!(
+        resp.status(),
+        404,
+        "User B must not toggle User A's protection"
+    );
 }
 
 #[tokio::test]
@@ -266,7 +311,10 @@ async fn test_project_list_includes_is_protected() {
 
     // Enable protection on the project
     let resp = client
-        .patch(format!("{}/project/{}/protection", &app.address, project_id))
+        .patch(format!(
+            "{}/project/{}/protection",
+            &app.address, project_id
+        ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
         .send()

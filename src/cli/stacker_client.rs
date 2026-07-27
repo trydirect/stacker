@@ -258,6 +258,8 @@ pub struct MarketplaceInstallResponse {
     pub template: MarketplaceTemplate,
     pub latest_version: serde_json::Value,
     pub deployment_id: Option<i32>,
+    #[serde(default)]
+    pub deployment_hash: Option<String>,
     /// Populated only when the template is billed per_install.
     #[serde(default)]
     pub authorization: Option<AuthorizationSummary>,

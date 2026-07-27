@@ -444,13 +444,19 @@ mod tests {
             serde_json::json!({}),
             serde_json::json!({}),
         );
-        assert!(!project.is_protected, "new projects should default to unprotected");
+        assert!(
+            !project.is_protected,
+            "new projects should default to unprotected"
+        );
     }
 
     #[test]
     fn test_project_default_unprotected() {
         let project = Project::default();
-        assert!(!project.is_protected, "default projects should be unprotected");
+        assert!(
+            !project.is_protected,
+            "default projects should be unprotected"
+        );
     }
 
     #[test]

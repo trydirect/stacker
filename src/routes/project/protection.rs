@@ -36,10 +36,12 @@ pub async fn toggle(
     if !form.is_protected {
         let confirmation = form.confirmation_name.as_deref().unwrap_or("");
         if confirmation != project.name {
-            return Err(JsonResponse::<models::Project>::build().bad_request(format!(
-                "Project name '{}' does not match. Enter the exact project name to confirm.",
-                confirmation
-            )));
+            return Err(
+                JsonResponse::<models::Project>::build().bad_request(format!(
+                    "Project name '{}' does not match. Enter the exact project name to confirm.",
+                    confirmation
+                )),
+            );
         }
     }
 
@@ -48,9 +50,7 @@ pub async fn toggle(
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
         .and_then(|updated| {
             if !updated {
-                return Err(
-                    JsonResponse::<models::Project>::build().not_found("Project not found")
-                );
+                return Err(JsonResponse::<models::Project>::build().not_found("Project not found"));
             }
             let mut p = project;
             p.is_protected = form.is_protected;
@@ -66,8 +66,7 @@ mod tests {
 
     #[test]
     fn test_protection_form_enable() {
-        let form: ProtectionForm =
-            serde_json::from_str(r#"{"is_protected": true}"#).unwrap();
+        let form: ProtectionForm = serde_json::from_str(r#"{"is_protected": true}"#).unwrap();
         assert!(form.is_protected);
         assert!(form.confirmation_name.is_none());
     }
@@ -83,8 +82,7 @@ mod tests {
 
     #[test]
     fn test_protection_form_disable_without_name() {
-        let form: ProtectionForm =
-            serde_json::from_str(r#"{"is_protected": false}"#).unwrap();
+        let form: ProtectionForm = serde_json::from_str(r#"{"is_protected": false}"#).unwrap();
         assert!(!form.is_protected);
         assert!(form.confirmation_name.is_none());
     }
