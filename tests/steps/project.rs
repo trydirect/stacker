@@ -340,3 +340,149 @@ async fn update_domain_ssl(world: &mut StepWorld, code: String, domain: String) 
         .put_json(&format!("/project/{}/apps/{}/domain", id, code), &body)
         .await;
 }
+
+// ─── Protection steps ────────────────────────────────────────────
+
+#[when("I set protection to true on the stored project")]
+#[given("I set protection to true on the stored project")]
+async fn enable_protection(world: &mut StepWorld) {
+    let id = world
+        .stored_ids
+        .get("project_id")
+        .expect("No stored project_id")
+        .clone();
+    let body = json!({ "is_protected": true });
+    world
+        .patch(&format!("/project/{}/protection", id), &body)
+        .await;
+}
+
+#[when(regex = r#"^I disable protection on the stored project with confirmation name "(.+)"$"#)]
+async fn disable_protection(world: &mut StepWorld, confirmation_name: String) {
+    let id = world
+        .stored_ids
+        .get("project_id")
+        .expect("No stored project_id")
+        .clone();
+    let body = json!({ "is_protected": false, "confirmation_name": confirmation_name });
+    world
+        .patch(&format!("/project/{}/protection", id), &body)
+        .await;
+}
+
+#[when("I try to delete the stored project")]
+async fn try_delete_project(world: &mut StepWorld) {
+    let id = world
+        .stored_ids
+        .get("project_id")
+        .expect("No stored project_id")
+        .clone();
+    world.delete(&format!("/project/{}", id)).await;
+}
+
+#[given(regex = r#"^the stored project has (\d+) active deployments? and (\d+) servers?$"#)]
+async fn seed_deployments_and_servers(
+    world: &mut StepWorld,
+    deployment_count: u32,
+    server_count: u32,
+) {
+    let pool = world
+        .db_pool
+        .as_ref()
+        .expect("No DB pool available for seeding");
+    let project_id: i32 = world
+        .stored_ids
+        .get("project_id")
+        .expect("No stored project_id")
+        .parse()
+        .expect("project_id must be an integer");
+
+    for i in 0..deployment_count {
+        sqlx::query(
+            r#"INSERT INTO deployment (project_id, deployment_hash, user_id, metadata, status, runtime, created_at, updated_at)
+            VALUES ($1, $2, $3, '{}'::jsonb, 'running', 'runc', NOW(), NOW())"#,
+        )
+        .bind(project_id)
+        .bind(format!("bdd-deploy-{}-{}", project_id, i))
+        .bind("test_user_id")
+        .execute(pool)
+        .await
+        .expect("Failed to insert test deployment");
+    }
+
+    for _ in 0..server_count {
+        sqlx::query(
+            r#"INSERT INTO server (user_id, project_id, connection_mode, key_status, created_at, updated_at)
+            VALUES ($1, $2, 'ssh', 'active', NOW(), NOW())"#,
+        )
+        .bind("test_user_id")
+        .bind(project_id)
+        .execute(pool)
+        .await
+        .expect("Failed to insert test server");
+    }
+}
+
+// ─── Boolean / numeric assertion steps ───────────────────────────
+
+#[then(regex = r#"^the response JSON at "(.+)" should be (true|false)$"#)]
+async fn check_json_boolean(world: &mut StepWorld, path: String, expected: String) {
+    let json = world
+        .response_json
+        .as_ref()
+        .expect("No JSON response available");
+    let value = json
+        .pointer(&path)
+        .unwrap_or_else(|| panic!("JSON path '{}' not found in: {}", path, json));
+    let expected_bool = expected == "true";
+    match value {
+        serde_json::Value::Bool(b) => assert_eq!(*b, expected_bool, "At JSON path '{}'", path),
+        other => panic!(
+            "Expected boolean {} at '{}', got: {}",
+            expected_bool, path, other
+        ),
+    }
+}
+
+#[then(regex = r#"^the response JSON at "(.+)" should be (\d+)$"#)]
+async fn check_json_number(world: &mut StepWorld, path: String, expected: u64) {
+    let json = world
+        .response_json
+        .as_ref()
+        .expect("No JSON response available");
+    let value = json
+        .pointer(&path)
+        .unwrap_or_else(|| panic!("JSON path '{}' not found in: {}", path, json));
+    match value {
+        serde_json::Value::Number(n) => {
+            let actual = n.as_u64().expect("Expected unsigned integer");
+            assert_eq!(actual, expected, "At JSON path '{}'", path);
+        }
+        other => panic!(
+            "Expected number {} at '{}', got: {}",
+            expected, path, other
+        ),
+    }
+}
+
+#[then(regex = r#"^the response JSON at "(.+)" should contain "(.+)"$"#)]
+async fn check_json_contains(world: &mut StepWorld, path: String, expected: String) {
+    let json = world
+        .response_json
+        .as_ref()
+        .expect("No JSON response available");
+    let value = json
+        .pointer(&path)
+        .unwrap_or_else(|| panic!("JSON path '{}' not found in: {}", path, json));
+    let actual = match value {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    assert!(
+        actual.contains(&expected),
+        "Expected '{}' to contain '{}', got: '{}'",
+        path,
+        expected,
+        actual
+    );
+}

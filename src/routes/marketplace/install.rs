@@ -974,6 +974,7 @@ async fn install_stack_template(
     };
     project.source_template_id = Some(template.id);
     project.template_version = Some(latest_version.version.clone());
+    project.is_protected = true;
     project = db::project::update(pg_pool, project).await.map_err(|err| {
         tracing::error!("Failed to update installed template metadata: {}", err);
         JsonResponse::<serde_json::Value>::build().internal_server_error("Internal Server Error")

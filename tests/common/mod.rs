@@ -701,8 +701,8 @@ pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
 /// Required because server.project_id has a FK constraint to project(id).
 pub async fn create_test_project(pool: &PgPool, user_id: &str) -> i32 {
     sqlx::query(
-        r#"INSERT INTO project (stack_id, user_id, name, metadata, request_json, created_at, updated_at)
-        VALUES (gen_random_uuid(), $1, 'Test Project', '{}'::jsonb, '{}'::jsonb, NOW(), NOW())
+        r#"INSERT INTO project (stack_id, user_id, name, metadata, request_json, is_protected, created_at, updated_at)
+        VALUES (gen_random_uuid(), $1, 'Test Project', '{}'::jsonb, '{}'::jsonb, false, NOW(), NOW())
         RETURNING id"#,
     )
     .bind(user_id)

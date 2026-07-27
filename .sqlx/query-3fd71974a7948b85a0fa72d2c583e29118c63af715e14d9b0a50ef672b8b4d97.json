@@ -52,6 +52,11 @@
         "ordinal": 9,
         "name": "template_version",
         "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "is_protected",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -70,7 +75,8 @@
       false,
       false,
       true,
-      true
+      true,
+      false
     ]
   },
   "hash": "3fd71974a7948b85a0fa72d2c583e29118c63af715e14d9b0a50ef672b8b4d97"

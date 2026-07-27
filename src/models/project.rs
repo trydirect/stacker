@@ -160,6 +160,7 @@ pub struct Project {
     pub updated_at: DateTime<Utc>,
     pub source_template_id: Option<Uuid>, // marketplace template UUID
     pub template_version: Option<String>, // marketplace template version
+    pub is_protected: bool,               // prevent deletion when true
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow)]
@@ -183,6 +184,7 @@ impl Project {
             updated_at: Utc::now(),
             source_template_id: None,
             template_version: None,
+            is_protected: false,
         }
     }
 
@@ -227,6 +229,7 @@ impl Default for Project {
             updated_at: Default::default(),
             source_template_id: None,
             template_version: None,
+            is_protected: false,
         }
     }
 }
@@ -431,5 +434,37 @@ mod tests {
         assert_eq!(project.id, 0);
         assert_eq!(project.user_id, "");
         assert_eq!(project.name, "");
+    }
+
+    #[test]
+    fn test_project_new_default_unprotected() {
+        let project = Project::new(
+            "user1".to_string(),
+            "my-project".to_string(),
+            serde_json::json!({}),
+            serde_json::json!({}),
+        );
+        assert!(!project.is_protected, "new projects should default to unprotected");
+    }
+
+    #[test]
+    fn test_project_default_unprotected() {
+        let project = Project::default();
+        assert!(!project.is_protected, "default projects should be unprotected");
+    }
+
+    #[test]
+    fn test_project_protection_toggle() {
+        let mut project = Project::new(
+            "user1".to_string(),
+            "toggle-test".to_string(),
+            serde_json::json!({}),
+            serde_json::json!({}),
+        );
+        assert!(!project.is_protected);
+        project.is_protected = true;
+        assert!(project.is_protected);
+        project.is_protected = false;
+        assert!(!project.is_protected);
     }
 }
