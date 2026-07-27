@@ -375,6 +375,12 @@ enum StackerCommands {
         #[arg(long)]
         json: bool,
     },
+    /// List saved cloud credentials (alias for `stacker list clouds`)
+    Keys {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
     /// SSH key management (generate, show, upload, repair)
     #[command(long_about = "Manage Stacker server SSH keys.\n\n\
 Cloud deploys automatically create a local backup SSH key under the Stacker config directory and authorize it on the deployed server when possible. The `generate` command manages the server-side Vault key; `inject` repairs a server by using an already-working local private key to add the Vault public key.")]
@@ -485,6 +491,12 @@ enum CloudCommands {
     Firewall {
         #[command(subcommand)]
         command: CloudFirewallCommands,
+    },
+    /// List saved cloud credentials
+    Keys {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -2131,6 +2143,9 @@ fn get_command(
         StackerCommands::Clouds { json } => {
             Box::new(stacker::console::commands::cli::list::ListCloudsCommand::new(json))
         }
+        StackerCommands::Keys { json } => {
+            Box::new(stacker::console::commands::cli::list::ListCloudsCommand::new(json))
+        }
         StackerCommands::SshKey { command: ssh_cmd } => match ssh_cmd {
             SshKeyCommands::Generate { server_id, save_to } => Box::new(
                 stacker::console::commands::cli::ssh_key::SshKeyGenerateCommand::new(
@@ -2683,6 +2698,9 @@ fn get_command(
                     ),
                 ),
             },
+            CloudCommands::Keys { json } => {
+                Box::new(stacker::console::commands::cli::list::ListCloudsCommand::new(json))
+            }
         },
         StackerCommands::Submit {
             file,

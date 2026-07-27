@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — `stacker keys` and `stacker cloud keys` aliases
+
+- Added `stacker keys` as a top-level shortcut for `stacker list clouds`.
+- Added `stacker cloud keys` as a nested alias under the `cloud` command group.
+- Both aliases dispatch to the same `ListCloudsCommand` and accept `--json`.
+
 ### Added — Remote project initialization via `--from-github`
 
 - Added `stacker init --from-github <url>` (short flag: `-g`) to automatically

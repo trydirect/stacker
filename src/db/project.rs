@@ -124,9 +124,10 @@ pub async fn insert(
             updated_at,
             request_json,
             source_template_id,
-            template_version
+            template_version,
+            is_protected
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING id;
         "#,
     )
@@ -139,6 +140,7 @@ pub async fn insert(
     .bind(project.request_json.clone())
     .bind(project.source_template_id)
     .bind(project.template_version.clone())
+    .bind(project.is_protected)
     .fetch_one(pool)
     .instrument(query_span)
     .await
@@ -168,6 +170,7 @@ pub async fn update(
             request_json=$6,
             source_template_id=$7,
             template_version=$8,
+            is_protected=$9,
             updated_at=NOW() at time zone 'utc'
         WHERE id = $1
         "#,
@@ -180,6 +183,7 @@ pub async fn update(
     .bind(project.request_json.clone())
     .bind(project.source_template_id)
     .bind(project.template_version.clone())
+    .bind(project.is_protected)
     .execute(pool)
     .instrument(query_span)
     .await
@@ -211,4 +215,114 @@ pub async fn delete(pool: &PgPool, id: i32, user_id: &str) -> Result<bool, Strin
             tracing::error!("Failed to delete project: {:?}", err);
             "Failed to delete project".to_string()
         })
+}
+
+/// Set or unset the `is_protected` flag on a project.
+/// Returns `true` if the row was updated, `false` if no matching project was found.
+pub async fn set_protected(
+    pool: &PgPool,
+    id: i32,
+    user_id: &str,
+    protected: bool,
+) -> Result<bool, String> {
+    tracing::info!("Set project {} is_protected={}", id, protected);
+    sqlx::query(
+        "UPDATE project SET is_protected = $3, updated_at = NOW() at time zone 'utc' WHERE id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(protected)
+    .execute(pool)
+    .await
+    .map(|r| r.rows_affected() > 0)
+    .map_err(|err| {
+        tracing::error!("Failed to set project protection: {:?}", err);
+        "Failed to update project protection".to_string()
+    })
+}
+
+/// Summary of resources that block project deletion.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DeletionBlockers {
+    pub is_protected: bool,
+    pub has_marketplace_template: bool,
+    pub active_deployments: i64,
+    pub active_servers: i64,
+}
+
+/// Check what resources would block deletion of a project.
+pub async fn check_deletion_blockers(
+    pool: &PgPool,
+    project_id: i32,
+) -> Result<DeletionBlockers, String> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            p.is_protected,
+            p.source_template_id IS NOT NULL AS has_marketplace_template,
+            COALESCE(d.cnt, 0) AS active_deployments,
+            COALESCE(s.cnt, 0) AS active_servers
+        FROM project p
+        LEFT JOIN (
+            SELECT project_id, COUNT(*) AS cnt
+            FROM deployment
+            WHERE deleted = false OR deleted IS NULL
+            GROUP BY project_id
+        ) d ON d.project_id = p.id
+        LEFT JOIN (
+            SELECT project_id, COUNT(*) AS cnt
+            FROM server
+            GROUP BY project_id
+        ) s ON s.project_id = p.id
+        WHERE p.id = $1
+        "#,
+    )
+    .bind(project_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to check deletion blockers: {:?}", err);
+        "Failed to check deletion blockers".to_string()
+    })?;
+
+    Ok(DeletionBlockers {
+        is_protected: row.get("is_protected"),
+        has_marketplace_template: row.get("has_marketplace_template"),
+        active_deployments: row.get::<i64, _>("active_deployments"),
+        active_servers: row.get::<i64, _>("active_servers"),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deletion_blockers_serialization() {
+        let blockers = DeletionBlockers {
+            is_protected: true,
+            has_marketplace_template: true,
+            active_deployments: 3,
+            active_servers: 2,
+        };
+        let json = serde_json::to_value(&blockers).unwrap();
+        assert_eq!(json["is_protected"], true);
+        assert_eq!(json["has_marketplace_template"], true);
+        assert_eq!(json["active_deployments"], 3);
+        assert_eq!(json["active_servers"], 2);
+    }
+
+    #[test]
+    fn test_deletion_blockers_zero_counts() {
+        let blockers = DeletionBlockers {
+            is_protected: false,
+            has_marketplace_template: false,
+            active_deployments: 0,
+            active_servers: 0,
+        };
+        let json = serde_json::to_value(&blockers).unwrap();
+        assert_eq!(json["is_protected"], false);
+        assert_eq!(json["active_deployments"], 0);
+        assert_eq!(json["active_servers"], 0);
+    }
 }

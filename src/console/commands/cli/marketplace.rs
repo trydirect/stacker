@@ -475,7 +475,14 @@ impl CallableTrait for MarketplaceInstallCommand {
                 "Installed '{}' as project #{} and started deployment #{}.",
                 response.template.slug, response.project.id, deployment_id
             );
-            println!("Track with: stacker deployment state");
+            if let Some(ref hash) = response.deployment_hash {
+                println!("Track with: stacker deployment state --deployment {}", hash);
+            } else {
+                println!(
+                    "Track with: stacker deployment state --project {}",
+                    response.project.id
+                );
+            }
             return Ok(());
         }
 
@@ -1321,6 +1328,7 @@ mod tests {
             template: marketplace_template("dify"),
             latest_version,
             deployment_id: None,
+            deployment_hash: None,
             authorization: None,
             idempotency_key: None,
         }
