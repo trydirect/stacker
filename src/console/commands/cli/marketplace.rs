@@ -479,19 +479,20 @@ impl CallableTrait for MarketplaceInstallCommand {
 
             // Fetch deployment hash — the install response may not include it
             // (older servers), so resolve it client-side via the project ID.
-            let deployment_hash = response
-                .deployment_hash
-                .clone()
-                .or_else(|| {
-                    ctx.block_on(async {
-                        ctx.client
-                            .get_deployment_status_by_project(response.project.id)
-                            .await
-                            .ok()
-                            .flatten()
-                            .map(|d| d.deployment_hash)
-                    })
+            let deployment_hash = if response.deployment_hash.is_some() {
+                response.deployment_hash.clone()
+            } else {
+                let fetched = ctx.block_on(async {
+                    ctx.client
+                        .get_deployment_status_by_project(response.project.id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|d| d.deployment_hash)
                 });
+                eprintln!("[debug] client-side fetch result: {:?}", fetched);
+                fetched
+            };
 
             if let Some(ref hash) = deployment_hash {
                 // Update stacker.yml with the deployment hash
