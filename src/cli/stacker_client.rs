@@ -113,6 +113,20 @@ pub struct ProjectAppInfo {
     pub parent_app_code: Option<String>,
 }
 
+/// App config as returned by `/project/{id}/apps/{code}/config`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfigInfo {
+    pub project_id: i32,
+    pub app_code: String,
+    pub environment: serde_json::Value,
+    pub ports: serde_json::Value,
+    pub volumes: serde_json::Value,
+    pub domain: Option<String>,
+    pub ssl_enabled: bool,
+    pub resources: serde_json::Value,
+    pub restart_policy: String,
+}
+
 /// Project app registration payload for `POST /project/{id}/apps`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectAppRegistrationRequest {
@@ -695,6 +709,46 @@ impl StackerClient {
             })?;
 
         Ok(api.list.unwrap_or_default())
+    }
+
+    /// Get app configuration (env, ports, volumes, domain).
+    pub async fn get_app_config(
+        &self,
+        project_id: i32,
+        app_code: &str,
+    ) -> Result<AppConfigInfo, CliError> {
+        let resp = self
+            .send_project_request(
+                reqwest::Method::GET,
+                &format!("/{}/apps/{}/config", project_id, app_code),
+                None,
+                "GET /project/{id}/apps/{code}/config",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: stacker_api_failure(
+                    &format!("GET /project/{project_id}/apps/{app_code}/config"),
+                    status,
+                    &body,
+                ),
+            });
+        }
+
+        let api: ApiResponse<AppConfigInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: self.target.clone(),
+            reason: "Stacker server did not return app config".to_string(),
+        })
     }
 
     /// Create or update one project app target.

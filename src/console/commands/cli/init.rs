@@ -811,7 +811,7 @@ fn generate_config_template_path(
     Ok(config_path.to_path_buf())
 }
 
-fn serialize_generated_config(config: &StackerConfig) -> Result<String, CliError> {
+pub fn serialize_generated_config(config: &StackerConfig) -> Result<String, CliError> {
     let mut value = serde_yaml::to_value(config)
         .map_err(|e| CliError::GeneratorError(format!("Failed to serialize config: {e}")))?;
 
@@ -822,7 +822,7 @@ fn serialize_generated_config(config: &StackerConfig) -> Result<String, CliError
         .map_err(|e| CliError::GeneratorError(format!("Failed to serialize config: {e}")))
 }
 
-fn prune_generated_config_value(value: &mut serde_yaml::Value) {
+pub fn prune_generated_config_value(value: &mut serde_yaml::Value) {
     match value {
         serde_yaml::Value::Mapping(map) => {
             let keys = map.keys().cloned().collect::<Vec<_>>();
@@ -857,7 +857,7 @@ fn is_noise_generated_config_value(value: &serde_yaml::Value) -> bool {
     }
 }
 
-fn remove_disabled_generated_ai_section(value: &mut serde_yaml::Value) {
+pub fn remove_disabled_generated_ai_section(value: &mut serde_yaml::Value) {
     let serde_yaml::Value::Mapping(root) = value else {
         return;
     };

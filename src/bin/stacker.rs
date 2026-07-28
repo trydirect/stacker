@@ -16,6 +16,7 @@
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use stacker::console::commands::cli::secrets::RemoteSecretScope;
+use std::path::PathBuf;
 
 fn print_banner() {
     let version = env!("CARGO_PKG_VERSION");
@@ -352,6 +353,21 @@ enum StackerCommands {
         /// Limit number of results
         #[arg(long)]
         limit: Option<i64>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pull project configuration to local directory
+    Pull {
+        /// Project ID or name
+        #[arg(value_name = "PROJECT_REF")]
+        project_ref: String,
+        /// Overwrite existing files without asking
+        #[arg(long)]
+        force: bool,
+        /// Target directory (default: current)
+        #[arg(long)]
+        dir: Option<PathBuf>,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -2134,6 +2150,17 @@ fn get_command(
                 json, project, limit,
             ),
         ),
+        StackerCommands::Pull {
+            project_ref,
+            force,
+            dir,
+            json,
+        } => Box::new(stacker::console::commands::cli::pull::PullCommand::new(
+            project_ref,
+            force,
+            dir,
+            json,
+        )),
         StackerCommands::Servers { json } => {
             Box::new(stacker::console::commands::cli::list::ListServersCommand::new(json))
         }
