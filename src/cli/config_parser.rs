@@ -1392,6 +1392,7 @@ pub struct ConfigBuilder {
     services: Vec<ServiceDefinition>,
     proxy: Option<ProxyConfig>,
     deploy_target: Option<DeployTarget>,
+    deployment_hash: Option<String>,
     cloud: Option<CloudConfig>,
     server: Option<ServerConfig>,
     registry: Option<RegistryConfig>,
@@ -1469,6 +1470,11 @@ impl ConfigBuilder {
 
     pub fn deploy_target(mut self, target: DeployTarget) -> Self {
         self.deploy_target = Some(target);
+        self
+    }
+
+    pub fn deployment_hash<S: Into<String>>(mut self, hash: S) -> Self {
+        self.deployment_hash = Some(hash.into());
         self
     }
 
@@ -1560,7 +1566,7 @@ impl ConfigBuilder {
                 target: self.deploy_target.unwrap_or_default(),
                 environment: None,
                 compose_file: None,
-                deployment_hash: None,
+                deployment_hash: self.deployment_hash,
                 cloud: self.cloud,
                 server: self.server,
                 registry: self.registry,

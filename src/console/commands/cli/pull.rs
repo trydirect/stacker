@@ -158,13 +158,14 @@ async fn detect_deploy_target(ctx: &CliRuntime, project_id: i32) -> DeployTarget
 fn build_stacker_yml_from_deployment(
     project: &ProjectInfo,
     apps: &[ProjectAppInfo],
-    _deployment: &DeploymentStatusInfo,
+    deployment: &DeploymentStatusInfo,
     target: DeployTarget,
 ) -> String {
     let mut builder = ConfigBuilder::new()
         .name(&project.name)
         .project_identity(&project.name)
-        .deploy_target(target);
+        .deploy_target(target)
+        .deployment_hash(&deployment.deployment_hash);
 
     // Primary app (no parent)
     if let Some(primary) = apps.iter().find(|a| a.parent_app_code.is_none()) {
@@ -389,6 +390,7 @@ mod tests {
 
         assert!(yml.contains("name: my-project"));
         assert!(yml.contains("identity: my-project"));
+        assert!(yml.contains("deployment_hash: deployment_abc123"));
         assert!(yml.contains("image: node:20-alpine"));
         assert!(yml.contains("name: db"));
         assert!(yml.contains("image: postgres:16"));
