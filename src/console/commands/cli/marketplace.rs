@@ -476,7 +476,24 @@ impl CallableTrait for MarketplaceInstallCommand {
                 "Installed '{}' as project #{} and started deployment #{}.",
                 response.template.slug, response.project.id, deployment_id
             );
-            if let Some(ref hash) = response.deployment_hash {
+
+            // Fetch deployment hash — the install response may not include it
+            // (older servers), so resolve it client-side via the project ID.
+            let deployment_hash = response
+                .deployment_hash
+                .clone()
+                .or_else(|| {
+                    ctx.block_on(async {
+                        ctx.client
+                            .get_deployment_status_by_project(response.project.id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|d| d.deployment_hash)
+                    })
+                });
+
+            if let Some(ref hash) = deployment_hash {
                 // Update stacker.yml with the deployment hash
                 if self.file.exists() {
                     let hash_clone = hash.clone();
