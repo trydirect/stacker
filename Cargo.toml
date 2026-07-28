@@ -5,7 +5,7 @@ edition = "2021"
 default-run= "server"
 
 [workspace]
-members = ["crates/pipe-adapter-sdk", "crates/pipe-adapter-mail", "crates/td-audit"]
+members = ["crates/pipe-adapter-sdk", "crates/pipe-adapter-mail", "crates/td-audit", "crates/agent-tools"]
 resolver = "2"
 
 [lib]
