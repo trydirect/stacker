@@ -70,6 +70,8 @@ pub struct SandboxStatus {
 /// polls the deployment DB; mocked in tests. v1 = FreshVmController, v2 = Kata pool.
 #[async_trait]
 pub trait SandboxController: Send + Sync {
+    /// Number of the owner's currently-active sandboxes (for quota enforcement).
+    async fn active_count(&self, owner: &str) -> Result<u32>;
     async fn launch(&self, spec: &SandboxSpec) -> Result<SandboxHandle>;
     async fn status(&self, handle: &SandboxHandle) -> Result<SandboxStatus>;
     async fn teardown(&self, handle: &SandboxHandle) -> Result<()>;
@@ -222,6 +224,9 @@ mod tests {
     struct MockController;
     #[async_trait]
     impl SandboxController for MockController {
+        async fn active_count(&self, _owner: &str) -> Result<u32> {
+            Ok(0)
+        }
         async fn launch(&self, spec: &SandboxSpec) -> Result<SandboxHandle> {
             Ok(SandboxHandle { id: "sandbox_test".into(), expires_at: spec.expires_at })
         }

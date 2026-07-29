@@ -195,6 +195,7 @@ const MFA_REQUIRED_TOOLS: &[&str] = &[
     "activate_pipe",
     "deactivate_pipe",
     "trigger_pipe",
+    "deploy_ephemeral",
 ];
 
 /// Trait for tool handlers
@@ -219,10 +220,14 @@ impl ToolRegistry {
             handlers: HashMap::new(),
         };
 
-        // Agent ground-truth tools
+        // Agent ground-truth + execution tools
         registry.register(
             "resolve_image",
             Box::new(crate::mcp::tools::resolve_image::ResolveImageTool),
+        );
+        registry.register(
+            "deploy_ephemeral",
+            Box::new(crate::mcp::tools::deploy_ephemeral::DeployEphemeralTool),
         );
 
         // Project management tools
