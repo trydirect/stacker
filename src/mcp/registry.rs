@@ -219,6 +219,12 @@ impl ToolRegistry {
             handlers: HashMap::new(),
         };
 
+        // Agent ground-truth tools
+        registry.register(
+            "resolve_image",
+            Box::new(crate::mcp::tools::resolve_image::ResolveImageTool),
+        );
+
         // Project management tools
         registry.register("list_projects", Box::new(ListProjectsTool));
         registry.register("get_project", Box::new(GetProjectTool));
