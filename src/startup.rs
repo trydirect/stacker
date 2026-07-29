@@ -568,6 +568,8 @@ pub async fn run_agent_gateway(
             .wrap(Compress::default())
             .wrap(middleware::prometheus::PrometheusMetrics)
             .route("/health", web::get().to(agent_gateway_health))
+            // Public, unauthenticated ground-truth endpoint (casbin grants anon).
+            .service(crate::routes::agent_public::resolve_image_public)
             .service(web::resource("/mcp").route(web::get().to(mcp::mcp_websocket)))
             .app_data(api_pool.clone())
             .app_data(agent_pool.clone())

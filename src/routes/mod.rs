@@ -1,4 +1,5 @@
 pub(crate) mod agent;
+pub mod agent_public;
 pub mod audit;
 pub mod client;
 pub(crate) mod command;

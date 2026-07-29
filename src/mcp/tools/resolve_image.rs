@@ -9,12 +9,22 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use agent_tools::image::{resolve_image, ImageResolver, ParsedRef, RawImageFacts};
+use agent_tools::image::{resolve_image, ImageResolver, ParsedRef, RawImageFacts, ResolvedImage};
 
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
 
 const HUB: &str = "https://hub.docker.com/v2";
+
+/// Resolve a reference to ground-truth facts. Shared by the MCP tool and the
+/// public (unauthenticated) HTTP endpoint so both behave identically.
+pub async fn resolve_reference(reference: &str) -> Result<ResolvedImage, String> {
+    let resolver = DockerHubImageResolver::new();
+    // CVE summary is a follow-up (Trivy); ground-truth metadata now.
+    resolve_image(&resolver, reference, None)
+        .await
+        .map_err(|e| e.to_string())
+}
 
 /// Docker Hub-backed resolver. Only ever contacts hub.docker.com (no SSRF
 /// surface: the reference is normalized to a `namespace/repo` path).
@@ -150,12 +160,7 @@ impl ToolHandler for ResolveImageTool {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| "`reference` (an image ref, e.g. \"redis:7-alpine\") is required".to_string())?;
 
-        let resolver = DockerHubImageResolver::new();
-        // CVE summary is a follow-up (Trivy); ground-truth metadata now.
-        let resolved = resolve_image(&resolver, reference, None)
-            .await
-            .map_err(|e| e.to_string())?;
-
+        let resolved = resolve_reference(reference).await?;
         let json = serde_json::to_string_pretty(&resolved).map_err(|e| e.to_string())?;
         Ok(ToolContent::Text { text: json })
     }
