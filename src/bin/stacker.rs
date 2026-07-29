@@ -180,6 +180,9 @@ enum StackerCommands {
         /// marketplace. Only pass this after reviewing the hook scripts.
         #[arg(long)]
         allow_untrusted_hooks: bool,
+        /// Send a terminal/desktop notification when deploy finishes.
+        #[arg(long)]
+        notify: bool,
     },
     /// Attach this directory to an existing deployment from the dashboard
     Connect {
@@ -1960,6 +1963,7 @@ fn get_command(
             apply_plan,
             no_hooks,
             allow_untrusted_hooks,
+            notify,
         } => Box::new(
             stacker::console::commands::cli::deploy::DeployCommand::new(
                 target,
@@ -1977,7 +1981,8 @@ fn get_command(
             .with_runtime(runtime)
             .with_plan(plan)
             .with_apply_plan(apply_plan)
-            .with_hook_flags(no_hooks, allow_untrusted_hooks),
+            .with_hook_flags(no_hooks, allow_untrusted_hooks)
+            .with_notify(notify),
         ),
         StackerCommands::Connect { handoff } => {
             Box::new(stacker::console::commands::cli::connect::ConnectCommand::new(handoff))

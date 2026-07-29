@@ -131,6 +131,7 @@ pub fn full_config_reference_example() -> &'static str {
 #   # pre_build: "./scripts/pre-build.sh"
 #   # post_deploy: "./scripts/post-deploy.sh"
 #   # on_failure: "./scripts/on-failure.sh"
+#   # notify: true    # terminal/desktop notification on deploy finish
 # -----------------------------------------------------------------------------"#
 }
 

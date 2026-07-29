@@ -725,6 +725,15 @@ pub struct HookConfig {
 
     #[serde(default)]
     pub on_failure: Option<PathBuf>,
+
+    /// Send a terminal/desktop notification on deploy completion.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub notify: bool,
+}
+
+/// Serde helper: skip serializing when `false`.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Project identity metadata.
