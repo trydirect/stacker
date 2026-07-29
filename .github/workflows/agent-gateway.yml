@@ -25,9 +25,10 @@ on:
       - ".github/workflows/agent-gateway.yml"
 
 jobs:
-  # Fast, DB-less checks: the pure crate + that the standalone binary compiles.
-  test:
-    name: Test crate + build binary
+  # Fast, DB-less checks + build the release binary once (cached), so the Docker
+  # image just bakes it (no Rust compile inside Docker).
+  build:
+    name: Test crate + build release binary
     runs-on: ubuntu-latest
     env:
       SQLX_OFFLINE: true
@@ -41,17 +42,29 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Unit-test the pure agent-tools crate (no DB/cloud)
         run: cargo test -p agent-tools --verbose
-      - name: Build the agent-gateway binary (offline)
-        run: cargo build --bin agent-gateway --verbose
+      - name: Build the agent-gateway binary (release, offline)
+        run: cargo build --release --bin agent-gateway --verbose
+      - name: Upload binary for the Docker job
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-gateway-bin
+          path: target/release/agent-gateway
+          retention-days: 1
 
-  # Build + push the standalone image on push to dev/main (not PRs).
+  # Bake the prebuilt binary into a slim runtime image and push (push only).
   docker:
     name: Build & push image
-    needs: test
+    needs: build
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Download prebuilt binary
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-gateway-bin
+          path: .
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Login to Docker Hub
@@ -69,5 +82,3 @@ jobs:
           file: ./Dockerfile.agent-gateway
           push: true
           tags: ${{ steps.tags.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max

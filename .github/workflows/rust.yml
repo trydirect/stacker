@@ -65,6 +65,9 @@ jobs:
       - name: Build cleanup-notify (release)
         run: cargo build --release --target ${{ matrix.target }} --bin cleanup-notify --verbose
 
+      - name: Build agent-gateway (release)
+        run: cargo build --release --target ${{ matrix.target }} --bin agent-gateway --verbose
+
       - name: Prepare binaries
         run: |
           mkdir -p artifacts
@@ -72,6 +75,7 @@ jobs:
           cp target/${{ matrix.target }}/release/console artifacts/console
           cp target/${{ matrix.target }}/release/stacker-cli artifacts/stacker-cli
           cp target/${{ matrix.target }}/release/cleanup-notify artifacts/cleanup-notify
+          cp target/${{ matrix.target }}/release/agent-gateway artifacts/agent-gateway
           tar -czf ${{ matrix.artifact_name }}.tar.gz -C artifacts .
       - name: Upload binaries
         uses: actions/upload-artifact@v4

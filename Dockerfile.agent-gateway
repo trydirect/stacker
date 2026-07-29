@@ -1,52 +1,26 @@
-# syntax=docker/dockerfile:1.4
-# Standalone image for the agent-gateway MCP server. Mirrors the root Dockerfile
-# but builds and ships only the `agent-gateway` binary, so it deploys and scales
-# independently of the main `server`.
-FROM rust:bookworm AS builder
-
-RUN apt-get update && apt-get install --no-install-recommends -y \
-        protobuf-compiler libprotobuf-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN cargo install sqlx-cli
-
-WORKDIR /app
-
-# Manifests + offline sqlx cache (compile-time checked queries without a DB).
-COPY ./Cargo.toml .
-COPY ./Cargo.lock .
-COPY ./build.rs .
-COPY ./rustfmt.toml .
-COPY ./docker/local/.env .
-COPY ./docker/local/configuration.yaml .
-COPY .sqlx .sqlx/
-COPY ./proto ./proto
-COPY ./tests/bdd.rs ./tests/bdd.rs
-
-COPY ./src ./src
-COPY ./crates ./crates
-COPY ./scenarios ./scenarios
-
-ENV SQLX_OFFLINE=true
-
-RUN apt-get update && apt-get install --no-install-recommends -y libssl-dev \
-    && cargo build --release --bin agent-gateway
-
-# ---- runtime ----
+# Runtime-only image for the agent-gateway MCP server.
+#
+# CI (.github/workflows/agent-gateway.yml) builds the release binary once on the
+# runner (cached) and downloads it into the build context, so this image just
+# bakes it — no Rust compile inside Docker. The binary is glibc (built on
+# ubuntu-latest) and this base is glibc (debian:bookworm-slim), so they match.
+#
+# Expects `./agent-gateway` (the prebuilt binary) present in the build context.
 FROM debian:bookworm-slim AS production
 
 RUN apt-get update && apt-get install --no-install-recommends -y \
-        libssl-dev ca-certificates \
+        libssl3 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 RUN mkdir ./files && chmod 0777 ./files
 
-COPY --from=builder /app/target/release/agent-gateway .
-COPY --from=builder /app/.env .
-COPY --from=builder /app/configuration.yaml .
-COPY --from=builder /usr/local/cargo/bin/sqlx /usr/local/bin/sqlx
-COPY ./access_control.conf.dist ./access_control.conf
+# Prebuilt binary + runtime config (from the checked-out repo).
+COPY agent-gateway /app/agent-gateway
+COPY docker/local/configuration.yaml /app/configuration.yaml
+COPY docker/local/.env /app/.env
+COPY access_control.conf.dist /app/access_control.conf
+RUN chmod +x /app/agent-gateway
 
 ENV AGENT_GATEWAY_BIND=0.0.0.0:4600
 EXPOSE 4600
