@@ -349,6 +349,7 @@ enum StackerCommands {
         json: bool,
     },
     /// List deployments (alias for `stacker list deployments`)
+    #[command(visible_alias = "ps")]
     Deployments {
         /// Filter by project ID
         #[arg(long)]
@@ -791,6 +792,7 @@ enum ServiceCommands {
 #[derive(Debug, Subcommand)]
 enum DeploymentCommands {
     /// Show canonical deployment state
+    #[command(visible_alias = "status")]
     State {
         /// Output in JSON format
         #[arg(long)]
@@ -798,6 +800,9 @@ enum DeploymentCommands {
         /// Override deployment hash instead of using stacker.yml
         #[arg(long)]
         deployment: Option<String>,
+        /// Use the deployment hash from stacker.yml instead of the latest
+        #[arg(long)]
+        pinned: bool,
     },
     /// Show structured deployment events
     Events {
@@ -807,6 +812,9 @@ enum DeploymentCommands {
         /// Override deployment hash instead of using stacker.yml
         #[arg(long)]
         deployment: Option<String>,
+        /// Use the deployment hash from stacker.yml instead of the latest
+        #[arg(long)]
+        pinned: bool,
     },
     /// Preview or apply a deployment rollback
     Rollback {
@@ -1999,14 +2007,22 @@ fn get_command(
             stacker::console::commands::cli::status::StatusCommand::new(json, watch),
         ),
         StackerCommands::Deployment { command } => match command {
-            DeploymentCommands::State { json, deployment } => Box::new(
+            DeploymentCommands::State {
+                json,
+                deployment,
+                pinned,
+            } => Box::new(
                 stacker::console::commands::cli::deployment::DeploymentStateCommand::new(
-                    json, deployment,
+                    json, deployment, pinned,
                 ),
             ),
-            DeploymentCommands::Events { json, deployment } => Box::new(
+            DeploymentCommands::Events {
+                json,
+                deployment,
+                pinned,
+            } => Box::new(
                 stacker::console::commands::cli::deployment::DeploymentEventsCommand::new(
-                    json, deployment,
+                    json, deployment, pinned,
                 ),
             ),
             DeploymentCommands::Rollback {

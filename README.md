@@ -183,8 +183,11 @@ The end-user tool. No server required for local deploys.
 | `stacker deploy` | Build & deploy the stack (local, cloud, or server). Cloud deploys also install a local SSH backup key when possible. `--runtime kata\|runc` selects container runtime |
 | `stacker status` | Show running containers and health |
 | `stacker logs` | View container logs (`--follow`, `--service`, `--tail`) |
+| `stacker deployment state` / `stacker deployment status` | Show canonical deployment state (defaults to latest; `--pinned` uses stacker.yml hash) |
+| `stacker deployment events` | Show structured deployment events (`--pinned` uses stacker.yml hash) |
+| `stacker deployment rollback` | Preview or apply a deployment rollback |
 | `stacker secrets` | Manage local `.env` secrets or remote Vault-backed `service` / `server` secrets |
-| `stacker list deployments` / `stacker deployments` | List deployments on the Stacker server |
+| `stacker list deployments` / `stacker deployments` / `stacker ps` | List deployments on the Stacker server |
 | `stacker list servers` / `stacker servers` | List saved servers |
 | `stacker list clouds` / `stacker clouds` / `stacker keys` / `stacker cloud keys` | List saved cloud credentials |
 | `stacker list ssh-keys` / `stacker ssh-keys` | List per-server SSH key status |
