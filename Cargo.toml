@@ -28,6 +28,10 @@ name = "stacker-cli"
 path = "src/bin/agent_executor.rs"
 name = "agent-executor"
 
+[[bin]]
+path = "src/bin/agent_gateway.rs"
+name = "agent-gateway"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]

@@ -508,6 +508,82 @@ pub async fn run(
     Ok(server)
 }
 
+/// Health endpoint for the standalone agent gateway.
+async fn agent_gateway_health() -> actix_web::HttpResponse {
+    actix_web::HttpResponse::Ok().json(serde_json::json!({
+        "status": "ok",
+        "service": "agent-gateway",
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
+}
+
+/// Boot the standalone **agent-gateway** server: a lean, independently-scalable
+/// process that serves only `/health` and the MCP WebSocket at `/mcp` (the
+/// agent-facing tools: `resolve_image`, `deploy_ephemeral`). It reuses the same
+/// auth + casbin middleware and the shared `ToolRegistry`, so agents authenticate
+/// exactly as they do against the main server — but agent traffic scales apart
+/// from the core API.
+pub async fn run_agent_gateway(
+    listener: TcpListener,
+    api_pool: Pool<Postgres>,
+    agent_pool: AgentPgPool,
+    settings: Settings,
+) -> Result<Server, std::io::Error> {
+    crate::metrics::init();
+
+    let settings = web::Data::new(settings);
+    let api_pool = web::Data::new(api_pool);
+    let agent_pool = web::Data::new(agent_pool);
+
+    let vault_client = web::Data::new(helpers::VaultClient::new(&settings.vault));
+    let oauth_http_client =
+        web::Data::new(build_oauth_http_client(&settings).map_err(std::io::Error::other)?);
+    let oauth_cache = web::Data::new(middleware::authentication::OAuthCache::new(
+        Duration::from_secs(60),
+    ));
+
+    let mcp_registry = web::Data::new(Arc::new(mcp::ToolRegistry::new()));
+    let authorization =
+        middleware::authorization::try_new(settings.database.connection_string()).await?;
+
+    let server = HttpServer::new(move || {
+        App::new()
+            .wrap(
+                Cors::default()
+                    .allow_any_origin()
+                    .allow_any_method()
+                    .allowed_headers(vec![
+                        http::header::AUTHORIZATION,
+                        http::header::CONTENT_TYPE,
+                        http::header::ACCEPT,
+                        http::header::ORIGIN,
+                        http::header::HeaderName::from_static("x-requested-with"),
+                    ])
+                    .expose_any_header()
+                    .max_age(3600),
+            )
+            .wrap(TracingLogger::default())
+            .wrap(authorization.clone())
+            .wrap(middleware::authentication::Manager::new())
+            .wrap(Compress::default())
+            .wrap(middleware::prometheus::PrometheusMetrics)
+            .route("/health", web::get().to(agent_gateway_health))
+            .service(web::resource("/mcp").route(web::get().to(mcp::mcp_websocket)))
+            .app_data(api_pool.clone())
+            .app_data(agent_pool.clone())
+            .app_data(settings.clone())
+            .app_data(vault_client.clone())
+            .app_data(oauth_http_client.clone())
+            .app_data(oauth_cache.clone())
+            .app_data(mcp_registry.clone())
+            .app_data(web::Data::new(authorization.clone()))
+    })
+    .listen(listener)?
+    .run();
+
+    Ok(server)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
