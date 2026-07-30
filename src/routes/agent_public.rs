@@ -15,17 +15,41 @@ pub struct ResolveImageBody {
     pub reference: String,
 }
 
-/// `POST /public/resolve_image` — `{ "reference": "redis:7-alpine" }` → the
-/// `ResolvedImage` ground truth (exists, digest, size, architectures, tags,
-/// grade). No authentication required.
+#[derive(Debug, Deserialize)]
+pub struct ResolveImageQuery {
+    pub reference: Option<String>,
+}
+
+/// `POST /public/resolve_image` → the `ResolvedImage` ground truth (exists,
+/// digest, size, architectures, tags, grade). No authentication required.
+///
+/// Lenient on input so agents don't trip on content-type: accepts a JSON body
+/// `{"reference": "redis:7-alpine"}` regardless of the Content-Type header, or a
+/// `?reference=redis:7-alpine` query parameter.
 #[post("/public/resolve_image")]
-pub async fn resolve_image_public(body: web::Json<ResolveImageBody>) -> impl Responder {
-    let reference = body.reference.trim();
-    if reference.is_empty() {
-        return HttpResponse::BadRequest()
-            .json(serde_json::json!({ "error": "`reference` is required" }));
-    }
-    match resolve_reference(reference).await {
+pub async fn resolve_image_public(
+    body: web::Bytes,
+    query: web::Query<ResolveImageQuery>,
+) -> impl Responder {
+    // Prefer the JSON body (parsed content-type-agnostically); fall back to the
+    // query param.
+    let reference = serde_json::from_slice::<ResolveImageBody>(&body)
+        .map(|b| b.reference)
+        .ok()
+        .or_else(|| query.reference.clone())
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty());
+
+    let reference = match reference {
+        Some(r) => r,
+        None => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "provide an image reference as JSON body {\"reference\":\"…\"} or ?reference=…"
+            }));
+        }
+    };
+
+    match resolve_reference(&reference).await {
         Ok(resolved) => HttpResponse::Ok().json(resolved),
         Err(err) => HttpResponse::BadGateway().json(serde_json::json!({ "error": err })),
     }
