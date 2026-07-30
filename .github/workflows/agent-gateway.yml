@@ -44,6 +44,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          # Namespace the cache to the runner OS so switching runners doesn't
+          # restore incompatible artifacts (e.g. sqlx rmeta from a 24.04 build
+          # into a 22.04 job -> "can't find crate for sqlx").
+          key: ubuntu-22.04
       - name: Unit-test the pure agent-tools crate (no DB/cloud)
         run: cargo test -p agent-tools --verbose
       - name: Build the agent-gateway binary (release, offline)
