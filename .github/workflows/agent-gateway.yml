@@ -26,14 +26,10 @@ on:
       - ".github/workflows/agent-gateway.yml"
 
 jobs:
-  # Fast, DB-less checks + build the release binary once (cached), so the Docker
-  # image just bakes it (no Rust compile inside Docker).
-  build:
-    name: Test crate + build release binary
-    # Pinned to 22.04 (glibc 2.35) so the binary runs on the debian:bookworm-slim
-    # runtime (glibc 2.36). ubuntu-latest (24.04, glibc 2.39) would require a
-    # newer glibc than the runtime has -> "GLIBC_2.38 not found".
-    runs-on: ubuntu-22.04
+  # Fast, DB-less feedback: the pure crate + that the standalone binary compiles.
+  test:
+    name: Test crate + build binary
+    runs-on: ubuntu-latest
     env:
       SQLX_OFFLINE: true
     steps:
@@ -44,36 +40,21 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
-        with:
-          # Namespace the cache to the runner OS so switching runners doesn't
-          # restore incompatible artifacts (e.g. sqlx rmeta from a 24.04 build
-          # into a 22.04 job -> "can't find crate for sqlx").
-          key: ubuntu-22.04
       - name: Unit-test the pure agent-tools crate (no DB/cloud)
         run: cargo test -p agent-tools --verbose
-      - name: Build the agent-gateway binary (release, offline)
-        run: cargo build --release --bin agent-gateway --verbose
-      - name: Upload binary for the Docker job
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
-        with:
-          name: agent-gateway-bin
-          path: target/release/agent-gateway
-          retention-days: 1
+      - name: Build the agent-gateway binary (offline)
+        run: cargo build --bin agent-gateway --verbose
 
-  # Bake the prebuilt binary into a slim runtime image and push (push only).
+  # Build + push the image on push to dev/main/feature (not PRs). The Docker
+  # build compiles inside rust:bookworm, so glibc matches the runtime — no
+  # coupling to the runner's glibc.
   docker:
     name: Build & push image
-    needs: build
+    needs: test
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Download prebuilt binary
-        uses: actions/download-artifact@v4
-        with:
-          name: agent-gateway-bin
-          path: .
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Login to Docker Hub
@@ -94,3 +75,5 @@ jobs:
           file: ./Dockerfile.agent-gateway
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
