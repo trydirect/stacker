@@ -50,17 +50,12 @@ services:
         condition: service_completed_successfully
     environment:
       AGENT_GATEWAY_BIND: 0.0.0.0:4600
-      REDIS_URL: redis://redis:6379/0
-      SANDBOX_DEFAULT_TTL_SECS: "1800"
-      SANDBOX_MAX_TTL_SECS: "7200"
-      SANDBOX_MAX_CONCURRENT_PER_USER: "3"
+      # Sandbox quotas (only affect deploy_ephemeral; safe defaults).
+      SANDBOX_DEFAULT_TTL_SECS: "${SANDBOX_DEFAULT_TTL_SECS:-1800}"
+      SANDBOX_MAX_TTL_SECS: "${SANDBOX_MAX_TTL_SECS:-7200}"
+      SANDBOX_MAX_CONCURRENT_PER_USER: "${SANDBOX_MAX_CONCURRENT_PER_USER:-3}"
     ports:
-      - "4600:4600"
-    restart: unless-stopped
-
-  # Optional: Docker Hub response cache (resolve_image works without it).
-  redis:
-    image: redis:7-alpine
+      - "${HOST_PORT:-4600}:4600"
     restart: unless-stopped
 
 volumes:
