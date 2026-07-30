@@ -20,6 +20,9 @@ COPY agent-gateway /app/agent-gateway
 COPY docker/local/configuration.yaml /app/configuration.yaml
 COPY docker/local/.env /app/.env
 COPY access_control.conf.dist /app/access_control.conf
+# Baked migrations so `sqlx migrate run` works from the image (casbin policy +
+# the public resolve_image grant must exist for the gateway to boot/serve).
+COPY migrations /app/migrations
 RUN chmod +x /app/agent-gateway
 
 ENV AGENT_GATEWAY_BIND=0.0.0.0:4600

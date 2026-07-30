@@ -1,0 +1,67 @@
+# Self-contained test stack for the agent-gateway MCP server.
+#
+#   docker compose -f docker-compose.agent-gateway.yml up
+#
+# Brings up Postgres (named `stackerdb` to match the image's baked
+# configuration.yaml), applies migrations, then the gateway on :4600.
+#
+# Verify once up:
+#   curl -s http://localhost:4600/health
+#   curl -s -X POST http://localhost:4600/public/resolve_image \
+#        -H 'Content-Type: application/json' -d '{"reference":"redis:7-alpine"}'
+#
+# Pin AGENT_GATEWAY_TAG to the branch image (default: feature-agent-gateway,
+# what this branch's CI publishes). deploy_ephemeral reports "not enabled" until
+# M3 wires provisioning (RabbitMQ/Vault/install-service).
+
+services:
+  stackerdb:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: stacker
+    volumes:
+      - stackerdb-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d stacker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    image: trydirect/agent-gateway:${AGENT_GATEWAY_TAG:-feature-agent-gateway}
+    depends_on:
+      stackerdb:
+        condition: service_healthy
+    working_dir: /app
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@stackerdb:5432/stacker
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sqlx migrate run"]
+    restart: "no"
+
+  agent-gateway:
+    image: trydirect/agent-gateway:${AGENT_GATEWAY_TAG:-feature-agent-gateway}
+    depends_on:
+      stackerdb:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      AGENT_GATEWAY_BIND: 0.0.0.0:4600
+      REDIS_URL: redis://redis:6379/0
+      SANDBOX_DEFAULT_TTL_SECS: "1800"
+      SANDBOX_MAX_TTL_SECS: "7200"
+      SANDBOX_MAX_CONCURRENT_PER_USER: "3"
+    ports:
+      - "4600:4600"
+    restart: unless-stopped
+
+  # Optional: Docker Hub response cache (resolve_image works without it).
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+volumes:
+  stackerdb-data:
