@@ -167,7 +167,8 @@ pub(crate) async fn fetch_remote_deployment_plan(
     rollback_target: Option<&str>,
     expected_fingerprint: Option<&str>,
 ) -> Result<DeployPlan, CliError> {
-    let deployment_hash = resolve_deployment_hash(config, base_url, client, requested_hash, true).await?;
+    let deployment_hash =
+        resolve_deployment_hash(config, base_url, client, requested_hash, true).await?;
     client
         .get_deployment_plan_by_hash(
             &deployment_hash,

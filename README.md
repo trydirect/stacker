@@ -13,7 +13,22 @@
 
 <img alt="Deploying Directus (Node + Postgres) to an existing server with Stacker" src="docs/demos/directus-deploy.gif" width="720">
 
-<sub>Real deploy — Directus + Postgres to a live server in one command. See <a href="https://github.com/trydirect/stacker-project-examples/tree/main/stacker-projects/directus">stacker-project-examples/directus</a>.</sub>
+<sub>Real deploys, one command each. See <a href="https://github.com/trydirect/stacker-project-examples/tree/main/stacker-projects">stacker-project-examples</a>.</sub>
+
+<details>
+<summary>More demos — n8n · Gotify</summary>
+
+<br>
+
+**n8n** (workflow automation, Node + Postgres)
+
+<img alt="Deploying n8n with Stacker" src="docs/demos/n8n-deploy.gif" width="720">
+
+**Gotify** (push-notification server, single container)
+
+<img alt="Deploying Gotify with Stacker" src="docs/demos/gotify-deploy.gif" width="720">
+
+</details>
 
 </div>
 

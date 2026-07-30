@@ -124,7 +124,7 @@ fn deployment_state_json_fetches_canonical_payload() {
     stacker_cmd()
         .current_dir(dir.path())
         .env("XDG_CONFIG_HOME", config_home.path())
-        .args(["deployment", "state", "--json"])
+        .args(["deployment", "state", "--json", "--pinned"])
         .assert()
         .success()
         .stdout(

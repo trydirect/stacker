@@ -40,18 +40,14 @@ fn os_notify(title: &str, body: &str, sound: &str) {
         "display notification \"{}\" with title \"{}\" sound name \"{}\"",
         body, title, sound,
     );
-    let _ = Command::new("osascript")
-        .args(["-e", &script])
-        .status();
+    let _ = Command::new("osascript").args(["-e", &script]).status();
 }
 
 #[cfg(target_os = "linux")]
 fn os_notify(title: &str, body: &str, _sound: &str) {
     // notify-send is the standard desktop-notification tool on Linux.
     // Silently fails if not installed (e.g. headless server).
-    let _ = Command::new("notify-send")
-        .args([title, body])
-        .status();
+    let _ = Command::new("notify-send").args([title, body]).status();
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
