@@ -531,6 +531,23 @@ pub async fn run_agent_gateway(
 ) -> Result<Server, std::io::Error> {
     crate::metrics::init();
 
+    // Self-heal: ensure the gateway's public routes are reachable anonymously,
+    // independent of whether the casbin migration was applied to this DB. The
+    // authorization wrap gates every route, so /health and /public/resolve_image
+    // need an explicit group_anonymous grant or they return a bare 403. Runs on
+    // the raw pool before the enforcer loads policy in `authorization::try_new`.
+    if let Err(e) = sqlx::query(
+        "INSERT INTO casbin_rule (ptype, v0, v1, v2, v3, v4, v5) VALUES \
+         ('p','group_anonymous','/health','GET','','',''), \
+         ('p','group_anonymous','/public/resolve_image','POST','','','') \
+         ON CONFLICT DO NOTHING",
+    )
+    .execute(&api_pool)
+    .await
+    {
+        tracing::warn!("agent-gateway: could not ensure anonymous grants: {e}");
+    }
+
     let settings = web::Data::new(settings);
     let api_pool = web::Data::new(api_pool);
     let agent_pool = web::Data::new(agent_pool);
