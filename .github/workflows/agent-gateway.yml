@@ -30,7 +30,10 @@ jobs:
   # image just bakes it (no Rust compile inside Docker).
   build:
     name: Test crate + build release binary
-    runs-on: ubuntu-latest
+    # Pinned to 22.04 (glibc 2.35) so the binary runs on the debian:bookworm-slim
+    # runtime (glibc 2.36). ubuntu-latest (24.04, glibc 2.39) would require a
+    # newer glibc than the runtime has -> "GLIBC_2.38 not found".
+    runs-on: ubuntu-22.04
     env:
       SQLX_OFFLINE: true
     steps:
