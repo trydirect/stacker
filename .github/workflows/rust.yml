@@ -78,6 +78,7 @@ jobs:
   test:
     name: Run CLI tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16
@@ -123,4 +124,5 @@ jobs:
       - name: Cache Cargo registry/git/target (with stale-artifact pruning)
         uses: Swatinem/rust-cache@v2
       - name: Run CLI integration tests
+        timeout-minutes: 25
         run: cargo test --tests --verbose
