@@ -125,4 +125,4 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Run CLI integration tests
         timeout-minutes: 25
-        run: cargo test --tests --verbose
+        run: cargo test --tests --verbose -- --test-threads=4
