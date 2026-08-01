@@ -1,0 +1,1 @@
+DROP FUNCTION IF EXISTS stacker_delete_user_data(VARCHAR, BOOLEAN, BOOLEAN);

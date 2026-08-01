@@ -1064,3 +1064,8 @@ my-project/
 ---
 
 *Based on Stacker CLI v0.3 — [try.direct](https://try.direct)*
+
+## Critical Rules
+- NEVER modify OAuth2 token handling without security review
+- NEVER change database migration files that have been applied
+- ALWAYS create new migration files for schema changes
