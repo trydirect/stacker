@@ -10,6 +10,16 @@ use std::sync::{Mutex, OnceLock};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TestApp {
+    common::get_or_init_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 fn create_admin_jwt() -> String {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
@@ -99,10 +109,7 @@ async fn admin_can_mark_template_needs_changes_and_creator_can_see_reason() {
     // Hold env_lock to prevent concurrent webhook-triggering tests from cross-contaminating
     // each other's mock servers via shared env vars (URL_SERVER_USER etc.)
     let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     let template_id = insert_template(
         &app.db_pool,
@@ -163,10 +170,7 @@ async fn admin_can_mark_template_needs_changes_and_creator_can_see_reason() {
 
 #[tokio::test]
 async fn admin_cannot_mark_approved_template_as_needs_changes() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     let template_id = insert_template(
         &app.db_pool,
@@ -204,10 +208,7 @@ async fn admin_cannot_mark_approved_template_as_needs_changes() {
 #[tokio::test]
 async fn admin_approval_sends_template_published_webhook() {
     let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let mock_user_service = MockServer::start().await;
     let _url_server_user = EnvGuard::set("URL_SERVER_USER", &mock_user_service.uri());
     let _user_service_url = EnvGuard::set("USER_SERVICE_URL", &mock_user_service.uri());
@@ -265,10 +266,7 @@ async fn admin_approval_sends_template_published_webhook() {
 #[tokio::test]
 async fn admin_rejection_sends_template_review_rejected_webhook() {
     let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let mock_user_service = MockServer::start().await;
     let _url_server_user = EnvGuard::set("URL_SERVER_USER", &mock_user_service.uri());
     let _user_service_url = EnvGuard::set("USER_SERVICE_URL", &mock_user_service.uri());
@@ -329,10 +327,7 @@ async fn admin_rejection_sends_template_review_rejected_webhook() {
 #[tokio::test]
 async fn admin_unapprove_sends_template_unpublished_webhook() {
     let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let mock_user_service = MockServer::start().await;
     let _url_server_user = EnvGuard::set("URL_SERVER_USER", &mock_user_service.uri());
     let _user_service_url = EnvGuard::set("USER_SERVICE_URL", &mock_user_service.uri());
@@ -387,10 +382,7 @@ async fn admin_unapprove_sends_template_unpublished_webhook() {
 
 #[tokio::test]
 async fn admin_detail_lists_extended_version_contract_for_resubmitted_templates() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
 
     let create_response = client
@@ -684,10 +676,7 @@ async fn admin_detail_lists_extended_version_contract_for_resubmitted_templates(
 
 #[tokio::test]
 async fn resubmit_same_version_updates_latest_version_in_place() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
 
     let create_response = client

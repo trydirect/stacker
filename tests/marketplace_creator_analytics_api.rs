@@ -27,6 +27,16 @@ use chrono::{Duration, Utc};
 use reqwest::StatusCode;
 use uuid::Uuid;
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TestApp {
+    common::get_or_init_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 const BEARER_TOKEN_USER_A: &str = "test-bearer-token-user-a";
 const MOCK_USER_A_ID: &str = "test_user_id"; // Default from common::mock_auth
 

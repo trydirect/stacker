@@ -3,6 +3,16 @@ mod common;
 use common::{USER_A_ID, USER_A_TOKEN, USER_B_TOKEN};
 use sqlx::Row;
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TwoUserTestApp {
+    common::get_or_init_two_user_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 /// Rating edit/delete endpoints check `rating.user_id == user.id`.
 /// Non-owner attempts return 404 (the handler treats missing-or-not-owned as "not found").
 async fn insert_rating(pool: &sqlx::PgPool, user_id: &str) -> i32 {

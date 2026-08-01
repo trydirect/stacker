@@ -17,6 +17,16 @@ use serde_json::json;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TestApp {
+    common::get_or_init_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Test 1: Event Persistence Contract
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

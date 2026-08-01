@@ -1,4 +1,14 @@
 mod common;
+
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TestApp {
+    common::get_or_init_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
 // test me:
 // cargo t --test agreement -- --nocapture --show-output
 
@@ -48,10 +58,7 @@ mod common;
 // test me: cargo t --test agreement get --nocapture --show-output
 #[tokio::test]
 async fn get() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    }; // server
+    let app = app().await;
     let client = reqwest::Client::new(); // client
 
     // Pre-insert an agreement so the handler has something to return
@@ -77,10 +84,7 @@ async fn get() {
 // test me: cargo t --test agreement user_add -- --nocapture --show-output
 #[tokio::test]
 async fn user_add() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    }; // server
+    let app = app().await;
     let client = reqwest::Client::new(); // client
 
     // Pre-insert an agreement that the user will accept
@@ -108,10 +112,7 @@ async fn user_add() {
 
 #[tokio::test]
 async fn user_add_via_api_prefix() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
 
     let agreement_id: i32 = sqlx::query_scalar(

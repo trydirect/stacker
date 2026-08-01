@@ -4,6 +4,16 @@ use reqwest::StatusCode;
 use serde_json::json;
 use stacker::models::{Agent, Command};
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TwoUserTestApp {
+    common::get_or_init_two_user_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 #[tokio::test]
 async fn discovery_prefers_active_agent_hash_over_latest_deployment_row() {
     let Some(app) = common::spawn_app_two_users().await else {

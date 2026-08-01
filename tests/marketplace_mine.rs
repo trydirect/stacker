@@ -17,6 +17,16 @@ mod common;
 
 use reqwest::StatusCode;
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TestApp {
+    common::get_or_init_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 // Any non-empty token works: the mock auth server (spawned by common::spawn_app)
 // validates all Bearer tokens and returns role = "group_user", id = "test_user_id".
 const BEARER_TOKEN: &str = "test-bearer-token";
@@ -24,10 +34,7 @@ const BEARER_TOKEN: &str = "test-bearer-token";
 /// Authenticated user with no templates receives a 200 with an empty list.
 #[tokio::test]
 async fn mine_returns_empty_list_for_new_user() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
 
     let response = client
@@ -57,10 +64,7 @@ async fn mine_returns_empty_list_for_new_user() {
 /// Authenticated user sees their own templates, not other users' templates.
 #[tokio::test]
 async fn mine_returns_only_the_authenticated_users_templates() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
 
     // Seed one template for the mock user (id = "test_user_id" per common::mock_auth).
@@ -117,10 +121,7 @@ async fn mine_returns_only_the_authenticated_users_templates() {
 /// from an external reverse proxy or an outdated server binary, not from this route.
 #[tokio::test]
 async fn mine_returns_forbidden_without_authorization_header() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
 
     let response = client

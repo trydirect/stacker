@@ -4,6 +4,16 @@ use reqwest::StatusCode;
 use serde_json::{json, Value};
 use sqlx::Row;
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TestApp {
+    common::get_or_init_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 const USER_TOKEN: &str = "test-bearer-token";
 
 async fn seed_template(app: &common::TestApp, slug: &str) -> uuid::Uuid {
@@ -21,10 +31,7 @@ async fn seed_template(app: &common::TestApp, slug: &str) -> uuid::Uuid {
 
 #[tokio::test]
 async fn public_rating_summary_does_not_create_product_for_unrated_template() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let template_id = seed_template(&app, "wordpress-pro").await;
 
     let before: Option<i32> = sqlx::query("SELECT product_id FROM stack_template WHERE id = $1")
@@ -60,10 +67,7 @@ async fn public_rating_summary_does_not_create_product_for_unrated_template() {
 
 #[tokio::test]
 async fn user_can_rate_template_by_template_id_without_product_id_knowledge() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let template_id = seed_template(&app, "wordpress-pro").await;
 
     let response = reqwest::Client::new()
@@ -104,10 +108,7 @@ async fn user_can_rate_template_by_template_id_without_product_id_knowledge() {
 
 #[tokio::test]
 async fn user_rating_upsert_updates_existing_template_rating() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let template_id = seed_template(&app, "wordpress-pro").await;
     let client = reqwest::Client::new();
 
@@ -152,10 +153,7 @@ async fn user_rating_upsert_updates_existing_template_rating() {
 
 #[tokio::test]
 async fn user_can_fetch_and_delete_own_template_rating() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let template_id = seed_template(&app, "wordpress-pro").await;
     let client = reqwest::Client::new();
 
@@ -211,10 +209,7 @@ async fn user_can_fetch_and_delete_own_template_rating() {
 
 #[tokio::test]
 async fn template_rating_rejects_invalid_star_values() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let template_id = seed_template(&app, "wordpress-pro").await;
 
     let response = reqwest::Client::new()

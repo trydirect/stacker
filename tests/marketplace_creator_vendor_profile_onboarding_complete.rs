@@ -4,14 +4,21 @@ use reqwest::StatusCode;
 use serde_json::Value;
 use sqlx::Row;
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TestApp {
+    common::get_or_init_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 const USER_TOKEN: &str = "test-bearer-token";
 
 #[tokio::test]
 async fn creator_onboarding_complete_marks_in_progress_profile_completed() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     sqlx::query(
         r#"INSERT INTO marketplace_vendor_profile (
@@ -71,10 +78,7 @@ async fn creator_onboarding_complete_marks_in_progress_profile_completed() {
 
 #[tokio::test]
 async fn creator_onboarding_complete_is_idempotent_after_completion() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     sqlx::query(
         r#"INSERT INTO marketplace_vendor_profile (
@@ -119,10 +123,7 @@ async fn creator_onboarding_complete_is_idempotent_after_completion() {
 
 #[tokio::test]
 async fn creator_onboarding_complete_rejects_missing_linkage() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     let response = reqwest::Client::new()
         .post(format!(
@@ -139,10 +140,7 @@ async fn creator_onboarding_complete_rejects_missing_linkage() {
 
 #[tokio::test]
 async fn creator_onboarding_complete_requires_authentication() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     let response = reqwest::Client::new()
         .post(format!(

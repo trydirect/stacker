@@ -6,6 +6,16 @@ mod common;
 
 use reqwest::StatusCode;
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TwoUserTestApp {
+    common::get_or_init_two_user_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 /// Seed a deployment and insert a command for the given user.
 /// Returns (deployment_hash, command_id).
 async fn seed_deployment_with_command(pool: &sqlx::PgPool, user_id: &str) -> (String, String) {

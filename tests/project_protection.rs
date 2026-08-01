@@ -1,5 +1,15 @@
 mod common;
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TwoUserTestApp {
+    common::get_or_init_two_user_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 /// Integration tests for project deletion protection.
 /// Verifies that protected projects cannot be deleted, protection toggle
 /// requires name confirmation to disable, and active resource counts are reported.

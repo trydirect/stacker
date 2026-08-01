@@ -7,6 +7,16 @@ use stacker::forms::project::DockerImage;
 // use stacker::helpers::project::dctypes::{ComposeVolume, SingleValue};
 use stacker::forms::project::Volume;
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TestApp {
+    common::get_or_init_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 const DOCKER_PASSWORD: &str = "**********";
 //  Unit Test
 

@@ -634,6 +634,55 @@ pub struct TestApp {
     pub db_pool: PgPool,
 }
 
+/// Initialize a shared `TestApp` in the given `OnceCell`, booting the server
+/// only once per test file. All tests in the file share the same server and
+/// database. Tests must use unique identifiers (UUIDs) to avoid data conflicts.
+///
+/// Usage in a test file:
+/// ```ignore
+/// use tokio::sync::OnceCell;
+/// static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+///
+/// async fn app() -> &'static common::TestApp {
+///     common::get_or_init_app(&APP).await.expect("Failed to start test app")
+/// }
+///
+/// #[tokio::test]
+/// async fn my_test() {
+///     let app = app().await;
+///     // ...
+/// }
+/// ```
+pub async fn get_or_init_app(
+    cell: &'static tokio::sync::OnceCell<TestApp>,
+) -> Option<&'static TestApp> {
+    cell.get_or_try_init(|| async {
+        spawn_app().await.ok_or(())
+    })
+    .await
+    .ok()
+}
+
+pub async fn get_or_init_two_user_app(
+    cell: &'static tokio::sync::OnceCell<TwoUserTestApp>,
+) -> Option<&'static TwoUserTestApp> {
+    cell.get_or_try_init(|| async {
+        spawn_app_two_users().await.ok_or(())
+    })
+    .await
+    .ok()
+}
+
+pub async fn get_or_init_vault_app(
+    cell: &'static tokio::sync::OnceCell<TestAppWithVault>,
+) -> Option<&'static TestAppWithVault> {
+    cell.get_or_try_init(|| async {
+        spawn_app_with_vault().await.ok_or(())
+    })
+    .await
+    .ok()
+}
+
 pub struct TestAppWithVault {
     pub address: String,
     pub db_pool: PgPool,

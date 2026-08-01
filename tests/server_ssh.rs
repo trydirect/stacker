@@ -4,6 +4,16 @@ use serde_json::{json, Value};
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, ResponseTemplate};
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TestAppWithVault> = OnceCell::const_new();
+
+async fn app() -> &'static common::TestAppWithVault {
+    common::get_or_init_vault_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -40,10 +50,7 @@ async fn set_server_ip(pool: &sqlx::PgPool, server_id: i32, ip: &str) {
 /// Must return 400, not 500.
 #[tokio::test]
 async fn test_get_public_key_vault_path_null_returns_400() {
-    let app = match common::spawn_app_with_vault().await {
-        Some(a) => a,
-        None => return,
-    };
+    let app = app().await;
     let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
     let server_id = common::create_test_server(
         &app.db_pool,
@@ -83,10 +90,7 @@ async fn test_get_public_key_vault_path_null_returns_400() {
 /// Must return 404 (key lost from Vault), not 500.
 #[tokio::test]
 async fn test_get_public_key_vault_returns_404_propagates_as_404() {
-    let app = match common::spawn_app_with_vault().await {
-        Some(a) => a,
-        None => return,
-    };
+    let app = app().await;
     let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
     let server_id = common::create_test_server(
         &app.db_pool,
@@ -133,10 +137,7 @@ async fn test_get_public_key_vault_returns_404_propagates_as_404() {
 /// Must return 404.
 #[tokio::test]
 async fn test_get_public_key_no_active_key_returns_404() {
-    let app = match common::spawn_app_with_vault().await {
-        Some(a) => a,
-        None => return,
-    };
+    let app = app().await;
     let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
     let server_id =
         common::create_test_server(&app.db_pool, "test_user_id", project_id, "none", None).await;
@@ -158,10 +159,7 @@ async fn test_get_public_key_no_active_key_returns_404() {
 /// Happy path: active key, vault_key_path set, Vault returns the key successfully.
 #[tokio::test]
 async fn test_get_public_key_success() {
-    let app = match common::spawn_app_with_vault().await {
-        Some(a) => a,
-        None => return,
-    };
+    let app = app().await;
     let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
     let server_id = common::create_test_server(
         &app.db_pool,
@@ -211,10 +209,7 @@ async fn test_get_public_key_success() {
 /// inline in the response, and the DB must have key_status=active + vault_key_path=NULL.
 #[tokio::test]
 async fn test_generate_key_vault_down_returns_private_key_inline() {
-    let app = match common::spawn_app_with_vault().await {
-        Some(a) => a,
-        None => return,
-    };
+    let app = app().await;
     let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
     let server_id =
         common::create_test_server(&app.db_pool, "test_user_id", project_id, "none", None).await;
@@ -273,10 +268,7 @@ async fn test_generate_key_vault_down_returns_private_key_inline() {
 /// Happy path: Vault is available — key is stored, no private key in response, vault_key_path saved.
 #[tokio::test]
 async fn test_generate_key_success_stores_in_vault_no_private_key_exposed() {
-    let app = match common::spawn_app_with_vault().await {
-        Some(a) => a,
-        None => return,
-    };
+    let app = app().await;
     let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
     let server_id =
         common::create_test_server(&app.db_pool, "test_user_id", project_id, "none", None).await;
@@ -331,10 +323,7 @@ async fn test_generate_key_success_stores_in_vault_no_private_key_exposed() {
 /// Generating a key when one is already active must return 400.
 #[tokio::test]
 async fn test_generate_key_already_active_returns_400() {
-    let app = match common::spawn_app_with_vault().await {
-        Some(a) => a,
-        None => return,
-    };
+    let app = app().await;
     let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
     let server_id = common::create_test_server(
         &app.db_pool,
@@ -369,10 +358,7 @@ async fn test_generate_key_already_active_returns_400() {
 /// and clear vault_key_path in DB.
 #[tokio::test]
 async fn test_delete_key_clears_vault_and_db() {
-    let app = match common::spawn_app_with_vault().await {
-        Some(a) => a,
-        None => return,
-    };
+    let app = app().await;
     let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
     let server_id = common::create_test_server(
         &app.db_pool,
@@ -414,10 +400,7 @@ async fn test_delete_key_clears_vault_and_db() {
 /// Deleting when no key exists must return 400.
 #[tokio::test]
 async fn test_delete_key_none_returns_400() {
-    let app = match common::spawn_app_with_vault().await {
-        Some(a) => a,
-        None => return,
-    };
+    let app = app().await;
     let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
     let server_id =
         common::create_test_server(&app.db_pool, "test_user_id", project_id, "none", None).await;
@@ -439,10 +422,7 @@ async fn test_delete_key_none_returns_400() {
 
 #[tokio::test]
 async fn test_authorize_public_key_invalid_public_key_returns_400_before_vault() {
-    let app = match common::spawn_app_with_vault().await {
-        Some(a) => a,
-        None => return,
-    };
+    let app = app().await;
     let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
     let server_id = common::create_test_server(
         &app.db_pool,
@@ -475,10 +455,7 @@ async fn test_authorize_public_key_invalid_public_key_returns_400_before_vault()
 
 #[tokio::test]
 async fn test_authorize_public_key_vault_path_null_returns_400_before_vault() {
-    let app = match common::spawn_app_with_vault().await {
-        Some(a) => a,
-        None => return,
-    };
+    let app = app().await;
     let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
     let server_id =
         common::create_test_server(&app.db_pool, "test_user_id", project_id, "active", None).await;
@@ -505,10 +482,7 @@ async fn test_authorize_public_key_vault_path_null_returns_400_before_vault() {
 
 #[tokio::test]
 async fn test_authorize_public_key_missing_server_ip_returns_400_before_vault() {
-    let app = match common::spawn_app_with_vault().await {
-        Some(a) => a,
-        None => return,
-    };
+    let app = app().await;
     let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
     let server_id = common::create_test_server(
         &app.db_pool,
@@ -541,10 +515,7 @@ async fn test_authorize_public_key_missing_server_ip_returns_400_before_vault() 
 
 #[tokio::test]
 async fn test_authorize_public_key_vault_read_failure_does_not_leak_private_key() {
-    let app = match common::spawn_app_with_vault().await {
-        Some(a) => a,
-        None => return,
-    };
+    let app = app().await;
     let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
     let server_id = common::create_test_server(
         &app.db_pool,
@@ -589,10 +560,7 @@ async fn test_authorize_public_key_vault_read_failure_does_not_leak_private_key(
 /// All SSH key endpoints must reject requests without a Bearer token.
 #[tokio::test]
 async fn test_ssh_key_endpoints_require_auth() {
-    let app = match common::spawn_app_with_vault().await {
-        Some(a) => a,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
 
     let endpoints: &[(&str, &str)] = &[

@@ -5,6 +5,15 @@ use serde_json::json;
 use stacker::db;
 use stacker::models::{Command, CommandPriority};
 use std::time::Duration;
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TestApp {
+    common::get_or_init_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
 
 fn fixture(path: &str) -> serde_json::Value {
     let body = match path {
@@ -218,10 +227,7 @@ async fn wait_for_command(
 /// 5. Agent reports command completion
 #[tokio::test]
 async fn test_agent_command_flow() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
 
     // Step 1: Create a test deployment (simulating what deploy endpoint does)
@@ -475,10 +481,7 @@ async fn test_agent_command_flow() {
 
 #[tokio::test]
 async fn test_trigger_pipe_report_persists_execution_history() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
 
     let deployment_hash = format!("test_pipe_deployment_{}", uuid::Uuid::new_v4());
@@ -719,10 +722,7 @@ async fn test_trigger_pipe_report_persists_execution_history() {
 /// Test agent heartbeat mechanism
 #[tokio::test]
 async fn test_agent_heartbeat() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
 
     let deployment_hash = format!("test_hb_{}", uuid::Uuid::new_v4());
@@ -824,10 +824,7 @@ async fn test_agent_heartbeat() {
 #[tokio::test]
 #[ignore] // Requires auth setup
 async fn test_command_priority_ordering() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
 
     let deployment_hash = format!("test_priority_{}", uuid::Uuid::new_v4());
@@ -900,10 +897,7 @@ async fn test_command_priority_ordering() {
 /// Test authenticated command creation
 #[tokio::test]
 async fn test_authenticated_command_creation() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
 
     let deployment_hash = format!("test_cmd_{}", uuid::Uuid::new_v4());
@@ -1027,10 +1021,7 @@ async fn test_authenticated_command_creation() {
 /// Test command priorities and user permissions
 #[tokio::test]
 async fn test_command_priorities_and_permissions() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
 
     let deployment_hash = format!("test_prio_{}", uuid::Uuid::new_v4());
@@ -1165,10 +1156,7 @@ async fn test_command_priorities_and_permissions() {
 
 #[tokio::test]
 async fn test_trigger_pipe_failed_report_persists_execution_history() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
     let deployment_hash = format!("test_pipe_fail_deployment_{}", uuid::Uuid::new_v4());
 
@@ -1255,10 +1243,7 @@ async fn test_trigger_pipe_failed_report_persists_execution_history() {
 
 #[tokio::test]
 async fn test_replay_trigger_pipe_report_updates_existing_replay_execution() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
     let deployment_hash = format!("test_pipe_replay_deployment_{}", uuid::Uuid::new_v4());
 
@@ -1385,10 +1370,7 @@ async fn test_replay_trigger_pipe_report_updates_existing_replay_execution() {
 
 #[tokio::test]
 async fn test_activate_pipe_report_accepts_runtime_lifecycle_shape() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
     let deployment_hash = format!("test_activate_pipe_deployment_{}", uuid::Uuid::new_v4());
 
@@ -1460,10 +1442,7 @@ async fn test_activate_pipe_report_accepts_runtime_lifecycle_shape() {
 
 #[tokio::test]
 async fn test_deactivate_pipe_report_accepts_runtime_lifecycle_shape() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
     let deployment_hash = format!("test_deactivate_pipe_deployment_{}", uuid::Uuid::new_v4());
 

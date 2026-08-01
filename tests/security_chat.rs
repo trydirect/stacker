@@ -2,6 +2,16 @@ mod common;
 
 use common::{USER_A_ID, USER_A_TOKEN, USER_B_TOKEN};
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TwoUserTestApp {
+    common::get_or_init_two_user_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 /// Chat endpoints use (user_id, project_id) as the lookup key.
 /// Isolation is enforced server-side: the handler always uses the authenticated
 /// user's ID, so User B cannot see or mutate User A's chat history.

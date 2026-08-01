@@ -1,5 +1,15 @@
 mod common;
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TwoUserTestApp {
+    common::get_or_init_two_user_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 /// IDOR security tests for /cloud endpoints.
 /// Verify that User B cannot list, read, update, or delete User A's cloud credentials.
 #[tokio::test]
