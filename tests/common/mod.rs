@@ -638,7 +638,8 @@ pub async fn configure_database(config: &DatabaseSettings) -> Result<PgPool, sql
         .await?;
 
     let connection_pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(32)
+        .max_connections(8)
+        .acquire_timeout(std::time::Duration::from_secs(60))
         .connect(&config.connection_string())
         .await?;
 

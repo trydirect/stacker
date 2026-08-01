@@ -98,7 +98,8 @@ async fn configure_database(config: &DatabaseSettings) -> Result<PgPool, sqlx::E
         .execute(format!(r#"CREATE DATABASE "{}""#, config.database_name).as_str())
         .await?;
     let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(32)
+        .max_connections(8)
+        .acquire_timeout(std::time::Duration::from_secs(60))
         .connect(&config.connection_string())
         .await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
