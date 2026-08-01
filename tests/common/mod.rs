@@ -54,6 +54,11 @@ pub async fn spawn_app() -> Option<TestApp> {
     let mut configuration = get_configuration().expect("Failed to get configuration");
     apply_test_database_env_overrides(&mut configuration);
 
+    // Disable DockerHub connector in tests to skip Redis connection timeout
+    if let Some(ref mut cfg) = configuration.connectors.dockerhub_service {
+        cfg.enabled = false;
+    }
+
     let listener = std::net::TcpListener::bind("127.0.0.1:0")
         .expect("Failed to bind port for testing auth server");
 
@@ -86,6 +91,11 @@ pub async fn spawn_app_with_test_auth_configuration(
     mut configuration: Settings,
 ) -> Option<TestApp> {
     apply_test_database_env_overrides(&mut configuration);
+
+    // Disable DockerHub connector in tests to skip Redis connection timeout
+    if let Some(ref mut cfg) = configuration.connectors.dockerhub_service {
+        cfg.enabled = false;
+    }
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0")
         .expect("Failed to bind port for testing auth server");
@@ -180,6 +190,11 @@ pub async fn spawn_app_two_users_with_user_service(
 pub async fn spawn_app_two_users_with_configuration(
     mut configuration: Settings,
 ) -> Option<TwoUserTestApp> {
+    // Disable DockerHub connector in tests to skip Redis connection timeout
+    if let Some(ref mut cfg) = configuration.connectors.dockerhub_service {
+        cfg.enabled = false;
+    }
+
     let auth_listener = std::net::TcpListener::bind("127.0.0.1:0")
         .expect("Failed to bind port for testing auth server");
 
@@ -697,6 +712,11 @@ pub struct TestAppWithVault {
 /// before calling API endpoints that touch Vault.
 pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
     let mut configuration = get_configuration().expect("Failed to get configuration");
+
+    // Disable DockerHub connector in tests to skip Redis connection timeout
+    if let Some(ref mut cfg) = configuration.connectors.dockerhub_service {
+        cfg.enabled = false;
+    }
 
     // Mock auth server
     let auth_listener = std::net::TcpListener::bind("127.0.0.1:0")

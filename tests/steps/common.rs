@@ -22,6 +22,11 @@ const POSTGRES_STARTUP_RETRY_DELAY: Duration = Duration::from_secs(1);
 pub async fn spawn_bdd_app() -> Option<BddTestApp> {
     let mut configuration = get_configuration().expect("Failed to get configuration");
 
+    // Disable DockerHub connector in tests to skip Redis connection timeout
+    if let Some(ref mut cfg) = configuration.connectors.dockerhub_service {
+        cfg.enabled = false;
+    }
+
     // Start mock auth server (token-aware: "user-b" → User B, anything else → User A)
     let auth_listener =
         TcpListener::bind("127.0.0.1:0").expect("Failed to bind port for BDD auth server");
