@@ -622,7 +622,10 @@ pub async fn configure_database(config: &DatabaseSettings) -> Result<PgPool, sql
         .execute(format!(r#"CREATE DATABASE "{}""#, config.database_name).as_str())
         .await?;
 
-    let connection_pool = PgPool::connect(&config.connection_string()).await?;
+    let connection_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(32)
+        .connect(&config.connection_string())
+        .await?;
 
     sqlx::migrate!("./migrations").run(&connection_pool).await?;
 
