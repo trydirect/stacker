@@ -145,13 +145,24 @@ pub async fn run(
         let redis_url =
             std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/0".to_string());
         match redis::Client::open(redis_url.as_str()) {
-            Ok(client) => match redis::aio::ConnectionManager::new(client).await {
-                Ok(cm) => Some(cm),
-                Err(err) => {
-                    tracing::warn!("audit rate limiter: Redis unavailable at startup ({err}); running without the shared limiter");
-                    None
+            Ok(client) => {
+                match tokio::time::timeout(
+                    Duration::from_secs(2),
+                    redis::aio::ConnectionManager::new(client),
+                )
+                .await
+                {
+                    Ok(Ok(cm)) => Some(cm),
+                    Ok(Err(err)) => {
+                        tracing::warn!("audit rate limiter: Redis unavailable at startup ({err}); running without the shared limiter");
+                        None
+                    }
+                    Err(_) => {
+                        tracing::warn!("audit rate limiter: Redis connection timed out; running without the shared limiter");
+                        None
+                    }
                 }
-            },
+            }
             Err(err) => {
                 tracing::warn!("audit rate limiter: invalid REDIS_URL ({err})");
                 None
