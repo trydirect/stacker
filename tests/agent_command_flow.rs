@@ -2,17 +2,38 @@ mod common;
 
 use chrono::Utc;
 use serde_json::json;
+use sqlx::postgres::PgPoolOptions;
 use stacker::db;
 use stacker::models::{Command, CommandPriority};
 use std::time::Duration;
 use tokio::sync::OnceCell;
 
-static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+/// Cache only the server address and connection string. Each test creates its
+/// own PgPool on its own #[tokio::test] runtime to avoid cross-runtime pool
+/// issues (connections bound to a different runtime's I/O reactor).
+static APP_CONFIG: OnceCell<(String, String)> = OnceCell::const_new();
 
-async fn app() -> &'static common::TestApp {
-    common::get_or_init_app(&APP)
+async fn app() -> common::TestApp {
+    let (address, conn_str) = APP_CONFIG
+        .get_or_try_init(|| async {
+            let app = common::spawn_app().await.ok_or(())?;
+            Ok::<_, ()>((app.address, app.connection_string))
+        })
         .await
-        .expect("Failed to start test app")
+        .expect("Failed to start test app");
+
+    let db_pool = PgPoolOptions::new()
+        .max_connections(4)
+        .acquire_timeout(Duration::from_secs(120))
+        .connect(conn_str)
+        .await
+        .expect("Failed to create test pool");
+
+    common::TestApp {
+        address: address.clone(),
+        db_pool,
+        connection_string: conn_str.clone(),
+    }
 }
 
 fn fixture(path: &str) -> serde_json::Value {

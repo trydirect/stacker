@@ -52,6 +52,7 @@ pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option
     let port = listener.local_addr().unwrap().port();
     let address = format!("http://127.0.0.1:{}", port);
     configuration.database.database_name = uuid::Uuid::new_v4().to_string();
+    let connection_string = configuration.database.connection_string();
 
     // Create pool and server on the long-lived infrastructure runtime so they
     // survive across #[tokio::test] runtime boundaries.
@@ -82,6 +83,7 @@ pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option
             Some(TestApp {
                 address,
                 db_pool: connection_pool,
+                connection_string,
             })
         })
         .await;
@@ -713,6 +715,9 @@ pub async fn configure_database(config: &DatabaseSettings) -> Result<PgPool, sql
 pub struct TestApp {
     pub address: String,
     pub db_pool: PgPool,
+    /// Database connection string. Tests that need a pool on their own runtime
+    /// (to avoid cross-runtime PgPool issues) can create a fresh pool from this.
+    pub connection_string: String,
 }
 
 /// Initialize a shared `TestApp` in the given `OnceCell`, booting the server
