@@ -18,6 +18,32 @@ use std::sync::OnceLock;
 use wiremock::MockServer;
 static ACCESS_CONTROL_CONF_READY: OnceLock<()> = OnceLock::new();
 
+/// Long-lived runtime handle for test infrastructure (server + pool).
+/// The runtime is leaked so it never drops, keeping the server alive and the
+/// pool's background tasks running for the entire test process. Without this,
+/// each `#[tokio::test]` creates its own runtime; the first test to initialize
+/// the `OnceCell` spawns the server on ITS runtime, and when that test finishes
+/// the runtime drops, killing the server and making pool connections stale.
+fn infra_handle() -> tokio::runtime::Handle {
+    static HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
+    HANDLE
+        .get_or_init(|| {
+            // multi_thread runtime has its own worker threads that keep running
+            // even after the creating thread moves on (via std::mem::forget).
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
+                .enable_all()
+                .build()
+                .expect("Failed to create test infrastructure runtime");
+            let handle = rt.handle().clone();
+            // Leak the runtime so its worker threads (pool connection manager,
+            // server workers, Casbin reloader, etc.) stay alive for the process.
+            std::mem::forget(rt);
+            handle
+        })
+        .clone()
+}
+
 pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option<TestApp> {
     ensure_test_access_control_conf();
 
@@ -27,27 +53,46 @@ pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option
     let address = format!("http://127.0.0.1:{}", port);
     configuration.database.database_name = uuid::Uuid::new_v4().to_string();
 
-    let connection_pool = match configure_database(&configuration.database).await {
-        Ok(pool) => pool,
-        Err(err) => {
-            eprintln!("Skipping tests: failed to connect to postgres: {}", err);
-            return None;
-        }
-    };
+    // Create pool and server on the long-lived infrastructure runtime so they
+    // survive across #[tokio::test] runtime boundaries.
+    let handle = infra_handle();
+    let result = handle
+        .spawn(async move {
+            let connection_pool = match configure_database(&configuration.database).await {
+                Ok(pool) => pool,
+                Err(err) => {
+                    eprintln!("Skipping tests: failed to connect to postgres: {}", err);
+                    return None;
+                }
+            };
 
-    let agent_pool = AgentPgPool::new(connection_pool.clone());
-    let server =
-        stacker::startup::run(listener, connection_pool.clone(), agent_pool, configuration)
+            let agent_pool = AgentPgPool::new(connection_pool.clone());
+            let server = stacker::startup::run(
+                listener,
+                connection_pool.clone(),
+                agent_pool,
+                configuration,
+            )
             .await
             .expect("Failed to bind address.");
 
-    let _ = tokio::spawn(server);
-    println!("Used Port: {}", port);
+            tokio::spawn(server);
+            println!("Used Port: {}", port);
 
-    Some(TestApp {
-        address,
-        db_pool: connection_pool,
-    })
+            Some(TestApp {
+                address,
+                db_pool: connection_pool,
+            })
+        })
+        .await;
+
+    match result {
+        Ok(app) => app,
+        Err(err) => {
+            eprintln!("Skipping tests: infrastructure task panicked: {}", err);
+            None
+        }
+    }
 }
 
 pub async fn spawn_app() -> Option<TestApp> {
@@ -68,8 +113,12 @@ pub async fn spawn_app() -> Option<TestApp> {
     );
     println!("Auth Server is running on: {}", configuration.auth_url);
 
-    // Start mock auth server in background; do not await the JoinHandle
-    let _ = tokio::spawn(mock_auth_server(listener));
+    // Start mock auth server on the infrastructure runtime so it stays alive
+    // across test function boundaries.
+    let handle = infra_handle();
+    handle.spawn(async move {
+        mock_auth_server(listener).await;
+    });
     // Give the mock server a brief moment to start listening
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -105,7 +154,10 @@ pub async fn spawn_app_with_test_auth_configuration(
         listener.local_addr().unwrap().port()
     );
 
-    let _ = tokio::spawn(mock_auth_server(listener));
+    let handle = infra_handle();
+    handle.spawn(async move {
+        mock_auth_server(listener).await;
+    });
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     spawn_app_with_configuration(configuration).await
@@ -637,13 +689,23 @@ pub async fn configure_database(config: &DatabaseSettings) -> Result<PgPool, sql
         .execute(format!(r#"CREATE DATABASE "{}""#, config.database_name).as_str())
         .await?;
 
+    // Run migrations on a dedicated single-connection pool so the advisory lock
+    // and any DDL catalog locks are fully released before the server pool is
+    // created. This prevents PoolTimedOut when concurrent tests query the pool
+    // immediately after server boot while migration connections are still in use.
+    let migrate_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(120))
+        .connect(&config.connection_string())
+        .await?;
+    sqlx::migrate!("./migrations").run(&migrate_pool).await?;
+    migrate_pool.close().await;
+
     let connection_pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(32)
         .acquire_timeout(std::time::Duration::from_secs(120))
         .connect(&config.connection_string())
         .await?;
-
-    sqlx::migrate!("./migrations").run(&connection_pool).await?;
 
     Ok(connection_pool)
 }
