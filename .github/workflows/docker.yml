@@ -116,10 +116,9 @@ jobs:
       - name: Cargo test
         if: ${{ always() }}
         timeout-minutes: 25
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --tests -- --test-threads=4
+        env:
+          RUST_TEST_THREADS: "4"
+        run: cargo test --tests
 
       - name: Rustfmt
         uses: actions-rs/toolchain@v1
