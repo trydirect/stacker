@@ -30,7 +30,14 @@ async fn creator_onboarding_complete_marks_in_progress_profile_completed() {
             payout_account_ref,
             metadata
         )
-        VALUES ($1, 'pending', 'in_progress', false, 'mock', 'acct_progress', '{"onboarding":{"started_at":"2026-04-12T00:00:00Z","link_request_count":1}}'::jsonb)"#,
+        VALUES ($1, 'pending', 'in_progress', false, 'mock', 'acct_progress', '{"onboarding":{"started_at":"2026-04-12T00:00:00Z","link_request_count":1}}'::jsonb)
+        ON CONFLICT (creator_user_id) DO UPDATE SET
+            verification_status = EXCLUDED.verification_status,
+            onboarding_status = EXCLUDED.onboarding_status,
+            payouts_enabled = EXCLUDED.payouts_enabled,
+            payout_provider = EXCLUDED.payout_provider,
+            payout_account_ref = EXCLUDED.payout_account_ref,
+            metadata = EXCLUDED.metadata"#,
     )
     .bind("test_user_id")
     .execute(&app.db_pool)
@@ -90,7 +97,14 @@ async fn creator_onboarding_complete_is_idempotent_after_completion() {
             payout_account_ref,
             metadata
         )
-        VALUES ($1, 'pending', 'completed', false, 'mock', 'acct_completed', '{"onboarding":{"completed_at":"2026-04-12T00:00:00Z","completion_source":"creator_api"}}'::jsonb)"#,
+        VALUES ($1, 'pending', 'completed', false, 'mock', 'acct_completed', '{"onboarding":{"completed_at":"2026-04-12T00:00:00Z","completion_source":"creator_api"}}'::jsonb)
+        ON CONFLICT (creator_user_id) DO UPDATE SET
+            verification_status = EXCLUDED.verification_status,
+            onboarding_status = EXCLUDED.onboarding_status,
+            payouts_enabled = EXCLUDED.payouts_enabled,
+            payout_provider = EXCLUDED.payout_provider,
+            payout_account_ref = EXCLUDED.payout_account_ref,
+            metadata = EXCLUDED.metadata"#,
     )
     .bind("test_user_id")
     .execute(&app.db_pool)
@@ -124,6 +138,13 @@ async fn creator_onboarding_complete_is_idempotent_after_completion() {
 #[tokio::test]
 async fn creator_onboarding_complete_rejects_missing_linkage() {
     let app = app().await;
+
+    // Clean up any leftover vendor profile from previous tests
+    sqlx::query("DELETE FROM marketplace_vendor_profile WHERE creator_user_id = $1")
+        .bind("test_user_id")
+        .execute(&app.db_pool)
+        .await
+        .expect("Failed to clean up vendor profile");
 
     let response = reqwest::Client::new()
         .post(format!(
