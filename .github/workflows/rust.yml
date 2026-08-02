@@ -126,5 +126,5 @@ jobs:
       - name: Run CLI integration tests
         timeout-minutes: 25
         env:
-          RUST_TEST_THREADS: "4"
+          RUST_TEST_THREADS: "1"
         run: cargo test --tests --verbose
