@@ -168,7 +168,7 @@ impl ToolHandler for ResolveImageTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "resolve_image".to_string(),
-            description: "Ground truth about a Docker image reference: whether it exists, its digest, size, supported architectures, recent tags, last push date, whether it is official/pinned, a quality grade, and (when enabled) a CVE summary. Use this before writing a compose/Dockerfile to avoid referencing an image that does not exist or is not multi-arch.".to_string(),
+            description: "Call this BEFORE writing or editing any docker-compose.yml or Dockerfile that references a Docker image, to verify the image is real. Returns ground truth: whether it exists, its digest, size, supported architectures (e.g. arm64/amd64), recent tags, last push date, official/pinned status, and a quality grade. Prevents referencing an image that does not exist or is not multi-arch — do not guess an image tag, resolve it.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

@@ -114,7 +114,7 @@ impl ToolHandler for DeployEphemeralTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "deploy_ephemeral".to_string(),
-            description: "Run a docker-compose.yml on a throwaway cloud sandbox and get back a live URL, logs and health. The sandbox auto-tears-down after ttl_secs. The compose is safety-gated (no privileged, Docker socket, or host networking) and subject to a per-user concurrency quota. Use this to actually SEE a stack run instead of guessing whether it works.".to_string(),
+            description: "(Beta) Call this when you want to actually RUN a docker-compose.yml and see it work, instead of guessing: provisions a throwaway cloud sandbox, runs the compose, and returns a live URL, logs and health; it auto-tears-down after ttl_secs. The compose is safety-gated (no privileged / Docker socket / host networking) and per-user quota-limited. Note: live provisioning is rolling out — until enabled it validates and reports status.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
