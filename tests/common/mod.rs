@@ -720,6 +720,14 @@ pub struct TestApp {
     pub connection_string: String,
 }
 
+/// Cached server info. Used by `get_or_init_app_fresh` to create a fresh
+/// `PgPool` on the caller's runtime for each test, avoiding cross-runtime
+/// pool issues.
+pub struct TestAppConfig {
+    pub address: String,
+    pub connection_string: String,
+}
+
 /// Initialize a shared `TestApp` in the given `OnceCell`, booting the server
 /// only once per test file. All tests in the file share the same server and
 /// database. Tests must use unique identifiers (UUIDs) to avoid data conflicts.
@@ -747,6 +755,47 @@ pub async fn get_or_init_app(
     })
     .await
     .ok()
+}
+
+/// Like `get_or_init_app` but creates a fresh `PgPool` on the caller's
+/// runtime for each call. This avoids cross-runtime pool issues when
+/// `#[tokio::test]` creates a new runtime per test function.
+///
+/// Usage:
+/// ```ignore
+/// use tokio::sync::OnceCell;
+/// static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
+///
+/// async fn app() -> common::TestApp {
+///     common::get_or_init_app_fresh(&APP_CONFIG).await.expect("Failed to start test app")
+/// }
+/// ```
+pub async fn get_or_init_app_fresh(
+    cell: &'static tokio::sync::OnceCell<TestAppConfig>,
+) -> Option<TestApp> {
+    let config = cell
+        .get_or_try_init(|| async {
+            let app = spawn_app().await.ok_or(())?;
+            Ok::<_, ()>(TestAppConfig {
+                address: app.address,
+                connection_string: app.connection_string,
+            })
+        })
+        .await
+        .ok()?;
+
+    let db_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(4)
+        .acquire_timeout(std::time::Duration::from_secs(120))
+        .connect(&config.connection_string)
+        .await
+        .ok()?;
+
+    Some(TestApp {
+        address: config.address.clone(),
+        db_pool,
+        connection_string: config.connection_string.clone(),
+    })
 }
 
 pub async fn get_or_init_two_user_app(

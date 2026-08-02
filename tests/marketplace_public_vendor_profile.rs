@@ -5,10 +5,10 @@ use serde_json::Value;
 
 use tokio::sync::OnceCell;
 
-static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
 
-async fn app() -> &'static common::TestApp {
-    common::get_or_init_app(&APP)
+async fn app() -> common::TestApp {
+    common::get_or_init_app_fresh(&APP_CONFIG)
         .await
         .expect("Failed to start test app")
 }
