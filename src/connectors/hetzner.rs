@@ -159,7 +159,7 @@ impl HetznerCloudConnector for HetznerCloudClient {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(status_to_error(status, "Hetzner snapshot request failed"));
+            return Err(error_with_body(response, "Hetzner snapshot request failed").await);
         }
 
         let body: HetznerCreateImageResponse = response
@@ -211,10 +211,7 @@ impl HetznerCloudConnector for HetznerCloudClient {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(status_to_error(
-                status,
-                "Hetzner create-server-from-image failed",
-            ));
+            return Err(error_with_body(response, "Hetzner create-server-from-image failed").await);
         }
 
         let body: HetznerCreateServerResponse = response
@@ -269,12 +266,30 @@ impl HetznerCloudConnector for HetznerCloudClient {
 
 fn status_to_error(status: reqwest::StatusCode, message: &str) -> ConnectorError {
     match status.as_u16() {
-        401 | 403 => {
-            ConnectorError::Unauthorized("Hetzner rejected the saved cloud token".to_string())
-        }
+        // 401 is genuine auth; 403 is forbidden for many reasons (permissions,
+        // resource limits, protection) — do NOT claim "rejected token" for it.
+        401 => ConnectorError::Unauthorized("Hetzner rejected the API token (401)".to_string()),
+        403 => ConnectorError::HttpError(format!(
+            "{message} forbidden (403) — check token permissions or account/resource limits"
+        )),
         404 => ConnectorError::NotFound(message.to_string()),
         429 => ConnectorError::RateLimited("Hetzner API rate limit exceeded".to_string()),
         _ => ConnectorError::HttpError(format!("{} with status {}", message, status.as_u16())),
+    }
+}
+
+/// Build an error that INCLUDES Hetzner's response body, so the real cause
+/// (e.g. `resource_limit_exceeded: image limit exceeded`) is surfaced instead of
+/// a misleading generic status message.
+async fn error_with_body(response: reqwest::Response, context: &str) -> ConnectorError {
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    let snippet = body.trim();
+    match status.as_u16() {
+        401 => ConnectorError::Unauthorized(format!("{context}: {snippet}")),
+        429 => ConnectorError::RateLimited(format!("{context}: {snippet}")),
+        404 => ConnectorError::NotFound(format!("{context}: {snippet}")),
+        _ => ConnectorError::HttpError(format!("{context}: HTTP {}: {snippet}", status.as_u16())),
     }
 }
 
