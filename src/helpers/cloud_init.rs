@@ -6,6 +6,13 @@
 //! file, renders the domain vhost, and (re)starts the baked compose. It is a
 //! pure, deterministic function of [`BootConfig`] — no I/O — so it is fully
 //! unit-testable and can't fail at deploy time.
+//!
+//! CONTRACT: the file paths, permissions, env-file format, and the
+//! `stacker-compose.service` unit name here are the DEPLOY side of the canonical
+//! boot contract at `config/shared-fixtures/immutable-deploy/boot-contract.json`.
+//! The BAKE side (install service) builds a snapshot expecting this exact layout.
+//! Changing any of them is a breaking change — update the contract + both
+//! services together.
 
 use std::collections::BTreeMap;
 
