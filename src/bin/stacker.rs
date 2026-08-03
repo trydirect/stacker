@@ -293,9 +293,12 @@ enum StackerCommands {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
-        /// Watch for changes (refresh periodically)
+        /// Watch for changes (refresh periodically); notifies on completion by default
         #[arg(long)]
         watch: bool,
+        /// Send a terminal/desktop notification when deployment reaches a terminal state (on by default in --watch mode)
+        #[arg(long)]
+        notify: bool,
     },
     /// Deployment inspection commands
     Deployment {
@@ -2003,9 +2006,13 @@ fn get_command(
         } => Box::new(stacker::console::commands::cli::logs::LogsCommand::new(
             service, follow, tail, since,
         )),
-        StackerCommands::Status { json, watch } => Box::new(
-            stacker::console::commands::cli::status::StatusCommand::new(json, watch),
-        ),
+        StackerCommands::Status {
+            json,
+            watch,
+            notify,
+        } => Box::new(stacker::console::commands::cli::status::StatusCommand::new(
+            json, watch, notify,
+        )),
         StackerCommands::Deployment { command } => match command {
             DeploymentCommands::State {
                 json,

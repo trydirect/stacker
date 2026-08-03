@@ -187,8 +187,12 @@ enum StackerCommands {
     Status {
         #[arg(long)]
         json: bool,
+        /// Watch for changes (refresh periodically); notifies on completion by default
         #[arg(long)]
         watch: bool,
+        /// Send a terminal/desktop notification when deployment reaches a terminal state (on by default in --watch mode)
+        #[arg(long)]
+        notify: bool,
     },
     /// Tear down the deployed stack
     Destroy {
@@ -499,8 +503,8 @@ fn get_command(
                     service, follow, tail, since,
                 ),
             )),
-            StackerCommands::Status { json, watch } => Ok(Box::new(
-                stacker::console::commands::cli::status::StatusCommand::new(json, watch),
+            StackerCommands::Status { json, watch, notify } => Ok(Box::new(
+                stacker::console::commands::cli::status::StatusCommand::new(json, watch, notify),
             )),
             StackerCommands::Destroy { volumes, confirm } => Ok(Box::new(
                 stacker::console::commands::cli::destroy::DestroyCommand::new(volumes, confirm),
