@@ -32,3 +32,4 @@ pub use cloud::*;
 pub mod audit_cache;
 pub mod rate_limit;
 pub mod cloud_init;
+pub mod bake;
