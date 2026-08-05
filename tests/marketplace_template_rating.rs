@@ -112,6 +112,18 @@ async fn user_rating_upsert_updates_existing_template_rating() {
     let template_id = seed_template(&app, "wordpress-pro").await;
     let client = reqwest::Client::new();
 
+    // Clean up any ratings left by previous tests (same shared DB).
+    // Test 3 (user_can_fetch_and_delete_own_template_rating) leaves a hidden
+    // rating; test 4 (user_can_rate_template_...) leaves a visible one.
+    // Without cleanup, the count assertion below sees both.
+    sqlx::query(
+        "DELETE FROM rating WHERE obj_id IN (SELECT product_id FROM stack_template WHERE id = $1)",
+    )
+    .bind(template_id)
+    .execute(&app.db_pool)
+    .await
+    .expect("cleanup should work");
+
     let first = client
         .put(format!(
             "{}/api/templates/{}/rating",
