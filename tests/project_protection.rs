@@ -25,6 +25,7 @@ async fn test_new_project_default_unprotected() {
         .post(format!("{}/project", &app.address))
         .header("Content-Type", "application/json")
         .body(r#"{"custom":{"custom_stack_code":"default-unprot","web":[{"_id":"a1","code":"nginx","name":"Nginx","type":"web","restart":"always","dockerhub_name":"nginx","custom":true}]}}"#)
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
         .expect("request failed");
@@ -51,6 +52,7 @@ async fn test_enable_protection_via_patch() {
         ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
         .expect("request failed");
@@ -75,6 +77,7 @@ async fn test_delete_protected_project_returns_403() {
         ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
         .expect("request failed");
@@ -83,6 +86,7 @@ async fn test_delete_protected_project_returns_403() {
     // Try to delete — should be blocked
     let resp = client
         .delete(format!("{}/project/{}", &app.address, project_id))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
         .expect("request failed");
@@ -109,6 +113,7 @@ async fn test_delete_unprotected_project_succeeds() {
 
     let resp = client
         .delete(format!("{}/project/{}", &app.address, project_id))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
         .expect("request failed");
@@ -135,6 +140,7 @@ async fn test_disable_protection_requires_name() {
         ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
         .expect("request failed");
@@ -148,6 +154,7 @@ async fn test_disable_protection_requires_name() {
         ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": false}"#)
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
         .expect("request failed");
@@ -174,6 +181,7 @@ async fn test_disable_protection_wrong_name_rejected() {
         ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
         .expect("request failed");
@@ -187,6 +195,7 @@ async fn test_disable_protection_wrong_name_rejected() {
         ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": false, "confirmation_name": "wrong-name"}"#)
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
         .expect("request failed");
@@ -209,6 +218,7 @@ async fn test_disable_protection_correct_name_succeeds() {
         ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
         .expect("request failed");
@@ -222,6 +232,7 @@ async fn test_disable_protection_correct_name_succeeds() {
         ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": false, "confirmation_name": "Test Project"}"#)
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
         .expect("request failed");
@@ -232,6 +243,7 @@ async fn test_disable_protection_correct_name_succeeds() {
     // Now delete should succeed
     let resp = client
         .delete(format!("{}/project/{}", &app.address, project_id))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
         .expect("request failed");
@@ -267,6 +279,7 @@ async fn test_protection_shows_deployment_and_server_counts() {
         ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
         .expect("request failed");
@@ -275,6 +288,7 @@ async fn test_protection_shows_deployment_and_server_counts() {
     // Try to delete — should be blocked with counts
     let resp = client
         .delete(format!("{}/project/{}", &app.address, project_id))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
         .expect("request failed");
@@ -327,6 +341,7 @@ async fn test_project_list_includes_is_protected() {
         ))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
         .expect("request failed");
@@ -335,6 +350,7 @@ async fn test_project_list_includes_is_protected() {
     // List projects — should include is_protected
     let resp = client
         .get(format!("{}/project", &app.address))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
         .expect("request failed");
