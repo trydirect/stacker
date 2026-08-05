@@ -816,6 +816,93 @@ pub struct TestAppWithVault {
     pub address: String,
     pub db_pool: PgPool,
     pub vault_server: MockServer,
+    pub connection_string: String,
+}
+
+/// Cached vault app info (address, DB connection string, and the mock Vault
+/// server). Used by `get_or_init_vault_app_fresh` to create a fresh `PgPool`
+/// on the caller's runtime for each test, avoiding cross-runtime pool issues
+/// (see `TestAppConfig`/`get_or_init_app_fresh` above for the same pattern).
+pub struct TestAppWithVaultShared {
+    pub address: String,
+    pub connection_string: String,
+    pub vault_server: MockServer,
+}
+
+/// Vault test app with a `PgPool` created fresh on the caller's runtime.
+/// `vault_server` is a `&'static MockServer` shared across tests in the file
+/// (safe to reuse across runtimes since wiremock's `MockServer` runs its own
+/// independent server/runtime internally).
+pub struct TestAppWithVaultFresh {
+    pub address: String,
+    pub db_pool: PgPool,
+    pub vault_server: &'static MockServer,
+}
+
+/// Dedicated background tokio runtime that outlives every individual
+/// `#[tokio::test]` runtime. The actix server (and the `PgPool` it uses
+/// internally) must be bootstrapped on a runtime that stays alive for the
+/// whole test binary process — if it's bootstrapped on whichever ephemeral
+/// per-test runtime happens to trigger the `OnceCell` first, that runtime is
+/// dropped when that test returns, and the server's pool can no longer
+/// establish new physical connections (acquire() then hangs until timeout).
+static SERVER_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+fn server_runtime() -> &'static tokio::runtime::Runtime {
+    SERVER_RUNTIME.get_or_init(|| {
+        tokio::runtime::Runtime::new().expect("Failed to create dedicated server runtime")
+    })
+}
+
+/// Like `get_or_init_vault_app` but creates a fresh `PgPool` on the caller's
+/// runtime for each call. This avoids `PoolTimedOut` hangs caused by reusing
+/// a single `PgPool` across the different tokio runtimes that `#[tokio::test]`
+/// creates for each test function (a live connection/background task tied to
+/// one test's runtime becomes unusable once that runtime is dropped).
+///
+/// Usage:
+/// ```ignore
+/// use tokio::sync::OnceCell;
+/// static APP: OnceCell<common::TestAppWithVaultShared> = OnceCell::const_new();
+///
+/// async fn app() -> common::TestAppWithVaultFresh {
+///     common::get_or_init_vault_app_fresh(&APP).await.expect("Failed to start test app")
+/// }
+/// ```
+pub async fn get_or_init_vault_app_fresh(
+    cell: &'static tokio::sync::OnceCell<TestAppWithVaultShared>,
+) -> Option<TestAppWithVaultFresh> {
+    let shared = cell
+        .get_or_try_init(|| async {
+            // Bootstrap the server and its pool on the persistent runtime
+            // instead of the caller's (ephemeral) test runtime.
+            let app = server_runtime()
+                .spawn(spawn_app_with_vault())
+                .await
+                .ok()
+                .flatten()
+                .ok_or(())?;
+            Ok::<_, ()>(TestAppWithVaultShared {
+                address: app.address,
+                connection_string: app.connection_string,
+                vault_server: app.vault_server,
+            })
+        })
+        .await
+        .ok()?;
+
+    let db_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(4)
+        .acquire_timeout(std::time::Duration::from_secs(120))
+        .connect(&shared.connection_string)
+        .await
+        .ok()?;
+
+    Some(TestAppWithVaultFresh {
+        address: shared.address.clone(),
+        db_pool,
+        vault_server: &shared.vault_server,
+    })
 }
 
 /// Spawn the full app with a mock Vault server.
@@ -849,6 +936,7 @@ pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
         Some(stacker::connectors::InstallServiceConfig { enabled: false });
 
     configuration.database.database_name = uuid::Uuid::new_v4().to_string();
+    let connection_string = configuration.database.connection_string();
 
     let connection_pool = match configure_database(&configuration.database).await {
         Ok(pool) => pool,
@@ -877,6 +965,7 @@ pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
         address,
         db_pool: connection_pool,
         vault_server,
+        connection_string,
     })
 }
 
