@@ -153,7 +153,7 @@ async fn user_rating_upsert_updates_existing_template_rating() {
     assert_eq!("updated", body["item"]["comment"]);
 
     let count: i64 = sqlx::query(
-        "SELECT COUNT(*)::bigint AS count FROM rating r JOIN stack_template t ON t.product_id = r.obj_id WHERE t.id = $1",
+        "SELECT COUNT(*)::bigint AS count FROM rating r JOIN stack_template t ON t.product_id = r.obj_id WHERE t.id = $1 AND r.hidden = false",
     )
     .bind(template_id)
     .fetch_one(&app.db_pool)
