@@ -17,8 +17,8 @@ async fn app() -> &'static common::TwoUserTestApp {
 /// Non-owner attempts return 404 (the handler treats missing-or-not-owned as "not found").
 async fn insert_rating(pool: &sqlx::PgPool, user_id: &str) -> i32 {
     let rec = sqlx::query(
-        "INSERT INTO rating (user_id, obj_id, rating, comment, category) \
-         VALUES ($1, 1, 5, 'great', 'Application') RETURNING id",
+        "INSERT INTO rating (user_id, obj_id, rate, comment, category, created_at, updated_at) \
+         VALUES ($1, 1, 5, 'great', 'application', now(), now()) RETURNING id",
     )
     .bind(user_id)
     .fetch_one(pool)

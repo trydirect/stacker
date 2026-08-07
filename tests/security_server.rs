@@ -121,7 +121,7 @@ async fn test_delete_server_rejects_other_user() {
 
     let client = reqwest::Client::new();
 
-    // User B tries to DELETE User A's server → 400 (bad_request = IDOR guard)
+    // User B tries to DELETE User A's server → 404 (commit 145b8c96: avoid leaking resource existence via IDOR)
     let resp = client
         .delete(format!("{}/server/{}", &app.address, server_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
@@ -130,7 +130,7 @@ async fn test_delete_server_rejects_other_user() {
         .expect("request failed");
     assert_eq!(
         resp.status(),
-        reqwest::StatusCode::BAD_REQUEST,
+        reqwest::StatusCode::NOT_FOUND,
         "User B must not delete User A's server"
     );
 }
