@@ -39,7 +39,8 @@ async fn test_list_chats_only_returns_own() {
     // User A saves a chat for a specific project
     insert_chat(&app.db_pool, USER_A_ID, TEST_PROJECT_ID).await;
 
-    // User B queries the same project_id → should get 404 (no chat for B)
+    // User B queries the same project_id → lookup is scoped to the
+    // authenticated user, so User B gets a 200 with a null item (see routes/chat/get.rs)
     let resp = client
         .get(format!(
             "{}/chat/history?project_id={}",
@@ -50,9 +51,13 @@ async fn test_list_chats_only_returns_own() {
         .await
         .expect("Failed to send request");
 
-    assert_eq!(
-        resp.status().as_u16(),
-        404,
+    assert!(
+        resp.status().is_success(),
+        "User B should not see User A's chat history (unexpected status)"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["item"].is_null(),
         "User B should not see User A's chat history"
     );
 }
@@ -66,7 +71,7 @@ async fn test_get_chat_rejects_other_user() {
 
     insert_chat(&app.db_pool, USER_A_ID, TEST_PROJECT_ID).await;
 
-    // User B GET on the same project_id → 404
+    // User B GET on the same project_id → 200 with a null item (scoped to user)
     let resp = client
         .get(format!(
             "{}/chat/history?project_id={}",
@@ -77,10 +82,14 @@ async fn test_get_chat_rejects_other_user() {
         .await
         .expect("Failed to send request");
 
-    assert_eq!(
-        resp.status().as_u16(),
-        404,
-        "User B GET on User A's chat should return 404"
+    assert!(
+        resp.status().is_success(),
+        "User B GET on User A's chat should not error"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["item"].is_null(),
+        "User B GET on User A's chat should not return User A's chat"
     );
 }
 
@@ -250,5 +259,11 @@ async fn test_owner_can_access_own_chat() {
         .send()
         .await
         .expect("Failed to send request");
-    assert_eq!(resp.status().as_u16(), 404, "Deleted chat should be gone");
+    assert!(
+        resp.status().is_success(),
+        "GET after delete should not error, got {}",
+        resp.status()
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["item"].is_null(), "Deleted chat should be gone");
 }
