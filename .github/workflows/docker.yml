@@ -113,12 +113,20 @@ jobs:
         with:
           command: check
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      # nextest runs each test in its own process, so tests that mutate global
+      # env vars no longer race and the suite runs in parallel (no more
+      # RUST_TEST_THREADS=1 serialization, no 25-minute timeout). The `bdd`
+      # target uses a custom harness nextest cannot run, so it runs separately.
       - name: Cargo test
         if: ${{ always() }}
-        timeout-minutes: 25
-        env:
-          RUST_TEST_THREADS: "1"
-        run: cargo test --tests
+        run: cargo nextest run --tests -E 'not binary(bdd)'
+
+      - name: Cargo test (bdd suite)
+        if: ${{ always() }}
+        run: cargo test --test bdd
 
       - name: Rustfmt
         uses: actions-rs/toolchain@v1
