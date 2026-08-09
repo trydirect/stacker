@@ -3603,6 +3603,10 @@ impl CallableTrait for DeployCommand {
                 }
             }
             DeployTarget::Cloud | DeployTarget::Server if should_watch => {
+                // Save SSH keypair early — ensures key is on disk even if
+                // Ansible provisioning fails (e.g. nginx_proxy_manager port-conflict bug),
+                // so the user can always SSH into the created server.
+                self.save_local_backup_keypair_early(&result);
                 watch_outcome = watch_cloud_deployment(&result)?;
             }
             _ => {}
@@ -3612,7 +3616,12 @@ impl CallableTrait for DeployCommand {
 
         // ── Deployment lock: persist deployment context ──
         self.save_deployment_lock(&project_dir, &result, should_fetch_remote_details)?;
-        if should_fetch_remote_details && should_install_cloud_backup_key(&result, self.dry_run) {
+        // Authorize the local backup key whenever the server was created, even if
+        // the deployment watch reported failure (e.g. nginx_proxy_manager port
+        // conflict). A failed post-create step is exactly when the user needs SSH
+        // access, so this must NOT be gated behind should_fetch_remote_details.
+        // install_cloud_backup_key internally guards on server IP + active key.
+        if should_install_cloud_backup_key(&result, self.dry_run) {
             self.install_cloud_backup_key(&result);
         }
 
@@ -3636,6 +3645,41 @@ fn should_install_cloud_backup_key(result: &DeployResult, dry_run: bool) -> bool
 }
 
 impl DeployCommand {
+    /// Save the local backup SSH keypair to disk immediately after deployment,
+    /// before watching for completion. This ensures the key is available even if
+    /// Ansible provisioning fails (e.g. nginx_proxy_manager port-conflict bug),
+    /// so the user can always SSH into the created server for manual troubleshooting.
+    fn save_local_backup_keypair_early(&self, result: &DeployResult) {
+        if !should_install_cloud_backup_key(result, self.dry_run) {
+            return;
+        }
+
+        let Some(project_id) = result.project_id else {
+            return;
+        };
+
+        let server = match fetch_server_for_project(
+            project_id as i32,
+            DeployTarget::Cloud,
+            result.server_name.as_deref(),
+        ) {
+            Ok(Some(server)) => server,
+            _ => return,
+        };
+
+        match crate::console::commands::cli::ssh_key::ensure_local_backup_keypair(server.id) {
+            Ok(keypair) => {
+                eprintln!(
+                    "  ✓ Local SSH backup key saved: {}",
+                    keypair.private_key_path.display()
+                );
+            }
+            Err(err) => {
+                eprintln!("  ⚠ Could not save local backup SSH key: {}", err);
+            }
+        }
+    }
+
     fn install_cloud_backup_key(&self, result: &DeployResult) {
         if result.target != DeployTarget::Cloud {
             return;

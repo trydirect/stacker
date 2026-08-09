@@ -196,10 +196,10 @@ pub struct LocalBackupKeyAuthorization {
 }
 
 #[derive(Debug, Clone)]
-struct LocalBackupKeypair {
-    private_key_path: PathBuf,
-    public_key_path: PathBuf,
-    public_key: String,
+pub struct LocalBackupKeypair {
+    pub private_key_path: PathBuf,
+    pub public_key_path: PathBuf,
+    pub public_key: String,
 }
 
 pub async fn ensure_local_backup_key_authorized(
@@ -242,7 +242,7 @@ fn backup_key_paths_for_server(server_id: i32, ssh_dir: &Path) -> (PathBuf, Path
     (private_key_path, public_key_path)
 }
 
-fn ensure_local_backup_keypair(server_id: i32) -> Result<LocalBackupKeypair, CliError> {
+pub fn ensure_local_backup_keypair(server_id: i32) -> Result<LocalBackupKeypair, CliError> {
     ensure_local_backup_keypair_in_dir(server_id, &default_backup_ssh_dir())
 }
 
