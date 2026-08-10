@@ -57,8 +57,8 @@ pub fn render_user_data(cfg: &BootConfig) -> String {
         ],
     });
 
-    let yaml = serde_yaml::to_string(&doc)
-        .unwrap_or_else(|_| "write_files: []\nruncmd: []\n".to_string());
+    let yaml =
+        serde_yaml::to_string(&doc).unwrap_or_else(|_| "write_files: []\nruncmd: []\n".to_string());
     format!("#cloud-config\n{yaml}")
 }
 

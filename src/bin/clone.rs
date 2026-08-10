@@ -32,12 +32,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--image-id" => { image_id = args.get(i + 1).and_then(|v| v.parse().ok()); i += 2; }
-            "--name" => { name = args.get(i + 1).cloned().unwrap_or(name); i += 2; }
-            "--type" => { server_type = args.get(i + 1).cloned().unwrap_or(server_type); i += 2; }
-            "--location" => { location = args.get(i + 1).cloned().unwrap_or(location); i += 2; }
-            "--domain" => { domain = args.get(i + 1).cloned().unwrap_or(domain); i += 2; }
-            "--admin-email" => { admin_email = args.get(i + 1).cloned().unwrap_or(admin_email); i += 2; }
+            "--image-id" => {
+                image_id = args.get(i + 1).and_then(|v| v.parse().ok());
+                i += 2;
+            }
+            "--name" => {
+                name = args.get(i + 1).cloned().unwrap_or(name);
+                i += 2;
+            }
+            "--type" => {
+                server_type = args.get(i + 1).cloned().unwrap_or(server_type);
+                i += 2;
+            }
+            "--location" => {
+                location = args.get(i + 1).cloned().unwrap_or(location);
+                i += 2;
+            }
+            "--domain" => {
+                domain = args.get(i + 1).cloned().unwrap_or(domain);
+                i += 2;
+            }
+            "--admin-email" => {
+                admin_email = args.get(i + 1).cloned().unwrap_or(admin_email);
+                i += 2;
+            }
             "--ssh-key-id" => {
                 if let Some(id) = args.get(i + 1).and_then(|v| v.parse().ok()) {
                     ssh_key_ids.push(id);
@@ -52,7 +70,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 i += 2;
             }
-            other => { eprintln!("ignoring unknown arg: {other}"); i += 1; }
+            other => {
+                eprintln!("ignoring unknown arg: {other}");
+                i += 1;
+            }
         }
     }
 
@@ -61,8 +82,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|_| "set HETZNER_TOKEN to the Hetzner Cloud API token".to_string())?;
 
     // The only per-user variance: env + domain -> cloud-init user-data.
-    env.entry("DOMAIN".to_string()).or_insert_with(|| domain.clone());
-    let boot = BootConfig { domain: domain.clone(), admin_email, env };
+    env.entry("DOMAIN".to_string())
+        .or_insert_with(|| domain.clone());
+    let boot = BootConfig {
+        domain: domain.clone(),
+        admin_email,
+        env,
+    };
     let user_data = render_user_data(&boot);
 
     let request = HetznerCreateServerRequest {

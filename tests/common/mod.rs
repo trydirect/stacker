@@ -68,14 +68,10 @@ pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option
             };
 
             let agent_pool = AgentPgPool::new(connection_pool.clone());
-            let server = stacker::startup::run(
-                listener,
-                connection_pool.clone(),
-                agent_pool,
-                configuration,
-            )
-            .await
-            .expect("Failed to bind address.");
+            let server =
+                stacker::startup::run(listener, connection_pool.clone(), agent_pool, configuration)
+                    .await
+                    .expect("Failed to bind address.");
 
             tokio::spawn(server);
             println!("Used Port: {}", port);
@@ -750,11 +746,9 @@ pub struct TestAppConfig {
 pub async fn get_or_init_app(
     cell: &'static tokio::sync::OnceCell<TestApp>,
 ) -> Option<&'static TestApp> {
-    cell.get_or_try_init(|| async {
-        spawn_app().await.ok_or(())
-    })
-    .await
-    .ok()
+    cell.get_or_try_init(|| async { spawn_app().await.ok_or(()) })
+        .await
+        .ok()
 }
 
 /// Like `get_or_init_app` but creates a fresh `PgPool` on the caller's
@@ -801,21 +795,17 @@ pub async fn get_or_init_app_fresh(
 pub async fn get_or_init_two_user_app(
     cell: &'static tokio::sync::OnceCell<TwoUserTestApp>,
 ) -> Option<&'static TwoUserTestApp> {
-    cell.get_or_try_init(|| async {
-        spawn_app_two_users().await.ok_or(())
-    })
-    .await
-    .ok()
+    cell.get_or_try_init(|| async { spawn_app_two_users().await.ok_or(()) })
+        .await
+        .ok()
 }
 
 pub async fn get_or_init_vault_app(
     cell: &'static tokio::sync::OnceCell<TestAppWithVault>,
 ) -> Option<&'static TestAppWithVault> {
-    cell.get_or_try_init(|| async {
-        spawn_app_with_vault().await.ok_or(())
-    })
-    .await
-    .ok()
+    cell.get_or_try_init(|| async { spawn_app_with_vault().await.ok_or(()) })
+        .await
+        .ok()
 }
 
 pub struct TestAppWithVault {
