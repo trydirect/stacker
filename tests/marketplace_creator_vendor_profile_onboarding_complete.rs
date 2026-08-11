@@ -1,12 +1,22 @@
+#![allow(clippy::await_holding_lock)]
+
 mod common;
 
 use reqwest::StatusCode;
 use serde_json::Value;
 use sqlx::Row;
+use std::sync::{Mutex, OnceLock};
 
 use tokio::sync::OnceCell;
 
 static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+
+/// Tests share a single server and the same `test_user_id`, and tokio runs them
+/// concurrently. The mutex serializes them so they can't race on the same row.
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 async fn app() -> &'static common::TestApp {
     common::get_or_init_app(&APP)
@@ -18,6 +28,7 @@ const USER_TOKEN: &str = "test-bearer-token";
 
 #[tokio::test]
 async fn creator_onboarding_complete_marks_in_progress_profile_completed() {
+    let _lock = env_lock().lock().expect("env lock should be available");
     let app = app().await;
 
     sqlx::query(
@@ -85,6 +96,7 @@ async fn creator_onboarding_complete_marks_in_progress_profile_completed() {
 
 #[tokio::test]
 async fn creator_onboarding_complete_is_idempotent_after_completion() {
+    let _lock = env_lock().lock().expect("env lock should be available");
     let app = app().await;
 
     sqlx::query(
@@ -137,6 +149,7 @@ async fn creator_onboarding_complete_is_idempotent_after_completion() {
 
 #[tokio::test]
 async fn creator_onboarding_complete_rejects_missing_linkage() {
+    let _lock = env_lock().lock().expect("env lock should be available");
     let app = app().await;
 
     // Clean up any leftover vendor profile from previous tests
@@ -161,6 +174,7 @@ async fn creator_onboarding_complete_rejects_missing_linkage() {
 
 #[tokio::test]
 async fn creator_onboarding_complete_requires_authentication() {
+    let _lock = env_lock().lock().expect("env lock should be available");
     let app = app().await;
 
     let response = reqwest::Client::new()
