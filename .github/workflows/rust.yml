@@ -62,12 +62,16 @@ jobs:
       - name: Build stacker-cli (release)
         run: cargo build --release --target ${{ matrix.target }} --bin stacker-cli --verbose
 
+      - name: Build agent-gateway (release)
+        run: cargo build --release --target ${{ matrix.target }} --bin agent-gateway --verbose
+
       - name: Prepare binaries
         run: |
           mkdir -p artifacts
           cp target/${{ matrix.target }}/release/server artifacts/server
           cp target/${{ matrix.target }}/release/console artifacts/console
           cp target/${{ matrix.target }}/release/stacker-cli artifacts/stacker-cli
+          cp target/${{ matrix.target }}/release/agent-gateway artifacts/agent-gateway
           tar -czf ${{ matrix.artifact_name }}.tar.gz -C artifacts .
       - name: Upload binaries
         uses: actions/upload-artifact@v4

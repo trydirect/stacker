@@ -1,0 +1,55 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.trydirect/agent-gateway",
+  "description": "Ground truth and hands for AI agents building infrastructure: resolve_image returns real Docker image facts (exists, digest, size, architectures, tags, official/pinned, grade) so agents stop hallucinating image refs; deploy_ephemeral runs a docker-compose on a throwaway cloud box and returns a live URL + logs, auto-torn-down after a TTL.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/trydirect/stacker",
+    "source": "github"
+  },
+  "websiteUrl": "https://try.direct",
+  "remotes": [
+    {
+      "type": "websocket",
+      "url": "wss://mcp.try.direct/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Bearer <TryDirect token> — required for deploy_ephemeral; resolve_image works anonymously. Get a token at https://try.direct/account/tokens.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "trydirect/agent-gateway",
+      "version": "latest",
+      "transport": { "type": "websocket", "url": "ws://localhost:4600/mcp" },
+      "environmentVariables": [
+        { "name": "AGENT_GATEWAY_BIND", "description": "Bind address", "isRequired": false, "default": "0.0.0.0:4600" },
+        { "name": "SANDBOX_DEFAULT_TTL_SECS", "description": "Default sandbox lifetime", "isRequired": false, "default": "1800" },
+        { "name": "SANDBOX_MAX_TTL_SECS", "description": "Max sandbox lifetime", "isRequired": false, "default": "7200" },
+        { "name": "SANDBOX_MAX_CONCURRENT_PER_USER", "description": "Per-user concurrent sandbox quota", "isRequired": false, "default": "3" }
+      ]
+    }
+  ],
+  "_meta": {
+    "category": "devops",
+    "vendor": "TryDirect",
+    "tools": [
+      {
+        "name": "resolve_image",
+        "auth": "anonymous",
+        "description": "Ground truth about a Docker image reference (exists, digest, size, architectures, recent tags, official/pinned, quality grade). Also available unauthenticated at POST /public/resolve_image."
+      },
+      {
+        "name": "deploy_ephemeral",
+        "auth": "bearer",
+        "description": "Run a docker-compose.yml on a throwaway cloud sandbox and get back a live URL, logs and health; auto-teardown after ttl_secs. Safety-gated (no privileged / docker.sock / host networking) and per-user quota-limited."
+      }
+    ]
+  }
+}

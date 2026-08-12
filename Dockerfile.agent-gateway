@@ -1,0 +1,56 @@
+# syntax=docker/dockerfile:1.4
+# Standalone image for the agent-gateway MCP server.
+#
+# Multi-stage: compile INSIDE rust:bookworm and run on debian:bookworm-slim, so
+# the binary's glibc always matches the runtime (no coupling to the CI runner's
+# glibc — which caused "GLIBC_2.38 not found" when baking an ubuntu-built binary).
+FROM rust:bookworm AS builder
+
+RUN apt-get update && apt-get install --no-install-recommends -y \
+        protobuf-compiler libprotobuf-dev libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN cargo install sqlx-cli --no-default-features --features native-tls,postgres
+
+WORKDIR /app
+
+# Manifests + offline sqlx cache (compile-time checked queries without a DB).
+COPY ./Cargo.toml .
+COPY ./Cargo.lock .
+COPY ./build.rs .
+COPY ./rustfmt.toml .
+COPY ./docker/local/.env .
+COPY ./docker/local/configuration.yaml .
+COPY .sqlx .sqlx/
+COPY ./proto ./proto
+COPY ./tests/bdd.rs ./tests/bdd.rs
+
+COPY ./src ./src
+COPY ./crates ./crates
+COPY ./scenarios ./scenarios
+
+ENV SQLX_OFFLINE=true
+RUN cargo build --release --bin agent-gateway
+
+# ---- runtime ----
+FROM debian:bookworm-slim AS production
+
+RUN apt-get update && apt-get install --no-install-recommends -y \
+        libssl3 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+RUN mkdir ./files && chmod 0777 ./files
+
+COPY --from=builder /app/target/release/agent-gateway /app/agent-gateway
+COPY --from=builder /usr/local/cargo/bin/sqlx /usr/local/bin/sqlx
+COPY docker/local/configuration.yaml /app/configuration.yaml
+COPY docker/local/.env /app/.env
+COPY access_control.conf.dist /app/access_control.conf
+# Baked migrations so `sqlx migrate run` works from the image.
+COPY migrations /app/migrations
+
+ENV AGENT_GATEWAY_BIND=0.0.0.0:4600
+EXPOSE 4600
+
+ENTRYPOINT ["/app/agent-gateway"]

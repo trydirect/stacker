@@ -1,0 +1,16 @@
+[package]
+name = "agent-tools"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-logic core for TryDirect's agent-facing MCP tools (resolve_image ground truth, deploy_ephemeral sandbox orchestration). Heavy I/O is injected via traits so this compiles/tests apart from the Actix/sqlx server."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "1"
+async-trait = "0.1"
+td-audit = { path = "../td-audit" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

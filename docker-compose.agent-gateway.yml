@@ -1,0 +1,62 @@
+# Test stack for the agent-gateway MCP server, wired to reuse a RUNNING
+# TryDirect stack: it joins the external `trydirect` networks and talks to the
+# existing `stackerdb` (Postgres) and `stackeredis` (Redis) — no local DB.
+#
+# The image's baked configuration.yaml already uses `host: stackerdb`, so on the
+# shared network DNS resolves straight to the real DB (same as `stacker`).
+#
+#   cp .env.agent-gateway.example .env
+#   docker compose -f docker-compose.agent-gateway.yml up
+#
+# Verify:
+#   curl -s http://localhost:4600/health
+#   curl -s -X POST http://localhost:4600/public/resolve_image \
+#        -H 'Content-Type: application/json' -d '{"reference":"redis:7-alpine"}'
+#
+# Prereq: the stacker stack must be up so `stackerdb`/`stackeredis` and the
+# external networks exist. If your stackerdb uses non-default creds, set
+# DATABASE_URL in .env and mount a matching configuration.yaml (see below).
+
+services:
+  # Applies just this branch's new migration (the public resolve_image casbin
+  # grant) to the shared DB; already-applied migrations are skipped (idempotent).
+  migrate:
+    image: trydirect/agent-gateway:${AGENT_GATEWAY_TAG:-feature-agent-gateway}
+    working_dir: /app
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://postgres:postgres@stackerdb:5432/stacker}
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sqlx migrate run"]
+    restart: "no"
+    networks:
+      - trydirect_default
+      - trydirect-network
+
+  agent-gateway:
+    image: trydirect/agent-gateway:${AGENT_GATEWAY_TAG:-feature-agent-gateway}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      AGENT_GATEWAY_BIND: 0.0.0.0:4600
+      # Sandbox quotas (only affect deploy_ephemeral; safe defaults).
+      SANDBOX_DEFAULT_TTL_SECS: "${SANDBOX_DEFAULT_TTL_SECS:-1800}"
+      SANDBOX_MAX_TTL_SECS: "${SANDBOX_MAX_TTL_SECS:-7200}"
+      SANDBOX_MAX_CONCURRENT_PER_USER: "${SANDBOX_MAX_CONCURRENT_PER_USER:-3}"
+    # If stackerdb uses non-default creds/db, mount a matching config instead of
+    # relying on the baked one:
+    # volumes:
+    #   - ./configuration.yaml:/app/configuration.yaml:ro
+    ports:
+      - "${HOST_PORT:-4600}:4600"
+    restart: unless-stopped
+    networks:
+      - trydirect_default
+      - trydirect-network
+
+networks:
+  trydirect_default:
+    external: true
+  trydirect-network:
+    external: true
+    name: trydirect-network

@@ -1,5 +1,7 @@
 pub mod agent_control;
 pub mod ansible_roles;
+pub mod deploy_ephemeral;
+pub mod resolve_image;
 pub mod cloud;
 pub mod compose;
 pub mod config;
@@ -37,3 +39,5 @@ pub use remote_secrets::*;
 pub use support::*;
 pub use templates::*;
 pub use user_service::*;
+pub use resolve_image::*;
+pub use deploy_ephemeral::*;
