@@ -202,6 +202,7 @@ pub async fn run(
                 let cfg = audit_rl_cfg.clone();
                 move |c| crate::routes::audit::configure(c, redis.clone(), cfg.clone())
             })
+            .configure(crate::routes::oneclick_deploy::configure)
             .service(
                 web::scope("/health_check")
                     .service(routes::health_check)
