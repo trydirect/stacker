@@ -113,6 +113,20 @@ pub struct ProjectAppInfo {
     pub parent_app_code: Option<String>,
 }
 
+/// App config as returned by `/project/{id}/apps/{code}/config`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfigInfo {
+    pub project_id: i32,
+    pub app_code: String,
+    pub environment: serde_json::Value,
+    pub ports: serde_json::Value,
+    pub volumes: serde_json::Value,
+    pub domain: Option<String>,
+    pub ssl_enabled: bool,
+    pub resources: serde_json::Value,
+    pub restart_policy: String,
+}
+
 /// Project app registration payload for `POST /project/{id}/apps`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectAppRegistrationRequest {
@@ -229,7 +243,10 @@ pub struct AuthorizePublicKeyResponse {
 // Marketplace response types
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Marketplace template summary as returned by `GET /api/templates`
+/// Marketplace template as returned by `GET /api/templates` (summary; list
+/// form) and `GET /api/templates/{slug}` (detail). In the list form
+/// `stack_definition` is absent; `get_marketplace_template` populates it from
+/// the detail response's `latest_version.stack_definition`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketplaceTemplate {
     pub id: Option<serde_json::Value>,
@@ -258,6 +275,8 @@ pub struct MarketplaceInstallResponse {
     pub template: MarketplaceTemplate,
     pub latest_version: serde_json::Value,
     pub deployment_id: Option<i32>,
+    #[serde(default)]
+    pub deployment_hash: Option<String>,
     /// Populated only when the template is billed per_install.
     #[serde(default)]
     pub authorization: Option<AuthorizationSummary>,
@@ -693,6 +712,46 @@ impl StackerClient {
             })?;
 
         Ok(api.list.unwrap_or_default())
+    }
+
+    /// Get app configuration (env, ports, volumes, domain).
+    pub async fn get_app_config(
+        &self,
+        project_id: i32,
+        app_code: &str,
+    ) -> Result<AppConfigInfo, CliError> {
+        let resp = self
+            .send_project_request(
+                reqwest::Method::GET,
+                &format!("/{}/apps/{}/config", project_id, app_code),
+                None,
+                "GET /project/{id}/apps/{code}/config",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: stacker_api_failure(
+                    &format!("GET /project/{project_id}/apps/{app_code}/config"),
+                    status,
+                    &body,
+                ),
+            });
+        }
+
+        let api: ApiResponse<AppConfigInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: self.target.clone(),
+            reason: "Stacker server did not return app config".to_string(),
+        })
     }
 
     /// Create or update one project app target.
@@ -1882,13 +1941,26 @@ impl StackerClient {
         let Some(item) = api.item else {
             return Ok(None);
         };
+        // The server nests the full definition under `latest_version`
+        // (see marketplace `detail_handler`), while the summary fields live
+        // under `template`. Pull the definition across so callers that read
+        // `MarketplaceTemplate.stack_definition` (e.g. the service catalog)
+        // actually see it instead of always getting `None`.
+        let latest_stack_definition = item
+            .get("latest_version")
+            .and_then(|lv| lv.get("stack_definition"))
+            .filter(|sd| !sd.is_null())
+            .cloned();
         let template = item.get("template").cloned().unwrap_or(item);
-        serde_json::from_value(template)
-            .map(Some)
-            .map_err(|e| CliError::DeployFailed {
+        let mut template: MarketplaceTemplate =
+            serde_json::from_value(template).map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid marketplace template response: {}", e),
-            })
+            })?;
+        if template.stack_definition.is_none() {
+            template.stack_definition = latest_stack_definition;
+        }
+        Ok(Some(template))
     }
 
     /// Create a Stacker project from a marketplace template.
@@ -5171,6 +5243,83 @@ mod tests {
                 .and_then(|meta| meta.get("deployment_hash")),
             Some(&serde_json::json!("hash-123"))
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_marketplace_template_pulls_stack_definition_from_latest_version() {
+        let server = MockServer::start().await;
+
+        // Mirror the server's `detail_handler` shape: summary fields under
+        // `template`, full definition under `latest_version.stack_definition`.
+        Mock::given(method("GET"))
+            .and(path("/api/templates/n8n"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "_status": "OK",
+                "item": {
+                    "template": {
+                        "id": "abc-123",
+                        "slug": "n8n",
+                        "name": "n8n",
+                        "status": "approved"
+                    },
+                    "latest_version": {
+                        "definition_format": "yaml",
+                        "stack_definition": "version: '3.8'\nservices:\n  n8n:\n    image: n8nio/n8n:latest"
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = StackerClient::new(&server.uri(), "token");
+        let template = client
+            .get_marketplace_template("n8n")
+            .await
+            .expect("request should succeed")
+            .expect("template should be present");
+
+        assert_eq!(template.slug, "n8n");
+        assert_eq!(
+            template.stack_definition,
+            Some(serde_json::json!(
+                "version: '3.8'\nservices:\n  n8n:\n    image: n8nio/n8n:latest"
+            )),
+            "stack_definition must be lifted out of latest_version",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_marketplace_template_leaves_definition_none_when_absent() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/templates/bare"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "_status": "OK",
+                "item": {
+                    "template": {
+                        "id": "def-456",
+                        "slug": "bare",
+                        "name": "bare",
+                        "status": "approved"
+                    },
+                    "latest_version": {
+                        "definition_format": "yaml",
+                        "stack_definition": null
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = StackerClient::new(&server.uri(), "token");
+        let template = client
+            .get_marketplace_template("bare")
+            .await
+            .expect("request should succeed")
+            .expect("template should be present");
+
+        assert_eq!(template.stack_definition, None);
     }
 
     #[tokio::test]

@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — Deployment command aliases and `--pinned` flag
+
+- Added `stacker deployment status` as a visible alias for `stacker deployment state`.
+- Added `stacker ps` as a visible alias for `stacker deployments`.
+- `stacker deployment state` and `stacker deployment events` now default to the
+  latest deployment from the server instead of the `deployment_hash` stored in
+  the local `stacker.yml`. Use `--pinned` to read the hash from `stacker.yml`
+  instead (the previous default behavior). The `--deployment <hash>` flag
+  continues to take highest priority.
+
+### Added — `stacker keys` and `stacker cloud keys` aliases
+
+- Added `stacker keys` as a top-level shortcut for `stacker list clouds`.
+- Added `stacker cloud keys` as a nested alias under the `cloud` command group.
+- Both aliases dispatch to the same `ListCloudsCommand` and accept `--json`.
+
 ### Added — Remote project initialization via `--from-github`
 
 - Added `stacker init --from-github <url>` (short flag: `-g`) to automatically

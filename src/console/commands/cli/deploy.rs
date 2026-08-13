@@ -23,6 +23,7 @@ use crate::cli::install_runner::{
     resolve_docker_registry_credentials, strategy_for, CommandExecutor, DeployContext,
     DeployResult, HookPolicy, ShellExecutor,
 };
+use crate::cli::notify;
 use crate::cli::progress;
 use crate::cli::stacker_client::{self, StackerClient};
 use crate::console::commands::CallableTrait;
@@ -2187,6 +2188,8 @@ pub struct DeployCommand {
     /// Run hooks even when the stacker.yml is marketplace-generated
     /// (--allow-untrusted-hooks). No-op for user-authored files.
     pub allow_untrusted_hooks: bool,
+    /// Send a terminal/desktop notification on deploy completion (--notify).
+    pub notify: bool,
 }
 
 impl DeployCommand {
@@ -2215,6 +2218,7 @@ impl DeployCommand {
             apply_plan: None,
             no_hooks: false,
             allow_untrusted_hooks: false,
+            notify: false,
         }
     }
 
@@ -2222,6 +2226,12 @@ impl DeployCommand {
     pub fn with_hook_flags(mut self, no_hooks: bool, allow_untrusted_hooks: bool) -> Self {
         self.no_hooks = no_hooks;
         self.allow_untrusted_hooks = allow_untrusted_hooks;
+        self
+    }
+
+    /// Builder method for --notify flag.
+    pub fn with_notify(mut self, notify: bool) -> Self {
+        self.notify = notify;
         self
     }
 
@@ -3481,6 +3491,14 @@ impl CallableTrait for DeployCommand {
         let project_dir = std::env::current_dir()?;
         let executor = ShellExecutor;
 
+        // Merge CLI --notify flag with hooks.notify from stacker.yml
+        let should_notify = self.notify || {
+            let config_path = project_dir.join(self.file.as_deref().unwrap_or("stacker.yml"));
+            StackerConfig::from_file(&config_path)
+                .map(|c| c.hooks.notify)
+                .unwrap_or(false)
+        };
+
         // Build remote overrides from CLI flags
         let remote_overrides = RemoteDeployOverrides {
             project_name: self.project_name.clone(),
@@ -3513,6 +3531,16 @@ impl CallableTrait for DeployCommand {
             }
             Err(err) => {
                 progress::finish_error(&spin, &format!("{}", err));
+                if should_notify {
+                    let name = self.project_name.clone().unwrap_or_else(|| {
+                        project_dir
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string()
+                    });
+                    notify::deploy_notify(false, &name);
+                }
                 if let CliError::LoginRequired { .. } = &err {
                     eprintln!("\nHint: run `stacker login` and retry deploy.");
                 }
@@ -3575,6 +3603,10 @@ impl CallableTrait for DeployCommand {
                 }
             }
             DeployTarget::Cloud | DeployTarget::Server if should_watch => {
+                // Save SSH keypair early — ensures key is on disk even if
+                // Ansible provisioning fails (e.g. nginx_proxy_manager port-conflict bug),
+                // so the user can always SSH into the created server.
+                self.save_local_backup_keypair_early(&result);
                 watch_outcome = watch_cloud_deployment(&result)?;
             }
             _ => {}
@@ -3584,8 +3616,24 @@ impl CallableTrait for DeployCommand {
 
         // ── Deployment lock: persist deployment context ──
         self.save_deployment_lock(&project_dir, &result, should_fetch_remote_details)?;
-        if should_fetch_remote_details && should_install_cloud_backup_key(&result, self.dry_run) {
+        // Authorize the local backup key whenever the server was created, even if
+        // the deployment watch reported failure (e.g. nginx_proxy_manager port
+        // conflict). A failed post-create step is exactly when the user needs SSH
+        // access, so this must NOT be gated behind should_fetch_remote_details.
+        // install_cloud_backup_key internally guards on server IP + active key.
+        if should_install_cloud_backup_key(&result, self.dry_run) {
             self.install_cloud_backup_key(&result);
+        }
+
+        if should_notify {
+            let name = self.project_name.clone().unwrap_or_else(|| {
+                project_dir
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            });
+            notify::deploy_notify(true, &name);
         }
 
         Ok(())
@@ -3597,6 +3645,41 @@ fn should_install_cloud_backup_key(result: &DeployResult, dry_run: bool) -> bool
 }
 
 impl DeployCommand {
+    /// Save the local backup SSH keypair to disk immediately after deployment,
+    /// before watching for completion. This ensures the key is available even if
+    /// Ansible provisioning fails (e.g. nginx_proxy_manager port-conflict bug),
+    /// so the user can always SSH into the created server for manual troubleshooting.
+    fn save_local_backup_keypair_early(&self, result: &DeployResult) {
+        if !should_install_cloud_backup_key(result, self.dry_run) {
+            return;
+        }
+
+        let Some(project_id) = result.project_id else {
+            return;
+        };
+
+        let server = match fetch_server_for_project(
+            project_id as i32,
+            DeployTarget::Cloud,
+            result.server_name.as_deref(),
+        ) {
+            Ok(Some(server)) => server,
+            _ => return,
+        };
+
+        match crate::console::commands::cli::ssh_key::ensure_local_backup_keypair(server.id) {
+            Ok(keypair) => {
+                eprintln!(
+                    "  ✓ Local SSH backup key saved: {}",
+                    keypair.private_key_path.display()
+                );
+            }
+            Err(err) => {
+                eprintln!("  ⚠ Could not save local backup SSH key: {}", err);
+            }
+        }
+    }
+
     fn install_cloud_backup_key(&self, result: &DeployResult) {
         if result.target != DeployTarget::Cloud {
             return;

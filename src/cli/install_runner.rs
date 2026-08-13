@@ -3764,7 +3764,7 @@ services:
     #[test]
     fn test_check_local_host_port_conflicts_free_port() {
         use std::io::Write;
-        // Pick an ephemeral port that should be free
+        // Use a high ephemeral port unlikely to be occupied by another process
         let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
         let free_port = listener.local_addr().unwrap().port();
         drop(listener); // release it

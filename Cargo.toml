@@ -5,7 +5,7 @@ edition = "2021"
 default-run= "server"
 
 [workspace]
-members = ["crates/pipe-adapter-sdk", "crates/pipe-adapter-mail"]
+members = ["crates/pipe-adapter-sdk", "crates/pipe-adapter-mail", "crates/td-audit"]
 resolver = "2"
 
 [lib]
@@ -38,6 +38,7 @@ chrono = { version = "0.4.39", features = ["serde", "clock"] }
 config = "0.13.4"
 reqwest = { version = "0.11.23", features = ["json", "blocking", "stream", "native-tls"] }
 serde = { version = "1.0.195", features = ["derive"] }
+td-audit = { path = "crates/td-audit" }
 tokio = { version = "1.28.1", features = ["full"] }
 tracing = { version = "0.1.40", features = ["log"] }
 tracing-bunyan-formatter = "0.3.8"

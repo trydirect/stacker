@@ -349,7 +349,7 @@ pub async fn authorize_public_key(
         &ssh_user,
         &private_key,
         public_key,
-        Duration::from_secs(4),
+        Duration::from_secs(15),
     )
     .await
     .map_err(|e| {
@@ -533,7 +533,7 @@ pub async fn validate_key(
         ssh_port,
         &ssh_user,
         &private_key,
-        Duration::from_secs(4),
+        Duration::from_secs(30),
     )
     .await;
 

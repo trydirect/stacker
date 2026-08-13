@@ -5,6 +5,7 @@ use crate::cli::credentials::{CredentialsManager, StoredCredentials};
 use crate::cli::error::CliError;
 use crate::cli::install_runner::{CommandExecutor, CommandOutput, ShellExecutor};
 use crate::cli::local_compose::resolve_local_compose_path;
+use crate::cli::notify;
 use crate::cli::stacker_client::{self, DeploymentStatusInfo, ServerInfo, StackerClient};
 use crate::console::commands::cli::ssh_key::{format_ssh_command, local_backup_private_key_path};
 use crate::console::commands::CallableTrait;
@@ -23,11 +24,16 @@ const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 pub struct StatusCommand {
     pub json: bool,
     pub watch: bool,
+    pub notify: bool,
 }
 
 impl StatusCommand {
-    pub fn new(json: bool, watch: bool) -> Self {
-        Self { json, watch }
+    pub fn new(json: bool, watch: bool, notify: bool) -> Self {
+        Self {
+            json,
+            watch,
+            notify,
+        }
     }
 }
 
@@ -416,7 +422,11 @@ fn containers_signature(containers: &[serde_json::Value]) -> String {
 }
 
 /// Query remote deployment status from the Stacker server, optionally watching.
-fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn run_remote_status(
+    json: bool,
+    watch: bool,
+    notify: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Load stacker.yml to find project name
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
@@ -433,6 +443,10 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
 
     let project_name = resolve_project_name(&config);
     let deploy_target = config.deploy.target;
+
+    // In --watch mode, notify by default (the user is waiting for completion).
+    // In single-query mode, only notify when explicitly requested.
+    let should_notify = watch || notify || config.hooks.notify;
 
     // Load credentials
     let cred_manager = CredentialsManager::with_default_store();
@@ -516,6 +530,10 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
                             }
 
                             if is_terminal(&info.status) {
+                                if should_notify {
+                                    let success = info.status == "completed";
+                                    notify::deploy_notify(success, &project_name);
+                                }
                                 if !json {
                                     eprintln!(
                                         "\nDeployment reached terminal status: {}",
@@ -642,6 +660,10 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
                         }
 
                         if is_terminal(&info.status) {
+                            if should_notify {
+                                let success = info.status == "completed";
+                                notify::deploy_notify(success, &project_name);
+                            }
                             if !json {
                                 eprintln!("\nDeployment reached terminal status: {}", info.status);
                             }
@@ -705,7 +727,7 @@ impl CallableTrait for StatusCommand {
 
         if is_remote_deployment(&project_dir) {
             // Remote deployment — query Stacker server
-            run_remote_status(self.json, self.watch)?;
+            run_remote_status(self.json, self.watch, self.notify)?;
         } else {
             // Local deployment — docker compose ps
             let executor = ShellExecutor;

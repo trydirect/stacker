@@ -1,5 +1,15 @@
 mod common;
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TwoUserTestApp {
+    common::get_or_init_two_user_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 /// IDOR security tests for /cloud endpoints.
 /// Verify that User B cannot list, read, update, or delete User A's cloud credentials.
 #[tokio::test]
@@ -73,7 +83,7 @@ async fn test_update_cloud_rejects_other_user() {
     let cloud_id = common::create_test_cloud(&app.db_pool, common::USER_A_ID, "a-htz", "htz").await;
     let client = reqwest::Client::new();
 
-    // User B tries to PUT User A's cloud → 400 (bad_request = IDOR guard)
+    // User B tries to PUT User A's cloud → 404 (IDOR guard; avoids leaking existence via 400 — see 145b8c96)
     let resp = client
         .put(format!("{}/cloud/{}", &app.address, cloud_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
@@ -84,7 +94,7 @@ async fn test_update_cloud_rejects_other_user() {
         .expect("request failed");
     assert_eq!(
         resp.status(),
-        reqwest::StatusCode::BAD_REQUEST,
+        reqwest::StatusCode::NOT_FOUND,
         "User B must not update User A's cloud"
     );
 }
@@ -98,7 +108,7 @@ async fn test_delete_cloud_rejects_other_user() {
     let cloud_id = common::create_test_cloud(&app.db_pool, common::USER_A_ID, "a-htz", "htz").await;
     let client = reqwest::Client::new();
 
-    // User B tries to DELETE User A's cloud → 400 (bad_request = IDOR guard)
+    // User B tries to DELETE User A's cloud → 404 (IDOR guard; avoids leaking existence via 400 — see 145b8c96)
     let resp = client
         .delete(format!("{}/cloud/{}", &app.address, cloud_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
@@ -107,7 +117,7 @@ async fn test_delete_cloud_rejects_other_user() {
         .expect("request failed");
     assert_eq!(
         resp.status(),
-        reqwest::StatusCode::BAD_REQUEST,
+        reqwest::StatusCode::NOT_FOUND,
         "User B must not delete User A's cloud"
     );
 }

@@ -3,6 +3,16 @@ mod common;
 use reqwest::StatusCode;
 use serde_json::Value;
 
+use tokio::sync::OnceCell;
+
+static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
+
+async fn app() -> common::TestApp {
+    common::get_or_init_app_fresh(&APP_CONFIG)
+        .await
+        .expect("Failed to start test app")
+}
+
 async fn seed_vendor_page(
     app: &common::TestApp,
     public_slug: &str,
@@ -18,10 +28,7 @@ async fn seed_vendor_page(
 #[tokio::test]
 async fn public_vendor_profile_returns_vendor_and_approved_templates_by_slug() {
     // Given a shared vendor fixture with approved and non-approved templates
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let vendor = seed_vendor_page(&app, "acme-cloud").await;
 
     // When a public user requests the vendor page without authentication
@@ -91,10 +98,7 @@ async fn public_vendor_profile_returns_vendor_and_approved_templates_by_slug() {
 
 #[tokio::test]
 async fn public_vendor_profile_can_be_loaded_by_creator_user_id() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let vendor = seed_vendor_page(&app, "acme-cloud").await;
 
     let response = reqwest::Client::new()
@@ -114,10 +118,7 @@ async fn public_vendor_profile_can_be_loaded_by_creator_user_id() {
 #[tokio::test]
 async fn public_vendor_profile_does_not_expose_sensitive_payout_fields() {
     // Given a vendor fixture with a payout account reference
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let vendor = seed_vendor_page(&app, "acme-cloud").await;
     sqlx::query(
         r#"UPDATE marketplace_vendor_profile
@@ -160,10 +161,7 @@ async fn public_vendor_profile_does_not_expose_sensitive_payout_fields() {
 #[tokio::test]
 async fn public_vendor_profile_returns_not_found_for_unknown_vendor() {
     // Given no matching vendor fixture has been seeded
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     // When a public user requests an unknown vendor
     let response = reqwest::Client::new()
@@ -179,10 +177,7 @@ async fn public_vendor_profile_returns_not_found_for_unknown_vendor() {
 #[tokio::test]
 async fn public_vendor_profile_does_not_require_authentication() {
     // Given a public vendor fixture exists
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let vendor = seed_vendor_page(&app, "acme-cloud").await;
 
     // When the request has no Authorization header
@@ -202,10 +197,7 @@ async fn public_vendor_profile_does_not_require_authentication() {
 #[tokio::test]
 async fn public_vendor_profile_returns_empty_template_list_when_vendor_has_no_approved_templates() {
     // Given a vendor exists but only has draft templates
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let vendor = seed_vendor_page(&app, "beta-labs").await;
 
     // When the public vendor page is requested
@@ -242,10 +234,7 @@ async fn public_vendor_profile_returns_empty_template_list_when_vendor_has_no_ap
 #[tokio::test]
 async fn template_detail_includes_vendor_slug_from_vendor_profile() {
     // Given a vendor with an approved template
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let vendor = seed_vendor_page(&app, "acme-cloud").await;
 
     // When fetching the template detail for an approved template owned by that vendor
@@ -281,10 +270,7 @@ async fn template_detail_includes_vendor_slug_from_vendor_profile() {
 #[tokio::test]
 async fn template_detail_vendor_slug_is_null_when_no_vendor_profile() {
     // Given a template whose creator has no marketplace_vendor_profile record
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     // Insert a template directly without creating a vendor profile
     sqlx::query(

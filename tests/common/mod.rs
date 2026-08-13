@@ -18,6 +18,32 @@ use std::sync::OnceLock;
 use wiremock::MockServer;
 static ACCESS_CONTROL_CONF_READY: OnceLock<()> = OnceLock::new();
 
+/// Long-lived runtime handle for test infrastructure (server + pool).
+/// The runtime is leaked so it never drops, keeping the server alive and the
+/// pool's background tasks running for the entire test process. Without this,
+/// each `#[tokio::test]` creates its own runtime; the first test to initialize
+/// the `OnceCell` spawns the server on ITS runtime, and when that test finishes
+/// the runtime drops, killing the server and making pool connections stale.
+fn infra_handle() -> tokio::runtime::Handle {
+    static HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
+    HANDLE
+        .get_or_init(|| {
+            // multi_thread runtime has its own worker threads that keep running
+            // even after the creating thread moves on (via std::mem::forget).
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
+                .enable_all()
+                .build()
+                .expect("Failed to create test infrastructure runtime");
+            let handle = rt.handle().clone();
+            // Leak the runtime so its worker threads (pool connection manager,
+            // server workers, Casbin reloader, etc.) stay alive for the process.
+            std::mem::forget(rt);
+            handle
+        })
+        .clone()
+}
+
 pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option<TestApp> {
     ensure_test_access_control_conf();
 
@@ -26,33 +52,55 @@ pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option
     let port = listener.local_addr().unwrap().port();
     let address = format!("http://127.0.0.1:{}", port);
     configuration.database.database_name = uuid::Uuid::new_v4().to_string();
+    let connection_string = configuration.database.connection_string();
 
-    let connection_pool = match configure_database(&configuration.database).await {
-        Ok(pool) => pool,
+    // Create pool and server on the long-lived infrastructure runtime so they
+    // survive across #[tokio::test] runtime boundaries.
+    let handle = infra_handle();
+    let result = handle
+        .spawn(async move {
+            let connection_pool = match configure_database(&configuration.database).await {
+                Ok(pool) => pool,
+                Err(err) => {
+                    eprintln!("Skipping tests: failed to connect to postgres: {}", err);
+                    return None;
+                }
+            };
+
+            let agent_pool = AgentPgPool::new(connection_pool.clone());
+            let server =
+                stacker::startup::run(listener, connection_pool.clone(), agent_pool, configuration)
+                    .await
+                    .expect("Failed to bind address.");
+
+            tokio::spawn(server);
+            println!("Used Port: {}", port);
+
+            Some(TestApp {
+                address,
+                db_pool: connection_pool,
+                connection_string,
+            })
+        })
+        .await;
+
+    match result {
+        Ok(app) => app,
         Err(err) => {
-            eprintln!("Skipping tests: failed to connect to postgres: {}", err);
-            return None;
+            eprintln!("Skipping tests: infrastructure task panicked: {}", err);
+            None
         }
-    };
-
-    let agent_pool = AgentPgPool::new(connection_pool.clone());
-    let server =
-        stacker::startup::run(listener, connection_pool.clone(), agent_pool, configuration)
-            .await
-            .expect("Failed to bind address.");
-
-    let _ = tokio::spawn(server);
-    println!("Used Port: {}", port);
-
-    Some(TestApp {
-        address,
-        db_pool: connection_pool,
-    })
+    }
 }
 
 pub async fn spawn_app() -> Option<TestApp> {
     let mut configuration = get_configuration().expect("Failed to get configuration");
     apply_test_database_env_overrides(&mut configuration);
+
+    // Disable DockerHub connector in tests to skip Redis connection timeout
+    if let Some(ref mut cfg) = configuration.connectors.dockerhub_service {
+        cfg.enabled = false;
+    }
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0")
         .expect("Failed to bind port for testing auth server");
@@ -63,8 +111,12 @@ pub async fn spawn_app() -> Option<TestApp> {
     );
     println!("Auth Server is running on: {}", configuration.auth_url);
 
-    // Start mock auth server in background; do not await the JoinHandle
-    let _ = tokio::spawn(mock_auth_server(listener));
+    // Start mock auth server on the infrastructure runtime so it stays alive
+    // across test function boundaries.
+    let handle = infra_handle();
+    handle.spawn(async move {
+        mock_auth_server(listener).await;
+    });
     // Give the mock server a brief moment to start listening
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -87,6 +139,11 @@ pub async fn spawn_app_with_test_auth_configuration(
 ) -> Option<TestApp> {
     apply_test_database_env_overrides(&mut configuration);
 
+    // Disable DockerHub connector in tests to skip Redis connection timeout
+    if let Some(ref mut cfg) = configuration.connectors.dockerhub_service {
+        cfg.enabled = false;
+    }
+
     let listener = std::net::TcpListener::bind("127.0.0.1:0")
         .expect("Failed to bind port for testing auth server");
 
@@ -95,7 +152,10 @@ pub async fn spawn_app_with_test_auth_configuration(
         listener.local_addr().unwrap().port()
     );
 
-    let _ = tokio::spawn(mock_auth_server(listener));
+    let handle = infra_handle();
+    handle.spawn(async move {
+        mock_auth_server(listener).await;
+    });
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     spawn_app_with_configuration(configuration).await
@@ -180,6 +240,11 @@ pub async fn spawn_app_two_users_with_user_service(
 pub async fn spawn_app_two_users_with_configuration(
     mut configuration: Settings,
 ) -> Option<TwoUserTestApp> {
+    // Disable DockerHub connector in tests to skip Redis connection timeout
+    if let Some(ref mut cfg) = configuration.connectors.dockerhub_service {
+        cfg.enabled = false;
+    }
+
     let auth_listener = std::net::TcpListener::bind("127.0.0.1:0")
         .expect("Failed to bind port for testing auth server");
 
@@ -597,7 +662,11 @@ pub async fn seed_marketplace_template_ratings_for_vendor(pool: &PgPool, creator
                         created_at,
                         updated_at
                     )
-                    VALUES ($1, $2, 'application', $3, false, $4, NOW(), NOW())"#,
+                    VALUES ($1, $2, 'application', $3, false, $4, NOW(), NOW())
+                    ON CONFLICT (user_id, obj_id, category) WHERE hidden = false DO UPDATE SET
+                        comment = EXCLUDED.comment,
+                        rate = EXCLUDED.rate,
+                        updated_at = NOW()"#,
                 )
                 .bind(format!("rating-user-{}-{}", slug, rating_index))
                 .bind(product_id)
@@ -622,9 +691,23 @@ pub async fn configure_database(config: &DatabaseSettings) -> Result<PgPool, sql
         .execute(format!(r#"CREATE DATABASE "{}""#, config.database_name).as_str())
         .await?;
 
-    let connection_pool = PgPool::connect(&config.connection_string()).await?;
+    // Run migrations on a dedicated single-connection pool so the advisory lock
+    // and any DDL catalog locks are fully released before the server pool is
+    // created. This prevents PoolTimedOut when concurrent tests query the pool
+    // immediately after server boot while migration connections are still in use.
+    let migrate_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(120))
+        .connect(&config.connection_string())
+        .await?;
+    sqlx::migrate!("./migrations").run(&migrate_pool).await?;
+    migrate_pool.close().await;
 
-    sqlx::migrate!("./migrations").run(&connection_pool).await?;
+    let connection_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(32)
+        .acquire_timeout(std::time::Duration::from_secs(120))
+        .connect(&config.connection_string())
+        .await?;
 
     Ok(connection_pool)
 }
@@ -632,12 +715,194 @@ pub async fn configure_database(config: &DatabaseSettings) -> Result<PgPool, sql
 pub struct TestApp {
     pub address: String,
     pub db_pool: PgPool,
+    /// Database connection string. Tests that need a pool on their own runtime
+    /// (to avoid cross-runtime PgPool issues) can create a fresh pool from this.
+    pub connection_string: String,
+}
+
+/// Cached server info. Used by `get_or_init_app_fresh` to create a fresh
+/// `PgPool` on the caller's runtime for each test, avoiding cross-runtime
+/// pool issues.
+pub struct TestAppConfig {
+    pub address: String,
+    pub connection_string: String,
+}
+
+/// Initialize a shared `TestApp` in the given `OnceCell`, booting the server
+/// only once per test file. All tests in the file share the same server and
+/// database. Tests must use unique identifiers (UUIDs) to avoid data conflicts.
+///
+/// Usage in a test file:
+/// ```ignore
+/// use tokio::sync::OnceCell;
+/// static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+///
+/// async fn app() -> &'static common::TestApp {
+///     common::get_or_init_app(&APP).await.expect("Failed to start test app")
+/// }
+///
+/// #[tokio::test]
+/// async fn my_test() {
+///     let app = app().await;
+///     // ...
+/// }
+/// ```
+pub async fn get_or_init_app(
+    cell: &'static tokio::sync::OnceCell<TestApp>,
+) -> Option<&'static TestApp> {
+    cell.get_or_try_init(|| async { spawn_app().await.ok_or(()) })
+        .await
+        .ok()
+}
+
+/// Like `get_or_init_app` but creates a fresh `PgPool` on the caller's
+/// runtime for each call. This avoids cross-runtime pool issues when
+/// `#[tokio::test]` creates a new runtime per test function.
+///
+/// Usage:
+/// ```ignore
+/// use tokio::sync::OnceCell;
+/// static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
+///
+/// async fn app() -> common::TestApp {
+///     common::get_or_init_app_fresh(&APP_CONFIG).await.expect("Failed to start test app")
+/// }
+/// ```
+pub async fn get_or_init_app_fresh(
+    cell: &'static tokio::sync::OnceCell<TestAppConfig>,
+) -> Option<TestApp> {
+    let config = cell
+        .get_or_try_init(|| async {
+            let app = spawn_app().await.ok_or(())?;
+            Ok::<_, ()>(TestAppConfig {
+                address: app.address,
+                connection_string: app.connection_string,
+            })
+        })
+        .await
+        .ok()?;
+
+    let db_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(4)
+        .acquire_timeout(std::time::Duration::from_secs(120))
+        .connect(&config.connection_string)
+        .await
+        .ok()?;
+
+    Some(TestApp {
+        address: config.address.clone(),
+        db_pool,
+        connection_string: config.connection_string.clone(),
+    })
+}
+
+pub async fn get_or_init_two_user_app(
+    cell: &'static tokio::sync::OnceCell<TwoUserTestApp>,
+) -> Option<&'static TwoUserTestApp> {
+    cell.get_or_try_init(|| async { spawn_app_two_users().await.ok_or(()) })
+        .await
+        .ok()
+}
+
+pub async fn get_or_init_vault_app(
+    cell: &'static tokio::sync::OnceCell<TestAppWithVault>,
+) -> Option<&'static TestAppWithVault> {
+    cell.get_or_try_init(|| async { spawn_app_with_vault().await.ok_or(()) })
+        .await
+        .ok()
 }
 
 pub struct TestAppWithVault {
     pub address: String,
     pub db_pool: PgPool,
     pub vault_server: MockServer,
+    pub connection_string: String,
+}
+
+/// Cached vault app info (address, DB connection string, and the mock Vault
+/// server). Used by `get_or_init_vault_app_fresh` to create a fresh `PgPool`
+/// on the caller's runtime for each test, avoiding cross-runtime pool issues
+/// (see `TestAppConfig`/`get_or_init_app_fresh` above for the same pattern).
+pub struct TestAppWithVaultShared {
+    pub address: String,
+    pub connection_string: String,
+    pub vault_server: MockServer,
+}
+
+/// Vault test app with a `PgPool` created fresh on the caller's runtime.
+/// `vault_server` is a `&'static MockServer` shared across tests in the file
+/// (safe to reuse across runtimes since wiremock's `MockServer` runs its own
+/// independent server/runtime internally).
+pub struct TestAppWithVaultFresh {
+    pub address: String,
+    pub db_pool: PgPool,
+    pub vault_server: &'static MockServer,
+}
+
+/// Dedicated background tokio runtime that outlives every individual
+/// `#[tokio::test]` runtime. The actix server (and the `PgPool` it uses
+/// internally) must be bootstrapped on a runtime that stays alive for the
+/// whole test binary process — if it's bootstrapped on whichever ephemeral
+/// per-test runtime happens to trigger the `OnceCell` first, that runtime is
+/// dropped when that test returns, and the server's pool can no longer
+/// establish new physical connections (acquire() then hangs until timeout).
+static SERVER_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+fn server_runtime() -> &'static tokio::runtime::Runtime {
+    SERVER_RUNTIME.get_or_init(|| {
+        tokio::runtime::Runtime::new().expect("Failed to create dedicated server runtime")
+    })
+}
+
+/// Like `get_or_init_vault_app` but creates a fresh `PgPool` on the caller's
+/// runtime for each call. This avoids `PoolTimedOut` hangs caused by reusing
+/// a single `PgPool` across the different tokio runtimes that `#[tokio::test]`
+/// creates for each test function (a live connection/background task tied to
+/// one test's runtime becomes unusable once that runtime is dropped).
+///
+/// Usage:
+/// ```ignore
+/// use tokio::sync::OnceCell;
+/// static APP: OnceCell<common::TestAppWithVaultShared> = OnceCell::const_new();
+///
+/// async fn app() -> common::TestAppWithVaultFresh {
+///     common::get_or_init_vault_app_fresh(&APP).await.expect("Failed to start test app")
+/// }
+/// ```
+pub async fn get_or_init_vault_app_fresh(
+    cell: &'static tokio::sync::OnceCell<TestAppWithVaultShared>,
+) -> Option<TestAppWithVaultFresh> {
+    let shared = cell
+        .get_or_try_init(|| async {
+            // Bootstrap the server and its pool on the persistent runtime
+            // instead of the caller's (ephemeral) test runtime.
+            let app = server_runtime()
+                .spawn(spawn_app_with_vault())
+                .await
+                .ok()
+                .flatten()
+                .ok_or(())?;
+            Ok::<_, ()>(TestAppWithVaultShared {
+                address: app.address,
+                connection_string: app.connection_string,
+                vault_server: app.vault_server,
+            })
+        })
+        .await
+        .ok()?;
+
+    let db_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(4)
+        .acquire_timeout(std::time::Duration::from_secs(120))
+        .connect(&shared.connection_string)
+        .await
+        .ok()?;
+
+    Some(TestAppWithVaultFresh {
+        address: shared.address.clone(),
+        db_pool,
+        vault_server: &shared.vault_server,
+    })
 }
 
 /// Spawn the full app with a mock Vault server.
@@ -645,6 +910,11 @@ pub struct TestAppWithVault {
 /// before calling API endpoints that touch Vault.
 pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
     let mut configuration = get_configuration().expect("Failed to get configuration");
+
+    // Disable DockerHub connector in tests to skip Redis connection timeout
+    if let Some(ref mut cfg) = configuration.connectors.dockerhub_service {
+        cfg.enabled = false;
+    }
 
     // Mock auth server
     let auth_listener = std::net::TcpListener::bind("127.0.0.1:0")
@@ -666,6 +936,7 @@ pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
         Some(stacker::connectors::InstallServiceConfig { enabled: false });
 
     configuration.database.database_name = uuid::Uuid::new_v4().to_string();
+    let connection_string = configuration.database.connection_string();
 
     let connection_pool = match configure_database(&configuration.database).await {
         Ok(pool) => pool,
@@ -694,6 +965,7 @@ pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
         address,
         db_pool: connection_pool,
         vault_server,
+        connection_string,
     })
 }
 
@@ -701,8 +973,8 @@ pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
 /// Required because server.project_id has a FK constraint to project(id).
 pub async fn create_test_project(pool: &PgPool, user_id: &str) -> i32 {
     sqlx::query(
-        r#"INSERT INTO project (stack_id, user_id, name, metadata, request_json, created_at, updated_at)
-        VALUES (gen_random_uuid(), $1, 'Test Project', '{}'::jsonb, '{}'::jsonb, NOW(), NOW())
+        r#"INSERT INTO project (stack_id, user_id, name, metadata, request_json, is_protected, created_at, updated_at)
+        VALUES (gen_random_uuid(), $1, 'Test Project', '{}'::jsonb, '{}'::jsonb, false, NOW(), NOW())
         RETURNING id"#,
     )
     .bind(user_id)

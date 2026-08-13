@@ -76,8 +76,14 @@ jobs:
           path: ${{ matrix.artifact_name }}.tar.gz
           retention-days: 7
   test:
-    name: Run CLI tests
+    name: Run CLI tests (shard ${{ matrix.shard }}/${{ matrix.shards }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+        shards: [4]
     services:
       postgres:
         image: postgres:16
@@ -86,7 +92,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: postgres
         ports:
-          - 5432/tcp
+          - 5432:5432
         options: >-
           --init
           --health-cmd "pg_isready -U postgres"
@@ -100,7 +106,7 @@ jobs:
       - name: Export PostgreSQL connection env
         run: |
           echo "PGHOST=127.0.0.1" >> "$GITHUB_ENV"
-          echo "PGPORT=${{ job.services.postgres.ports['5432'] }}" >> "$GITHUB_ENV"
+          echo "PGPORT=5432" >> "$GITHUB_ENV"
           echo "PGUSER=postgres" >> "$GITHUB_ENV"
           echo "PGPASSWORD=postgres" >> "$GITHUB_ENV"
       - name: Install protoc
@@ -122,5 +128,16 @@ jobs:
           override: true
       - name: Cache Cargo registry/git/target (with stale-artifact pruning)
         uses: Swatinem/rust-cache@v2
-      - name: Run CLI integration tests
-        run: cargo test --tests --verbose
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+      # nextest runs each test in its own process, so tests that mutate global
+      # env vars (std::env::set_var) no longer race — that is why the old
+      # RUST_TEST_THREADS=1 serialization is gone. Work is split into shards that
+      # run in parallel across matrix jobs to stay under the wall-clock timeout.
+      - name: Run integration tests (shard ${{ matrix.shard }}/${{ matrix.shards }})
+        run: cargo nextest run --partition count:${{ matrix.shard }}/${{ matrix.shards }} -E 'not binary(bdd)'
+      # The `bdd` test uses a custom harness (harness = false), which nextest
+      # cannot run, so execute it once on shard 1 with the standard test runner.
+      - name: Run BDD suite
+        if: ${{ matrix.shard == 1 }}
+        run: cargo test --test bdd

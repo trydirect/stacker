@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod agent_audit_log;
 pub(crate) mod agreement;
+pub mod baked_snapshot;
 pub mod chat;
 pub mod client;
 pub(crate) mod cloud;

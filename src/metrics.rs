@@ -63,6 +63,25 @@ lazy_static! {
         "Number of currently active agents"
     )
     .expect("Failed to register active_agents");
+
+    // ── Public Audit Checker Metrics ────────────────────────────
+    /// Rate-limiter decisions on /api/audit/*, by tier and decision
+    /// (allow | throttle | overload).
+    pub static ref AUDIT_RATE_LIMIT_TOTAL: CounterVec = register_counter_vec!(
+        "audit_rate_limit_total",
+        "Audit endpoint rate-limiter decisions",
+        &["tier", "decision"]
+    )
+    .expect("Failed to register audit_rate_limit_total");
+
+    /// Result-cache outcomes on /api/audit/*, by checker and result
+    /// (hit | miss | bypass).
+    pub static ref AUDIT_CACHE_TOTAL: CounterVec = register_counter_vec!(
+        "audit_cache_total",
+        "Audit endpoint result-cache outcomes",
+        &["checker", "result"]
+    )
+    .expect("Failed to register audit_cache_total");
 }
 
 /// Initialize all metrics (forces lazy_static registration).
@@ -75,6 +94,8 @@ pub fn init() {
     lazy_static::initialize(&DAG_STEPS_TOTAL);
     lazy_static::initialize(&ACTIVE_PIPE_INSTANCES);
     lazy_static::initialize(&ACTIVE_AGENTS);
+    lazy_static::initialize(&AUDIT_RATE_LIMIT_TOTAL);
+    lazy_static::initialize(&AUDIT_CACHE_TOTAL);
 
     // Pre-initialize CounterVec label combinations so they appear in /metrics output
     // even before first use (Prometheus best practice: expose all known label sets).

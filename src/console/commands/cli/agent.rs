@@ -2871,18 +2871,46 @@ impl CallableTrait for AgentInstallCommand {
 
             // Find the deployment hash for this project
             let pb = progress::spinner("Resolving deployment...");
+            let lock_for_local = crate::cli::deployment_lock::DeploymentLock::load(&project_dir)?;
             let deployment_hash: Result<String, CliError> = ctx.block_on(async {
-                let project = ctx
-                    .client
-                    .find_project_by_name(&project_name)
-                    .await?
-                    .ok_or_else(|| {
-                        CliError::ConfigValidation(format!(
-                            "Project '{}' not found on the Stacker server.\n\
-                             Deploy the project first with: stacker deploy --target server",
-                            project_name
-                        ))
-                    })?;
+                let project = if let Some(lock) = lock_for_local.as_ref() {
+                    if let Some(pid) = lock.project_id {
+                        ctx.client
+                            .list_projects()
+                            .await?
+                            .into_iter()
+                            .find(|p| p.id == pid as i32)
+                            .ok_or_else(|| {
+                                CliError::ConfigValidation(format!(
+                                    "Project ID {} from lock file not found.\n\
+                                     Deploy the project first with: stacker deploy --target server",
+                                    pid
+                                ))
+                            })?
+                    } else {
+                        ctx.client
+                            .find_project_by_name(&project_name)
+                            .await?
+                            .ok_or_else(|| {
+                                CliError::ConfigValidation(format!(
+                                    "Project '{}' not found on the Stacker server.\n\
+                                     Deploy the project first with: stacker deploy --target server",
+                                    project_name
+                                ))
+                            })?
+                    }
+                } else {
+                    ctx.client
+                        .find_project_by_name(&project_name)
+                        .await?
+                        .ok_or_else(|| {
+                            CliError::ConfigValidation(format!(
+                                "Project '{}' not found on the Stacker server.\n\
+                                 Deploy the project first with: stacker deploy --target server",
+                                project_name
+                            ))
+                        })?
+                };
 
                 let deployments = ctx
                     .client
@@ -2934,21 +2962,52 @@ impl CallableTrait for AgentInstallCommand {
         // ── Cloud install path (public-IP servers) ────────────────────────────
         let pb = progress::spinner("Installing Status Panel agent");
 
+        // Load deployment lock to get the correct project_id (avoids name collision)
+        let lock = crate::cli::deployment_lock::DeploymentLock::load(&project_dir)?;
+
         let result: Result<stacker_client::DeployResponse, CliError> = ctx.block_on(async {
             let target_label = config.deploy.target.to_string();
-            // 1. Find the project
+            // 1. Find the project — prefer lock file project_id over name lookup
             progress::update_message(&pb, "Finding project...");
-            let project = ctx
-                .client
-                .find_project_by_name(&project_name)
-                .await?
-                .ok_or_else(|| {
-                    CliError::ConfigValidation(format!(
-                        "Project '{}' not found on the Stacker server.\n\
-                     Deploy the project first with: stacker deploy --target {}",
-                        project_name, target_label
-                    ))
-                })?;
+            let project = if let Some(lock) = lock.as_ref() {
+                if let Some(pid) = lock.project_id {
+                    // Fetch project by ID via list_projects and filter
+                    ctx.client
+                        .list_projects()
+                        .await?
+                        .into_iter()
+                        .find(|p| p.id == pid as i32)
+                        .ok_or_else(|| {
+                            CliError::ConfigValidation(format!(
+                                "Project ID {} from lock file not found.\n\
+                                 Deploy the project first with: stacker deploy --target {}",
+                                pid, target_label
+                            ))
+                        })?
+                } else {
+                    ctx.client
+                        .find_project_by_name(&project_name)
+                        .await?
+                        .ok_or_else(|| {
+                            CliError::ConfigValidation(format!(
+                                "Project '{}' not found on the Stacker server.\n\
+                             Deploy the project first with: stacker deploy --target {}",
+                                project_name, target_label
+                            ))
+                        })?
+                }
+            } else {
+                ctx.client
+                    .find_project_by_name(&project_name)
+                    .await?
+                    .ok_or_else(|| {
+                        CliError::ConfigValidation(format!(
+                            "Project '{}' not found on the Stacker server.\n\
+                         Deploy the project first with: stacker deploy --target {}",
+                            project_name, target_label
+                        ))
+                    })?
+            };
 
             // 2. Find the server for this project
             progress::update_message(&pb, "Finding server...");

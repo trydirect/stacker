@@ -9,6 +9,27 @@
 
 **Build, deploy, and manage containerised applications with a single config file.**
 
+<br>
+
+<img alt="Deploying Directus (Node + Postgres) to an existing server with Stacker" src="docs/demos/directus-deploy.gif" width="720">
+
+<sub>Real deploys, one command each. See <a href="https://github.com/trydirect/stacker-project-examples/tree/main/stacker-projects">stacker-project-examples</a>.</sub>
+
+<details>
+<summary>More demos — n8n · Gotify</summary>
+
+<br>
+
+**n8n** (workflow automation, Node + Postgres)
+
+<img alt="Deploying n8n with Stacker" src="docs/demos/n8n-deploy.gif" width="720">
+
+**Gotify** (push-notification server, single container)
+
+<img alt="Deploying Gotify with Stacker" src="docs/demos/gotify-deploy.gif" width="720">
+
+</details>
+
 </div>
 
 Stacker is a platform for turning any project into a deployable Docker stack. Add a `stacker.yml` to your repo, and Stacker generates Dockerfiles, docker-compose definitions, reverse-proxy configs, and deploys locally or to cloud providers — optionally with AI assistance.
@@ -177,10 +198,13 @@ The end-user tool. No server required for local deploys.
 | `stacker deploy` | Build & deploy the stack (local, cloud, or server). Cloud deploys also install a local SSH backup key when possible. `--runtime kata\|runc` selects container runtime |
 | `stacker status` | Show running containers and health |
 | `stacker logs` | View container logs (`--follow`, `--service`, `--tail`) |
+| `stacker deployment state` / `stacker deployment status` | Show canonical deployment state (defaults to latest; `--pinned` uses stacker.yml hash) |
+| `stacker deployment events` | Show structured deployment events (`--pinned` uses stacker.yml hash) |
+| `stacker deployment rollback` | Preview or apply a deployment rollback |
 | `stacker secrets` | Manage local `.env` secrets or remote Vault-backed `service` / `server` secrets |
-| `stacker list deployments` / `stacker deployments` | List deployments on the Stacker server |
+| `stacker list deployments` / `stacker deployments` / `stacker ps` | List deployments on the Stacker server |
 | `stacker list servers` / `stacker servers` | List saved servers |
-| `stacker list clouds` / `stacker clouds` | List saved cloud credentials |
+| `stacker list clouds` / `stacker clouds` / `stacker keys` / `stacker cloud keys` | List saved cloud credentials |
 | `stacker list ssh-keys` / `stacker ssh-keys` | List per-server SSH key status |
 | `stacker destroy` | Tear down the deployed stack |
 | `stacker config validate` | Validate `stacker.yml` syntax |

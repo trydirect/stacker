@@ -31,6 +31,7 @@ fn project_scope(path: &str) -> actix_web::Scope {
         .service(crate::routes::project::add::item)
         .service(crate::routes::project::update::item)
         .service(crate::routes::project::delete::item)
+        .service(crate::routes::project::protection::toggle)
         .service(crate::routes::project::app::list_apps)
         .service(crate::routes::project::app::create_app)
         .service(crate::routes::project::app::get_app)
@@ -135,6 +136,40 @@ pub async fn run(
         };
         error::InternalError::new(msg, http::StatusCode::BAD_REQUEST).into()
     });
+
+    // Shared Redis connection for the public /api/audit/* rate limiter.
+    // Fail-soft: if Redis is unavailable at boot, the endpoints still run
+    // (protected by the body-size cap) without the shared limiter.
+    let audit_rl_cfg = crate::helpers::rate_limit::AuditRateLimitConfig::from_env();
+    let audit_redis: Option<redis::aio::ConnectionManager> = {
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/0".to_string());
+        match redis::Client::open(redis_url.as_str()) {
+            Ok(client) => {
+                match tokio::time::timeout(
+                    Duration::from_secs(2),
+                    redis::aio::ConnectionManager::new(client),
+                )
+                .await
+                {
+                    Ok(Ok(cm)) => Some(cm),
+                    Ok(Err(err)) => {
+                        tracing::warn!("audit rate limiter: Redis unavailable at startup ({err}); running without the shared limiter");
+                        None
+                    }
+                    Err(_) => {
+                        tracing::warn!("audit rate limiter: Redis connection timed out; running without the shared limiter");
+                        None
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!("audit rate limiter: invalid REDIS_URL ({err})");
+                None
+            }
+        }
+    };
+
     let server = HttpServer::new(move || {
         App::new()
             .wrap(
@@ -162,6 +197,12 @@ pub async fn run(
             .app_data(oauth_http_client.clone())
             .app_data(oauth_cache.clone())
             .app_data(payout_provider.clone())
+            .configure({
+                let redis = audit_redis.clone();
+                let cfg = audit_rl_cfg.clone();
+                move |c| crate::routes::audit::configure(c, redis.clone(), cfg.clone())
+            })
+            .configure(crate::routes::oneclick_deploy::configure)
             .service(
                 web::scope("/health_check")
                     .service(routes::health_check)

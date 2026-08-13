@@ -4,6 +4,16 @@ use reqwest::StatusCode;
 use serde_json::{json, Value};
 use stacker::{db, models};
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TestApp {
+    common::get_or_init_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 fn project_payload(stack_code: &str, service_codes: &[&str]) -> Value {
     let services = service_codes
         .iter()

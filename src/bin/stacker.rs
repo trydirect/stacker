@@ -16,6 +16,7 @@
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use stacker::console::commands::cli::secrets::RemoteSecretScope;
+use std::path::PathBuf;
 
 fn print_banner() {
     let version = env!("CARGO_PKG_VERSION");
@@ -179,6 +180,9 @@ enum StackerCommands {
         /// marketplace. Only pass this after reviewing the hook scripts.
         #[arg(long)]
         allow_untrusted_hooks: bool,
+        /// Send a terminal/desktop notification when deploy finishes.
+        #[arg(long)]
+        notify: bool,
     },
     /// Attach this directory to an existing deployment from the dashboard
     Connect {
@@ -289,9 +293,12 @@ enum StackerCommands {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
-        /// Watch for changes (refresh periodically)
+        /// Watch for changes (refresh periodically); notifies on completion by default
         #[arg(long)]
         watch: bool,
+        /// Send a terminal/desktop notification when deployment reaches a terminal state (on by default in --watch mode)
+        #[arg(long)]
+        notify: bool,
     },
     /// Deployment inspection commands
     Deployment {
@@ -345,6 +352,7 @@ enum StackerCommands {
         json: bool,
     },
     /// List deployments (alias for `stacker list deployments`)
+    #[command(visible_alias = "ps")]
     Deployments {
         /// Filter by project ID
         #[arg(long)]
@@ -352,6 +360,21 @@ enum StackerCommands {
         /// Limit number of results
         #[arg(long)]
         limit: Option<i64>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pull project configuration to local directory
+    Pull {
+        /// Project ID or name
+        #[arg(value_name = "PROJECT_REF")]
+        project_ref: String,
+        /// Overwrite existing files without asking
+        #[arg(long)]
+        force: bool,
+        /// Target directory (default: current)
+        #[arg(long)]
+        dir: Option<PathBuf>,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -371,6 +394,12 @@ enum StackerCommands {
     },
     /// List saved cloud credentials (alias for `stacker list clouds`)
     Clouds {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// List saved cloud credentials (alias for `stacker list clouds`)
+    Keys {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -485,6 +514,12 @@ enum CloudCommands {
     Firewall {
         #[command(subcommand)]
         command: CloudFirewallCommands,
+    },
+    /// List saved cloud credentials
+    Keys {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -760,6 +795,7 @@ enum ServiceCommands {
 #[derive(Debug, Subcommand)]
 enum DeploymentCommands {
     /// Show canonical deployment state
+    #[command(visible_alias = "status")]
     State {
         /// Output in JSON format
         #[arg(long)]
@@ -767,6 +803,9 @@ enum DeploymentCommands {
         /// Override deployment hash instead of using stacker.yml
         #[arg(long)]
         deployment: Option<String>,
+        /// Use the deployment hash from stacker.yml instead of the latest
+        #[arg(long)]
+        pinned: bool,
     },
     /// Show structured deployment events
     Events {
@@ -776,6 +815,9 @@ enum DeploymentCommands {
         /// Override deployment hash instead of using stacker.yml
         #[arg(long)]
         deployment: Option<String>,
+        /// Use the deployment hash from stacker.yml instead of the latest
+        #[arg(long)]
+        pinned: bool,
     },
     /// Preview or apply a deployment rollback
     Rollback {
@@ -1932,6 +1974,7 @@ fn get_command(
             apply_plan,
             no_hooks,
             allow_untrusted_hooks,
+            notify,
         } => Box::new(
             stacker::console::commands::cli::deploy::DeployCommand::new(
                 target,
@@ -1949,7 +1992,8 @@ fn get_command(
             .with_runtime(runtime)
             .with_plan(plan)
             .with_apply_plan(apply_plan)
-            .with_hook_flags(no_hooks, allow_untrusted_hooks),
+            .with_hook_flags(no_hooks, allow_untrusted_hooks)
+            .with_notify(notify),
         ),
         StackerCommands::Connect { handoff } => {
             Box::new(stacker::console::commands::cli::connect::ConnectCommand::new(handoff))
@@ -1962,18 +2006,30 @@ fn get_command(
         } => Box::new(stacker::console::commands::cli::logs::LogsCommand::new(
             service, follow, tail, since,
         )),
-        StackerCommands::Status { json, watch } => Box::new(
-            stacker::console::commands::cli::status::StatusCommand::new(json, watch),
-        ),
+        StackerCommands::Status {
+            json,
+            watch,
+            notify,
+        } => Box::new(stacker::console::commands::cli::status::StatusCommand::new(
+            json, watch, notify,
+        )),
         StackerCommands::Deployment { command } => match command {
-            DeploymentCommands::State { json, deployment } => Box::new(
+            DeploymentCommands::State {
+                json,
+                deployment,
+                pinned,
+            } => Box::new(
                 stacker::console::commands::cli::deployment::DeploymentStateCommand::new(
-                    json, deployment,
+                    json, deployment, pinned,
                 ),
             ),
-            DeploymentCommands::Events { json, deployment } => Box::new(
+            DeploymentCommands::Events {
+                json,
+                deployment,
+                pinned,
+            } => Box::new(
                 stacker::console::commands::cli::deployment::DeploymentEventsCommand::new(
-                    json, deployment,
+                    json, deployment, pinned,
                 ),
             ),
             DeploymentCommands::Rollback {
@@ -2122,6 +2178,17 @@ fn get_command(
                 json, project, limit,
             ),
         ),
+        StackerCommands::Pull {
+            project_ref,
+            force,
+            dir,
+            json,
+        } => Box::new(stacker::console::commands::cli::pull::PullCommand::new(
+            project_ref,
+            force,
+            dir,
+            json,
+        )),
         StackerCommands::Servers { json } => {
             Box::new(stacker::console::commands::cli::list::ListServersCommand::new(json))
         }
@@ -2129,6 +2196,9 @@ fn get_command(
             Box::new(stacker::console::commands::cli::list::ListSshKeysCommand::new(json))
         }
         StackerCommands::Clouds { json } => {
+            Box::new(stacker::console::commands::cli::list::ListCloudsCommand::new(json))
+        }
+        StackerCommands::Keys { json } => {
             Box::new(stacker::console::commands::cli::list::ListCloudsCommand::new(json))
         }
         StackerCommands::SshKey { command: ssh_cmd } => match ssh_cmd {
@@ -2683,6 +2753,9 @@ fn get_command(
                     ),
                 ),
             },
+            CloudCommands::Keys { json } => {
+                Box::new(stacker::console::commands::cli::list::ListCloudsCommand::new(json))
+            }
         },
         StackerCommands::Submit {
             file,

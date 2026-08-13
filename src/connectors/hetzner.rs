@@ -24,6 +24,31 @@ pub struct HetznerSnapshot {
     pub image_id: Option<i64>,
 }
 
+/// Request to clone a server from a baked snapshot image — the user-side of the
+/// immutable-deploy model. All the fragile work already happened at bake time;
+/// deploy = create a server FROM the snapshot and inject cloud-init at first boot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HetznerCreateServerRequest {
+    pub name: String,
+    /// e.g. "cpx11".
+    pub server_type: String,
+    /// e.g. "fsn1".
+    pub location: String,
+    /// The baked snapshot's image id (from `HetznerSnapshot.image_id`). In
+    /// Hetzner a snapshot IS an image, so it is passed as the `image` field.
+    pub image_id: i64,
+    pub ssh_key_ids: Vec<i64>,
+    /// cloud-init user-data injected at first boot: per-user env, secrets and the
+    /// small deterministic config render (domain/TLS). The ONLY per-deploy variance.
+    pub user_data: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HetznerProvisionedServer {
+    pub id: i64,
+    pub public_ipv4: Option<String>,
+}
+
 #[async_trait]
 pub trait HetznerCloudConnector: Send + Sync {
     async fn create_server_snapshot(
@@ -32,6 +57,13 @@ pub trait HetznerCloudConnector: Send + Sync {
         target: HetznerSnapshotTarget,
         description: &str,
     ) -> Result<HetznerSnapshot, ConnectorError>;
+
+    /// Clone a new server from a baked snapshot image (immutable deploy).
+    async fn create_server_from_image(
+        &self,
+        token: &str,
+        request: HetznerCreateServerRequest,
+    ) -> Result<HetznerProvisionedServer, ConnectorError>;
 
     async fn list_server_types(
         &self,
@@ -127,7 +159,7 @@ impl HetznerCloudConnector for HetznerCloudClient {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(status_to_error(status, "Hetzner snapshot request failed"));
+            return Err(error_with_body(response, "Hetzner snapshot request failed").await);
         }
 
         let body: HetznerCreateImageResponse = response
@@ -145,6 +177,55 @@ impl HetznerCloudConnector for HetznerCloudClient {
             action_id: body.action.id,
             status: body.action.status,
             image_id,
+        })
+    }
+
+    async fn create_server_from_image(
+        &self,
+        token: &str,
+        request: HetznerCreateServerRequest,
+    ) -> Result<HetznerProvisionedServer, ConnectorError> {
+        let mut payload = json!({
+            "name": request.name,
+            "server_type": request.server_type,
+            "location": request.location,
+            // A snapshot is an image; cloning from it means passing it as `image`.
+            "image": request.image_id,
+            "start_after_create": true,
+        });
+        if !request.ssh_key_ids.is_empty() {
+            payload["ssh_keys"] = json!(request.ssh_key_ids);
+        }
+        if let Some(user_data) = &request.user_data {
+            payload["user_data"] = json!(user_data);
+        }
+
+        let response = self
+            .http_client
+            .post(format!("{}/servers", self.base_url))
+            .bearer_auth(token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(ConnectorError::from)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(error_with_body(response, "Hetzner create-server-from-image failed").await);
+        }
+
+        let body: HetznerCreateServerResponse = response
+            .json()
+            .await
+            .map_err(|err| ConnectorError::InvalidResponse(err.to_string()))?;
+        let public_ipv4 = body
+            .server
+            .public_net
+            .and_then(|net| net.ipv4)
+            .map(|ipv4| ipv4.ip);
+        Ok(HetznerProvisionedServer {
+            id: body.server.id,
+            public_ipv4,
         })
     }
 
@@ -185,12 +266,30 @@ impl HetznerCloudConnector for HetznerCloudClient {
 
 fn status_to_error(status: reqwest::StatusCode, message: &str) -> ConnectorError {
     match status.as_u16() {
-        401 | 403 => {
-            ConnectorError::Unauthorized("Hetzner rejected the saved cloud token".to_string())
-        }
+        // 401 is genuine auth; 403 is forbidden for many reasons (permissions,
+        // resource limits, protection) — do NOT claim "rejected token" for it.
+        401 => ConnectorError::Unauthorized("Hetzner rejected the API token (401)".to_string()),
+        403 => ConnectorError::HttpError(format!(
+            "{message} forbidden (403) — check token permissions or account/resource limits"
+        )),
         404 => ConnectorError::NotFound(message.to_string()),
         429 => ConnectorError::RateLimited("Hetzner API rate limit exceeded".to_string()),
         _ => ConnectorError::HttpError(format!("{} with status {}", message, status.as_u16())),
+    }
+}
+
+/// Build an error that INCLUDES Hetzner's response body, so the real cause
+/// (e.g. `resource_limit_exceeded: image limit exceeded`) is surfaced instead of
+/// a misleading generic status message.
+async fn error_with_body(response: reqwest::Response, context: &str) -> ConnectorError {
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    let snippet = body.trim();
+    match status.as_u16() {
+        401 => ConnectorError::Unauthorized(format!("{context}: {snippet}")),
+        429 => ConnectorError::RateLimited(format!("{context}: {snippet}")),
+        404 => ConnectorError::NotFound(format!("{context}: {snippet}")),
+        _ => ConnectorError::HttpError(format!("{context}: HTTP {}: {snippet}", status.as_u16())),
     }
 }
 
@@ -248,6 +347,11 @@ struct HetznerServerIpv4 {
 #[derive(Debug, Deserialize)]
 struct HetznerCreateImageResponse {
     action: HetznerAction,
+}
+
+#[derive(Debug, Deserialize)]
+struct HetznerCreateServerResponse {
+    server: HetznerServer,
 }
 
 #[derive(Debug, Deserialize)]

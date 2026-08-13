@@ -1383,6 +1383,7 @@ Configuration issues:
 | `stacker ai ask` | Ask the AI assistant a question |
 | `stacker proxy add` | Add a reverse-proxy domain entry |
 | `stacker proxy detect` | Detect running reverse proxies |
+| `stacker list clouds` / `stacker clouds` / `stacker keys` / `stacker cloud keys` | List saved cloud credentials (`--json` for machine-readable output) |
 | `stacker cloud firewall add` | Open cloud-provider firewall ports without SSH |
 | `stacker cloud firewall remove` | Remove Stacker-managed cloud-provider firewall rules |
 | `stacker cloud firewall list` | List cloud-provider firewall rules for a server |

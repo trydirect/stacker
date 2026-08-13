@@ -8,6 +8,7 @@ use crate::cli::stacker_client::{
     StackerClient,
 };
 use crate::console::commands::CallableTrait;
+use chrono::Utc;
 use dialoguer::Confirm;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
@@ -475,7 +476,70 @@ impl CallableTrait for MarketplaceInstallCommand {
                 "Installed '{}' as project #{} and started deployment #{}.",
                 response.template.slug, response.project.id, deployment_id
             );
-            println!("Track with: stacker deployment state");
+
+            // Fetch deployment hash — the install response may not include it
+            // (older servers), so resolve it client-side via the project ID.
+            let deployment_hash = if response.deployment_hash.is_some() {
+                response.deployment_hash.clone()
+            } else {
+                let fetched = ctx.block_on(async {
+                    ctx.client
+                        .get_deployment_status_by_project(response.project.id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|d| d.deployment_hash)
+                });
+                eprintln!("[debug] client-side fetch result: {:?}", fetched);
+                fetched
+            };
+
+            if let Some(ref hash) = deployment_hash {
+                // Update stacker.yml with the deployment hash
+                if self.file.exists() {
+                    let hash_clone = hash.clone();
+                    let _ = DeploymentLock::edit_config_value(&self.file, |root| {
+                        let deploy = root
+                            .entry(serde_yaml::Value::String("deploy".to_string()))
+                            .or_insert_with(|| {
+                                serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+                            });
+                        if let Some(deploy_map) = deploy.as_mapping_mut() {
+                            deploy_map.insert(
+                                serde_yaml::Value::String("deployment_hash".to_string()),
+                                serde_yaml::Value::String(hash_clone),
+                            );
+                        }
+                        Ok(())
+                    });
+                }
+                // Create deployment lock file
+                let project_dir = self
+                    .file
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."));
+                let lock = DeploymentLock {
+                    target: "cloud".to_string(),
+                    server_ip: None,
+                    ssh_user: None,
+                    ssh_port: None,
+                    ssh_key: None,
+                    server_name: None,
+                    deployment_id: Some(deployment_id as i64),
+                    project_id: Some(response.project.id as i64),
+                    cloud_id: None,
+                    project_name: Some(response.project.name.clone()),
+                    stacker_email: None,
+                    deployed_at: chrono::Utc::now().to_rfc3339(),
+                };
+                let _ = lock.save(project_dir);
+
+                println!("Track with: stacker deployment state --deployment {}", hash);
+            } else {
+                // Fallback: use project name to find latest deployment
+                println!("Track with: stacker deployment state");
+            }
             return Ok(());
         }
 
@@ -1321,6 +1385,7 @@ mod tests {
             template: marketplace_template("dify"),
             latest_version,
             deployment_id: None,
+            deployment_hash: None,
             authorization: None,
             idempotency_key: None,
         }

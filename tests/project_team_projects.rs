@@ -4,6 +4,16 @@ use reqwest::StatusCode;
 use serde_json::json;
 use sqlx::Row;
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TwoUserTestApp {
+    common::get_or_init_two_user_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 async fn seed_project_and_deployment(pool: &sqlx::PgPool, user_id: &str) -> (i32, i32, String) {
     let project_id = common::create_test_project(pool, user_id).await;
     let hash = format!("team-dpl-{}", uuid::Uuid::new_v4());

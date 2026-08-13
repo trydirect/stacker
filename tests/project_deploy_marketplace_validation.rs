@@ -8,6 +8,16 @@ use uuid::Uuid;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TestAppWithVault> = OnceCell::const_new();
+
+async fn app() -> &'static common::TestAppWithVault {
+    common::get_or_init_vault_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 static APP_SERVICE_ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
 async fn mount_server_catalog(

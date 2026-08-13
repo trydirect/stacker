@@ -19,6 +19,7 @@ const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 pub struct DeploymentStateCommand {
     pub json: bool,
     pub deployment: Option<String>,
+    pub pinned: bool,
 }
 
 /// `stacker deployment events [--json] [--deployment <hash>]`
@@ -27,6 +28,7 @@ pub struct DeploymentStateCommand {
 pub struct DeploymentEventsCommand {
     pub json: bool,
     pub deployment: Option<String>,
+    pub pinned: bool,
 }
 
 /// `stacker deployment rollback --to <target> [--plan] [--apply-plan <fingerprint>] --confirm`
@@ -57,14 +59,22 @@ impl DeploymentRollbackCommand {
 }
 
 impl DeploymentEventsCommand {
-    pub fn new(json: bool, deployment: Option<String>) -> Self {
-        Self { json, deployment }
+    pub fn new(json: bool, deployment: Option<String>, pinned: bool) -> Self {
+        Self {
+            json,
+            deployment,
+            pinned,
+        }
     }
 }
 
 impl DeploymentStateCommand {
-    pub fn new(json: bool, deployment: Option<String>) -> Self {
-        Self { json, deployment }
+    pub fn new(json: bool, deployment: Option<String>, pinned: bool) -> Self {
+        Self {
+            json,
+            deployment,
+            pinned,
+        }
     }
 }
 
@@ -157,7 +167,8 @@ pub(crate) async fn fetch_remote_deployment_plan(
     rollback_target: Option<&str>,
     expected_fingerprint: Option<&str>,
 ) -> Result<DeployPlan, CliError> {
-    let deployment_hash = resolve_deployment_hash(config, base_url, client, requested_hash).await?;
+    let deployment_hash =
+        resolve_deployment_hash(config, base_url, client, requested_hash, true).await?;
     client
         .get_deployment_plan_by_hash(
             &deployment_hash,
@@ -184,6 +195,7 @@ async fn resolve_deployment_hash(
     base_url: &str,
     client: &StackerClient,
     requested_hash: Option<&str>,
+    pinned: bool,
 ) -> Result<String, CliError> {
     if let Some(hash) = requested_hash
         .map(str::trim)
@@ -193,15 +205,17 @@ async fn resolve_deployment_hash(
         return Ok(hash);
     }
 
-    if let Some(hash) = config
-        .deploy
-        .deployment_hash
-        .as_ref()
-        .map(|hash| hash.trim())
-        .filter(|hash| !hash.is_empty())
-        .map(ToOwned::to_owned)
-    {
-        return Ok(hash);
+    if pinned {
+        if let Some(hash) = config
+            .deploy
+            .deployment_hash
+            .as_ref()
+            .map(|hash| hash.trim())
+            .filter(|hash| !hash.is_empty())
+            .map(ToOwned::to_owned)
+        {
+            return Ok(hash);
+        }
     }
 
     let project_name = resolve_project_name(config);
@@ -227,6 +241,7 @@ async fn resolve_deployment_hash(
 fn run_remote_deployment_state(
     json: bool,
     requested_hash: Option<&str>,
+    pinned: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
@@ -257,7 +272,7 @@ fn run_remote_deployment_state(
     rt.block_on(async {
         let client = StackerClient::new(&base_url, &creds.access_token);
         let deployment_hash =
-            resolve_deployment_hash(&config, &base_url, &client, requested_hash).await?;
+            resolve_deployment_hash(&config, &base_url, &client, requested_hash, pinned).await?;
         let state = client
             .get_deployment_state_by_hash(&deployment_hash)
             .await?
@@ -279,6 +294,7 @@ fn run_remote_deployment_state(
 fn run_remote_deployment_events(
     json: bool,
     requested_hash: Option<&str>,
+    pinned: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
@@ -309,7 +325,7 @@ fn run_remote_deployment_events(
     rt.block_on(async {
         let client = StackerClient::new(&base_url, &creds.access_token);
         let deployment_hash =
-            resolve_deployment_hash(&config, &base_url, &client, requested_hash).await?;
+            resolve_deployment_hash(&config, &base_url, &client, requested_hash, pinned).await?;
         let events = client
             .get_deployment_events_by_hash(&deployment_hash)
             .await?
@@ -388,7 +404,7 @@ impl CallableTrait for DeploymentStateCommand {
             )));
         }
 
-        run_remote_deployment_state(self.json, self.deployment.as_deref())
+        run_remote_deployment_state(self.json, self.deployment.as_deref(), self.pinned)
     }
 }
 
@@ -401,7 +417,7 @@ impl CallableTrait for DeploymentEventsCommand {
             )));
         }
 
-        run_remote_deployment_events(self.json, self.deployment.as_deref())
+        run_remote_deployment_events(self.json, self.deployment.as_deref(), self.pinned)
     }
 }
 

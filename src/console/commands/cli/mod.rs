@@ -15,6 +15,7 @@ pub mod logs;
 pub mod marketplace;
 pub mod pipe;
 pub mod proxy;
+pub mod pull;
 pub mod resolve;
 pub mod rollback;
 pub mod secrets;
