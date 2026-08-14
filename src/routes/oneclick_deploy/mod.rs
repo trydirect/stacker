@@ -128,7 +128,9 @@ fn to_issue_json(issues: &[&crate::cli::error::ValidationIssue]) -> Vec<Validati
 #[post("/validate")]
 async fn validate(body: String) -> impl Responder {
     // Parse. A malformed YAML is a config error, not a server error.
-    let config = match StackerConfig::from_str(&body) {
+    // Use from_str_raw so config_contract install inputs (`${VAR}`) that are
+    // filled at deploy time do not fail validation when undefined here.
+    let config = match StackerConfig::from_str_raw(&body) {
         Ok(config) => config,
         Err(err) => {
             let failed = ValidateFailed {

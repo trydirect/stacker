@@ -924,6 +924,21 @@ impl StackerConfig {
         Ok(config)
     }
 
+    /// Load config from a YAML string **without** resolving `${VAR}` placeholders.
+    ///
+    /// Use this for validation/preview where referenced variables (e.g.
+    /// config_contract install inputs) are not yet known. `${VAR}` references
+    /// are kept as-is so a missing variable does not fail the parse.
+    pub fn from_str_raw(yaml: &str) -> Result<Self, CliError> {
+        let origin = detect_origin_from_raw(yaml);
+        let parsed: serde_yaml::Value = serde_yaml::from_str(yaml)?;
+        let app_present = parsed.get("app").is_some();
+        let mut config = deserialize_config_value(parsed)?;
+        config.origin = origin;
+        config.app_present = app_present;
+        Ok(config)
+    }
+
     /// Load config from a YAML string (useful for tests).
     pub fn from_str(yaml: &str) -> Result<Self, CliError> {
         let origin = detect_origin_from_raw(yaml);
