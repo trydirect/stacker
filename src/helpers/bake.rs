@@ -143,7 +143,6 @@ mod tests {
         async fn list_server_types(
             &self,
             _t: &str,
-            _l: Option<&str>,
         ) -> Result<Vec<String>, crate::connectors::ConnectorError> {
             Ok(vec![])
         }

@@ -17,3 +17,5 @@ plan/
 .stacker
 done.txt
 post-deploy-ran.txt
+
+bake/

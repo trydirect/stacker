@@ -1337,6 +1337,46 @@ impl DeployStrategy for CloudDeploy {
             }
         }
 
+        // Pre-flight: reject a server type Hetzner can't create in the chosen
+        // region BEFORE the Terraform container runs, so we fail fast with a
+        // clear message instead of a swallowed "unsupported location" Terraform
+        // error that surfaces only as a paused deploy. Mirrors the server-side
+        // guard in the deploy route — both call the shared connector.
+        if let Some(cloud_cfg) = &config.deploy.cloud {
+            if matches!(
+                cloud_cfg.provider,
+                crate::cli::config_parser::CloudProvider::Hetzner
+            ) {
+                if let Some(server_type) =
+                    cloud_cfg.size.as_deref().filter(|s| !s.trim().is_empty())
+                {
+                    if let Some(token) = first_non_empty_env(cloud_env::token_env_vars("htz")) {
+                        let base_url = crate::connectors::hetzner::api_base_url();
+                        let region = cloud_cfg.region.clone();
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .map_err(|e| CliError::DeployFailed {
+                                target: DeployTarget::Cloud,
+                                reason: format!("Failed to initialize async runtime: {}", e),
+                            })?;
+                        rt.block_on(
+                            crate::connectors::hetzner::validate_server_type_availability(
+                                &base_url,
+                                &token,
+                                server_type,
+                                region.as_deref(),
+                            ),
+                        )
+                        .map_err(|reason| CliError::DeployFailed {
+                            target: DeployTarget::Cloud,
+                            reason,
+                        })?;
+                    }
+                }
+            }
+        }
+
         let action = if context.dry_run {
             InstallAction::Plan
         } else {
