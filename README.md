@@ -542,7 +542,6 @@ See [docs/kata/](docs/kata/README.md) for the full setup guide, network constrai
 ## Documentation
 
 - [stacker.yml reference](docs/STACKER_YML_REFERENCE.md) — full configuration schema
-- [CLI implementation plan](docs/STACKER_CLI_PLAN.md) — architecture and design decisions
 - [Changelog](CHANGELOG.md) — release history
 - [Kata Containers guide](docs/kata/README.md) — hardware-isolated containers with KVM
 
