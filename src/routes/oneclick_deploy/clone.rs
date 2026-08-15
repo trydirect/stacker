@@ -238,7 +238,7 @@ pub async fn clone_server(
     }
 
     let request = HetznerCreateServerRequest {
-        name: format!("{}-{}", form.stack, snapshot.version),
+        name: format!("{}-{}-{}", form.stack, snapshot.version, &deployment_hash[11..19]),
         server_type: form.server_type.clone(),
         location: form.region.clone(),
         image_id,
