@@ -224,6 +224,8 @@ impl InstallServiceConnector for InstallServiceClient {
         mq_manager
             .publish("install".to_string(), routing_key, &payload)
             .await
-            .map_err(|err| format!("Failed to publish post-deploy-clone to MQ: {}", err))
+            .map_err(|err| format!("Failed to publish post-deploy-clone to MQ: {}", err))?;
+
+        Ok(())
     }
 }
