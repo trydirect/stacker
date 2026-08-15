@@ -348,7 +348,10 @@ pub async fn validate_server_type_availability(
     {
         Ok(c) => c,
         Err(err) => {
-            tracing::warn!("Could not initialize Hetzner API client: {}; proceeding", err);
+            tracing::warn!(
+                "Could not initialize Hetzner API client: {}; proceeding",
+                err
+            );
             return Ok(());
         }
     };
@@ -391,7 +394,11 @@ async fn fetch_hetzner_json<T: serde::de::DeserializeOwned>(
     let response = match client.get(url).bearer_auth(token).send().await {
         Ok(r) => r,
         Err(err) => {
-            tracing::warn!("Could not reach Hetzner API for {}: {}; proceeding", what, err);
+            tracing::warn!(
+                "Could not reach Hetzner API for {}: {}; proceeding",
+                what,
+                err
+            );
             return None;
         }
     };
@@ -408,7 +415,11 @@ async fn fetch_hetzner_json<T: serde::de::DeserializeOwned>(
     match response.json::<T>().await {
         Ok(body) => Some(body),
         Err(err) => {
-            tracing::warn!("Invalid Hetzner {} response: {}; skipping validation", what, err);
+            tracing::warn!(
+                "Invalid Hetzner {} response: {}; skipping validation",
+                what,
+                err
+            );
             None
         }
     }
@@ -645,7 +656,6 @@ struct HetznerActionResource {
     resource_type: String,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,7 +696,10 @@ mod tests {
             .expect_err("cpx21 must be rejected in nbg1");
         assert!(err.contains("cpx21"), "error should name the type: {err}");
         assert!(err.contains("nbg1"), "error should name the region: {err}");
-        assert!(err.contains("cpx11"), "error should list available types: {err}");
+        assert!(
+            err.contains("cpx11"),
+            "error should list available types: {err}"
+        );
     }
 
     #[test]
@@ -834,9 +847,11 @@ mod tests {
             .await;
 
         // Existence passes, region check skipped → Ok.
-        assert!(validate_server_type_availability(&api.uri(), "tok", "cpx21", Some("nbg1"))
-            .await
-            .is_ok());
+        assert!(
+            validate_server_type_availability(&api.uri(), "tok", "cpx21", Some("nbg1"))
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]

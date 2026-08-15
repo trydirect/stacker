@@ -164,7 +164,10 @@ impl ToolHandler for SetAppEnvVarTool {
         .await
         .map_err(|e| format!("Failed to load remote service secrets: {}", e))?;
 
-        if service_secrets.iter().any(|secret| secret.name == params.name) {
+        if service_secrets
+            .iter()
+            .any(|secret| secret.name == params.name)
+        {
             return Err(format!(
                 "Environment variable '{}' is managed as a remote service secret. Use 'stacker secrets set {} --scope service --project {} --service {}' instead.",
                 params.name, params.name, params.project_id, params.app_code
