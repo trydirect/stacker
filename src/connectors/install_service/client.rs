@@ -1,4 +1,4 @@
-use super::InstallServiceConnector;
+use super::{InstallServiceConnector, PostDeployClonePayload};
 use crate::forms::cloud_firewall;
 use crate::forms::project::{RegistryForm, Stack, Var};
 use crate::forms::{CloudFirewallOperationMessage, ConfigureCloudFirewallResponse};
@@ -208,5 +208,22 @@ impl InstallServiceConnector for InstallServiceClient {
             firewall_name: None,
             firewall: None,
         })
+    }
+
+    async fn post_deploy_clone(
+        &self,
+        payload: PostDeployClonePayload,
+        mq_manager: &MqManager,
+    ) -> Result<(), String> {
+        let routing_key = "install.post_deploy.clone.all.all".to_string();
+        tracing::info!(
+            deployment_hash = %payload.deployment_hash,
+            server_id = payload.server_id,
+            "publishing post-deploy-clone job to install service"
+        );
+        mq_manager
+            .publish("install".to_string(), routing_key, &payload)
+            .await
+            .map_err(|err| format!("Failed to publish post-deploy-clone to MQ: {}", err))
     }
 }

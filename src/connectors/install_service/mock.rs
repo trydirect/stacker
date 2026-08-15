@@ -1,4 +1,4 @@
-use super::InstallServiceConnector;
+use super::{InstallServiceConnector, PostDeployClonePayload};
 use crate::forms::cloud_firewall;
 use crate::forms::project::{RegistryForm, Stack};
 use crate::forms::{CloudFirewallOperationMessage, ConfigureCloudFirewallResponse};
@@ -53,5 +53,13 @@ impl InstallServiceConnector for MockInstallServiceConnector {
             firewall_name: None,
             firewall: None,
         })
+    }
+
+    async fn post_deploy_clone(
+        &self,
+        _payload: PostDeployClonePayload,
+        _mq_manager: &MqManager,
+    ) -> Result<(), String> {
+        Ok(())
     }
 }

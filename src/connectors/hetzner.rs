@@ -49,6 +49,12 @@ pub struct HetznerProvisionedServer {
     pub public_ipv4: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HetznerSshKey {
+    pub id: i64,
+    pub name: String,
+}
+
 #[async_trait]
 pub trait HetznerCloudConnector: Send + Sync {
     async fn create_server_snapshot(
@@ -69,6 +75,15 @@ pub trait HetznerCloudConnector: Send + Sync {
     /// global and does not support a location filter, so this cannot answer
     /// per-region availability — use `validate_server_type_availability` for that.
     async fn list_server_types(&self, token: &str) -> Result<Vec<String>, ConnectorError>;
+
+    /// Register a public key on the Hetzner account (`POST /ssh_keys`).
+    /// Returns the key id needed for `HetznerCreateServerRequest::ssh_key_ids`.
+    async fn add_ssh_key(
+        &self,
+        token: &str,
+        name: &str,
+        public_key: &str,
+    ) -> Result<HetznerSshKey, ConnectorError>;
 }
 
 #[derive(Clone)]
@@ -253,6 +268,42 @@ impl HetznerCloudConnector for HetznerCloudClient {
             .map_err(|err| ConnectorError::InvalidResponse(err.to_string()))?;
 
         Ok(body.server_types.into_iter().map(|t| t.name).collect())
+    }
+
+    async fn add_ssh_key(
+        &self,
+        token: &str,
+        name: &str,
+        public_key: &str,
+    ) -> Result<HetznerSshKey, ConnectorError> {
+        let url = format!("{}/ssh_keys", self.base_url);
+        let response = self
+            .http_client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "name": name,
+                "public_key": public_key,
+            }))
+            .send()
+            .await
+            .map_err(ConnectorError::from)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(status_to_error(status, "Hetzner SSH key registration failed"));
+        }
+
+        #[derive(Deserialize)]
+        struct SshKeyResponse {
+            ssh_key: HetznerSshKey,
+        }
+        let body: SshKeyResponse = response
+            .json()
+            .await
+            .map_err(|err| ConnectorError::InvalidResponse(err.to_string()))?;
+
+        Ok(body.ssh_key)
     }
 }
 

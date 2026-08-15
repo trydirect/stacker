@@ -7,6 +7,7 @@ use crate::forms::{CloudFirewallOperationMessage, ConfigureCloudFirewallResponse
 use crate::helpers::MqManager;
 use crate::models;
 use async_trait::async_trait;
+use serde::Serialize;
 
 pub mod client;
 pub mod init;
@@ -15,6 +16,22 @@ pub mod mock;
 pub use client::InstallServiceClient;
 pub use init::init;
 pub use mock::MockInstallServiceConnector;
+
+/// Payload for the post-clone-deploy Ansible setup job.
+#[derive(Debug, Serialize)]
+pub struct PostDeployClonePayload {
+    pub deployment_hash: String,
+    pub server_id: i64,
+    pub public_ipv4: String,
+    pub domain: String,
+    pub stack: String,
+    pub provider: String,
+    pub user_token: String,
+    pub user_email: String,
+    pub installation_id: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssh_private_key: Option<String>,
+}
 
 #[async_trait]
 pub trait InstallServiceConnector: Send + Sync {
@@ -42,4 +59,12 @@ pub trait InstallServiceConnector: Send + Sync {
         message: CloudFirewallOperationMessage,
         mq_manager: &MqManager,
     ) -> Result<ConfigureCloudFirewallResponse, String>;
+
+    /// Trigger post-clone Ansible setup (firewall, monitoring, etc.) on a
+    /// server that was just cloned from a baked snapshot.
+    async fn post_deploy_clone(
+        &self,
+        payload: PostDeployClonePayload,
+        mq_manager: &MqManager,
+    ) -> Result<(), String>;
 }
