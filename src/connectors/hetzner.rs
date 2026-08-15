@@ -276,6 +276,56 @@ pub fn api_base_url() -> String {
         .to_string()
 }
 
+/// Look up the public IPv4 of a Hetzner server by its name.
+///
+/// Used to reconcile `server.srv_ip` when a deploy provisioned a server but the
+/// install service never reported the IP back (deployment ends `paused`/`failed`
+/// with `srv_ip` null). Hetzner assigns a public IPv4 at creation, so the IP is
+/// available on the provider side even when the later Ansible step failed.
+///
+/// Returns `Ok(None)` when no server matches the name or the match has no IPv4
+/// yet; `Err` only on transport/HTTP/parse failure so callers can decide whether
+/// to retry.
+pub async fn fetch_server_ipv4_by_name(
+    base_url: &str,
+    token: &str,
+    name: &str,
+) -> Result<Option<String>, ConnectorError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Ok(None);
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(ConnectorError::from)?;
+
+    let response = client
+        .get(format!("{}/servers", base_url.trim_end_matches('/')))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(ConnectorError::from)?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(status_to_error(status, "Hetzner server lookup failed"));
+    }
+
+    let body: HetznerServersResponse = response
+        .json()
+        .await
+        .map_err(|err| ConnectorError::InvalidResponse(err.to_string()))?;
+
+    Ok(body
+        .servers
+        .iter()
+        .find(|server| server.name == name)
+        .and_then(hetzner_server_ip)
+        .map(str::to_string))
+}
+
 /// Validate that `server_type` can be created in `region` on Hetzner.
 ///
 /// Fails open (returns `Ok`) on any transport/HTTP/parse error so a Hetzner
@@ -727,6 +777,44 @@ mod tests {
             .await
             .expect_err("cpx21 not in nbg1");
         assert!(err.contains("nbg1"), "err: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_server_ipv4_by_name_returns_ip_for_match() {
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/servers"))
+            .and(header("authorization", "Bearer tok"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "servers": [
+                    {"id": 1, "name": "other", "public_net": {"ipv4": {"ip": "1.1.1.1"}}},
+                    {"id": 2, "name": "nocodb-419", "public_net": {"ipv4": {"ip": "203.0.113.7"}}}
+                ]
+            })))
+            .mount(&api)
+            .await;
+
+        let ip = fetch_server_ipv4_by_name(&api.uri(), "tok", "nocodb-419")
+            .await
+            .unwrap();
+        assert_eq!(ip.as_deref(), Some("203.0.113.7"));
+    }
+
+    #[tokio::test]
+    async fn fetch_server_ipv4_by_name_returns_none_when_absent() {
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/servers"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "servers": [{"id": 1, "name": "other", "public_net": {"ipv4": {"ip": "1.1.1.1"}}}]
+            })))
+            .mount(&api)
+            .await;
+
+        let ip = fetch_server_ipv4_by_name(&api.uri(), "tok", "missing")
+            .await
+            .unwrap();
+        assert!(ip.is_none());
     }
 
     #[tokio::test]

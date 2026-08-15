@@ -91,6 +91,107 @@ fn progress_message_server_ip(msg: &ProgressMessage) -> Option<String> {
         .or_else(|| extract_ipv4_from_text(&msg.message))
 }
 
+/// Reconcile `server.srv_ip` directly from the cloud provider.
+///
+/// The listener normally learns the IP from the install service's progress
+/// message (`progress_message_server_ip`). When provisioning succeeds but the
+/// install service ends the deploy `paused`/`failed` *without* reporting the IP,
+/// that path leaves `srv_ip` null forever — the reported "server created, no SSH
+/// access" bug. Here we go straight to the provider (Hetzner assigns a public
+/// IPv4 at creation) and persist it, so the record isn't orphaned.
+///
+/// Best-effort: only acts on servers that have a cloud but no IP yet, only for
+/// Hetzner today, and logs (never propagates) any provider error.
+async fn reconcile_server_ip_from_provider(pool: &PgPool, project_id: i32) {
+    let servers = match db::server::fetch_by_project(pool, project_id).await {
+        Ok(servers) => servers,
+        Err(e) => {
+            eprintln!(
+                "IP reconcile: could not load servers for project {}: {}",
+                project_id, e
+            );
+            return;
+        }
+    };
+
+    for server in servers {
+        let needs_ip = server
+            .srv_ip
+            .as_deref()
+            .map(str::trim)
+            .map_or(true, str::is_empty);
+        if !needs_ip {
+            continue;
+        }
+        let Some(cloud_id) = server.cloud_id else {
+            continue;
+        };
+        let Some(name) = server
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        else {
+            continue;
+        };
+
+        let cloud = match db::cloud::fetch(pool, cloud_id).await {
+            Ok(Some(cloud)) => cloud,
+            Ok(None) => continue,
+            Err(e) => {
+                eprintln!("IP reconcile: could not load cloud {}: {}", cloud_id, e);
+                continue;
+            }
+        };
+        // Only Hetzner is supported for provider-side IP lookup today.
+        if normalize_provider(&cloud.provider) != Some("htz") {
+            continue;
+        }
+        let cloud = if cloud.save_token == Some(true) {
+            CloudForm::decode_model(cloud, true)
+        } else {
+            cloud
+        };
+        let Some(token) = cloud
+            .cloud_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        else {
+            continue;
+        };
+
+        match crate::connectors::hetzner::fetch_server_ipv4_by_name(
+            &crate::connectors::hetzner::api_base_url(),
+            token,
+            name,
+        )
+        .await
+        {
+            Ok(Some(ip)) => {
+                match db::server::update_srv_ip(pool, project_id, &ip, server.ssh_port).await {
+                    Ok(s) => println!(
+                        "IP reconcile: set server {} srv_ip={} from provider for project {}",
+                        s.id, ip, project_id
+                    ),
+                    Err(e) => eprintln!(
+                        "IP reconcile: failed to persist srv_ip for project {}: {}",
+                        project_id, e
+                    ),
+                }
+            }
+            Ok(None) => println!(
+                "IP reconcile: provider has no IP yet for server '{}' (project {})",
+                name, project_id
+            ),
+            Err(e) => eprintln!(
+                "IP reconcile: provider lookup failed for server '{}' (project {}): {}",
+                name, project_id, e
+            ),
+        }
+    }
+}
+
 fn extract_public_ports(metadata: &Value) -> Vec<String> {
     metadata
         .get("public_ports")
@@ -426,11 +527,12 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                                         // but the IP is already known after Terraform succeeds
                                         // even when the subsequent Ansible step fails (status
                                         // "paused" / "failed").
-                                        if let Some(ip) = progress_message_server_ip(&msg) {
+                                        let ip_from_message = progress_message_server_ip(&msg);
+                                        if let Some(ip) = &ip_from_message {
                                             match db::server::update_srv_ip(
                                                 db_pool.get_ref(),
                                                 row.project_id,
-                                                &ip,
+                                                ip,
                                                 msg.ssh_port,
                                             )
                                             .await
@@ -444,6 +546,24 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                                                     row.project_id, e
                                                 ),
                                             }
+                                        }
+
+                                        // Fallback: the install service provisioned a server but
+                                        // never reported its IP (deployment ends paused/failed with
+                                        // srv_ip null — the reported root cause of "no SSH access").
+                                        // Reconcile the IP straight from the cloud provider so the
+                                        // record isn't left orphaned forever.
+                                        if ip_from_message.is_none()
+                                            && matches!(
+                                                row.status.as_str(),
+                                                "paused" | "failed" | "error" | "completed"
+                                            )
+                                        {
+                                            reconcile_server_ip_from_provider(
+                                                db_pool.get_ref(),
+                                                row.project_id,
+                                            )
+                                            .await;
                                         }
 
                                         let is_completed = row.status == "completed";
