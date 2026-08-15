@@ -146,6 +146,18 @@ mod tests {
         ) -> Result<Vec<String>, crate::connectors::ConnectorError> {
             Ok(vec![])
         }
+        async fn add_ssh_key(
+            &self,
+            _t: &str,
+            _n: &str,
+            _k: &str,
+        ) -> Result<crate::connectors::hetzner::HetznerSshKey, crate::connectors::ConnectorError>
+        {
+            Ok(crate::connectors::hetzner::HetznerSshKey {
+                id: 1,
+                name: "mock".into(),
+            })
+        }
     }
 
     #[tokio::test]
