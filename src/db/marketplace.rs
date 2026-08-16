@@ -2647,3 +2647,49 @@ pub async fn get_template_events_by_creator(
 ) -> Result<Vec<crate::models::marketplace::MarketplaceEvent>, String> {
     Err("get_template_events_by_creator not implemented - requires owner-scoped query".to_string())
 }
+
+/// Fetch an approved template by slug. Used by the one-click clone endpoint
+/// to look up billing_cycle and pricing fields.
+pub async fn get_approved_by_slug(
+    pool: &PgPool,
+    slug: &str,
+) -> Result<Option<StackTemplate>, String> {
+    sqlx::query_as::<_, StackTemplate>(
+        r#"SELECT
+            t.id,
+            t.creator_user_id,
+            t.creator_name,
+            t.name,
+            t.slug,
+            t.short_description,
+            t.long_description,
+            c.name AS category_code,
+            t.product_id,
+            t.tags,
+            t.tech_stack,
+            t.status,
+            t.is_configurable,
+            t.view_count,
+            t.deploy_count,
+            t.required_plan_name,
+            t.price,
+            t.billing_cycle,
+            t.currency,
+            t.daily_rate,
+            t.monthly_cap,
+            t.created_at,
+            t.updated_at,
+            t.approved_at,
+            t.verifications,
+            t.infrastructure_requirements,
+            t.public_ports,
+            t.vendor_url
+        FROM stack_template t
+        LEFT JOIN stack_category c ON t.category_id = c.id
+        WHERE t.slug = $1 AND t.status = 'approved'"#,
+    )
+    .bind(slug)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("get_approved_by_slug: {}", e))
+}

@@ -35,6 +35,14 @@ pub struct AuthorizationRow {
     pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    // Daily billing fields
+    pub billing_cycle: Option<String>,
+    pub daily_rate: Option<f64>,
+    pub monthly_cap: Option<f64>,
+    pub total_charged_minor: Option<i64>,
+    pub last_daily_charge_at: Option<DateTime<Utc>>,
+    pub server_deleted_at: Option<DateTime<Utc>>,
+    pub suspended_at: Option<DateTime<Utc>>,
 }
 
 /// Input for inserting a fresh authorization row. The row is always inserted
@@ -49,6 +57,9 @@ pub struct NewAuthorization {
     pub amount_minor: i64,
     pub currency: String,
     pub expires_at: Option<DateTime<Utc>>,
+    pub billing_cycle: Option<String>,
+    pub daily_rate: Option<f64>,
+    pub monthly_cap: Option<f64>,
 }
 
 /// Insert (or fetch, on idempotency-key replay) an authorization row.
@@ -67,8 +78,9 @@ pub async fn insert_authorization(
     let inserted: Option<AuthorizationRow> = sqlx::query_as::<_, AuthorizationRow>(
         r#"INSERT INTO marketplace_install_authorization
             (user_id, template_id, idempotency_key, authorization_id,
-             amount_minor, currency, status, expires_at)
-           VALUES ($1, $2, $3, $4, $5, $6, 'authorized', $7)
+             amount_minor, currency, status, expires_at,
+             billing_cycle, daily_rate, monthly_cap)
+           VALUES ($1, $2, $3, $4, $5, $6, 'authorized', $7, $8, $9, $10)
            ON CONFLICT (user_id, idempotency_key) DO NOTHING
            RETURNING *"#,
     )
@@ -79,6 +91,9 @@ pub async fn insert_authorization(
     .bind(row.amount_minor)
     .bind(&row.currency)
     .bind(row.expires_at)
+    .bind(&row.billing_cycle)
+    .bind(row.daily_rate)
+    .bind(row.monthly_cap)
     .fetch_optional(&mut *tx)
     .await
     .map_err(|e| format!("insert_authorization: {}", e))?;
@@ -206,4 +221,123 @@ pub async fn list_expired_authorized(
     .fetch_all(pool)
     .await
     .map_err(|e| format!("list_expired_authorized: {}", e))
+}
+
+// ─── Deployment-daily billing helpers ───────────────────────────────────
+
+/// Rows eligible for daily charge sweep:
+/// billing_cycle='deployment_daily', status='captured', not yet at monthly cap,
+/// last charge was 24+ hours ago, server not deleted.
+pub async fn list_daily_sweep_candidates(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<AuthorizationRow>, String> {
+    sqlx::query_as::<_, AuthorizationRow>(
+        r#"SELECT * FROM marketplace_install_authorization
+           WHERE billing_cycle = 'deployment_daily'
+             AND status = 'captured'
+             AND server_deleted_at IS NULL
+             AND suspended_at IS NULL
+             AND (last_daily_charge_at IS NULL OR last_daily_charge_at < now() - interval '24 hours')
+           ORDER BY last_daily_charge_at ASC NULLS FIRST
+           LIMIT $1"#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("list_daily_sweep_candidates: {}", e))
+}
+
+/// Mark a daily charge as applied: bump total_charged_minor and last_daily_charge_at.
+pub async fn mark_daily_charged(
+    pool: &PgPool,
+    authorization_id: &str,
+    charged_minor: i64,
+) -> Result<(), String> {
+    sqlx::query(
+        r#"UPDATE marketplace_install_authorization
+           SET total_charged_minor = total_charged_minor + $2,
+               last_daily_charge_at = now(),
+               updated_at = now()
+           WHERE authorization_id = $1"#,
+    )
+    .bind(authorization_id)
+    .bind(charged_minor)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("mark_daily_charged: {}", e))?;
+    Ok(())
+}
+
+/// Mark server as deleted (user-initiated deletion).
+pub async fn mark_server_deleted(
+    pool: &PgPool,
+    authorization_id: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        r#"UPDATE marketplace_install_authorization
+           SET server_deleted_at = now(), updated_at = now()
+           WHERE authorization_id = $1 AND server_deleted_at IS NULL"#,
+    )
+    .bind(authorization_id)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("mark_server_deleted: {}", e))?;
+    Ok(())
+}
+
+/// Mark server as suspended (grace period expired).
+pub async fn mark_suspended(
+    pool: &PgPool,
+    authorization_id: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        r#"UPDATE marketplace_install_authorization
+           SET suspended_at = now(), updated_at = now()
+           WHERE authorization_id = $1 AND suspended_at IS NULL"#,
+    )
+    .bind(authorization_id)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("mark_suspended: {}", e))?;
+    Ok(())
+}
+
+/// Update billing_cycle and daily rate fields on an authorization row.
+pub async fn set_daily_billing(
+    pool: &PgPool,
+    authorization_id: &str,
+    daily_rate: f64,
+    monthly_cap: f64,
+) -> Result<(), String> {
+    sqlx::query(
+        r#"UPDATE marketplace_install_authorization
+           SET billing_cycle = 'deployment_daily',
+               daily_rate = $2,
+               monthly_cap = $3,
+               updated_at = now()
+           WHERE authorization_id = $1"#,
+    )
+    .bind(authorization_id)
+    .bind(daily_rate)
+    .bind(monthly_cap)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("set_daily_billing: {}", e))?;
+    Ok(())
+}
+
+/// Fetch authorization by deployment_hash (for one-click flow).
+pub async fn find_by_deployment_hash_optional(
+    pool: &PgPool,
+    deployment_hash: &str,
+) -> Result<Option<AuthorizationRow>, String> {
+    sqlx::query_as::<_, AuthorizationRow>(
+        r#"SELECT * FROM marketplace_install_authorization
+           WHERE deployment_hash = $1"#,
+    )
+    .bind(deployment_hash)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("find_by_deployment_hash_optional: {}", e))
 }

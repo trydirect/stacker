@@ -900,6 +900,9 @@ async fn install_stack_template(
                 amount_minor: handle.amount_minor,
                 currency: handle.currency.clone(),
                 expires_at,
+                billing_cycle: Some("per_install".to_string()),
+                daily_rate: None,
+                monthly_cap: None,
             },
         )
         .await
