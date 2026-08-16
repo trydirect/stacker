@@ -298,4 +298,20 @@ impl UserServiceConnector for MockUserServiceConnector {
     ) -> Result<(), ConnectorError> {
         Ok(())
     }
+
+    async fn daily_capture_install_charge(
+        &self,
+        _auth_token: &str,
+        _authorization_id: &str,
+        _amount_minor: i64,
+        _deployment_hash: &str,
+    ) -> Result<AuthorizationHandle, ConnectorError> {
+        Ok(AuthorizationHandle {
+            authorization_id: "mock-auth-id".to_string(),
+            amount_minor: 0,
+            currency: "USD".to_string(),
+            expires_at: None,
+            status: "captured".to_string(),
+        })
+    }
 }

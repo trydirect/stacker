@@ -193,7 +193,7 @@ async fn tick_once(pool: &PgPool, user_service: &dyn UserServiceConnector) -> Re
             let deployment_hash = row.deployment_hash.clone().unwrap_or_default();
 
             match user_service
-                .capture_install_charge(&service_token, &row.authorization_id, &deployment_hash)
+                .daily_capture_install_charge(&service_token, &row.authorization_id, charged_minor, &deployment_hash)
                 .await
             {
                 Ok(_) => {
