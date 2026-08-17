@@ -3662,6 +3662,7 @@ impl DeployCommand {
             project_id as i32,
             DeployTarget::Cloud,
             result.server_name.as_deref(),
+            false,
         ) {
             Ok(Some(server)) => server,
             _ => return,
@@ -3696,6 +3697,7 @@ impl DeployCommand {
             project_id as i32,
             DeployTarget::Cloud,
             result.server_name.as_deref(),
+            false,
         ) {
             Ok(Some(server)) => server,
             Ok(None) => {
@@ -3829,6 +3831,7 @@ impl DeployCommand {
                             project_id as i32,
                             DeployTarget::Server,
                             result.server_name.as_deref(),
+                            false,
                         ) {
                             Ok(Some(info)) => {
                                 l = l.with_server_info(
@@ -3883,6 +3886,7 @@ impl DeployCommand {
                             project_id as i32,
                             DeployTarget::Cloud,
                             result.server_name.as_deref(),
+                            self.force_new,
                         ) {
                             Ok(Some(info)) => {
                                 l = l.with_server_info(
@@ -4005,6 +4009,7 @@ fn fetch_server_for_project(
     project_id: i32,
     target: DeployTarget,
     preferred_server_name: Option<&str>,
+    force_new: bool,
 ) -> Result<Option<stacker_client::ServerInfo>, Box<dyn std::error::Error>> {
     use std::time::Duration;
 
@@ -4024,6 +4029,7 @@ fn fetch_server_for_project(
         let deploy_timeout = Duration::from_secs(600);
         let deploy_start = std::time::Instant::now();
         let mut fallback_server_ip: Option<String> = None;
+        let mut deployment_failed = false;
 
         loop {
             match client.get_deployment_status_by_project(project_id).await {
@@ -4033,7 +4039,8 @@ fn fetch_server_for_project(
                             .as_deref()
                             .and_then(extract_ipv4_from_text)
                     });
-                    if info.status != "completed" {
+                    deployment_failed = info.status != "completed";
+                    if deployment_failed {
                         eprintln!(
                             "  Deployment #{} finished with status '{}' — server IP may not be available.",
                             info.id, info.status
@@ -4067,13 +4074,15 @@ fn fetch_server_for_project(
         }
 
         // Phase 2: deployment is terminal (or timed out) — poll for the server IP.
-        let ip_retries = 6;
+        // When the deployment failed, skip the retry loop — no point waiting for
+        // an IP when provisioning failed.
+        let ip_retries = if deployment_failed { 1 } else { 6 };
         let ip_delay = Duration::from_secs(10);
 
         for attempt in 0..ip_retries {
             let servers = client.list_servers().await?;
 
-            let server = choose_server_for_project(servers, project_id, preferred_server_name);
+            let server = choose_server_for_project(servers, project_id, preferred_server_name, force_new);
 
             match server {
                 Some(ref s) if s.srv_ip.is_some() => {
@@ -4127,11 +4136,19 @@ fn choose_server_for_project(
     servers: Vec<stacker_client::ServerInfo>,
     project_id: i32,
     preferred_server_name: Option<&str>,
+    force_new: bool,
 ) -> Option<stacker_client::ServerInfo> {
     let mut matching: Vec<stacker_client::ServerInfo> = servers
         .into_iter()
         .filter(|server| server.project_id == project_id)
         .collect();
+
+    // When --force-new is set, prefer the most recently created server
+    // (highest id) to avoid picking a stale server from a previous deploy.
+    if force_new && matching.len() > 1 {
+        matching.sort_by(|a, b| b.id.cmp(&a.id));
+        return matching.into_iter().next();
+    }
 
     if let Some(preferred_name) = preferred_server_name
         .map(str::trim)
@@ -4586,7 +4603,7 @@ services:
             server_info(3, 75, Some("coolify-current"), None),
         ];
 
-        let selected = choose_server_for_project(servers, 75, Some("coolify-current"))
+        let selected = choose_server_for_project(servers, 75, Some("coolify-current"), false)
             .expect("matching server should be selected");
 
         assert_eq!(selected.id, 2);
@@ -4601,10 +4618,23 @@ services:
             server_info(3, 75, Some("ready"), Some("203.0.113.42")),
         ];
 
-        let selected = choose_server_for_project(servers, 75, None)
+        let selected = choose_server_for_project(servers, 75, None, false)
             .expect("server with IP should be selected");
 
         assert_eq!(selected.id, 3);
+    }
+
+    #[test]
+    fn choose_server_for_project_prefers_newest_on_force_new() {
+        let servers = vec![
+            server_info(10, 75, Some("old-server"), Some("203.0.113.10")),
+            server_info(20, 75, Some("new-server"), None),
+        ];
+
+        let selected = choose_server_for_project(servers, 75, None, true)
+            .expect("newest server should be selected on force_new");
+
+        assert_eq!(selected.id, 20);
     }
 
     #[test]
