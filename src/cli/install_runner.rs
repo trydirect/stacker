@@ -2262,6 +2262,46 @@ fn deploy_to_intranet_server(
         });
     }
 
+    // 1b. Pre-flight: verify Docker is installed on the remote server.
+    // Fail fast with an actionable message instead of letting docker compose
+    // fail later with a cryptic error.
+    {
+        let docker_check = std::process::Command::new("ssh")
+            .args(&ssh_args)
+            .arg(&user_at_host)
+            .arg("docker --version 2>/dev/null && docker compose version 2>/dev/null")
+            .output()
+            .map_err(|e| CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: format!("Failed to run ssh: {}", e),
+            })?;
+
+        let docker_ok = docker_check.status.success()
+            && !String::from_utf8_lossy(&docker_check.stdout)
+                .trim()
+                .is_empty();
+
+        if !docker_ok {
+            return Err(CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: format!(
+                    "Docker is not installed on {}.\n\
+                     \n\
+                     Install Docker and Docker Compose on the server, then retry:\n\
+                     \n\
+                       ssh -i {} -p {} {} 'curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker {}'\n\
+                     \n\
+                     After installing, log out and back in (or run `newgrp docker`), then retry the deploy.",
+                    server_cfg.host,
+                    ssh_key_path.display(),
+                    server_cfg.port,
+                    user_at_host,
+                    server_cfg.user,
+                ),
+            });
+        }
+    }
+
     // 2. Sync project files to remote (rsync preferred, tar+ssh fallback)
     let project_src = format!("{}/", context.project_dir.display());
     let remote_dest = format!("{}:{}/", user_at_host, remote_dir_abs);
