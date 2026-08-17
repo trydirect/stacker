@@ -9,7 +9,14 @@ use tokio::time::{timeout, Duration};
 use tracing::{debug, warn};
 
 pub async fn try_new(db_connection_address: String) -> Result<CasbinService, Error> {
-    let m = DefaultModel::from_file("access_control.conf")
+    // Fall back to access_control.conf.dist if the main file doesn't exist
+    // (e.g., in CI or fresh checkouts where the file is gitignored).
+    let conf_path = if std::path::Path::new("access_control.conf").exists() {
+        "access_control.conf"
+    } else {
+        "access_control.conf.dist"
+    };
+    let m = DefaultModel::from_file(conf_path)
         .await
         .map_err(|err| Error::new(ErrorKind::Other, format!("{err:?}")))?;
     let a = SqlxAdapter::new(db_connection_address.clone(), 8)
