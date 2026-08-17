@@ -160,7 +160,7 @@ enum StackerCommands {
         #[arg(long)]
         lock: bool,
         /// Skip server pre-check; force fresh cloud provision even if deploy.server exists
-        #[arg(long)]
+        #[arg(long, conflicts_with = "force_rebuild")]
         force_new: bool,
         /// Container runtime: "runc" (default) or "kata" for hardware-isolated containers
         #[arg(long, value_name = "RUNTIME", default_value = "runc")]
