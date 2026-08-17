@@ -3351,7 +3351,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
 
     let origin_trusted = config.is_trusted();
 
-    // 6a. Execute pre-build hook
+    // 6a. Execute pre-build hook (always runs locally — builds happen locally).
     if !dry_run {
         run_hook(
             executor,
@@ -3366,6 +3366,12 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     // 6b. Deploy
     let deploy_result = strategy.deploy(&config, &context, executor);
 
+    // Hooks that reference application binaries (post_deploy, on_failure)
+    // only make sense for local deploys. For cloud/server deploys, the app
+    // runs on the remote host — running the hook locally would fail with
+    // "command not found" and is a security concern (arbitrary remote exec).
+    let is_remote = matches!(deploy_target, DeployTarget::Cloud | DeployTarget::Server);
+
     match deploy_result {
         Ok(result) => {
             // 6c. Execute post-deploy hook on success.
@@ -3377,21 +3383,27 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
             // scrolls off the terminal. A clean-content hook that just
             // exits non-zero at runtime stays best-effort (WARN + Ok).
             if !dry_run {
-                match run_hook(
-                    executor,
-                    project_dir,
-                    &config.hooks.post_deploy,
-                    "post_deploy",
-                    hook_policy,
-                    origin_trusted,
-                ) {
-                    Ok(()) => {}
-                    Err(err @ CliError::HookRejected { .. }) => {
-                        eprintln!("  [ERROR] {}", err);
-                        return Err(err);
+                if is_remote {
+                    if config.hooks.post_deploy.is_some() {
+                        eprintln!("  ℹ post_deploy hook skipped — hooks run locally and cannot reach the remote host.");
                     }
-                    Err(err) => {
-                        eprintln!("  [WARN] post_deploy hook failed: {}", err);
+                } else {
+                    match run_hook(
+                        executor,
+                        project_dir,
+                        &config.hooks.post_deploy,
+                        "post_deploy",
+                        hook_policy,
+                        origin_trusted,
+                    ) {
+                        Ok(()) => {}
+                        Err(err @ CliError::HookRejected { .. }) => {
+                            eprintln!("  [ERROR] {}", err);
+                            return Err(err);
+                        }
+                        Err(err) => {
+                            eprintln!("  [WARN] post_deploy hook failed: {}", err);
+                        }
                     }
                 }
             }
@@ -3406,7 +3418,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
             // into the returned error, so the operator sees BOTH the
             // primary cause AND the fact that a hostile cleanup script
             // was refused.
-            if !dry_run {
+            if !dry_run && !is_remote {
                 match run_hook(
                     executor,
                     project_dir,
