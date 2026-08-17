@@ -31,6 +31,12 @@ pub struct StackTemplate {
     pub price: Option<f64>,
     pub billing_cycle: Option<String>,
     pub currency: Option<String>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub daily_rate: Option<f64>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub monthly_cap: Option<f64>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
     pub approved_at: Option<DateTime<Utc>>,

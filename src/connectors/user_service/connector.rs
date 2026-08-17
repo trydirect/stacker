@@ -139,4 +139,15 @@ pub trait UserServiceConnector: Send + Sync {
         authorization_id: &str,
         reason: &str,
     ) -> Result<(), ConnectorError>;
+
+    /// Partial capture for deployment_daily billing.
+    /// Captures `amount_minor` from the existing hold, leaving the rest
+    /// available for future daily charges.
+    async fn daily_capture_install_charge(
+        &self,
+        auth_token: &str,
+        authorization_id: &str,
+        amount_minor: i64,
+        deployment_hash: &str,
+    ) -> Result<AuthorizationHandle, ConnectorError>;
 }

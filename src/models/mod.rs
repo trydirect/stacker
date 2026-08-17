@@ -22,6 +22,7 @@ mod remote_secret;
 pub mod resilience;
 mod rules;
 mod server;
+pub mod server_type_daily_rate;
 pub mod user;
 
 pub use agent::*;
@@ -45,4 +46,5 @@ pub use rating::*;
 pub use remote_secret::*;
 pub use rules::*;
 pub use server::*;
+pub use server_type_daily_rate::*;
 pub use user::*;

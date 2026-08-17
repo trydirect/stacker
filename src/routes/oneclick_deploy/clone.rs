@@ -21,6 +21,7 @@ use crate::connectors::config::HetznerConfig;
 use crate::connectors::hetzner::{
     HetznerCloudClient, HetznerCloudConnector, HetznerCreateServerRequest,
 };
+use crate::connectors::user_service::UserServiceConnector;
 use crate::helpers::cloud_init::{render_user_data, BootConfig};
 use crate::helpers::VaultClient;
 use crate::models::User;
@@ -70,6 +71,10 @@ pub struct CloneResponse {
     /// SSH private key (PEM) for the deploy key injected into the cloned server.
     /// The user service must pass this to the install service for Ansible access.
     pub ssh_private_key: String,
+    /// Present only for deployment_daily templates. The user service stores
+    /// this so it can void on failure or pass to deploy-complete for capture.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authorization_id: Option<String>,
 }
 
 #[post("/clone")]
@@ -77,6 +82,7 @@ pub async fn clone_server(
     user: web::ReqData<Arc<User>>,
     form: web::Json<CloneRequest>,
     pg_pool: Data<PgPool>,
+    user_service: Data<Arc<dyn UserServiceConnector>>,
 ) -> impl Responder {
     tracing::debug!(
         user_id = %user.id,
@@ -196,6 +202,114 @@ pub async fn clone_server(
         "clone deployment records created"
     );
 
+    // ── Deployment-daily billing: authorize before server creation ────────
+    let mut authorization_id: Option<String> = None;
+    if let Ok(Some(template)) =
+        crate::db::marketplace::get_approved_by_slug(&pg_pool, &form.stack).await
+    {
+        if template.billing_cycle.as_deref() == Some("deployment_daily") {
+            // Resolve daily_rate: template override or server-type default
+            let daily_rate = if let Some(rate) = template.daily_rate {
+                rate
+            } else if let Ok(Some(cfg)) =
+                crate::db::server_type_daily_rate::fetch(&pg_pool, &form.server_type).await
+            {
+                cfg.daily_rate
+            } else {
+                0.87 // fallback default
+            };
+            let monthly_cap = template.monthly_cap.unwrap_or_else(|| daily_rate * 30.0);
+
+            // Convert to minor units (cents)
+            let amount_minor = (daily_rate * 100.0).round() as i64;
+            let currency = template
+                .currency
+                .clone()
+                .unwrap_or_else(|| "USD".to_string());
+            let idem_key = format!("oneclick-{}", deployment_hash);
+
+            // Get user's access token for authorization
+            let user_token = user.access_token.as_deref().unwrap_or("");
+            if !user_token.is_empty() {
+                match user_service
+                    .authorize_install_charge(
+                        user_token,
+                        &template.id,
+                        amount_minor,
+                        &currency,
+                        &idem_key,
+                    )
+                    .await
+                {
+                    Ok(handle) => {
+                        let expires_at = handle
+                            .expires_at
+                            .as_deref()
+                            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                            .map(|dt| dt.with_timezone(&chrono::Utc));
+
+                        match crate::db::marketplace_billing::insert_authorization(
+                            &pg_pool,
+                            crate::db::marketplace_billing::NewAuthorization {
+                                user_id: user.id.clone(),
+                                template_id: template.id,
+                                idempotency_key: idem_key,
+                                authorization_id: handle.authorization_id.clone(),
+                                amount_minor: handle.amount_minor,
+                                currency: handle.currency.clone(),
+                                expires_at,
+                                billing_cycle: Some("deployment_daily".to_string()),
+                                daily_rate: Some(daily_rate),
+                                monthly_cap: Some(monthly_cap),
+                            },
+                        )
+                        .await
+                        {
+                            Ok(auth_row) => {
+                                crate::db::marketplace_billing::attach_deployment_hash(
+                                    &pg_pool,
+                                    auth_row.id,
+                                    &deployment_hash,
+                                )
+                                .await
+                                .ok();
+                                authorization_id = Some(handle.authorization_id);
+                                tracing::info!(
+                                    deployment_hash = %deployment_hash,
+                                    daily_rate = daily_rate,
+                                    monthly_cap = monthly_cap,
+                                    "deployment_daily authorization created"
+                                );
+                            }
+                            Err(err) => {
+                                tracing::error!("Failed to store authorization: {}", err);
+                                // Void the authorization since we can't track it
+                                let _ = user_service
+                                    .void_install_charge(
+                                        user_token,
+                                        &handle.authorization_id,
+                                        "db_write_failed",
+                                    )
+                                    .await;
+                                return HttpResponse::InternalServerError().json(json!({
+                                    "error": "authorization storage failed",
+                                    "details": err,
+                                }));
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        tracing::error!("authorize_install_charge failed: {:?}", err);
+                        return HttpResponse::PaymentRequired().json(json!({
+                            "error": "Payment authorization failed",
+                            "details": format!("{:?}", err),
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
     // Generate a per-deploy SSH keypair so Ansible can reach the server post-boot.
     let (public_key, private_key) = match VaultClient::generate_ssh_keypair() {
         Ok(pair) => pair,
@@ -222,7 +336,11 @@ pub async fn clone_server(
     match client
         .add_ssh_key(
             token,
-            &format!("deploy-{}-{}", form.stack, &deployment_hash[deployment_hash.len() - 8..]),
+            &format!(
+                "deploy-{}-{}",
+                form.stack,
+                &deployment_hash[deployment_hash.len() - 8..]
+            ),
             &public_key,
         )
         .await
@@ -238,7 +356,12 @@ pub async fn clone_server(
     }
 
     let request = HetznerCreateServerRequest {
-        name: format!("{}-{}-{}", form.stack, snapshot.version, &deployment_hash[11..19]),
+        name: format!(
+            "{}-{}-{}",
+            form.stack,
+            snapshot.version,
+            &deployment_hash[11..19]
+        ),
         server_type: form.server_type.clone(),
         location: form.region.clone(),
         image_id,
@@ -264,5 +387,6 @@ pub async fn clone_server(
         provider: form.provider.clone(),
         deployment_hash,
         ssh_private_key: private_key,
+        authorization_id,
     })
 }

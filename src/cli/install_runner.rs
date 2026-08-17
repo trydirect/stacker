@@ -2760,7 +2760,7 @@ fn resolve_ssh_key_path_with_home(path: &Path, home_dir: Option<&Path>) -> PathB
     path.to_path_buf()
 }
 
-fn resolve_ssh_key_path(path: &Path) -> PathBuf {
+pub(crate) fn resolve_ssh_key_path(path: &Path) -> PathBuf {
     let home_dir = std::env::var_os("HOME").map(PathBuf::from);
     resolve_ssh_key_path_with_home(path, home_dir.as_deref())
 }
