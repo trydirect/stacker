@@ -263,6 +263,18 @@ impl CallableTrait for ProxyAddCommand {
             build_domain_config(&self.domain, self.upstream.as_deref(), self.ssl.as_deref());
         let use_agent = self.deployment.is_some() || is_cloud_or_remote(&project_dir);
         if use_agent {
+            // Persist to stacker.yml first — the local config update does not
+            // depend on the remote agent or Vault. If the agent call later
+            // fails, the user's config is still saved.
+            let persistence = persist_proxy_config_to_stacker_yml(
+                &project_dir,
+                ProxyType::NginxProxyManager,
+                domain_config,
+            )?;
+            if !self.json {
+                print_proxy_config_persistence(persistence.as_ref());
+            }
+
             let upstream = self.upstream.as_deref().unwrap_or("app:8080");
             let target = parse_proxy_upstream(upstream)?;
             let ssl_enabled = parse_ssl_mode(self.ssl.as_deref()) != SslMode::Off;
@@ -277,14 +289,14 @@ impl CallableTrait for ProxyAddCommand {
                 self.json,
                 self.deployment.clone(),
             );
-            command.call()?;
-            let persistence = persist_proxy_config_to_stacker_yml(
-                &project_dir,
-                ProxyType::NginxProxyManager,
-                domain_config,
-            )?;
-            if !self.json {
-                print_proxy_config_persistence(persistence.as_ref());
+            if let Err(err) = command.call() {
+                eprintln!(
+                    "  ⚠ Proxy config saved locally, but remote NPM configuration failed: {}",
+                    err
+                );
+                eprintln!(
+                    "    The proxy will be configured on the remote server on the next deploy."
+                );
             }
             return Ok(());
         }
