@@ -2173,6 +2173,8 @@ pub async fn admin_update_pricing(
     billing_cycle: Option<&str>,
     required_plan_name: Option<&str>,
     currency: Option<&str>,
+    daily_rate: Option<f64>,
+    monthly_cap: Option<f64>,
 ) -> Result<bool, String> {
     let query_span = tracing::info_span!(
         "marketplace_admin_update_pricing",
@@ -2190,7 +2192,9 @@ pub async fn admin_update_pricing(
             price = COALESCE($2, price),
             billing_cycle = COALESCE($3, billing_cycle),
             required_plan_name = COALESCE($4, required_plan_name),
-            currency = COALESCE($5, currency)
+            currency = COALESCE($5, currency),
+            daily_rate = COALESCE($6, daily_rate),
+            monthly_cap = COALESCE($7, monthly_cap)
         WHERE id = $1"#,
     )
     .bind(*template_id)
@@ -2198,6 +2202,8 @@ pub async fn admin_update_pricing(
     .bind(billing_cycle)
     .bind(required_plan_name)
     .bind(currency)
+    .bind(daily_rate)
+    .bind(monthly_cap)
     .execute(pool)
     .instrument(query_span)
     .await

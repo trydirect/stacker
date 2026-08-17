@@ -509,6 +509,10 @@ pub struct AdminPricingRequest {
     pub billing_cycle: Option<String>,
     pub required_plan_name: Option<String>,
     pub currency: Option<String>,
+    /// Daily rate for deployment_daily billing (USD)
+    pub daily_rate: Option<f64>,
+    /// Monthly cap for deployment_daily billing (USD)
+    pub monthly_cap: Option<f64>,
 }
 
 #[tracing::instrument(name = "Admin update template pricing", skip_all)]
@@ -530,6 +534,8 @@ pub async fn pricing_handler(
         req.billing_cycle.as_deref(),
         req.required_plan_name.as_deref(),
         req.currency.as_deref(),
+        req.daily_rate,
+        req.monthly_cap,
     )
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err))?;
