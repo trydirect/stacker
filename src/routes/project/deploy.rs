@@ -2262,6 +2262,8 @@ mod tests {
             price: None,
             billing_cycle: None,
             currency: None,
+            daily_rate: None,
+            monthly_cap: None,
             created_at: None,
             updated_at: None,
             approved_at: None,

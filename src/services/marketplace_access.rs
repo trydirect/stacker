@@ -443,6 +443,28 @@ mod tests {
                 .pop_front()
                 .unwrap_or(Ok(()))
         }
+
+        async fn daily_capture_install_charge(
+            &self,
+            _auth_token: &str,
+            authorization_id: &str,
+            amount_minor: i64,
+            _deployment_hash: &str,
+        ) -> Result<AuthorizationHandle, ConnectorError> {
+            self.captured_calls
+                .lock()
+                .unwrap()
+                .push(CapturedCall::Capture {
+                    authorization_id: authorization_id.to_string(),
+                });
+            Ok(AuthorizationHandle {
+                authorization_id: authorization_id.to_string(),
+                amount_minor,
+                currency: "USD".to_string(),
+                expires_at: None,
+                status: "captured".to_string(),
+            })
+        }
     }
 
     fn test_user() -> models::User {
