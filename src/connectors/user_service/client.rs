@@ -757,7 +757,10 @@ impl UserServiceConnector for UserServiceClient {
         amount_minor: i64,
         deployment_hash: &str,
     ) -> Result<AuthorizationHandle, ConnectorError> {
-        let url = format!("{}/api/1.0/marketplace/billing/daily-capture", self.base_url);
+        let url = format!(
+            "{}/api/1.0/marketplace/billing/daily-capture",
+            self.base_url
+        );
         let payload = serde_json::json!({
             "payment_intent_id": authorization_id,
             "amount_minor": amount_minor,

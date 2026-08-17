@@ -291,7 +291,10 @@ impl HetznerCloudConnector for HetznerCloudClient {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(status_to_error(status, "Hetzner SSH key registration failed"));
+            return Err(status_to_error(
+                status,
+                "Hetzner SSH key registration failed",
+            ));
         }
 
         #[derive(Deserialize)]

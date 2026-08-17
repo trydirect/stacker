@@ -270,10 +270,7 @@ pub async fn mark_daily_charged(
 }
 
 /// Mark server as deleted (user-initiated deletion).
-pub async fn mark_server_deleted(
-    pool: &PgPool,
-    authorization_id: &str,
-) -> Result<(), String> {
+pub async fn mark_server_deleted(pool: &PgPool, authorization_id: &str) -> Result<(), String> {
     sqlx::query(
         r#"UPDATE marketplace_install_authorization
            SET server_deleted_at = now(), updated_at = now()
@@ -287,10 +284,7 @@ pub async fn mark_server_deleted(
 }
 
 /// Mark server as suspended (grace period expired).
-pub async fn mark_suspended(
-    pool: &PgPool,
-    authorization_id: &str,
-) -> Result<(), String> {
+pub async fn mark_suspended(pool: &PgPool, authorization_id: &str) -> Result<(), String> {
     sqlx::query(
         r#"UPDATE marketplace_install_authorization
            SET suspended_at = now(), updated_at = now()

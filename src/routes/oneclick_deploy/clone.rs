@@ -204,12 +204,16 @@ pub async fn clone_server(
 
     // ── Deployment-daily billing: authorize before server creation ────────
     let mut authorization_id: Option<String> = None;
-    if let Ok(Some(template)) = crate::db::marketplace::get_approved_by_slug(&pg_pool, &form.stack).await {
+    if let Ok(Some(template)) =
+        crate::db::marketplace::get_approved_by_slug(&pg_pool, &form.stack).await
+    {
         if template.billing_cycle.as_deref() == Some("deployment_daily") {
             // Resolve daily_rate: template override or server-type default
             let daily_rate = if let Some(rate) = template.daily_rate {
                 rate
-            } else if let Ok(Some(cfg)) = crate::db::server_type_daily_rate::fetch(&pg_pool, &form.server_type).await {
+            } else if let Ok(Some(cfg)) =
+                crate::db::server_type_daily_rate::fetch(&pg_pool, &form.server_type).await
+            {
                 cfg.daily_rate
             } else {
                 0.87 // fallback default
@@ -218,14 +222,23 @@ pub async fn clone_server(
 
             // Convert to minor units (cents)
             let amount_minor = (daily_rate * 100.0).round() as i64;
-            let currency = template.currency.clone().unwrap_or_else(|| "USD".to_string());
+            let currency = template
+                .currency
+                .clone()
+                .unwrap_or_else(|| "USD".to_string());
             let idem_key = format!("oneclick-{}", deployment_hash);
 
             // Get user's access token for authorization
             let user_token = user.access_token.as_deref().unwrap_or("");
             if !user_token.is_empty() {
                 match user_service
-                    .authorize_install_charge(user_token, &template.id, amount_minor, &currency, &idem_key)
+                    .authorize_install_charge(
+                        user_token,
+                        &template.id,
+                        amount_minor,
+                        &currency,
+                        &idem_key,
+                    )
                     .await
                 {
                     Ok(handle) => {
@@ -254,8 +267,12 @@ pub async fn clone_server(
                         {
                             Ok(auth_row) => {
                                 crate::db::marketplace_billing::attach_deployment_hash(
-                                    &pg_pool, auth_row.id, &deployment_hash,
-                                ).await.ok();
+                                    &pg_pool,
+                                    auth_row.id,
+                                    &deployment_hash,
+                                )
+                                .await
+                                .ok();
                                 authorization_id = Some(handle.authorization_id);
                                 tracing::info!(
                                     deployment_hash = %deployment_hash,
@@ -268,7 +285,11 @@ pub async fn clone_server(
                                 tracing::error!("Failed to store authorization: {}", err);
                                 // Void the authorization since we can't track it
                                 let _ = user_service
-                                    .void_install_charge(user_token, &handle.authorization_id, "db_write_failed")
+                                    .void_install_charge(
+                                        user_token,
+                                        &handle.authorization_id,
+                                        "db_write_failed",
+                                    )
                                     .await;
                                 return HttpResponse::InternalServerError().json(json!({
                                     "error": "authorization storage failed",
@@ -315,7 +336,11 @@ pub async fn clone_server(
     match client
         .add_ssh_key(
             token,
-            &format!("deploy-{}-{}", form.stack, &deployment_hash[deployment_hash.len() - 8..]),
+            &format!(
+                "deploy-{}-{}",
+                form.stack,
+                &deployment_hash[deployment_hash.len() - 8..]
+            ),
             &public_key,
         )
         .await
@@ -331,7 +356,12 @@ pub async fn clone_server(
     }
 
     let request = HetznerCreateServerRequest {
-        name: format!("{}-{}-{}", form.stack, snapshot.version, &deployment_hash[11..19]),
+        name: format!(
+            "{}-{}-{}",
+            form.stack,
+            snapshot.version,
+            &deployment_hash[11..19]
+        ),
         server_type: form.server_type.clone(),
         location: form.region.clone(),
         image_id,

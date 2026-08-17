@@ -7,7 +7,9 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 use crate::connectors::config::HetznerConfig;
-use crate::connectors::hetzner::{HetznerCloudClient, HetznerCloudConnector, HetznerSnapshotTarget};
+use crate::connectors::hetzner::{
+    HetznerCloudClient, HetznerCloudConnector, HetznerSnapshotTarget,
+};
 use crate::connectors::user_service::UserServiceConnector;
 
 /// Preview what would be deleted if the server is removed.
@@ -126,8 +128,11 @@ pub async fn item(
         db::deployment::fetch_by_project_id(pg_pool.get_ref(), server.project_id).await
     {
         // 3a. Stop daily billing for deployment_daily authorizations
-        if let Ok(Some(auth)) =
-            db::marketplace_billing::find_by_deployment_hash(pg_pool.get_ref(), &deployment.deployment_hash).await
+        if let Ok(Some(auth)) = db::marketplace_billing::find_by_deployment_hash(
+            pg_pool.get_ref(),
+            &deployment.deployment_hash,
+        )
+        .await
         {
             if auth.billing_cycle.as_deref() == Some("deployment_daily")
                 && auth.server_deleted_at.is_none()

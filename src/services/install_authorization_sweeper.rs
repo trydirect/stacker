@@ -166,7 +166,11 @@ async fn tick_once(pool: &PgPool, user_service: &dyn UserServiceConnector) -> Re
                     );
                     // Void the authorization — server will be cleaned up separately
                     if let Err(err) = user_service
-                        .void_install_charge(&service_token, &row.authorization_id, "suspension_expired")
+                        .void_install_charge(
+                            &service_token,
+                            &row.authorization_id,
+                            "suspension_expired",
+                        )
                         .await
                     {
                         tracing::warn!(
@@ -193,7 +197,12 @@ async fn tick_once(pool: &PgPool, user_service: &dyn UserServiceConnector) -> Re
             let deployment_hash = row.deployment_hash.clone().unwrap_or_default();
 
             match user_service
-                .daily_capture_install_charge(&service_token, &row.authorization_id, charged_minor, &deployment_hash)
+                .daily_capture_install_charge(
+                    &service_token,
+                    &row.authorization_id,
+                    charged_minor,
+                    &deployment_hash,
+                )
                 .await
             {
                 Ok(_) => {
