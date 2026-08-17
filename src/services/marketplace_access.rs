@@ -449,13 +449,14 @@ mod tests {
             _auth_token: &str,
             authorization_id: &str,
             amount_minor: i64,
-            _deployment_hash: &str,
+            deployment_hash: &str,
         ) -> Result<AuthorizationHandle, ConnectorError> {
             self.captured_calls
                 .lock()
                 .unwrap()
                 .push(CapturedCall::Capture {
                     authorization_id: authorization_id.to_string(),
+                    deployment_hash: deployment_hash.to_string(),
                 });
             Ok(AuthorizationHandle {
                 authorization_id: authorization_id.to_string(),

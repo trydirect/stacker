@@ -43,6 +43,14 @@ pub struct MarketplaceWebhookPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub billing_cycle: Option<String>,
 
+    /// Daily rate for deployment_daily billing (USD)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daily_rate: Option<f64>,
+
+    /// Monthly cap for deployment_daily billing (USD)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monthly_cap: Option<f64>,
+
     /// Currency code (USD, EUR, etc.)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
@@ -244,6 +252,8 @@ impl MarketplaceWebhookSender {
                 .or_else(|| template.long_description.clone()),
             price: template.price,
             billing_cycle: template.billing_cycle.clone(),
+            daily_rate: template.daily_rate,
+            monthly_cap: template.monthly_cap,
             currency: template.currency.clone(),
             vendor_user_id: Some(vendor_id.to_string()),
             vendor_name: template.creator_name.clone(),
@@ -310,6 +320,8 @@ impl MarketplaceWebhookSender {
                 .or_else(|| template.long_description.clone()),
             price: template.price,
             billing_cycle: template.billing_cycle.clone(),
+            daily_rate: template.daily_rate,
+            monthly_cap: template.monthly_cap,
             currency: template.currency.clone(),
             vendor_user_id: Some(vendor_id.to_string()),
             vendor_name: template.creator_name.clone(),
@@ -374,6 +386,8 @@ impl MarketplaceWebhookSender {
                 .or_else(|| template.long_description.clone()),
             price: template.price,
             billing_cycle: template.billing_cycle.clone(),
+            daily_rate: template.daily_rate,
+            monthly_cap: template.monthly_cap,
             currency: template.currency.clone(),
             vendor_user_id: Some(vendor_id.to_string()),
             vendor_name: template.creator_name.clone(),
@@ -439,6 +453,8 @@ impl MarketplaceWebhookSender {
                 .or_else(|| template.long_description.clone()),
             price: template.price,
             billing_cycle: template.billing_cycle.clone(),
+            daily_rate: template.daily_rate,
+            monthly_cap: template.monthly_cap,
             currency: template.currency.clone(),
             vendor_user_id: Some(vendor_id.to_string()),
             vendor_name: template.creator_name.clone(),
@@ -504,6 +520,8 @@ impl MarketplaceWebhookSender {
                 .or_else(|| template.long_description.clone()),
             price: template.price,
             billing_cycle: template.billing_cycle.clone(),
+            daily_rate: template.daily_rate,
+            monthly_cap: template.monthly_cap,
             currency: template.currency.clone(),
             vendor_user_id: Some(vendor_id.to_string()),
             vendor_name: template.creator_name.clone(),
@@ -569,6 +587,8 @@ impl MarketplaceWebhookSender {
                 .or_else(|| template.long_description.clone()),
             price: template.price,
             billing_cycle: template.billing_cycle.clone(),
+            daily_rate: template.daily_rate,
+            monthly_cap: template.monthly_cap,
             currency: template.currency.clone(),
             vendor_user_id: Some(vendor_id.to_string()),
             vendor_name: template.creator_name.clone(),
@@ -683,6 +703,8 @@ impl MarketplaceWebhookSender {
                 .or_else(|| template.long_description.clone()),
             price: template.price,
             billing_cycle: template.billing_cycle.clone(),
+            daily_rate: template.daily_rate,
+            monthly_cap: template.monthly_cap,
             currency: template.currency.clone(),
             vendor_user_id: Some(vendor_id.to_string()),
             vendor_name: template.creator_name.clone(),
