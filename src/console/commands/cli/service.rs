@@ -702,14 +702,36 @@ fn validate_no_duplicate_services(
 
 fn import_services_into_config(
     path: &Path,
-    mut config: StackerConfig,
+    _config: StackerConfig,
     plan: &ServiceImportPlan,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    for service in &plan.services {
-        config.services.push(service.clone());
+    // Read raw YAML to surgically append services without losing other keys.
+    let raw_text = std::fs::read_to_string(path)?;
+    let mut root: serde_yaml::Value = serde_yaml::from_str(&raw_text)?;
+
+    // Convert ServiceDefinition to serde_yaml::Value for insertion
+    let new_services: Vec<serde_yaml::Value> = plan
+        .services
+        .iter()
+        .map(|svc| serde_yaml::to_value(svc).unwrap_or_default())
+        .collect();
+
+    if let Some(services) = root.get_mut("services") {
+        if let Some(arr) = services.as_sequence_mut() {
+            for svc in new_services {
+                arr.push(svc);
+            }
+        }
+    } else {
+        // No services key exists — create it
+        if let Some(map) = root.as_mapping_mut() {
+            let key = serde_yaml::Value::String("services".to_string());
+            let val = serde_yaml::Value::Sequence(new_services);
+            map.insert(key, val);
+        }
     }
 
-    let yaml = serde_yaml::to_string(&config)
+    let yaml = serde_yaml::to_string(&root)
         .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
 
     let config_path = path.to_string_lossy().to_string();

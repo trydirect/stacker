@@ -125,9 +125,91 @@ fn persist_proxy_config_to_stacker_yml(
         return Ok(None);
     }
 
-    let mut config = StackerConfig::from_file_raw(&config_path)?;
-    let changed = upsert_proxy_domain_config(&mut config, proxy_type, domain_config);
     let backup_path = PathBuf::from(format!("{}.bak", config_path.display()));
+
+    // Read raw YAML to surgically update proxy without losing other keys.
+    let raw_text = std::fs::read_to_string(&config_path)?;
+    let mut root: serde_yaml::Value = serde_yaml::from_str(&raw_text)
+        .map_err(|e| CliError::ConfigValidation(format!("Invalid YAML: {}", e)))?;
+
+    // Check if domain already exists and needs update
+    let changed = if let Some(proxy) = root.get_mut("proxy") {
+        if let Some(domains) = proxy.get_mut("domains") {
+            if let Some(arr) = domains.as_sequence_mut() {
+                let _domain_lower = domain_config.domain.to_lowercase();
+                let existing = arr.iter_mut().find(|entry| {
+                    entry
+                        .get("domain")
+                        .and_then(|v| v.as_str())
+                        .map(|d| d.eq_ignore_ascii_case(&domain_config.domain))
+                        .unwrap_or(false)
+                });
+                if let Some(entry) = existing {
+                    let mut changed = false;
+                    if let Some(ssl) = entry.get_mut("ssl") {
+                        let new_ssl = serde_yaml::to_value(&domain_config.ssl).unwrap_or_default();
+                        if *ssl != new_ssl {
+                            *ssl = new_ssl;
+                            changed = true;
+                        }
+                    }
+                    if let Some(upstream) = entry.get_mut("upstream") {
+                        let new_upstream =
+                            serde_yaml::Value::String(domain_config.upstream.clone());
+                        if *upstream != new_upstream {
+                            *upstream = new_upstream;
+                            changed = true;
+                        }
+                    }
+                    changed
+                } else {
+                    // Add new domain entry
+                    let new_entry = serde_yaml::to_value(&domain_config).unwrap_or_default();
+                    arr.push(new_entry);
+                    true
+                }
+            } else {
+                // domains is not an array — replace it
+                *domains = serde_yaml::Value::Sequence(vec![
+                    serde_yaml::to_value(&domain_config).unwrap_or_default()
+                ]);
+                true
+            }
+        } else {
+            // No domains key — add it
+            if let Some(map) = proxy.as_mapping_mut() {
+                let key = serde_yaml::Value::String("domains".to_string());
+                let val = serde_yaml::Value::Sequence(vec![
+                    serde_yaml::to_value(&domain_config).unwrap_or_default()
+                ]);
+                map.insert(key, val);
+            }
+            true
+        }
+    } else {
+        // No proxy key — add it with type and domains
+        if let Some(map) = root.as_mapping_mut() {
+            let type_str = serde_yaml::Value::String(match proxy_type {
+                ProxyType::Nginx => "nginx".to_string(),
+                ProxyType::NginxProxyManager => "nginx-proxy-manager".to_string(),
+                ProxyType::Traefik => "traefik".to_string(),
+                ProxyType::None => "none".to_string(),
+            });
+            let mut proxy_map = serde_yaml::Mapping::new();
+            proxy_map.insert(serde_yaml::Value::String("type".to_string()), type_str);
+            proxy_map.insert(
+                serde_yaml::Value::String("domains".to_string()),
+                serde_yaml::Value::Sequence(vec![
+                    serde_yaml::to_value(&domain_config).unwrap_or_default()
+                ]),
+            );
+            map.insert(
+                serde_yaml::Value::String("proxy".to_string()),
+                serde_yaml::Value::Mapping(proxy_map),
+            );
+        }
+        true
+    };
 
     if !changed {
         return Ok(Some(ProxyConfigPersistence {
@@ -137,7 +219,7 @@ fn persist_proxy_config_to_stacker_yml(
         }));
     }
 
-    let yaml = serde_yaml::to_string(&config)
+    let yaml = serde_yaml::to_string(&root)
         .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
     std::fs::copy(&config_path, &backup_path)?;
     std::fs::write(&config_path, yaml)?;
