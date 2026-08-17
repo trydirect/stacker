@@ -36,6 +36,12 @@ pub struct ServerForm {
     /// Not persisted to the database.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ssh_private_key: Option<String>,
+    /// Additional SSH public keys to install on the server alongside the
+    /// Vault-managed key. Used for cloud deploys to install the user's own
+    /// SSH key from `deploy.cloud.ssh_key` so they can SSH directly.
+    /// Not persisted to the database.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub additional_public_keys: Option<Vec<String>>,
 }
 
 impl std::fmt::Debug for ServerForm {
@@ -56,6 +62,7 @@ impl std::fmt::Debug for ServerForm {
             .field("vault_key_path", &self.vault_key_path)
             .field("public_key", &"[REDACTED]")
             .field("ssh_private_key", &"[REDACTED]")
+            .field("additional_public_keys", &"[REDACTED]")
             .finish()
     }
 }
@@ -137,6 +144,7 @@ mod tests {
             vault_key_path: Some("/vault/path".to_string()),
             public_key: None,
             ssh_private_key: None,
+            additional_public_keys: None,
         };
         let server: models::Server = (&form).into();
         assert_eq!(server.cloud_id, Some(5));

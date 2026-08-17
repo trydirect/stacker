@@ -1371,6 +1371,23 @@ async fn execute_deployment(
         server
     };
 
+    // Merge any additional public keys (e.g., user's own SSH key from
+    // deploy.cloud.ssh_key) into the new_public_key so the Install Service
+    // installs all of them in authorized_keys.
+    if let Some(additional) = form.server.additional_public_keys.as_ref() {
+        if !additional.is_empty() {
+            let combined = match new_public_key.take() {
+                Some(vault_key) => {
+                    let mut keys = vec![vault_key];
+                    keys.extend(additional.iter().cloned());
+                    keys.join("\n")
+                }
+                None => additional.join("\n"),
+            };
+            new_public_key = Some(combined);
+        }
+    }
+
     let has_existing_ip = server.srv_ip.as_ref().map_or(false, |ip| !ip.is_empty());
     if has_existing_ip && new_public_key.is_none() && server.vault_key_path.is_none() {
         tracing::error!(
