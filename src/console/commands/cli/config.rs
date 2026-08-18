@@ -470,7 +470,12 @@ pub fn run_generate_remote_payload(
         .unwrap_or_else(|_| output_path.clone());
 
     // Surgically update only the deploy section to avoid losing other keys.
-    let cloud_provider_code = provider_code_for_remote(provider).to_string();
+    // The JSON payload uses the short provider code ("htz") for the install service,
+    // but stacker.yml must use the config enum name ("hetzner") for round-trip parsing.
+    let cloud_provider_yaml = serde_yaml::to_string(&provider)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     edit_stacker_yml(path, |root| {
         // Ensure deploy section exists
         if !root.contains_key(&serde_yaml::Value::String("deploy".to_string())) {
@@ -490,7 +495,7 @@ pub fn run_generate_remote_payload(
                     let mut cloud_map = serde_yaml::Mapping::new();
                     cloud_map.insert(
                         serde_yaml::Value::String("provider".to_string()),
-                        serde_yaml::Value::String(cloud_provider_code.clone()),
+                        serde_yaml::Value::String(cloud_provider_yaml.clone()),
                     );
                     cloud_map.insert(
                         serde_yaml::Value::String("orchestrator".to_string()),
