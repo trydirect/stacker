@@ -9,6 +9,7 @@
 //! The CLI never connects to the agent directly. All communication is mediated
 //! by the Stacker server.
 
+use crate::cli::compose_service_sync::upsert_external_network;
 use crate::cli::config_bundle::{build_config_bundle, ConfigBundleArtifacts};
 use crate::cli::config_parser::StackerConfig;
 use crate::cli::debug::cli_debug_enabled;
@@ -1196,7 +1197,8 @@ fn merge_compose_service(
                 "app-local compose does not define service '{app_code}'"
             ))
         })?;
-    let should_merge_networks = !project_service_networks(&project_doc).is_empty();
+    let project_networks = project_service_networks(&project_doc);
+    let should_merge_networks = !project_networks.is_empty();
     align_service_networks_with_project(&mut app_service, &project_doc);
 
     let project_services = project_doc
@@ -1210,6 +1212,14 @@ fn merge_compose_service(
 
     if should_merge_networks {
         merge_compose_top_level_mapping(&mut project_doc, &app_doc, "networks");
+        // `app_doc` may not itself know about a network that the project's
+        // *existing* services already reference (e.g. a per-app override
+        // compose that predates `default_network` being added elsewhere).
+        // Declare any such name as `external: true` so the merged compose
+        // never ends up with a service referencing an undeclared network.
+        for network in &project_networks {
+            upsert_external_network(&mut project_doc, network);
+        }
     }
     merge_compose_top_level_mapping(&mut project_doc, &app_doc, "volumes");
 
@@ -3087,6 +3097,51 @@ impl CallableTrait for AgentInstallCommand {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    // Regression test for GH issue #211: `merge_compose_service` attaches a
+    // network name to the newly-merged app service (copied from the
+    // *existing* project services via `align_service_networks_with_project`)
+    // that the app's own local compose (`app_doc`) never declared. Without
+    // also declaring it on `project_doc` directly, this produced "service X
+    // refers to undefined network default_network: invalid compose project"
+    // on `docker compose`.
+    #[test]
+    fn test_merge_compose_service_declares_network_inherited_from_project() {
+        // Existing remote project compose: "db" already joined
+        // `default_network` (e.g. it's NPM-proxied), but for whatever reason
+        // (hand-edited file, partial prior sync, backend-rendered compose)
+        // the top-level `networks:` mapping was never declared.
+        let project_compose = "services:\n  db:\n    image: postgres:16\n    networks: [default_network]\n";
+        // App-local compose (e.g. a per-app override file) — has no idea
+        // about `default_network` at all.
+        let app_compose = "services:\n  app:\n    image: myorg/app:latest\n";
+
+        let merged = merge_compose_service(project_compose, app_compose, "app")
+            .expect("merge should succeed");
+        let doc: serde_yaml::Value = serde_yaml::from_str(&merged).unwrap();
+
+        let app_networks: Vec<&str> = doc["services"]["app"]["networks"]
+            .as_sequence()
+            .expect("app service should have networks copied from the project")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            app_networks.contains(&"default_network"),
+            "app service should reference default_network like the rest of the project: {merged}"
+        );
+
+        let declares_default_network = doc
+            .get("networks")
+            .and_then(|n| n.as_mapping())
+            .map(|m| m.contains_key(serde_yaml::Value::String("default_network".to_string())))
+            .unwrap_or(false);
+        assert!(
+            declares_default_network,
+            "app service references default_network but the top-level networks: mapping \
+             never declares it, producing an invalid compose file:\n{merged}"
+        );
+    }
 
     fn label_value<'a>(labels: &'a serde_yaml::Mapping, key: &str) -> Option<&'a str> {
         labels

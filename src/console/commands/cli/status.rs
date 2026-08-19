@@ -153,6 +153,25 @@ fn emergency_ssh_command(server: &ServerInfo) -> Option<String> {
     ))
 }
 
+/// Formats the main `app:` container as a "Services" list entry, mirroring
+/// how `config.services` entries are printed. Returns `None` when the config
+/// carries no real `app:` section (services-only stacks), so a phantom `app`
+/// line never appears.
+fn app_service_line(config: &StackerConfig) -> Option<String> {
+    let app = &config.app;
+    let app_declared =
+        config.app_present || app.image.is_some() || app.dockerfile.is_some() || app.build.is_some();
+    if !app_declared {
+        return None;
+    }
+    let ports_str = if app.ports.is_empty() {
+        String::new()
+    } else {
+        format!(" (ports: {})", app.ports.join(", "))
+    };
+    Some(format!("• app{}", ports_str))
+}
+
 /// Pretty-print a deployment status with optional server/config context.
 fn print_deployment_status_rich(info: &DeploymentStatusInfo, json: bool, ctx: &StatusContext<'_>) {
     if json {
@@ -760,6 +779,48 @@ mod tests {
     // Serialise tests that mutate XDG_CONFIG_HOME to prevent races when
     // cargo runs lib tests in parallel threads.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    // Regression tests for GH issue #219: `stacker status --watch` omits the
+    // main `app` container from the printed "Services" list — only
+    // `config.services` (db/redis/sidekiq-style backend services) were shown.
+    #[test]
+    fn test_app_service_line_included_for_dockerfile_app() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("mastodon")
+            .app_dockerfile("Dockerfile")
+            .build()
+            .unwrap();
+
+        let line = app_service_line(&config).expect("declared app: section should be listed");
+        assert_eq!(line, "• app");
+    }
+
+    #[test]
+    fn test_app_service_line_includes_ports() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("mastodon")
+            .app_image("myorg/mastodon:latest")
+            .build()
+            .unwrap();
+        let mut config = config;
+        config.app.ports = vec!["127.0.0.1:3000:3000".to_string()];
+
+        let line = app_service_line(&config).unwrap();
+        assert_eq!(line, "• app (ports: 127.0.0.1:3000:3000)");
+    }
+
+    #[test]
+    fn test_app_service_line_absent_for_services_only_stack() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("services-only")
+            .build()
+            .unwrap();
+
+        assert!(
+            app_service_line(&config).is_none(),
+            "a config with no declared app: section should not synthesize a phantom app line"
+        );
+    }
 
     #[test]
     fn test_status_local_constructs_query() {
