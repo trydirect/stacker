@@ -335,7 +335,17 @@ pub async fn clone_server(
             }
         }
         Ok(None) => {
-            tracing::info!(template_slug = %form.stack, "no approved template found for billing");
+            tracing::warn!(
+                template_slug = %form.stack,
+                "stack not registered in stack_template; refusing to deploy"
+            );
+            return HttpResponse::NotFound().json(json!({
+                "error": "Unknown stack",
+                "details": format!(
+                    "stack '{}' is not registered in the marketplace catalog",
+                    form.stack
+                ),
+            }));
         }
         Err(err) => {
             tracing::warn!(error = %err, "failed to look up template for billing");
