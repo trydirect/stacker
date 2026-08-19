@@ -3739,6 +3739,29 @@ fn is_platform_managed_service(svc: &ServiceDefinition) -> bool {
     crate::project_app::is_platform_managed_app_identity(&svc.name, Some(&svc.image))
 }
 
+/// Cloud/server deploys go through the Stacker server API, which pulls a
+/// pre-built image on the remote host — it never receives the local build
+/// context. `app_source_to_app_json` silently drops the app from the deploy
+/// payload when `app.image` is unset, which previously produced a "deployed"
+/// project missing its main container. Call this before `build_project_body`
+/// so a build-only `app:` section (declared via `dockerfile:`/`build:`, no
+/// `image:`) fails fast with an actionable message instead of deploying
+/// everything except the app.
+pub fn require_app_image_for_remote_deploy(config: &StackerConfig) -> Result<(), CliError> {
+    let app = &config.app;
+    let app_declared = config.app_present || app.dockerfile.is_some() || app.build.is_some();
+    if app_declared && app.image.is_none() {
+        return Err(CliError::ConfigValidation(
+            "app.image is required for cloud/server deploys: the Stacker server pulls a \
+             pre-built image on the remote host and cannot build from app.dockerfile/app.build \
+             locally. Push your image to a registry and set `app.image`, or use \
+             `deploy.target: local` to build and run it on this machine."
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Convert the `app` section of stacker.yml into the Stacker server's app JSON
 /// format. Returns `None` if the app has no image (build-only local apps).
 fn app_source_to_app_json(
@@ -5125,6 +5148,74 @@ mod tests {
             features.is_empty(),
             "feature array should be empty when no proxy configured"
         );
+    }
+
+    // Regression test for GH issue #218: `app` service silently missing from
+    // the remote docker-compose.yml for cloud/server deploys. Root cause: a
+    // build-only `app:` section (declared via `dockerfile:`/`build:`, no
+    // `image:`) makes `app_source_to_app_json` return `None`, so
+    // `build_project_body` produces an empty `web` array and the server
+    // deploys everything except the app — silently. This must now be caught
+    // up front instead.
+    #[test]
+    fn test_build_project_body_drops_app_without_image() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("goaccess")
+            .app_dockerfile("Dockerfile")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .build()
+            .unwrap();
+
+        let body = build_project_body(&config);
+        assert!(
+            body["custom"]["web"].as_array().unwrap().is_empty(),
+            "documents the bug: app section has no image, so `web` stays empty \
+             even though app.dockerfile declares a real app"
+        );
+    }
+
+    #[test]
+    fn test_require_app_image_for_remote_deploy_rejects_dockerfile_only_app() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("goaccess")
+            .app_dockerfile("Dockerfile")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .build()
+            .unwrap();
+
+        let err = require_app_image_for_remote_deploy(&config)
+            .expect_err("build-only app (no image) must be rejected before remote deploy");
+        match err {
+            CliError::ConfigValidation(msg) => {
+                assert!(msg.contains("app.image"), "got: {msg}");
+            }
+            other => panic!("expected ConfigValidation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_require_app_image_for_remote_deploy_accepts_image_app() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("goaccess")
+            .app_image("nginx:alpine")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .build()
+            .unwrap();
+
+        require_app_image_for_remote_deploy(&config)
+            .expect("app with an explicit image should be allowed to deploy remotely");
+    }
+
+    #[test]
+    fn test_require_app_image_for_remote_deploy_accepts_services_only_stack() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("services-only")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .build()
+            .unwrap();
+
+        require_app_image_for_remote_deploy(&config)
+            .expect("a stack with no declared app: section should not be rejected");
     }
 
     #[test]

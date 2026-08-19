@@ -282,8 +282,12 @@ fn print_deployment_status_rich(info: &DeploymentStatusInfo, json: bool, ctx: &S
         let srv_ip = ctx.server.and_then(|s| s.srv_ip.as_deref());
 
         // Services
-        if !config.services.is_empty() {
+        let app_line = app_service_line(config);
+        if app_line.is_some() || !config.services.is_empty() {
             println!("\n── Services ───────────────────────────────");
+            if let Some(line) = app_line {
+                println!("  {}", line);
+            }
             for svc in &config.services {
                 let ports_str = if svc.ports.is_empty() {
                     String::new()

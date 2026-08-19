@@ -1051,6 +1051,7 @@ impl DeployStrategy for CloudDeploy {
                             config,
                             &context.compose_path,
                         )?;
+                    stacker_client::require_app_image_for_remote_deploy(&project_config)?;
                     let mut project_body = stacker_client::build_project_body(&project_config);
                     if let Some(bundle) = &context.config_bundle {
                         stacker_client::attach_config_bundle_to_project_body(
@@ -2558,6 +2559,7 @@ impl DeployStrategy for ServerDeploy {
             config,
             &context.compose_path,
         )?;
+        stacker_client::require_app_image_for_remote_deploy(&project_config)?;
         let mut project_body = stacker_client::build_project_body(&project_config);
         if let Some(bundle) = &context.config_bundle {
             stacker_client::attach_config_bundle_to_project_body(&mut project_body, bundle);
