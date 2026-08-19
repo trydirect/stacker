@@ -311,9 +311,14 @@ pub async fn clone_server(
                         }
                     }
                 } else {
-                    tracing::warn!(
-                        "deployment_daily template but user has no access_token, skipping authorize"
+                    tracing::error!(
+                        "deployment_daily template '{}' but user has no access_token, refusing to deploy",
+                        form.stack
                     );
+                    return HttpResponse::PaymentRequired().json(json!({
+                        "error": "Payment authorization failed",
+                        "details": "User token required for deployment_daily billing",
+                    }));
                 }
             } else {
                 tracing::info!(
