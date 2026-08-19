@@ -422,3 +422,82 @@ pub async fn clone_server(
         authorization_id,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::test;
+    use actix_web::web;
+    use actix_web::HttpMessage;
+
+    fn test_user(token: Option<String>) -> Arc<User> {
+        Arc::new(User {
+            id: "test-user-1".to_string(),
+            first_name: "Test".to_string(),
+            last_name: "User".to_string(),
+            email: "test@example.com".to_string(),
+            role: "user".to_string(),
+            email_confirmed: true,
+            mfa_verified: true,
+            access_token: token,
+        })
+    }
+
+    fn valid_payload() -> serde_json::Value {
+        serde_json::json!({
+            "stack": "wordpress",
+            "provider": "hetzner",
+            "region": "fsn1",
+            "server_type": "cpx11",
+            "domain": "example.com",
+            "admin_email": "admin@example.com",
+            "env": {},
+        })
+    }
+
+    async fn call_clone(user: Arc<User>) -> actix_web::http::StatusCode {
+        let pg_pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:postgres@localhost/stacker_test")
+            .expect("lazy pool");
+        let user_service: Arc<dyn crate::connectors::user_service::UserServiceConnector> =
+            Arc::new(crate::connectors::user_service::mock::MockUserServiceConnector);
+
+        let app = test::init_service(
+            actix_web::App::new()
+                .app_data(web::Data::new(pg_pool))
+                .app_data(web::Data::new(user_service))
+                .service(clone_server),
+        )
+        .await;
+
+        let req = test::TestRequest::post()
+            .uri("/clone")
+            .set_json(valid_payload())
+            .insert_header(("Authorization", "Bearer dummy-token"))
+            .to_request();
+        req.extensions_mut().insert(Arc::clone(&user));
+
+        let resp = test::call_service(&app, req).await;
+        resp.status()
+    }
+
+    #[actix_web::test]
+    async fn clone_without_access_token_returns_401() {
+        let status = call_clone(test_user(None)).await;
+        assert_eq!(status, actix_web::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[actix_web::test]
+    async fn clone_with_blank_access_token_returns_401() {
+        let status = call_clone(test_user(Some("   ".to_string()))).await;
+        assert_eq!(status, actix_web::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[actix_web::test]
+    async fn clone_with_access_token_passes_auth_guard() {
+        // The guard should pass; the handler then proceeds (and fails later
+        // on snapshot/DB/network, not on auth).
+        let status = call_clone(test_user(Some("valid-token".to_string()))).await;
+        assert_ne!(status, actix_web::http::StatusCode::UNAUTHORIZED);
+    }
+}
