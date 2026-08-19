@@ -134,6 +134,29 @@ fn persist_proxy_config_to_stacker_yml(
 
     // Check if domain already exists and needs update
     let changed = if let Some(proxy) = root.get_mut("proxy") {
+        // Ensure proxy type matches the requested provider even when the
+        // proxy section already exists (e.g. `type: none` -> nginx-proxy-manager).
+        let mut changed = false;
+        if let Some(map) = proxy.as_mapping_mut() {
+            let type_str = match proxy_type {
+                ProxyType::Nginx => "nginx".to_string(),
+                ProxyType::NginxProxyManager => "nginx-proxy-manager".to_string(),
+                ProxyType::Traefik => "traefik".to_string(),
+                ProxyType::None => "none".to_string(),
+            };
+            let type_key = serde_yaml::Value::String("type".to_string());
+            match map.get_mut(&type_key) {
+                Some(current) if current.as_str() != Some(type_str.as_str()) => {
+                    *current = serde_yaml::Value::String(type_str);
+                    changed = true;
+                }
+                None => {
+                    map.insert(type_key, serde_yaml::Value::String(type_str));
+                    changed = true;
+                }
+                _ => {}
+            }
+        }
         if let Some(domains) = proxy.get_mut("domains") {
             if let Some(arr) = domains.as_sequence_mut() {
                 let _domain_lower = domain_config.domain.to_lowercase();
@@ -145,12 +168,12 @@ fn persist_proxy_config_to_stacker_yml(
                         .unwrap_or(false)
                 });
                 if let Some(entry) = existing {
-                    let mut changed = false;
+                    let mut entry_changed = false;
                     if let Some(ssl) = entry.get_mut("ssl") {
                         let new_ssl = serde_yaml::to_value(&domain_config.ssl).unwrap_or_default();
                         if *ssl != new_ssl {
                             *ssl = new_ssl;
-                            changed = true;
+                            entry_changed = true;
                         }
                     }
                     if let Some(upstream) = entry.get_mut("upstream") {
@@ -158,9 +181,10 @@ fn persist_proxy_config_to_stacker_yml(
                             serde_yaml::Value::String(domain_config.upstream.clone());
                         if *upstream != new_upstream {
                             *upstream = new_upstream;
-                            changed = true;
+                            entry_changed = true;
                         }
                     }
+                    changed = changed || entry_changed;
                     changed
                 } else {
                     // Add new domain entry
