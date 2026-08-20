@@ -932,7 +932,23 @@ impl ConfigRenderer {
                     .map(str::to_string)
             })
             .unwrap_or_else(|| "trydirect_network".to_string());
+        // "default_network" is the platform's shared external network — the
+        // agent/status-panel and every project's containers all attach to
+        // the *same*, pre-existing host network by that literal name (see
+        // `forms::project::network::Network::default()` and
+        // `compose_service_sync::upsert_external_network`, which both
+        // always mark it `external: true`). Declaring it here as a plain
+        // `driver: bridge` network instead makes `docker compose -p
+        // <project> up` create a brand new project-scoped network
+        // (`<project>_default_network`) rather than joining the real
+        // shared one — the redeployed container ends up isolated from the
+        // rest of the stack (DNS lookups for sibling services fail). See
+        // GH #237. Any other network name (the "trydirect_network"
+        // fallback) keeps its own project-scoped bridge network, matching
+        // `Network::into()`'s `is_default` check.
+        let default_network_is_external = default_network == "default_network";
         context.insert("default_network", &default_network);
+        context.insert("default_network_is_external", &default_network_is_external);
 
         // Same class of bug as the network mismatch above (GH #211): the
         // per-service `volumes:` list can reference a named volume (e.g.
@@ -1224,7 +1240,11 @@ services:
 {% endfor %}
 networks:
   {{ default_network }}:
+{% if default_network_is_external %}
+    external: true
+{% else %}
     driver: bridge
+{% endif %}
 {% if named_volumes | length > 0 %}
 volumes:
 {% for vol in named_volumes %}
@@ -1910,6 +1930,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    // Regression test for GH issue #237: declaring `default_network` as a
+    // plain `driver: bridge` network (rather than `external: true`) makes
+    // `docker compose -p <project> up` create a brand new project-scoped
+    // network instead of joining the shared external network the rest of
+    // the stack (and the agent/status-panel) actually run on — the
+    // redeployed container ends up isolated, unable to resolve sibling
+    // services by hostname. `default_network` must always render as
+    // `external: true`, matching `Network::default()` /
+    // `upsert_external_network` elsewhere in the codebase.
+    #[test]
+    fn render_compose_declares_default_network_as_external() {
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project {
+            name: "miniflux".to_string(),
+            ..Project::default()
+        };
+        let app_ctx = AppRenderContext {
+            code: "miniflux".to_string(),
+            name: "miniflux".to_string(),
+            image: "miniflux/miniflux:latest".to_string(),
+            environment: HashMap::new(),
+            ports: vec![],
+            volumes: vec![],
+            domain: None,
+            ssl_enabled: false,
+            networks: vec!["default_network".to_string()],
+            depends_on: vec![],
+            restart_policy: "unless-stopped".to_string(),
+            resources: ResourceLimits::default(),
+            labels: HashMap::new(),
+            healthcheck: None,
+            runtime: None,
+        };
+
+        let compose = renderer.render_compose(&[app_ctx], &project).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&compose).unwrap();
+
+        assert_eq!(
+            doc["networks"]["default_network"]["external"],
+            serde_yaml::Value::Bool(true),
+            "default_network must be declared external: true so `docker compose -p <project>` \
+             attaches to the real shared network instead of creating a project-scoped copy:\n{compose}"
+        );
     }
 
     // Regression test for GH issue #236: same class of bug as #211, but for
