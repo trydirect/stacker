@@ -442,6 +442,13 @@ pub struct PortMapping {
     pub protocol: String,
 }
 
+/// True for a Compose named-volume reference (e.g. "postgres_data"), false
+/// for a bind mount (paths starting with `.`, `/`, or `~`), which Compose
+/// does not declare under top-level `volumes:`.
+fn is_named_volume(source: &str) -> bool {
+    !source.starts_with('.') && !source.starts_with('/') && !source.starts_with('~')
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VolumeMount {
     pub source: String,
@@ -927,6 +934,24 @@ impl ConfigRenderer {
             .unwrap_or_else(|| "trydirect_network".to_string());
         context.insert("default_network", &default_network);
 
+        // Same class of bug as the network mismatch above (GH #211): the
+        // per-service `volumes:` list can reference a named volume (e.g.
+        // "postgres_data"), but nothing declared it at the top level, so
+        // `docker compose` rejected the file with "service X refers to
+        // undefined volume postgres_data". Declare every named volume
+        // actually referenced by a service — bind mounts (paths starting
+        // with `.`, `/`, or `~`) are left alone, since those aren't
+        // declared under top-level `volumes:` at all.
+        let mut named_volumes: Vec<String> = Vec::new();
+        for app in apps {
+            for vol in &app.volumes {
+                if is_named_volume(&vol.source) && !named_volumes.contains(&vol.source) {
+                    named_volumes.push(vol.source.clone());
+                }
+            }
+        }
+        context.insert("named_volumes", &named_volumes);
+
         self.tera
             .render("docker-compose.yml.tera", &context)
             .context("Failed to render docker-compose.yml template")
@@ -1200,6 +1225,12 @@ services:
 networks:
   {{ default_network }}:
     driver: bridge
+{% if named_volumes | length > 0 %}
+volumes:
+{% for vol in named_volumes %}
+  {{ vol }}:
+{% endfor %}
+{% endif %}
 "#;
 
 /// Individual service template (for partial updates)
@@ -1879,6 +1910,114 @@ mod tests {
                 );
             }
         }
+    }
+
+    // Regression test for GH issue #236: same class of bug as #211, but for
+    // volumes. A named volume referenced under a service's `volumes:` list
+    // must also be declared under the top-level `volumes:` block, or
+    // `docker compose` rejects the file with "service X refers to
+    // undefined volume Y". Bind mounts (host paths) must NOT be declared.
+    #[test]
+    fn render_compose_declares_named_volumes_referenced_by_services() {
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project {
+            name: "miniflux".to_string(),
+            ..Project::default()
+        };
+        let postgres_ctx = AppRenderContext {
+            code: "postgres".to_string(),
+            name: "postgres".to_string(),
+            image: "postgres:16-alpine".to_string(),
+            environment: HashMap::new(),
+            ports: vec![],
+            volumes: vec![
+                VolumeMount {
+                    source: "postgres_data".to_string(),
+                    target: "/var/lib/postgresql/data".to_string(),
+                    read_only: false,
+                },
+                VolumeMount {
+                    source: "./config".to_string(),
+                    target: "/etc/postgres".to_string(),
+                    read_only: true,
+                },
+            ],
+            domain: None,
+            ssl_enabled: false,
+            networks: vec!["default_network".to_string()],
+            depends_on: vec![],
+            restart_policy: "unless-stopped".to_string(),
+            resources: ResourceLimits::default(),
+            labels: HashMap::new(),
+            healthcheck: None,
+            runtime: None,
+        };
+
+        let compose = renderer.render_compose(&[postgres_ctx], &project).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&compose).unwrap();
+
+        let service_volumes: Vec<&str> = doc["services"]["postgres"]["volumes"]
+            .as_sequence()
+            .expect("postgres should declare volumes")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            service_volumes
+                .iter()
+                .any(|v| v.starts_with("postgres_data:")),
+            "expected postgres_data mount in {:?}",
+            service_volumes
+        );
+
+        let top_level_volumes = doc
+            .get("volumes")
+            .and_then(|v| v.as_mapping())
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            top_level_volumes
+                .contains_key(serde_yaml::Value::String("postgres_data".to_string())),
+            "postgres references named volume 'postgres_data' but top-level volumes: \
+             never declares it:\n{compose}"
+        );
+        assert!(
+            !top_level_volumes.contains_key(serde_yaml::Value::String("./config".to_string())),
+            "bind mounts must not be declared under top-level volumes::\n{compose}"
+        );
+    }
+
+    #[test]
+    fn render_compose_omits_volumes_block_when_no_named_volumes() {
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project {
+            name: "demo".to_string(),
+            ..Project::default()
+        };
+        let ctx = AppRenderContext {
+            code: "web".to_string(),
+            name: "web".to_string(),
+            image: "nginx:latest".to_string(),
+            environment: HashMap::new(),
+            ports: vec![],
+            volumes: vec![],
+            domain: None,
+            ssl_enabled: false,
+            networks: vec![],
+            depends_on: vec![],
+            restart_policy: "unless-stopped".to_string(),
+            resources: ResourceLimits::default(),
+            labels: HashMap::new(),
+            healthcheck: None,
+            runtime: None,
+        };
+
+        let compose = renderer.render_compose(&[ctx], &project).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&compose).unwrap();
+        assert!(
+            doc.get("volumes").is_none(),
+            "no service declares a named volume, so volumes: should be omitted:\n{compose}"
+        );
     }
 
     #[test]
