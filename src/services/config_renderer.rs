@@ -905,13 +905,26 @@ impl ConfigRenderer {
         context.insert("project_id", &project.stack_id.to_string());
         context.insert("env_file", compose_env_file_reference());
 
-        // Extract network configuration from project metadata
-        let default_network = project
-            .metadata
-            .get("network")
-            .and_then(|v| v.as_str())
-            .unwrap_or("trydirect_network")
-            .to_string();
+        // The top-level `networks:` block must declare whatever name the
+        // per-app `networks:` list actually references (usually
+        // "default_network", resolved from the project's own network
+        // config — see `ProjectAppService::default_network_from_project`).
+        // `project.metadata["network"]` is an unrelated, never-populated
+        // field; falling back to it (or to the "trydirect_network" literal)
+        // when apps already carry a real network name produced a top-level
+        // declaration that didn't match any app's `networks:` entry —
+        // "service X refers to undefined network default_network".
+        let default_network = apps
+            .iter()
+            .find_map(|app| app.networks.first().cloned())
+            .or_else(|| {
+                project
+                    .metadata
+                    .get("network")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "trydirect_network".to_string());
         context.insert("default_network", &default_network);
 
         self.tera
@@ -1802,6 +1815,70 @@ mod tests {
         };
         let json = serde_json::to_value(&ctx).unwrap();
         assert!(json.get("runtime").is_none() || json["runtime"].is_null());
+    }
+
+    // Regression test for GH issue #211: the rendered compose's top-level
+    // `networks:` block must declare the same name each app's own
+    // `networks:` list references. Before the fix, the top-level block
+    // always used `project.metadata["network"]` (never populated in
+    // practice) falling back to the unrelated literal "trydirect_network",
+    // while apps carry the project's real network name (typically
+    // "default_network", resolved via `custom.networks`) — producing
+    // "service X refers to undefined network default_network: invalid
+    // compose project" on every single-app deploy_app re-render.
+    #[test]
+    fn render_compose_top_level_network_matches_app_networks() {
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project {
+            name: "miniflux".to_string(),
+            ..Project::default()
+        };
+        let app_ctx = AppRenderContext {
+            code: "app".to_string(),
+            name: "app".to_string(),
+            image: "miniflux/miniflux:latest".to_string(),
+            environment: HashMap::new(),
+            ports: vec![],
+            volumes: vec![],
+            domain: None,
+            ssl_enabled: false,
+            networks: vec!["default_network".to_string()],
+            depends_on: vec![],
+            restart_policy: "unless-stopped".to_string(),
+            resources: ResourceLimits::default(),
+            labels: HashMap::new(),
+            healthcheck: None,
+            runtime: None,
+        };
+        let db_ctx = AppRenderContext {
+            code: "postgres".to_string(),
+            networks: vec!["default_network".to_string()],
+            ..app_ctx.clone()
+        };
+
+        let compose = renderer
+            .render_compose(&[app_ctx, db_ctx], &project)
+            .unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&compose).unwrap();
+
+        for service in ["app", "postgres"] {
+            let service_networks: Vec<&str> = doc["services"][service]["networks"]
+                .as_sequence()
+                .unwrap_or_else(|| panic!("{service} should declare networks:\n{compose}"))
+                .iter()
+                .filter_map(|v| v.as_str())
+                .collect();
+            for network in &service_networks {
+                assert!(
+                    doc["networks"]
+                        .as_mapping()
+                        .map(|m| m.contains_key(serde_yaml::Value::String(network.to_string())))
+                        .unwrap_or(false),
+                    "{service} references network '{network}' but top-level networks: \
+                     never declares it:\n{compose}"
+                );
+            }
+        }
     }
 
     #[test]
