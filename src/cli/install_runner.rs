@@ -469,10 +469,11 @@ fn extract_port_from_docker_ps_entry(spec: &str) -> Option<String> {
 
 /// Ask Docker for the host ports currently bound by THIS compose project's containers.
 ///
-/// Uses `docker compose -f <path> ps --format "{{.Ports}}"`.
+/// Uses `docker compose -p <project_name> -f <path> ps --format "{{.Ports}}"`.
 /// Returns an empty set if Docker is unavailable or the project has no running containers.
 fn get_own_compose_running_ports(
     compose_path: &Path,
+    project_name: &str,
     executor: &dyn CommandExecutor,
 ) -> std::collections::HashSet<String> {
     let compose_str = compose_path.to_string_lossy();
@@ -480,6 +481,8 @@ fn get_own_compose_running_ports(
         "docker",
         &[
             "compose",
+            "-p",
+            project_name,
             "-f",
             &compose_str,
             "ps",
@@ -638,6 +641,7 @@ fn format_preflight_port_conflicts(target: &str, conflicts: &[String]) -> String
 /// Docker access still work.
 fn check_local_host_port_conflicts(
     compose_path: &Path,
+    project_name: &str,
     executor: &dyn CommandExecutor,
 ) -> Vec<String> {
     use std::net::TcpListener;
@@ -662,7 +666,7 @@ fn check_local_host_port_conflicts(
 
     // Exclude ports that belong to OUR own currently-running project containers —
     // docker compose up will stop-and-restart them without a conflict.
-    let own_ports = get_own_compose_running_ports(compose_path, executor);
+    let own_ports = get_own_compose_running_ports(compose_path, project_name, executor);
 
     occupied
         .into_iter()
@@ -689,6 +693,23 @@ fn resolve_compose_cmd(executor: &dyn CommandExecutor) -> (&'static str, Vec<&'s
         }
     }
     ("docker-compose", vec![])
+}
+
+/// Compose project name for local deploys, derived from the project's own
+/// identity rather than left to Compose's default (the containing
+/// directory's basename). Every project's generated compose file lives
+/// under `.stacker/`, so without an explicit name every project defaulted
+/// to the same Compose project ("stacker") — deploying one project locally
+/// would recreate/destroy another project's containers, and `down` would
+/// report unrelated projects' containers as orphans of the "stacker"
+/// project. See GH issue #235.
+fn local_compose_project_name(config: &StackerConfig) -> String {
+    let identity = config
+        .project
+        .identity
+        .clone()
+        .unwrap_or_else(|| config.name.clone());
+    sanitize_stack_code(&identity)
 }
 
 pub struct LocalDeploy;
@@ -721,10 +742,12 @@ impl DeployStrategy for LocalDeploy {
         }
 
         let compose_path = context.compose_path.to_string_lossy().to_string();
+        let project_name = local_compose_project_name(config);
 
         // Pre-flight: catch host port conflicts before docker compose up so the
         // error is actionable rather than buried in Docker daemon output.
-        let port_conflicts = check_local_host_port_conflicts(&context.compose_path, executor);
+        let port_conflicts =
+            check_local_host_port_conflicts(&context.compose_path, &project_name, executor);
         if !port_conflicts.is_empty() {
             return Err(CliError::DeployFailed {
                 target: DeployTarget::Local,
@@ -737,6 +760,9 @@ impl DeployStrategy for LocalDeploy {
 
         let (cmd, base_args) = resolve_compose_cmd(executor);
         let mut args: Vec<String> = base_args.iter().map(|s| s.to_string()).collect();
+
+        args.push("-p".into());
+        args.push(project_name);
 
         if let Some(ref env_file) = config.env_file {
             let env_file_path = if env_file.is_absolute() {
@@ -790,6 +816,9 @@ impl DeployStrategy for LocalDeploy {
 
         let (cmd, base_args) = resolve_compose_cmd(executor);
         let mut args: Vec<String> = base_args.iter().map(|s| s.to_string()).collect();
+
+        args.push("-p".into());
+        args.push(local_compose_project_name(config));
 
         if let Some(ref env_file) = config.env_file {
             let env_file_path = if env_file.is_absolute() {
@@ -3427,6 +3456,75 @@ mod tests {
         assert!(args.contains(&"--build".to_string()));
     }
 
+    // Regression test for GH issue #235: without an explicit `-p`, Compose
+    // derives the project name from the compose file's containing directory
+    // — since every project's compose lives under `.stacker/`, every
+    // project defaulted to the same Compose project ("stacker"), so
+    // deploying project B would recreate/destroy project A's containers.
+    #[test]
+    fn test_local_deploy_namespaces_compose_project_by_identity() {
+        let config = ConfigBuilder::new()
+            .name("Miniflux Prod")
+            .build()
+            .unwrap();
+        let context = sample_context(false);
+        let executor = MockExecutor::success();
+        let strategy = LocalDeploy;
+
+        strategy.deploy(&config, &context, &executor).unwrap();
+
+        let args = executor.last_args();
+        let p_index = args
+            .iter()
+            .position(|a| a == "-p")
+            .expect("docker compose up should pass -p <project-name>");
+        assert_eq!(
+            args.get(p_index + 1).map(String::as_str),
+            Some("miniflux-prod"),
+            "project name should be derived from stacker.yml's name/identity, not the compose \
+             file's directory, got args: {:?}",
+            args
+        );
+    }
+
+    #[test]
+    fn test_local_deploy_uses_project_identity_over_name_for_project_name() {
+        let config = ConfigBuilder::new()
+            .name("stacker") // matches the old universal default — must not collide
+            .project_identity("miniflux-blue")
+            .build()
+            .unwrap();
+        let context = sample_context(false);
+        let executor = MockExecutor::success();
+        let strategy = LocalDeploy;
+
+        strategy.deploy(&config, &context, &executor).unwrap();
+
+        let args = executor.last_args();
+        let p_index = args.iter().position(|a| a == "-p").unwrap();
+        assert_eq!(
+            args.get(p_index + 1).map(String::as_str),
+            Some("miniflux-blue")
+        );
+    }
+
+    #[test]
+    fn test_local_destroy_uses_same_project_name_as_deploy() {
+        let config = ConfigBuilder::new().name("ntfy").build().unwrap();
+        let context = sample_context(false);
+        let executor = MockExecutor::success();
+        let strategy = LocalDeploy;
+
+        strategy.destroy(&config, &context, &executor).unwrap();
+
+        let args = executor.last_args();
+        let p_index = args
+            .iter()
+            .position(|a| a == "-p")
+            .expect("docker compose down should pass -p <project-name>");
+        assert_eq!(args.get(p_index + 1).map(String::as_str), Some("ntfy"));
+    }
+
     #[test]
     fn test_local_deploy_failure() {
         let config = ConfigBuilder::new().name("local-app").build().unwrap();
@@ -3860,7 +3958,7 @@ services:
         .unwrap();
 
         let executor = MockExecutor::success();
-        let conflicts = check_local_host_port_conflicts(tmp.path(), &executor);
+        let conflicts = check_local_host_port_conflicts(tmp.path(), "myproject", &executor);
         assert!(
             conflicts.is_empty(),
             "expected no conflicts for free port {}: {:?}",
@@ -3890,7 +3988,7 @@ services:
         let ps_output = format!("0.0.0.0:{}->80/tcp", port);
         let executor = MockExecutor::success_with_stdout(&ps_output);
 
-        let conflicts = check_local_host_port_conflicts(tmp.path(), &executor);
+        let conflicts = check_local_host_port_conflicts(tmp.path(), "myproject", &executor);
         drop(listener);
         assert!(
             conflicts.is_empty(),
@@ -3919,7 +4017,7 @@ services:
         // Simulate `docker compose ps` returning empty (no own containers on this port)
         let executor = MockExecutor::success_with_stdout("");
 
-        let conflicts = check_local_host_port_conflicts(tmp.path(), &executor);
+        let conflicts = check_local_host_port_conflicts(tmp.path(), "myproject", &executor);
         drop(listener);
         assert!(
             !conflicts.is_empty(),
