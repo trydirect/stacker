@@ -4,8 +4,8 @@ use crate::cli::config_parser::{
 use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::proxy_manager::{
-    detect_proxy, detect_proxy_from_snapshot, generate_nginx_server_block, ContainerRuntime,
-    DockerCliRuntime, ProxyDetection,
+    detect_proxy, detect_proxy_from_snapshot, generate_caddy_server_block,
+    generate_nginx_server_block, ContainerRuntime, DockerCliRuntime, ProxyDetection,
 };
 use crate::cli::runtime::CliRuntime;
 use crate::cli::stacker_client::AgentEnqueueRequest;
@@ -142,6 +142,7 @@ fn persist_proxy_config_to_stacker_yml(
                 ProxyType::Nginx => "nginx".to_string(),
                 ProxyType::NginxProxyManager => "nginx-proxy-manager".to_string(),
                 ProxyType::Traefik => "traefik".to_string(),
+                ProxyType::Caddy => "caddy".to_string(),
                 ProxyType::None => "none".to_string(),
             };
             let type_key = serde_yaml::Value::String("type".to_string());
@@ -217,6 +218,7 @@ fn persist_proxy_config_to_stacker_yml(
                 ProxyType::Nginx => "nginx".to_string(),
                 ProxyType::NginxProxyManager => "nginx-proxy-manager".to_string(),
                 ProxyType::Traefik => "traefik".to_string(),
+                ProxyType::Caddy => "caddy".to_string(),
                 ProxyType::None => "none".to_string(),
             });
             let mut proxy_map = serde_yaml::Mapping::new();
@@ -407,16 +409,56 @@ impl CallableTrait for ProxyAddCommand {
             return Ok(());
         }
 
-        let block = generate_nginx_server_block(&domain_config)?;
+        // Keep an already-configured Caddy/Traefik proxy as-is; default to
+        // nginx otherwise, matching prior behavior for everyone who hasn't
+        // opted into either.
+        let existing_proxy_type = StackerConfig::from_file(&project_dir.join("stacker.yml"))
+            .map(|config| config.proxy.proxy_type)
+            .unwrap_or(ProxyType::Nginx);
+
+        if existing_proxy_type == ProxyType::Traefik {
+            // Traefik routes via labels baked directly into the generated
+            // docker-compose.yml (see `ComposeDefinition::try_from`'s
+            // domain-driven label injection) — there's no separate config
+            // file to print and hand-apply like nginx/Caddy.
+            let persistence = persist_proxy_config_to_stacker_yml(
+                &project_dir,
+                ProxyType::Traefik,
+                domain_config,
+            )?;
+            if !self.json {
+                print_proxy_config_persistence(persistence.as_ref());
+            }
+            eprintln!(
+                "✓ Domain {} saved to stacker.yml; Traefik routing labels are generated \
+                 automatically on the target service the next time you run `stacker deploy`.",
+                self.domain
+            );
+            return Ok(());
+        }
+
+        let (block, proxy_type, kind_label) = if existing_proxy_type == ProxyType::Caddy {
+            (
+                generate_caddy_server_block(&domain_config)?,
+                ProxyType::Caddy,
+                "Caddyfile",
+            )
+        } else {
+            (
+                generate_nginx_server_block(&domain_config)?,
+                ProxyType::Nginx,
+                "nginx",
+            )
+        };
         let persistence =
-            persist_proxy_config_to_stacker_yml(&project_dir, ProxyType::Nginx, domain_config)?;
+            persist_proxy_config_to_stacker_yml(&project_dir, proxy_type, domain_config)?;
         println!("{}", block);
         if !self.json {
             print_proxy_config_persistence(persistence.as_ref());
         }
         eprintln!(
-            "✓ Proxy config generated for {}; apply this nginx snippet to configure a local proxy",
-            self.domain
+            "✓ Proxy config generated for {}; apply this {} snippet to configure a local proxy",
+            self.domain, kind_label
         );
         Ok(())
     }

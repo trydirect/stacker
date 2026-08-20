@@ -81,6 +81,7 @@ pub enum ProxyType {
     Nginx,
     NginxProxyManager,
     Traefik,
+    Caddy,
     None,
 }
 
@@ -90,6 +91,7 @@ impl fmt::Display for ProxyType {
             Self::Nginx => write!(f, "nginx"),
             Self::NginxProxyManager => write!(f, "nginx-proxy-manager"),
             Self::Traefik => write!(f, "traefik"),
+            Self::Caddy => write!(f, "caddy"),
             Self::None => write!(f, "none"),
         }
     }
