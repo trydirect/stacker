@@ -146,8 +146,14 @@ impl InstallServiceConnector for InstallServiceClient {
         // Set stack_code for per-project directory namespacing on the remote server.
         // The Ansible `custom` role uses this as `stack_source` to compute the
         // deploy directory: /home/trydirect/{stack_code}/.
+        // Includes project.id to guarantee uniqueness — project.name has no DB
+        // constraint, so "My App" and "my-app" would otherwise collide.
         if payload.stack_code.is_none() {
-            let stack_code = crate::models::project::sanitize_project_name(&project.name);
+            let stack_code = format!(
+                "{}-{}",
+                crate::models::project::sanitize_project_name(&project.name),
+                project.id
+            );
             payload.stack_code = Some(stack_code);
         }
 

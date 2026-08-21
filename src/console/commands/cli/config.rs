@@ -1131,7 +1131,7 @@ pub fn run_show_resolved(config_path: &str) -> Result<String, CliError> {
     Ok(format!(
         "resolved_config:\n  local_env_file: {}\n  remote_runtime_env_file: {}\n  compose_env_file: {}\n  config_version: local\n  config_hash: unavailable_until_deploy\n  runtime_env_contract_version: {}\n  runtime_env_contract_order: {}\n  layers:\n{}\n",
         local_env_file,
-        remote_runtime_env_path_for(&config.name),
+        remote_runtime_env_path_for(&crate::models::project::sanitize_project_name(&config.name)),
         compose_env_file_reference(),
         runtime_env_contract.version,
         runtime_env_contract.order,

@@ -167,11 +167,17 @@ impl DeploymentState {
                 features,
             },
             runtime: DeploymentRuntimeState {
-                compose_path: remote_runtime_compose_path_for(&sanitize_project_name(
-                    &project.name,
+                stack_code: format!("{}-{}", sanitize_project_name(&project.name), project.id),
+                compose_path: remote_runtime_compose_path_for(&format!(
+                    "{}-{}",
+                    sanitize_project_name(&project.name),
+                    project.id
                 )),
-                env_path: remote_runtime_env_path_for(&sanitize_project_name(&project.name)),
-                stack_code: sanitize_project_name(&project.name),
+                env_path: remote_runtime_env_path_for(&format!(
+                    "{}-{}",
+                    sanitize_project_name(&project.name),
+                    project.id
+                )),
             },
             apps,
             drift: DeploymentDriftState {
