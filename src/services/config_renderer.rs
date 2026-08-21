@@ -555,12 +555,11 @@ impl ConfigRenderer {
             app_contexts.push(context);
 
             let rendered_env = self.render_env_file(app, deployment_hash, &environment)?;
+            let stack_code = format!("{}-{}", sanitize_project_name(&project.name), project.id);
             let config = AppConfig {
                 content: rendered_env.content,
                 content_type: "env".to_string(),
-                destination_path: remote_runtime_env_path_for(&sanitize_project_name(
-                    &project.name,
-                )),
+                destination_path: remote_runtime_env_path_for(&stack_code),
                 file_mode: "0600".to_string(),
                 owner: Some("trydirect".to_string()),
                 group: Some("docker".to_string()),
@@ -1013,10 +1012,11 @@ impl ConfigRenderer {
     ) -> Result<(AppConfig, String)> {
         let environment = self.resolve_app_environment(pool, project, app).await?;
         let rendered_env = self.render_env_file(app, deployment_hash, &environment)?;
+        let stack_code = format!("{}-{}", sanitize_project_name(&project.name), project.id);
         let config = AppConfig {
             content: rendered_env.content,
             content_type: "env".to_string(),
-            destination_path: remote_runtime_env_path_for(&sanitize_project_name(&project.name)),
+            destination_path: remote_runtime_env_path_for(&stack_code),
             file_mode: "0600".to_string(),
             owner: Some("trydirect".to_string()),
             group: Some("docker".to_string()),

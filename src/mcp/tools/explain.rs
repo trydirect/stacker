@@ -97,12 +97,13 @@ fn local_authoring_env_path(project: &Project) -> String {
 }
 
 fn runtime_compose_path(project: &Project) -> String {
+    let stack_code = format!("{}-{}", sanitize_project_name(&project.name), project.id);
     project
         .request_json
         .pointer("/custom/deployment_artifacts/config_bundle/remote_compose_path")
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned)
-        .unwrap_or_else(|| remote_runtime_compose_path_for(&sanitize_project_name(&project.name)))
+        .unwrap_or_else(|| remote_runtime_compose_path_for(&stack_code))
 }
 
 fn project_target(project: &Project) -> String {
@@ -253,11 +254,12 @@ impl ToolHandler for ExplainEnvTool {
             .or_else(|| apps.first())
             .ok_or_else(|| "No deployment apps found".to_string())?;
 
+        let stack_code = format!("{}-{}", sanitize_project_name(&project.name), project.id);
         let explain = build_explain_env(
             &deployment.deployment_hash,
             &app.code,
             &local_authoring_env_path(&project),
-            &remote_runtime_env_path_for(&sanitize_project_name(&project.name)),
+            &remote_runtime_env_path_for(&stack_code),
             &runtime_compose_path(&project),
             app_env_input(app),
         )
@@ -294,13 +296,14 @@ impl ToolHandler for ExplainTopologyTool {
                 .await
                 .map_err(|err| format!("Failed to fetch apps: {err}"))?;
 
+        let stack_code = format!("{}-{}", sanitize_project_name(&project.name), project.id);
         let topology = build_explain_topology(
             &deployment.deployment_hash,
             &project_target(&project),
             "stacker.yml",
             &runtime_compose_path(&project),
             &local_authoring_env_path(&project),
-            &remote_runtime_env_path_for(&sanitize_project_name(&project.name)),
+            &remote_runtime_env_path_for(&stack_code),
             topology_services(&apps),
         );
 
