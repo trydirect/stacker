@@ -109,7 +109,7 @@ deploy:
         .success()
         .stdout(predicate::str::contains("local_env_file: docker/prod/.env"))
         .stdout(predicate::str::contains(
-            "remote_runtime_env_file: /home/trydirect/project/.env",
+            "remote_runtime_env_file: /home/trydirect/resolved-test/.env",
         ))
         .stdout(predicate::str::contains("compose_env_file: .env"))
         .stdout(predicate::str::contains(
