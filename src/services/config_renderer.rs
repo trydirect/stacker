@@ -11,6 +11,7 @@
 use crate::configuration::DeploymentSettings;
 use crate::db;
 use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path_for};
+use crate::models::project::sanitize_project_name;
 use crate::models::{Project, ProjectApp};
 use crate::services::env_model::{
     normalize_optional_json_env, reconcile_env_layers, EnvLayer, ReconciledEnv,
@@ -557,7 +558,9 @@ impl ConfigRenderer {
             let config = AppConfig {
                 content: rendered_env.content,
                 content_type: "env".to_string(),
-                destination_path: remote_runtime_env_path_for(&project.name),
+                destination_path: remote_runtime_env_path_for(&sanitize_project_name(
+                    &project.name,
+                )),
                 file_mode: "0600".to_string(),
                 owner: Some("trydirect".to_string()),
                 group: Some("docker".to_string()),
@@ -1013,7 +1016,7 @@ impl ConfigRenderer {
         let config = AppConfig {
             content: rendered_env.content,
             content_type: "env".to_string(),
-            destination_path: remote_runtime_env_path_for(&project.name),
+            destination_path: remote_runtime_env_path_for(&sanitize_project_name(&project.name)),
             file_mode: "0600".to_string(),
             owner: Some("trydirect".to_string()),
             group: Some("docker".to_string()),
@@ -1668,7 +1671,10 @@ mod tests {
     #[test]
     fn test_env_destination_path_format() {
         // Test that .env files have correct destination paths
-        assert_eq!(remote_runtime_env_path(), "/home/trydirect/project/.env");
+        assert_eq!(
+            remote_runtime_env_path_for("project"),
+            "/home/trydirect/project/.env"
+        );
     }
 
     #[test]

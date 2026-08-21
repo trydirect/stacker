@@ -6,6 +6,7 @@ use crate::db;
 use crate::helpers::{remote_runtime_compose_path_for, remote_runtime_env_path_for};
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
+use crate::models::project::sanitize_project_name;
 use crate::models::{Project, ProjectApp};
 use crate::services::config_renderer::EnvRenderInput;
 use crate::services::{
@@ -101,7 +102,7 @@ fn runtime_compose_path(project: &Project) -> String {
         .pointer("/custom/deployment_artifacts/config_bundle/remote_compose_path")
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned)
-        .unwrap_or_else(|| remote_runtime_compose_path_for(&project.name))
+        .unwrap_or_else(|| remote_runtime_compose_path_for(&sanitize_project_name(&project.name)))
 }
 
 fn project_target(project: &Project) -> String {
@@ -256,7 +257,7 @@ impl ToolHandler for ExplainEnvTool {
             &deployment.deployment_hash,
             &app.code,
             &local_authoring_env_path(&project),
-            &remote_runtime_env_path_for(&project.name),
+            &remote_runtime_env_path_for(&sanitize_project_name(&project.name)),
             &runtime_compose_path(&project),
             app_env_input(app),
         )
@@ -299,7 +300,7 @@ impl ToolHandler for ExplainTopologyTool {
             "stacker.yml",
             &runtime_compose_path(&project),
             &local_authoring_env_path(&project),
-            &remote_runtime_env_path_for(&project.name),
+            &remote_runtime_env_path_for(&sanitize_project_name(&project.name)),
             topology_services(&apps),
         );
 

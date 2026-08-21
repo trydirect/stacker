@@ -42,27 +42,6 @@ fn stack_var_string(vars: &Option<Vec<Var>>, key: &str) -> Option<String> {
     })
 }
 
-fn sanitize_stack_code(name: &str) -> String {
-    let mut out = String::new();
-    let mut prev_dash = false;
-    for ch in name.chars() {
-        let c = ch.to_ascii_lowercase();
-        if c.is_ascii_alphanumeric() {
-            out.push(c);
-            prev_dash = false;
-        } else if !prev_dash {
-            out.push('-');
-            prev_dash = true;
-        }
-    }
-    let out = out.trim_matches('-').to_string();
-    if out.is_empty() {
-        "project".to_string()
-    } else {
-        out
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::normalize_server_region_for_installer;
@@ -168,7 +147,7 @@ impl InstallServiceConnector for InstallServiceClient {
         // The Ansible `custom` role uses this as `stack_source` to compute the
         // deploy directory: /home/trydirect/{stack_code}/.
         if payload.stack_code.is_none() {
-            let stack_code = sanitize_stack_code(&project.name);
+            let stack_code = crate::models::project::sanitize_project_name(&project.name);
             payload.stack_code = Some(stack_code);
         }
 

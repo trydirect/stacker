@@ -7,7 +7,7 @@ use crate::{
         extract_capabilities, has_capability, has_capability_value,
         remote_runtime_compose_path_for, remote_runtime_env_path_for, NPM_CREDENTIAL_SOURCE_KEY,
     },
-    models::{Agent, Command, Deployment, Project, ProjectApp},
+    models::{project::sanitize_project_name, Agent, Command, Deployment, Project, ProjectApp},
 };
 
 pub const DEPLOYMENT_STATE_SCHEMA_VERSION: &str = "v1alpha1";
@@ -167,9 +167,11 @@ impl DeploymentState {
                 features,
             },
             runtime: DeploymentRuntimeState {
-                compose_path: remote_runtime_compose_path_for(&project.name),
-                env_path: remote_runtime_env_path_for(&project.name),
-                stack_code: project.name.clone(),
+                compose_path: remote_runtime_compose_path_for(&sanitize_project_name(
+                    &project.name,
+                )),
+                env_path: remote_runtime_env_path_for(&sanitize_project_name(&project.name)),
+                stack_code: sanitize_project_name(&project.name),
             },
             apps,
             drift: DeploymentDriftState {
