@@ -3111,7 +3111,8 @@ mod tests {
         // `default_network` (e.g. it's NPM-proxied), but for whatever reason
         // (hand-edited file, partial prior sync, backend-rendered compose)
         // the top-level `networks:` mapping was never declared.
-        let project_compose = "services:\n  db:\n    image: postgres:16\n    networks: [default_network]\n";
+        let project_compose =
+            "services:\n  db:\n    image: postgres:16\n    networks: [default_network]\n";
         // App-local compose (e.g. a per-app override file) — has no idea
         // about `default_network` at all.
         let app_compose = "services:\n  app:\n    image: myorg/app:latest\n";

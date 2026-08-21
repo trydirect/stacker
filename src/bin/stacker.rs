@@ -863,6 +863,12 @@ enum ConfigCommands {
     Validate {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
+        /// Deploy target to validate against (local, cloud, server). Skips
+        /// env-var resolution for the inactive deploy.server/deploy.cloud
+        /// section in dual-target configs. Defaults to deploy.target in
+        /// the file when omitted.
+        #[arg(long)]
+        target: Option<String>,
     },
     /// Show resolved configuration
     Show {
@@ -2059,9 +2065,9 @@ fn get_command(
             stacker::console::commands::cli::rollback::RollbackCommand::new(version, confirm),
         ),
         StackerCommands::Config { command: cfg_cmd } => match cfg_cmd {
-            ConfigCommands::Validate { file } => {
-                Box::new(stacker::console::commands::cli::config::ConfigValidateCommand::new(file))
-            }
+            ConfigCommands::Validate { file, target } => Box::new(
+                stacker::console::commands::cli::config::ConfigValidateCommand::new(file, target),
+            ),
             ConfigCommands::Show { file, resolved } => Box::new(
                 stacker::console::commands::cli::config::ConfigShowCommand::new(file, resolved),
             ),

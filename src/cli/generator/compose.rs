@@ -4,8 +4,7 @@ use std::fmt;
 use std::path::Path;
 
 use crate::cli::config_parser::{
-    AppType, ComposeHealthcheck, DomainConfig, ProxyType, ServiceDefinition, SslMode,
-    StackerConfig,
+    AppType, ComposeHealthcheck, DomainConfig, ProxyType, ServiceDefinition, SslMode, StackerConfig,
 };
 use crate::cli::error::CliError;
 
@@ -210,8 +209,7 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
                 let Some(port) = upstream_port_from_domain(domain) else {
                     continue;
                 };
-                let Some(svc) = compose.services.iter_mut().find(|s| s.name == target_name)
-                else {
+                let Some(svc) = compose.services.iter_mut().find(|s| s.name == target_name) else {
                     continue;
                 };
 
@@ -425,7 +423,9 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
                 "--entrypoints.websecure.address=:443".to_string(),
             ];
             if let Some(email) = admin_email_from_config(config) {
-                args.push("--certificatesresolvers.letsencrypt.acme.httpchallenge=true".to_string());
+                args.push(
+                    "--certificatesresolvers.letsencrypt.acme.httpchallenge=true".to_string(),
+                );
                 args.push(
                     "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
                         .to_string(),
@@ -1015,10 +1015,10 @@ services:
             .and_then(|v| v.as_mapping())
             .cloned()
             .unwrap_or_default();
-        assert!(top_level_volumes
-            .contains_key(serde_yaml::Value::String("caddy_data".to_string())));
-        assert!(top_level_volumes
-            .contains_key(serde_yaml::Value::String("caddy_config".to_string())));
+        assert!(top_level_volumes.contains_key(serde_yaml::Value::String("caddy_data".to_string())));
+        assert!(
+            top_level_volumes.contains_key(serde_yaml::Value::String("caddy_config".to_string()))
+        );
     }
 
     // Regression tests: Traefik was previously a container-only stub — no
@@ -1050,7 +1050,10 @@ services:
         let compose = ComposeDefinition::try_from(&config).unwrap();
         let app = compose.services.iter().find(|s| s.name == "app").unwrap();
 
-        assert_eq!(app.labels.get("traefik.enable").map(String::as_str), Some("true"));
+        assert_eq!(
+            app.labels.get("traefik.enable").map(String::as_str),
+            Some("true")
+        );
         assert_eq!(
             app.labels
                 .get("traefik.http.routers.app-example-com.rule")
@@ -1070,7 +1073,9 @@ services:
             Some("web"),
             "SslMode::Off should route through the plain web entrypoint, no TLS label"
         );
-        assert!(!app.labels.contains_key("traefik.http.routers.app-example-com.tls"));
+        assert!(!app
+            .labels
+            .contains_key("traefik.http.routers.app-example-com.tls"));
     }
 
     #[test]
@@ -1101,10 +1106,10 @@ services:
     #[test]
     fn test_compose_traefik_labels_use_acme_certresolver_when_admin_email_present() {
         let mut config = traefik_config_with_domain(SslMode::Auto);
-        config
-            .install
-            .inputs
-            .insert("admin_email".to_string(), serde_json::json!("ops@example.com"));
+        config.install.inputs.insert(
+            "admin_email".to_string(),
+            serde_json::json!("ops@example.com"),
+        );
 
         let compose = ComposeDefinition::try_from(&config).unwrap();
         let app = compose.services.iter().find(|s| s.name == "app").unwrap();
@@ -1115,7 +1120,11 @@ services:
             Some("letsencrypt")
         );
 
-        let traefik = compose.services.iter().find(|s| s.name == "traefik").unwrap();
+        let traefik = compose
+            .services
+            .iter()
+            .find(|s| s.name == "traefik")
+            .unwrap();
         let command = traefik.command.as_deref().unwrap_or_default();
         assert!(command.contains("--certificatesresolvers.letsencrypt.acme.email=ops@example.com"));
         assert!(command.contains("--certificatesresolvers.letsencrypt.acme.httpchallenge=true"));
@@ -1125,7 +1134,11 @@ services:
     fn test_compose_traefik_static_config_and_certs_volume() {
         let config = traefik_config_with_domain(SslMode::Off);
         let compose = ComposeDefinition::try_from(&config).unwrap();
-        let traefik = compose.services.iter().find(|s| s.name == "traefik").unwrap();
+        let traefik = compose
+            .services
+            .iter()
+            .find(|s| s.name == "traefik")
+            .unwrap();
 
         let command = traefik.command.as_deref().unwrap_or_default();
         assert!(command.contains("--providers.docker=true"));

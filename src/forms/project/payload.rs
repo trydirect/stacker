@@ -41,6 +41,12 @@ pub struct Payload {
     pub config_bundle: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_artifact_bundle: Option<serde_json::Value>,
+    /// Per-project directory name on the remote server (e.g., "my-app").
+    /// Used by the Ansible `custom` role as `stack_source` to namespace
+    /// the deploy directory: `/home/trydirect/{stack_code}/`.
+    /// Falls back to "project" when not set (backward compatibility).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_code: Option<String>,
 }
 
 impl std::fmt::Debug for Payload {

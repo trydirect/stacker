@@ -2359,7 +2359,8 @@ mod tests {
         let path = generate_config(dir.path(), None, false, false, false).unwrap();
         let rendered = std::fs::read_to_string(&path).unwrap();
         let issues =
-            crate::console::commands::cli::config::run_validate(&path.to_string_lossy()).unwrap();
+            crate::console::commands::cli::config::run_validate(&path.to_string_lossy(), None)
+                .unwrap();
 
         assert_eq!(issues, Vec::<String>::new());
         assert!(rendered.contains("target: local"));

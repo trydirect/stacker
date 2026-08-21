@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::cli::config_parser::{ServiceDefinition, StackerConfig};
 use crate::cli::error::CliError;
 use crate::console::commands::CallableTrait;
-use crate::helpers::{remote_runtime_compose_path, remote_runtime_env_path};
+use crate::helpers::{remote_runtime_compose_path_for, remote_runtime_env_path_for};
 use crate::services::config_renderer::EnvRenderInput;
 use crate::services::{
     build_explain_env, build_explain_topology, ExplainTopologyService, TypedErrorEnvelope,
@@ -132,8 +132,8 @@ impl ExplainEnvCommand {
             &deployment_hash,
             &self.app,
             &local_env_path.to_string_lossy(),
-            remote_runtime_env_path(),
-            remote_runtime_compose_path(),
+            &remote_runtime_env_path_for(&config.name),
+            &remote_runtime_compose_path_for(&config.name),
             build_env_input(&config, &self.app)?,
         )
         .map_err(|err| CliError::ConfigValidation(err.to_string()))?;
@@ -202,9 +202,9 @@ impl CallableTrait for ExplainTopologyCommand {
             &deployment_hash,
             &config.deploy.target.to_string(),
             &local_compose_path.to_string_lossy(),
-            remote_runtime_compose_path(),
+            &remote_runtime_compose_path_for(&config.name),
             &local_env_path.to_string_lossy(),
-            remote_runtime_env_path(),
+            &remote_runtime_env_path_for(&config.name),
             services,
         );
 

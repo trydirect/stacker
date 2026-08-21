@@ -4152,9 +4152,9 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
         }
     }
 
-    // When proxy type is Nginx or NginxProxyManager, inject "nginx_proxy_manager"
-    // into extended_features so the install service's Ansible playbook runs the
-    // nginx_proxy_manager role (collect_roles checks selected_features).
+    // Inject the proxy role into extended_features so the install service's
+    // Ansible playbook runs the corresponding role (collect_roles checks
+    // selected_features).
     match config.proxy.proxy_type {
         crate::cli::config_parser::ProxyType::Nginx
         | crate::cli::config_parser::ProxyType::NginxProxyManager => {
@@ -4166,6 +4166,32 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
                     let npm = serde_json::Value::String("nginx_proxy_manager".to_string());
                     if !arr.contains(&npm) {
                         arr.push(npm);
+                    }
+                }
+            }
+        }
+        crate::cli::config_parser::ProxyType::Traefik => {
+            if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
+                let features = stack_obj
+                    .entry("extended_features")
+                    .or_insert_with(|| serde_json::json!([]));
+                if let Some(arr) = features.as_array_mut() {
+                    let role = serde_json::Value::String("traefik".to_string());
+                    if !arr.contains(&role) {
+                        arr.push(role);
+                    }
+                }
+            }
+        }
+        crate::cli::config_parser::ProxyType::Caddy => {
+            if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
+                let features = stack_obj
+                    .entry("extended_features")
+                    .or_insert_with(|| serde_json::json!([]));
+                if let Some(arr) = features.as_array_mut() {
+                    let role = serde_json::Value::String("caddy".to_string());
+                    if !arr.contains(&role) {
+                        arr.push(role);
                     }
                 }
             }

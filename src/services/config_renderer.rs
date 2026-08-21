@@ -10,7 +10,7 @@
 
 use crate::configuration::DeploymentSettings;
 use crate::db;
-use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path};
+use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path_for};
 use crate::models::{Project, ProjectApp};
 use crate::services::env_model::{
     normalize_optional_json_env, reconcile_env_layers, EnvLayer, ReconciledEnv,
@@ -557,7 +557,7 @@ impl ConfigRenderer {
             let config = AppConfig {
                 content: rendered_env.content,
                 content_type: "env".to_string(),
-                destination_path: remote_runtime_env_path().to_string(),
+                destination_path: remote_runtime_env_path_for(&project.name),
                 file_mode: "0600".to_string(),
                 owner: Some("trydirect".to_string()),
                 group: Some("docker".to_string()),
@@ -1013,7 +1013,7 @@ impl ConfigRenderer {
         let config = AppConfig {
             content: rendered_env.content,
             content_type: "env".to_string(),
-            destination_path: remote_runtime_env_path().to_string(),
+            destination_path: remote_runtime_env_path_for(&project.name),
             file_mode: "0600".to_string(),
             owner: Some("trydirect".to_string()),
             group: Some("docker".to_string()),
@@ -1677,7 +1677,7 @@ mod tests {
         let config = AppConfig {
             content: "FOO=bar\nBAZ=qux".to_string(),
             content_type: "env".to_string(),
-            destination_path: remote_runtime_env_path().to_string(),
+            destination_path: remote_runtime_env_path_for("test-project"),
             file_mode: "0600".to_string(),
             owner: Some("trydirect".to_string()),
             group: Some("docker".to_string()),
@@ -1685,7 +1685,7 @@ mod tests {
 
         assert_eq!(config.content_type, "env");
         assert_eq!(config.file_mode, "0600");
-        assert_eq!(config.destination_path, remote_runtime_env_path());
+        assert_eq!(config.destination_path, "/home/trydirect/test-project/.env");
     }
 
     #[test]
@@ -1718,7 +1718,7 @@ mod tests {
             AppConfig {
                 content: "INFLUX_TOKEN=xxx".to_string(),
                 content_type: "env".to_string(),
-                destination_path: remote_runtime_env_path().to_string(),
+                destination_path: remote_runtime_env_path_for("test-project"),
                 file_mode: "0600".to_string(),
                 owner: Some("trydirect".to_string()),
                 group: Some("docker".to_string()),
@@ -1730,7 +1730,7 @@ mod tests {
             AppConfig {
                 content: "DOMAIN=example.com".to_string(),
                 content_type: "env".to_string(),
-                destination_path: remote_runtime_env_path().to_string(),
+                destination_path: remote_runtime_env_path_for("test-project"),
                 file_mode: "0600".to_string(),
                 owner: Some("trydirect".to_string()),
                 group: Some("docker".to_string()),
@@ -2041,8 +2041,7 @@ mod tests {
             .cloned()
             .unwrap_or_default();
         assert!(
-            top_level_volumes
-                .contains_key(serde_yaml::Value::String("postgres_data".to_string())),
+            top_level_volumes.contains_key(serde_yaml::Value::String("postgres_data".to_string())),
             "postgres references named volume 'postgres_data' but top-level volumes: \
              never declares it:\n{compose}"
         );

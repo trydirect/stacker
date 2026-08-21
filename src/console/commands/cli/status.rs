@@ -159,8 +159,10 @@ fn emergency_ssh_command(server: &ServerInfo) -> Option<String> {
 /// line never appears.
 fn app_service_line(config: &StackerConfig) -> Option<String> {
     let app = &config.app;
-    let app_declared =
-        config.app_present || app.image.is_some() || app.dockerfile.is_some() || app.build.is_some();
+    let app_declared = config.app_present
+        || app.image.is_some()
+        || app.dockerfile.is_some()
+        || app.build.is_some();
     if !app_declared {
         return None;
     }

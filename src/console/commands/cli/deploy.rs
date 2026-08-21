@@ -2891,8 +2891,8 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         None => project_dir.join(DEFAULT_CONFIG_FILE),
     };
 
-    let mut config =
-        StackerConfig::from_file(&config_path)?.with_resolved_deploy_target(target_override)?;
+    let mut config = StackerConfig::from_file_for_target(&config_path, target_override)?
+        .with_resolved_deploy_target(target_override)?;
     let selected_environment = if let Some((environment, environment_config)) =
         config.resolve_environment_config(environment_override)?
     {

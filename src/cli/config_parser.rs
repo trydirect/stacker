@@ -885,6 +885,29 @@ impl StackerConfig {
     /// config and write it back to disk, use [`from_file_raw`] instead so
     /// that `${VAR}` placeholders are preserved.
     pub fn from_file(path: &Path) -> Result<Self, CliError> {
+        Self::from_file_for_target(path, None)
+    }
+
+    /// Load config from a file path like [`from_file`], but skip `${VAR}`
+    /// resolution inside whichever of `deploy.server` / `deploy.cloud` is
+    /// **not** the active target — determined by `target_override` (e.g.
+    /// the CLI's `--target` flag) or, absent that, the literal
+    /// `deploy.target` value in the file.
+    ///
+    /// A project commonly defines both `deploy.server` and `deploy.cloud`
+    /// (see the dual-target pattern) so it can be pointed at either without
+    /// editing `stacker.yml`. Without this, `stacker deploy --target cloud`
+    /// would fail on a missing `${EXISTING_SERVER_HOST}` even though the
+    /// server section is never used for a cloud deploy — see GH #239.
+    ///
+    /// When the effective target can't be determined (no override, no
+    /// literal `deploy.target` in the file, or a multi-target `deploy.targets`
+    /// config), both sections are resolved as before — this only skips a
+    /// section when we're confident it's inactive.
+    pub fn from_file_for_target(
+        path: &Path,
+        target_override: Option<&str>,
+    ) -> Result<Self, CliError> {
         if !path.exists() {
             return Err(CliError::ConfigNotFound {
                 path: path.to_path_buf(),
@@ -895,7 +918,14 @@ impl StackerConfig {
         let origin = detect_origin_from_raw(&raw_content);
         let mut parsed: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
         let env_file_vars = load_env_file_vars_from_yaml(path, &raw_content);
-        resolve_env_placeholders_in_value(&mut parsed, &env_file_vars)?;
+
+        let (skip_server, skip_cloud) = inactive_deploy_sections(&parsed, target_override);
+        resolve_env_placeholders_in_value_skipping_deploy(
+            &mut parsed,
+            &env_file_vars,
+            skip_server,
+            skip_cloud,
+        )?;
         let app_present = parsed.get("app").is_some();
         let mut config = deserialize_config_value(parsed)?;
         config.origin = origin;
@@ -1339,6 +1369,96 @@ fn extract_host_port(port_str: &str) -> String {
 #[allow(dead_code)]
 fn resolve_env_vars(content: &str) -> Result<String, CliError> {
     resolve_env_vars_with_fallback(content, &HashMap::new())
+}
+
+/// Decide which of `deploy.server` / `deploy.cloud` (legacy single-block
+/// form) is inactive for the effective target, so env-var resolution can
+/// skip it entirely. Returns `(skip_server, skip_cloud)`.
+///
+/// Only acts when the effective target is confidently known — from
+/// `target_override` (e.g. `--target`) or a literal (non-templated)
+/// `deploy.target` in the file. Multi-target `deploy.targets.<name>`
+/// configs are left untouched: each named profile already carries only
+/// its own `server` or `cloud`, so there's no ambiguity to resolve.
+fn inactive_deploy_sections(
+    parsed: &serde_yaml::Value,
+    target_override: Option<&str>,
+) -> (bool, bool) {
+    let Some(root) = parsed.as_mapping() else {
+        return (false, false);
+    };
+    let Some(deploy) = root
+        .get(serde_yaml::Value::String("deploy".to_string()))
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return (false, false);
+    };
+
+    let has_named_targets = deploy
+        .get(serde_yaml::Value::String("targets".to_string()))
+        .and_then(serde_yaml::Value::as_mapping)
+        .map(|m| !m.is_empty())
+        .unwrap_or(false);
+    if has_named_targets {
+        return (false, false);
+    }
+
+    let effective_target = target_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase)
+        .or_else(|| {
+            deploy
+                .get(serde_yaml::Value::String("target".to_string()))
+                .and_then(serde_yaml::Value::as_str)
+                .filter(|s| !s.contains("${")) // don't trust an unresolved literal
+                .map(|s| s.trim().to_lowercase())
+        });
+
+    match effective_target.as_deref() {
+        Some("cloud") => (true, false),
+        Some("server") => (false, true),
+        Some("local") => (true, true),
+        _ => (false, false),
+    }
+}
+
+/// Like [`resolve_env_placeholders_in_value`], but leaves `deploy.server`
+/// and/or `deploy.cloud` completely untouched (placeholders and all) when
+/// `skip_server`/`skip_cloud` say that section is inactive for this deploy.
+fn resolve_env_placeholders_in_value_skipping_deploy(
+    value: &mut serde_yaml::Value,
+    fallback_vars: &HashMap<String, String>,
+    skip_server: bool,
+    skip_cloud: bool,
+) -> Result<(), CliError> {
+    if !skip_server && !skip_cloud {
+        return resolve_env_placeholders_in_value(value, fallback_vars);
+    }
+
+    let Some(root) = value.as_mapping_mut() else {
+        return resolve_env_placeholders_in_value(value, fallback_vars);
+    };
+
+    for (key, map_value) in root.iter_mut() {
+        if key.as_str() != Some("deploy") {
+            resolve_env_placeholders_in_value(map_value, fallback_vars)?;
+            continue;
+        }
+        let Some(deploy_map) = map_value.as_mapping_mut() else {
+            continue;
+        };
+        for (deploy_key, deploy_value) in deploy_map.iter_mut() {
+            let skip = (deploy_key.as_str() == Some("server") && skip_server)
+                || (deploy_key.as_str() == Some("cloud") && skip_cloud);
+            if skip {
+                continue;
+            }
+            resolve_env_placeholders_in_value(deploy_value, fallback_vars)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn resolve_env_placeholders_in_value(
@@ -1941,6 +2061,125 @@ deploy:
 
         let config = StackerConfig::from_file(&config_path).unwrap();
         assert_eq!(config.app.image.as_deref(), Some("node:14-alpine"));
+    }
+
+    // Regression tests for GH #239: `stacker deploy --target cloud` failed
+    // on a missing `${EXISTING_SERVER_HOST}` even though `deploy.server` is
+    // never used for a cloud deploy — env-var resolution walked the whole
+    // file unconditionally, including the inactive dual-target section.
+    fn dual_target_yaml() -> &'static str {
+        r#"
+name: dual-target-app
+app:
+    type: custom
+    path: .
+    image: myorg/myapp:latest
+deploy:
+    target: server
+    server:
+        host: ${EXISTING_SERVER_HOST}
+        user: ${EXISTING_SERVER_USER}
+        ssh_key: /tmp/id_ed25519
+    cloud:
+        provider: hetzner
+        region: fsn1
+        size: cpx22
+        public_ports: ["3579"]
+"#
+    }
+
+    #[test]
+    fn test_from_file_for_target_cloud_skips_missing_server_vars() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        fs::write(&config_path, dual_target_yaml()).unwrap();
+
+        // No EXISTING_SERVER_HOST/USER anywhere (env or .env) — must not
+        // fail, since --target cloud never touches deploy.server.
+        let config = StackerConfig::from_file_for_target(&config_path, Some("cloud")).unwrap();
+        let resolved = config.with_resolved_deploy_target(Some("cloud")).unwrap();
+        assert_eq!(resolved.deploy.target, DeployTarget::Cloud);
+        assert!(resolved.deploy.cloud.is_some());
+    }
+
+    #[test]
+    fn test_from_file_for_target_server_skips_cloud_section() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        // Cloud section left var-free here on purpose — this test only
+        // asserts the server branch resolves independent of cloud content.
+        fs::write(
+            &config_path,
+            r#"
+name: dual-target-app
+app:
+    type: custom
+    path: .
+    image: myorg/myapp:latest
+deploy:
+    target: server
+    server:
+        host: 203.0.113.5
+        user: deployer
+        ssh_key: /tmp/id_ed25519
+    cloud:
+        provider: hetzner
+        region: ${UNSET_REGION_VAR}
+"#,
+        )
+        .unwrap();
+
+        let config = StackerConfig::from_file_for_target(&config_path, Some("server")).unwrap();
+        assert_eq!(
+            config.deploy.server.as_ref().map(|s| s.host.as_str()),
+            Some("203.0.113.5")
+        );
+    }
+
+    #[test]
+    fn test_from_file_for_target_falls_back_to_literal_deploy_target_in_file() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        fs::write(&config_path, dual_target_yaml()).unwrap();
+
+        // No override passed — `deploy.target: server` in the file is a
+        // plain literal, so it should still be trusted as the effective
+        // target and fail exactly like before (this isn't a behavior
+        // change for callers that already relied on the file's own target).
+        let result = StackerConfig::from_file_for_target(&config_path, None);
+        assert!(
+            result.is_err(),
+            "server section is active, so its missing vars must still error"
+        );
+    }
+
+    #[test]
+    fn test_from_file_for_target_unresolvable_target_resolves_both_sections_as_before() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        fs::write(&config_path, dual_target_yaml()).unwrap();
+
+        // Override doesn't match a known target keyword — falls back to
+        // resolving everything, matching the pre-fix strict behavior.
+        let result = StackerConfig::from_file_for_target(&config_path, Some("bogus"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_validate_respects_target_override() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        fs::write(&config_path, dual_target_yaml()).unwrap();
+
+        let path_str = config_path.to_string_lossy().to_string();
+        assert!(
+            crate::console::commands::cli::config::run_validate(&path_str, Some("cloud")).is_ok(),
+            "config validate --target cloud must not fail on unset server vars"
+        );
+        assert!(
+            crate::console::commands::cli::config::run_validate(&path_str, None).is_err(),
+            "without an override, the file's own deploy.target: server is still active"
+        );
     }
 
     #[test]

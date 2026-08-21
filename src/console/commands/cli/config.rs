@@ -23,7 +23,7 @@ use crate::cli::runtime::CliRuntime;
 use crate::cli::stacker_client::ProjectAppInfo;
 use crate::console::commands::cli::init::full_config_reference_example;
 use crate::console::commands::CallableTrait;
-use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path};
+use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path_for};
 use crate::services::runtime_env_contract_response;
 
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
@@ -1050,7 +1050,10 @@ pub fn run_fix_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
 }
 
 /// Core validate logic — loads config, runs semantic checks, returns issues.
-pub fn run_validate(config_path: &str) -> Result<Vec<String>, CliError> {
+pub fn run_validate(
+    config_path: &str,
+    target_override: Option<&str>,
+) -> Result<Vec<String>, CliError> {
     let path = Path::new(config_path);
     if !path.exists() {
         return Err(CliError::ConfigNotFound {
@@ -1075,7 +1078,7 @@ pub fn run_validate(config_path: &str) -> Result<Vec<String>, CliError> {
         Err(_) => Vec::new(),
     };
 
-    let config = StackerConfig::from_file(path)?;
+    let config = StackerConfig::from_file_for_target(path, target_override)?;
     let issues = config.validate_semantics();
     messages.extend(issues.iter().map(|i| format!("{:?}", i)));
     Ok(messages)
@@ -1128,7 +1131,7 @@ pub fn run_show_resolved(config_path: &str) -> Result<String, CliError> {
     Ok(format!(
         "resolved_config:\n  local_env_file: {}\n  remote_runtime_env_file: {}\n  compose_env_file: {}\n  config_version: local\n  config_hash: unavailable_until_deploy\n  runtime_env_contract_version: {}\n  runtime_env_contract_order: {}\n  layers:\n{}\n",
         local_env_file,
-        remote_runtime_env_path(),
+        remote_runtime_env_path_for(&config.name),
         compose_env_file_reference(),
         runtime_env_contract.version,
         runtime_env_contract.order,
@@ -1149,18 +1152,19 @@ fn resolve_display_path(config_dir: &Path, env_file: &Path) -> String {
 /// Validates a stacker.yml configuration file.
 pub struct ConfigValidateCommand {
     pub file: Option<String>,
+    pub target: Option<String>,
 }
 
 impl ConfigValidateCommand {
-    pub fn new(file: Option<String>) -> Self {
-        Self { file }
+    pub fn new(file: Option<String>, target: Option<String>) -> Self {
+        Self { file, target }
     }
 }
 
 impl CallableTrait for ConfigValidateCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let path = resolve_config_path(&self.file);
-        let issues = run_validate(&path)?;
+        let issues = run_validate(&path, self.target.as_deref())?;
 
         if issues.is_empty() {
             eprintln!("✓ Configuration is valid");
@@ -2277,14 +2281,14 @@ mod tests {
     fn test_validate_returns_ok_for_valid_config() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = write_config(dir.path(), minimal_config_yaml());
-        let result = run_validate(&path).unwrap();
+        let result = run_validate(&path, None).unwrap();
         // Minimal valid config should have zero or few issues
         assert!(result.len() < 5);
     }
 
     #[test]
     fn test_validate_missing_file_returns_error() {
-        let result = run_validate("/nonexistent/stacker.yml");
+        let result = run_validate("/nonexistent/stacker.yml", None);
         assert!(result.is_err());
     }
 
@@ -2301,7 +2305,7 @@ app:
 "#,
         );
 
-        let issues = run_validate(&path).unwrap();
+        let issues = run_validate(&path, None).unwrap();
         assert!(issues.iter().any(|issue| issue.contains("app.path")));
         assert!(issues
             .iter()

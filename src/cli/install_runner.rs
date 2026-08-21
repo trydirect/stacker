@@ -3463,10 +3463,7 @@ mod tests {
     // deploying project B would recreate/destroy project A's containers.
     #[test]
     fn test_local_deploy_namespaces_compose_project_by_identity() {
-        let config = ConfigBuilder::new()
-            .name("Miniflux Prod")
-            .build()
-            .unwrap();
+        let config = ConfigBuilder::new().name("Miniflux Prod").build().unwrap();
         let context = sample_context(false);
         let executor = MockExecutor::success();
         let strategy = LocalDeploy;

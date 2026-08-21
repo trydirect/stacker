@@ -95,7 +95,13 @@ pub async fn clone_server(
     // from several auth methods (agent, jwt, hmac, ...) that don't carry a
     // user-service token; clone needs one for billing and service callbacks.
     // 401 here lets the frontend redirect the user to sign in.
-    if user.access_token.as_deref().map(str::trim).unwrap_or("").is_empty() {
+    if user
+        .access_token
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+    {
         return HttpResponse::Unauthorized().json(json!({
             "error": "Unauthorized",
             "details": "User access token is missing",

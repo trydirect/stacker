@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::db;
-use crate::helpers::{remote_runtime_compose_path, remote_runtime_env_path};
+use crate::helpers::{remote_runtime_compose_path_for, remote_runtime_env_path_for};
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
 use crate::models::{Project, ProjectApp};
@@ -101,7 +101,7 @@ fn runtime_compose_path(project: &Project) -> String {
         .pointer("/custom/deployment_artifacts/config_bundle/remote_compose_path")
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned)
-        .unwrap_or_else(|| remote_runtime_compose_path().to_string())
+        .unwrap_or_else(|| remote_runtime_compose_path_for(&project.name))
 }
 
 fn project_target(project: &Project) -> String {
@@ -256,7 +256,7 @@ impl ToolHandler for ExplainEnvTool {
             &deployment.deployment_hash,
             &app.code,
             &local_authoring_env_path(&project),
-            remote_runtime_env_path(),
+            &remote_runtime_env_path_for(&project.name),
             &runtime_compose_path(&project),
             app_env_input(app),
         )
@@ -299,7 +299,7 @@ impl ToolHandler for ExplainTopologyTool {
             "stacker.yml",
             &runtime_compose_path(&project),
             &local_authoring_env_path(&project),
-            remote_runtime_env_path(),
+            &remote_runtime_env_path_for(&project.name),
             topology_services(&apps),
         );
 
@@ -384,7 +384,7 @@ mod tests {
             &deployment.deployment_hash,
             &app.code,
             &local_authoring_env_path(&project),
-            remote_runtime_env_path(),
+            &remote_runtime_env_path_for("test-project"),
             &runtime_compose_path(&project),
             app_env_input(&app),
         )
@@ -407,8 +407,8 @@ mod tests {
             "deployment_demo",
             "api",
             "docker/prod/.env",
-            remote_runtime_env_path(),
-            remote_runtime_compose_path(),
+            &remote_runtime_env_path_for("test-project"),
+            &remote_runtime_compose_path_for("test-project"),
             app_env_input(&{
                 let mut app = ProjectApp::new(
                     1,
@@ -448,9 +448,9 @@ mod tests {
             "deployment_state_online",
             "cloud",
             "docker/prod/compose.yml",
-            remote_runtime_compose_path(),
+            &remote_runtime_compose_path_for("test-project"),
             "docker/prod/.env",
-            remote_runtime_env_path(),
+            &remote_runtime_env_path_for("test-project"),
             vec![ExplainTopologyService {
                 code: "upload".to_string(),
                 name: "Upload".to_string(),
