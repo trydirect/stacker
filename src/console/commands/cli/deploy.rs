@@ -3619,7 +3619,7 @@ impl CallableTrait for DeployCommand {
                 // Ansible provisioning fails (e.g. nginx_proxy_manager port-conflict bug),
                 // so the user can always SSH into the created server.
                 self.save_local_backup_keypair_early(&result);
-                watch_outcome = watch_cloud_deployment(&result)?;
+                watch_outcome = watch_cloud_deployment(&result, self.force_new)?;
             }
             _ => {}
         }
@@ -4330,6 +4330,7 @@ enum DeploymentWatchOutcome {
 /// Watch remote deployment status until it reaches a terminal state.
 fn watch_cloud_deployment(
     result: &DeployResult,
+    force_new: bool,
 ) -> Result<DeploymentWatchOutcome, Box<dyn std::error::Error>> {
     use std::time::Duration;
 
@@ -4366,8 +4367,42 @@ fn watch_cloud_deployment(
         let start = std::time::Instant::now();
         let mut last_status = String::new();
         let mut last_message: Option<String> = None;
+        // For `--force-new` cloud deploys the server is created *during*
+        // provisioning, so the pre-watch keypair save finds no server and
+        // skips. Save the local backup keypair the moment the server first
+        // appears here, so an interrupted watch (Ctrl-C / timeout) never
+        // leaves a reachable server without a local key. Runs once.
+        let mut keypair_saved = false;
 
         loop {
+            if !keypair_saved && result.target == DeployTarget::Cloud {
+                if let Ok(servers) = client.list_servers().await {
+                    if let Some(server) = choose_server_for_project(
+                        servers,
+                        project_id,
+                        result.server_name.as_deref(),
+                        force_new,
+                    ) {
+                        match crate::console::commands::cli::ssh_key::ensure_local_backup_keypair(
+                            server.id,
+                        ) {
+                            Ok(keypair) => {
+                                eprintln!(
+                                    "  ✓ Local SSH backup key saved: {}",
+                                    keypair.private_key_path.display()
+                                );
+                                keypair_saved = true;
+                            }
+                            Err(err) => {
+                                eprintln!("  ⚠ Could not save local backup SSH key: {}", err);
+                                // Don't hammer on a persistent failure.
+                                keypair_saved = true;
+                            }
+                        }
+                    }
+                }
+            }
+
             match client.get_deployment_status_by_project(project_id).await {
                 Ok(Some(info)) => {
                     let status_changed = info.status != last_status;
