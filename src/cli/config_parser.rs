@@ -1126,15 +1126,19 @@ impl StackerConfig {
             });
         }
 
-        // Port conflict detection across services
+        // Port conflict detection across services, keyed by the *published
+        // host port*. Only services that publish a fixed host port can collide;
+        // the container-only form (no host port) is skipped. `host_port_binding`
+        // correctly handles the `ip:host:container` form — extracting the host
+        // port, not the leading IP — so two loopback services on different
+        // ports (e.g. `127.0.0.1:5432:5432` and `127.0.0.1:6379:6379`) are no
+        // longer misreported as sharing a port.
         let mut port_map: HashMap<String, Vec<String>> = HashMap::new();
         for svc in &self.services {
             for port_str in &svc.ports {
-                let host_port = extract_host_port(port_str);
-                port_map
-                    .entry(host_port.clone())
-                    .or_default()
-                    .push(svc.name.clone());
+                if let Some(host_port) = host_port_binding(port_str) {
+                    port_map.entry(host_port).or_default().push(svc.name.clone());
+                }
             }
         }
         for (port, services) in &port_map {
@@ -1412,10 +1416,6 @@ fn load_env_file_vars_from_yaml(path: &Path, raw_content: &str) -> HashMap<Strin
 }
 
 /// Extract the host port from a port mapping string like "8080:80" → "8080".
-fn extract_host_port(port_str: &str) -> String {
-    port_str.split(':').next().unwrap_or(port_str).to_string()
-}
-
 /// Extract the *published host* port from a compose port spec, or `None` when
 /// the spec publishes no host port (container-only form). Handles the protocol
 /// suffix and all three binding forms:
@@ -2542,6 +2542,71 @@ services:
             .filter(|i| i.severity == Severity::Error)
             .collect();
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+    }
+
+    #[test]
+    fn w001_does_not_false_positive_on_distinct_loopback_ports() {
+        // Regression: `ip:host:container` bindings must key on the host *port*,
+        // not the IP. Two loopback services on different ports do NOT conflict.
+        let config = StackerConfig::from_str(
+            r#"
+name: demo
+app:
+  type: custom
+  image: myapp:latest
+services:
+  - name: postgres
+    image: postgres:16-alpine
+    ports:
+      - "127.0.0.1:5432:5432"
+  - name: redis
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            !config
+                .validate_semantics()
+                .iter()
+                .any(|issue| issue.code == "W001"),
+            "distinct loopback host ports must not be reported as a conflict"
+        );
+    }
+
+    #[test]
+    fn w001_detects_real_host_port_conflict_across_binding_forms() {
+        // A 2-part `80:80` and a 3-part `127.0.0.1:80:80` both publish host
+        // port 80 → real conflict, previously missed by the IP-first extractor.
+        let config = StackerConfig::from_str(
+            r#"
+name: demo
+app:
+  type: custom
+  image: myapp:latest
+services:
+  - name: web
+    image: nginx:alpine
+    ports:
+      - "80:80"
+  - name: legacy
+    image: httpd:alpine
+    ports:
+      - "127.0.0.1:80:80"
+"#,
+        )
+        .unwrap();
+
+        let w001: Vec<_> = config
+            .validate_semantics()
+            .into_iter()
+            .filter(|issue| issue.code == "W001")
+            .collect();
+        assert_eq!(w001.len(), 1, "expected one W001 for the port-80 clash: {w001:?}");
+        assert!(w001[0].message.contains("80"));
+        assert!(w001[0].message.contains("web") && w001[0].message.contains("legacy"));
     }
 
     #[test]
