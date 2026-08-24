@@ -18,7 +18,7 @@ use crate::cli::config_promote::{
 };
 use crate::cli::debug::cli_debug_enabled;
 use crate::cli::deployment_lock::DeploymentLock;
-use crate::cli::error::CliError;
+use crate::cli::error::{CliError, Severity};
 use crate::cli::runtime::CliRuntime;
 use crate::cli::stacker_client::ProjectAppInfo;
 use crate::console::commands::cli::init::full_config_reference_example;
@@ -1080,7 +1080,19 @@ pub fn run_validate(
 
     let config = StackerConfig::from_file_for_target(path, target_override)?;
     let issues = config.validate_semantics();
-    messages.extend(issues.iter().map(|i| format!("{:?}", i)));
+    messages.extend(issues.iter().map(|issue| {
+        let severity = match issue.severity {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+            Severity::Info => "info",
+        };
+        match &issue.field {
+            Some(field) => {
+                format!("[{}] {} ({}): {}", issue.code, severity, field, issue.message)
+            }
+            None => format!("[{}] {}: {}", issue.code, severity, issue.message),
+        }
+    }));
     Ok(messages)
 }
 

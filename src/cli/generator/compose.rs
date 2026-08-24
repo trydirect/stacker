@@ -169,10 +169,14 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
         // --- Set top-level volumes ---
         compose.volumes = named_volumes;
 
-        // --- Auto-inject default_network for NginxProxyManager-proxied services ---
-        if config.proxy.proxy_type == ProxyType::NginxProxyManager
-            && !config.proxy.domains.is_empty()
-        {
+        // --- Auto-inject the shared external `default_network` onto proxied
+        // services ---
+        // Every proxy type is platform-managed: on remote deploys the proxy
+        // container is stripped from this compose (see build_config_bundle)
+        // and installed by its own backend role, which joins the external
+        // `default_network`. So the proxied app service(s) must also sit on
+        // `default_network` for the managed proxy to reach them by name/label.
+        if config.proxy.proxy_type != ProxyType::None && !config.proxy.domains.is_empty() {
             let proxied: Vec<String> = config
                 .proxy
                 .domains
@@ -375,6 +379,14 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
             };
             svc.volumes
                 .push("./nginx/conf.d:/etc/nginx/conf.d:ro".to_string());
+            crate::helpers::stacker_labels::insert_runtime_labels(
+                &mut svc.labels,
+                None::<String>,
+                None,
+                crate::helpers::stacker_labels::SCOPE_PLATFORM,
+                "nginx",
+                "nginx",
+            );
             Some(svc)
         }
         ProxyType::NginxProxyManager => {
@@ -440,6 +452,14 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
                 );
             }
             svc.command = Some(args.join(" "));
+            crate::helpers::stacker_labels::insert_runtime_labels(
+                &mut svc.labels,
+                None::<String>,
+                None,
+                crate::helpers::stacker_labels::SCOPE_PLATFORM,
+                "traefik",
+                "traefik",
+            );
             Some(svc)
         }
         ProxyType::Caddy => {
@@ -456,6 +476,14 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
             // container recreation instead of re-issuing on every restart.
             svc.volumes.push("caddy_data:/data".to_string());
             svc.volumes.push("caddy_config:/config".to_string());
+            crate::helpers::stacker_labels::insert_runtime_labels(
+                &mut svc.labels,
+                None::<String>,
+                None,
+                crate::helpers::stacker_labels::SCOPE_PLATFORM,
+                "caddy",
+                "caddy",
+            );
             Some(svc)
         }
         ProxyType::None => None,
@@ -1578,7 +1606,52 @@ services:
     }
 
     #[test]
-    fn non_npm_proxy_does_not_inject_default_network() {
+    fn every_proxy_type_labels_its_service_platform_scoped() {
+        // The synthesized proxy for every proxy type must carry
+        // `my.stacker.scope: platform` so the remote-bundle strip removes it
+        // and the backend role becomes its sole owner (no double-deploy).
+        for (proxy_type, service_name) in [
+            (ProxyType::Nginx, "nginx"),
+            (ProxyType::NginxProxyManager, "proxy-manager"),
+            (ProxyType::Traefik, "traefik"),
+            (ProxyType::Caddy, "caddy"),
+        ] {
+            let config = ConfigBuilder::new()
+                .name("proxy-scope-app")
+                .app_type(AppType::Node)
+                .proxy(ProxyConfig {
+                    proxy_type,
+                    auto_detect: false,
+                    domains: vec![],
+                    config: None,
+                })
+                .build()
+                .unwrap();
+
+            let compose = ComposeDefinition::try_from(&config).unwrap();
+            let proxy = compose
+                .services
+                .iter()
+                .find(|svc| svc.name == service_name)
+                .unwrap_or_else(|| panic!("{service_name} proxy service should be present"));
+            assert_eq!(
+                proxy
+                    .labels
+                    .get(crate::helpers::stacker_labels::SCOPE)
+                    .map(String::as_str),
+                Some(crate::helpers::stacker_labels::SCOPE_PLATFORM),
+                "{service_name} proxy must be platform-scoped"
+            );
+        }
+    }
+
+    #[test]
+    fn non_npm_proxy_injects_default_network_onto_proxied_service() {
+        // Every proxy type is platform-managed: on remote deploys the proxy
+        // container is stripped from this compose and installed by its own
+        // backend role, which joins the external `default_network`. So the
+        // proxied service must also join `default_network` for the managed
+        // proxy to reach it. (Previously only NginxProxyManager did this.)
         let svc = ServiceDefinition {
             name: "web".into(),
             image: "nginx:latest".into(),
@@ -1608,8 +1681,19 @@ services:
 
         let compose = ComposeDefinition::try_from(&config).unwrap();
         assert!(
-            compose.external_networks.is_empty(),
-            "Traefik proxy should not inject default_network"
+            compose
+                .external_networks
+                .contains(&"default_network".to_string()),
+            "Traefik proxy should inject the external default_network"
+        );
+        let web = compose
+            .services
+            .iter()
+            .find(|svc| svc.name == "web")
+            .expect("proxied 'web' service present");
+        assert!(
+            web.networks.contains(&"default_network".to_string()),
+            "the proxied service should join default_network"
         );
     }
 
