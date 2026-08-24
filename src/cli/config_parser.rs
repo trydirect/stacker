@@ -1152,6 +1152,57 @@ impl StackerConfig {
             }
         }
 
+        // W003 — a `proxy:` block deploys a *platform-managed* reverse proxy
+        // that owns the ingress host ports on the target. Any app/service that
+        // also publishes one of those host ports collides with it: the managed
+        // proxy takes precedence and the user's binding is shadowed. Detect by
+        // host-port overlap (not by image name) so it also catches a plain app
+        // accidentally bound to :80, not only a rival proxy.
+        if self.proxy.proxy_type != ProxyType::None {
+            let ingress_ports: &[&str] = match self.proxy.proxy_type {
+                ProxyType::NginxProxyManager => &["80", "443", "81"],
+                ProxyType::Nginx | ProxyType::Traefik | ProxyType::Caddy => &["80", "443"],
+                ProxyType::None => &[],
+            };
+
+            let mut published: Vec<(String, String)> = Vec::new();
+            for port in &self.app.ports {
+                if let Some(host_port) = host_port_binding(port) {
+                    published.push(("app".to_string(), host_port));
+                }
+            }
+            for svc in &self.services {
+                for port in &svc.ports {
+                    if let Some(host_port) = host_port_binding(port) {
+                        published.push((svc.name.clone(), host_port));
+                    }
+                }
+            }
+
+            let mut conflicts: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for (service, host_port) in published {
+                if ingress_ports.contains(&host_port.as_str()) {
+                    conflicts.entry(service).or_default().push(host_port);
+                }
+            }
+            for (service, ports) in conflicts {
+                issues.push(ValidationIssue {
+                    severity: Severity::Warning,
+                    code: "W003".to_string(),
+                    message: format!(
+                        "Service '{service}' publishes host port(s) {} that the platform-managed \
+                         '{}' proxy (configured via the proxy: block) also claims on the deploy \
+                         target. The managed proxy takes precedence, so '{service}' is ignored on \
+                         those ports. Remove the proxy: block to keep your own service there, or \
+                         change its host port.",
+                        ports.join(", "),
+                        self.proxy.proxy_type
+                    ),
+                    field: Some("proxy.type".to_string()),
+                });
+            }
+        }
+
         issues
     }
 }
@@ -1363,6 +1414,22 @@ fn load_env_file_vars_from_yaml(path: &Path, raw_content: &str) -> HashMap<Strin
 /// Extract the host port from a port mapping string like "8080:80" → "8080".
 fn extract_host_port(port_str: &str) -> String {
     port_str.split(':').next().unwrap_or(port_str).to_string()
+}
+
+/// Extract the *published host* port from a compose port spec, or `None` when
+/// the spec publishes no host port (container-only form). Handles the protocol
+/// suffix and all three binding forms:
+///   `"80"` -> None (ephemeral), `"80:80"` -> `"80"`,
+///   `"127.0.0.1:80:80"` -> `"80"`, `"80:80/tcp"` -> `"80"`.
+fn host_port_binding(port_str: &str) -> Option<String> {
+    let spec = port_str.split('/').next().unwrap_or(port_str);
+    let parts: Vec<&str> = spec.split(':').collect();
+    match parts.as_slice() {
+        [_container] => None,
+        [host, _container] => Some((*host).to_string()),
+        [_ip, host, _container] => Some((*host).to_string()),
+        _ => None,
+    }
 }
 
 /// Resolve `${VAR_NAME}` references in a string using process environment.
@@ -2475,6 +2542,73 @@ services:
             .filter(|i| i.severity == Severity::Error)
             .collect();
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+    }
+
+    #[test]
+    fn proxy_block_warns_when_user_service_publishes_an_ingress_port() {
+        // A `proxy:` block deploys a platform-managed proxy owning 80/443/81.
+        // A user's own reverse-proxy service on 80/443 collides → one W003.
+        let config = StackerConfig::from_str(
+            r#"
+name: demo
+app:
+  type: custom
+  image: myapp:latest
+services:
+  - name: my-own-traefik
+    image: traefik:v2.10
+    ports:
+      - "80:80"
+      - "443:443"
+proxy:
+  type: nginx-proxy-manager
+"#,
+        )
+        .unwrap();
+
+        let w003: Vec<_> = config
+            .validate_semantics()
+            .into_iter()
+            .filter(|issue| issue.code == "W003")
+            .collect();
+        assert_eq!(w003.len(), 1, "expected exactly one W003, got: {w003:?}");
+        assert_eq!(w003[0].severity, Severity::Warning);
+        assert!(w003[0].message.contains("my-own-traefik"));
+        // Both conflicting ports are reported in the single per-service warning.
+        assert!(w003[0].message.contains("80"));
+        assert!(w003[0].message.contains("443"));
+    }
+
+    #[test]
+    fn proxy_block_does_not_warn_for_nonconflicting_ports() {
+        // The app on :8080 (with `127.0.0.1:` host-scoped DB elsewhere) does not
+        // overlap the proxy's ingress ports → no W003.
+        let config = StackerConfig::from_str(
+            r#"
+name: demo
+app:
+  type: custom
+  image: myapp:latest
+  ports:
+    - "8080:8080"
+services:
+  - name: db
+    image: postgres:16-alpine
+    ports:
+      - "127.0.0.1:5432:5432"
+proxy:
+  type: nginx-proxy-manager
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            !config
+                .validate_semantics()
+                .iter()
+                .any(|issue| issue.code == "W003"),
+            "no ingress overlap should produce no W003"
+        );
     }
 
     #[test]
