@@ -694,6 +694,17 @@ fn strip_platform_managed_services(compose: &mut serde_yaml::Value) -> Vec<Strin
         .map(|(name, _)| name.clone())
         .collect();
 
+    // Collect the named volumes the doomed services referenced, so we can prune
+    // any that become orphaned once those services are gone (e.g. Caddy's
+    // caddy_data/caddy_config, which would otherwise linger as unused top-level
+    // volume declarations in the remote compose).
+    let mut candidate_volumes: Vec<String> = Vec::new();
+    for name in &to_remove {
+        if let Some(def) = services.get(name) {
+            candidate_volumes.extend(named_volume_sources(def));
+        }
+    }
+
     let mut removed = Vec::with_capacity(to_remove.len());
     for name in to_remove {
         services.remove(&name);
@@ -701,7 +712,62 @@ fn strip_platform_managed_services(compose: &mut serde_yaml::Value) -> Vec<Strin
             removed.push(name);
         }
     }
+
+    // A candidate volume is orphaned only if no *remaining* service still mounts
+    // it. Re-borrow services immutably to check, then prune the top-level map.
+    if !candidate_volumes.is_empty() {
+        let still_referenced: std::collections::HashSet<String> = mapping_mut(compose)
+            .and_then(|root| root.get_mut(serde_yaml::Value::String("services".to_string())))
+            .and_then(mapping_mut)
+            .map(|services| {
+                services
+                    .values()
+                    .flat_map(named_volume_sources)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if let Some(volumes) = mapping_mut(compose)
+            .and_then(|root| root.get_mut(serde_yaml::Value::String("volumes".to_string())))
+            .and_then(mapping_mut)
+        {
+            for vol in candidate_volumes {
+                if !still_referenced.contains(&vol) {
+                    volumes.remove(&serde_yaml::Value::String(vol));
+                }
+            }
+        }
+    }
+
     removed
+}
+
+/// Extract the *named* volume sources a service mounts (e.g. `caddy_data` from
+/// `caddy_data:/data`, or `source: caddy_data` in long syntax). Bind mounts
+/// (sources containing `/` or starting with `.`) are host paths, not named
+/// volumes, and are ignored.
+fn named_volume_sources(service_def: &serde_yaml::Value) -> Vec<String> {
+    let Some(serde_yaml::Value::Sequence(volumes)) = service_def.get("volumes") else {
+        return Vec::new();
+    };
+    let is_named = |src: &str| !src.is_empty() && !src.contains('/') && !src.starts_with('.');
+    volumes
+        .iter()
+        .filter_map(|vol| match vol {
+            // Short syntax: "name:/container/path[:opts]"
+            serde_yaml::Value::String(s) => {
+                let src = s.split(':').next().unwrap_or("");
+                is_named(src).then(|| src.to_string())
+            }
+            // Long syntax: { type: volume, source: name, target: ... }
+            serde_yaml::Value::Mapping(_) => vol
+                .get("source")
+                .and_then(|s| s.as_str())
+                .filter(|src| is_named(src))
+                .map(|src| src.to_string()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn validation_error(message: impl Into<String>) -> CliError {
@@ -1154,5 +1220,52 @@ services:
             Some(crate::helpers::stacker_labels::SCOPE_PROJECT),
             "a user's own project-scoped proxy must not be stripped:\n{compose_content}"
         );
+    }
+
+    #[test]
+    fn strip_platform_managed_services_prunes_orphaned_named_volumes() {
+        // Stripping the platform proxy must also drop the named volumes only it
+        // used (Caddy's caddy_data/caddy_config), while keeping volumes still
+        // referenced by a surviving service and untouched bind mounts.
+        let mut compose: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+services:
+  app:
+    image: myapp:latest
+    volumes:
+      - app_data:/data
+    labels:
+      my.stacker.scope: "project"
+  caddy:
+    image: caddy:2-alpine
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - app_data:/shared
+    labels:
+      my.stacker.scope: "platform"
+volumes:
+  app_data: {}
+  caddy_data: {}
+  caddy_config: {}
+"#,
+        )
+        .unwrap();
+
+        let removed = strip_platform_managed_services(&mut compose);
+        assert_eq!(removed, vec!["caddy".to_string()]);
+
+        let volumes = compose
+            .get("volumes")
+            .and_then(|v| v.as_mapping())
+            .expect("top-level volumes map");
+        let has = |name: &str| volumes.contains_key(serde_yaml::Value::String(name.to_string()));
+
+        // Orphaned (only caddy used them) → pruned.
+        assert!(!has("caddy_data"), "caddy_data should be pruned");
+        assert!(!has("caddy_config"), "caddy_config should be pruned");
+        // Still used by the surviving `app` service → kept.
+        assert!(has("app_data"), "app_data is still referenced and must stay");
     }
 }
