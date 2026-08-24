@@ -4199,6 +4199,37 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
         _ => {}
     }
 
+    // Proxy routing domains (proxy.domains) for platform-managed proxies that
+    // route via a config file — caddy (Caddyfile) and nginx (conf.d). Forwarded
+    // to the Install Service, which passes them to the proxy role as the
+    // `stacker_proxy_domains` extra var. (Traefik routes via container labels
+    // generated into the compose, so it does not need this.)
+    if !config.proxy.domains.is_empty() {
+        let domains: Vec<serde_json::Value> = config
+            .proxy
+            .domains
+            .iter()
+            .map(|d| {
+                let ssl = match d.ssl {
+                    crate::cli::config_parser::SslMode::Auto => "auto",
+                    crate::cli::config_parser::SslMode::Manual => "manual",
+                    crate::cli::config_parser::SslMode::Off => "off",
+                };
+                serde_json::json!({
+                    "domain": d.domain,
+                    "upstream": d.upstream,
+                    "ssl": ssl,
+                })
+            })
+            .collect();
+        if let Some(obj) = form.as_object_mut() {
+            obj.insert(
+                "proxy_domains".to_string(),
+                serde_json::Value::Array(domains),
+            );
+        }
+    }
+
     // When monitoring.status_panel is enabled, inject the "statuspanel" role into
     // integrated_features, set connection_mode so the installer recognizes the
     // status panel flow, and pass vault_url in stack.vars so the Ansible role
@@ -4873,6 +4904,56 @@ mod tests {
             ext_features.contains(&serde_json::json!("nginx_proxy_manager")),
             "extended_features should contain 'nginx_proxy_manager': {:?}",
             ext_features
+        );
+    }
+
+    #[test]
+    fn test_build_deploy_form_serializes_proxy_domains() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::Caddy,
+                auto_detect: true,
+                domains: vec![
+                    crate::cli::config_parser::DomainConfig {
+                        domain: "app.example.com".to_string(),
+                        ssl: crate::cli::config_parser::SslMode::Auto,
+                        upstream: "app:8080".to_string(),
+                    },
+                    crate::cli::config_parser::DomainConfig {
+                        domain: "api.example.com".to_string(),
+                        ssl: crate::cli::config_parser::SslMode::Off,
+                        upstream: "app:9000".to_string(),
+                    },
+                ],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let form = build_deploy_form(&config);
+        let domains = form["proxy_domains"]
+            .as_array()
+            .expect("proxy_domains should be present in the deploy form");
+        assert_eq!(domains.len(), 2);
+        assert_eq!(domains[0]["domain"], "app.example.com");
+        assert_eq!(domains[0]["upstream"], "app:8080");
+        assert_eq!(domains[0]["ssl"], "auto");
+        assert_eq!(domains[1]["domain"], "api.example.com");
+        assert_eq!(domains[1]["ssl"], "off");
+    }
+
+    #[test]
+    fn test_build_deploy_form_omits_proxy_domains_when_none() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .build()
+            .unwrap();
+        let form = build_deploy_form(&config);
+        assert!(
+            form.get("proxy_domains").is_none(),
+            "proxy_domains must be absent when no proxy domains are declared"
         );
     }
 

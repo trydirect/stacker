@@ -1458,6 +1458,16 @@ async fn execute_deployment(
             );
         }
     }
+
+    // Forward reverse-proxy routing domains to the Install Service so the proxy
+    // role can render its config file (caddy Caddyfile / nginx conf.d) from
+    // them. Stored verbatim on the deployment's request_json (→ install_data),
+    // where AppVarsMapper exposes it as the `stacker_proxy_domains` extra var.
+    if let Some(ref proxy_domains) = form.proxy_domains {
+        if let Some(obj) = json_request.as_object_mut() {
+            obj.insert("proxy_domains".to_string(), proxy_domains.clone());
+        }
+    }
     let deployment_hash = format!("deployment_{}", Uuid::new_v4());
     let deployment = models::Deployment::new(
         dc.project.id,
