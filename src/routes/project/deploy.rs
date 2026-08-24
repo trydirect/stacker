@@ -1459,10 +1459,12 @@ async fn execute_deployment(
         }
     }
 
-    // Forward reverse-proxy routing domains to the Install Service so the proxy
-    // role can render its config file (caddy Caddyfile / nginx conf.d) from
-    // them. Stored verbatim on the deployment's request_json (→ install_data),
-    // where AppVarsMapper exposes it as the `stacker_proxy_domains` extra var.
+    // Record reverse-proxy routing domains on the deployment's request_json for
+    // audit/rollback. NOTE: this stored record is NOT what reaches the Install
+    // Service — the MQ payload is built from the project + form in
+    // `install_service.deploy()`, so actual delivery is via `payload.proxy_domains`
+    // (threaded through the deploy call below). AppVarsMapper reads it as the
+    // `stacker_proxy_domains` extra var.
     if let Some(ref proxy_domains) = form.proxy_domains {
         if let Some(obj) = json_request.as_object_mut() {
             obj.insert("proxy_domains".to_string(), proxy_domains.clone());
@@ -1538,6 +1540,7 @@ async fn execute_deployment(
             mq_manager,
             new_public_key,
             new_private_key,
+            form.proxy_domains.clone(),
         )
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;

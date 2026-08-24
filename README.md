@@ -520,6 +520,7 @@ cargo test user_service_client     # User Service connector
 cargo test marketplace_webhook     # Marketplace webhook flows
 cargo test deployment_validator    # Deployment validation
 cargo test --test security_cli     # CLI endpoint IDOR security tests
+SQLX_OFFLINE=true cargo test --lib -- proxy_domains 2>&1 | tail -10
 ```
 
 ---

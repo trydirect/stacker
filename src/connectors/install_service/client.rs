@@ -106,6 +106,7 @@ impl InstallServiceConnector for InstallServiceClient {
         mq_manager: &MqManager,
         server_public_key: Option<String>,
         server_private_key: Option<String>,
+        proxy_domains: Option<serde_json::Value>,
     ) -> Result<i32, String> {
         // Build payload for the install service
         let mut payload = crate::forms::project::Payload::try_from(project)
@@ -142,6 +143,11 @@ impl InstallServiceConnector for InstallServiceClient {
         payload.user_email = Some(user_email);
         payload.docker_compose = Some(compress(fc.as_str()));
         payload.registry = registry;
+        // Reverse-proxy routing domains → install_data["proxy_domains"], read by
+        // AppVarsMapper as the `stacker_proxy_domains` extra-var. Set on the MQ
+        // payload here (not just the stored deployment record) so it actually
+        // reaches the Install Service.
+        payload.proxy_domains = proxy_domains;
 
         // Set stack_code for per-project directory namespacing on the remote server.
         // The Ansible `custom` role uses this as `stack_source` to compute the

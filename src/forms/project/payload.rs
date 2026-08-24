@@ -41,6 +41,14 @@ pub struct Payload {
     pub config_bundle: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_artifact_bundle: Option<serde_json::Value>,
+    /// Reverse-proxy routing domains (from `proxy.domains` in stacker.yml),
+    /// forwarded to the Install Service where AppVarsMapper exposes them as the
+    /// `stacker_proxy_domains` Ansible extra-var so the config-file proxy roles
+    /// (caddy Caddyfile, nginx conf.d) and the NPM proxy-host task can route.
+    /// Top-level so `install_data["proxy_domains"]` resolves. JSON array of
+    /// `{domain, upstream, ssl}`. Traefik routes via labels and ignores this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_domains: Option<Value>,
     /// Per-project directory name on the remote server (e.g., "my-app").
     /// Used by the Ansible `custom` role as `stack_source` to namespace
     /// the deploy directory: `/home/trydirect/{stack_code}/`.
@@ -185,6 +193,34 @@ mod tests {
         assert_eq!(
             payload.config_bundle.expect("config bundle should exist")["manifest"]["environment"],
             json!("production")
+        );
+    }
+
+    #[test]
+    fn payload_serializes_proxy_domains_at_top_level() {
+        // The Install Service's AppVarsMapper reads install_data["proxy_domains"]
+        // (top-level) to build the `stacker_proxy_domains` extra-var. Regression
+        // guard: proxy_domains must serialize as a top-level key named exactly
+        // `proxy_domains` — not nested under stack/custom, and not renamed.
+        let mut payload = Payload::default();
+        payload.proxy_domains = Some(json!([
+            {"domain": "ntfy.example.com", "upstream": "app:80", "ssl": "off"}
+        ]));
+
+        let serialized = serde_json::to_value(&payload).expect("serialize payload");
+        assert_eq!(
+            serialized["proxy_domains"][0]["domain"],
+            json!("ntfy.example.com"),
+            "proxy_domains must be a top-level key so install_data['proxy_domains'] resolves"
+        );
+        assert_eq!(serialized["proxy_domains"][0]["upstream"], json!("app:80"));
+        assert_eq!(serialized["proxy_domains"][0]["ssl"], json!("off"));
+
+        // Absent by default (skip_serializing_if) so non-proxy deploys stay clean.
+        let empty = serde_json::to_value(Payload::default()).expect("serialize default");
+        assert!(
+            empty.get("proxy_domains").is_none(),
+            "proxy_domains must be omitted when unset"
         );
     }
 }
