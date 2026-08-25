@@ -487,6 +487,69 @@ fn print_server_unreachable_hint(server: &ServerConfig, check: &ssh_client::Syst
     eprintln!();
 }
 
+/// Render the config-file proxy's routing file (caddy `Caddyfile`, nginx
+/// `conf.d`) next to the generated compose, from `proxy.domains`.
+///
+/// The synthesized caddy/nginx proxy service bind-mounts this file from the
+/// compose directory. For `--target local` and `--target server` the tfa proxy
+/// role never runs, so without this the mount points at a nonexistent path and
+/// Docker silently creates an empty directory — the proxy then serves nothing.
+/// This mirrors what the tfa caddy/nginx role renders on cloud deploys, so the
+/// three targets produce identical routing. Traefik routes via labels and needs
+/// no file; NPM has no file (routing lives in its DB) — both are no-ops here.
+fn write_local_proxy_config(config: &StackerConfig, output_dir: &Path) -> Result<(), CliError> {
+    use crate::cli::config_parser::ProxyType;
+    use crate::cli::proxy_manager::{generate_caddy_server_block, generate_nginx_server_block};
+
+    if config.proxy.domains.is_empty() {
+        return Ok(());
+    }
+
+    match config.proxy.proxy_type {
+        ProxyType::Caddy => {
+            let mut content = String::new();
+            // Optional global ACME email block (matches the tfa caddy role).
+            if let Some(email) = config
+                .install
+                .inputs
+                .get("admin_email")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                content.push_str(&format!("{{\n    email {}\n}}\n\n", email));
+            }
+            for domain in &config.proxy.domains {
+                content.push_str(&generate_caddy_server_block(domain)?);
+            }
+            let path = output_dir.join("Caddyfile");
+            std::fs::write(&path, content)?;
+            eprintln!(
+                "  Generated {}/Caddyfile from proxy.domains ({} site(s))",
+                OUTPUT_DIR,
+                config.proxy.domains.len()
+            );
+        }
+        ProxyType::Nginx => {
+            let mut content = String::new();
+            for domain in &config.proxy.domains {
+                content.push_str(&generate_nginx_server_block(domain)?);
+            }
+            // The nginx service mounts ./nginx/conf.d; nginx.conf includes *.conf.
+            let conf_dir = output_dir.join("nginx").join("conf.d");
+            std::fs::create_dir_all(&conf_dir)?;
+            std::fs::write(conf_dir.join("stacker.conf"), content)?;
+            eprintln!(
+                "  Generated {}/nginx/conf.d/stacker.conf from proxy.domains ({} site(s))",
+                OUTPUT_DIR,
+                config.proxy.domains.len()
+            );
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError> {
     let is_stacker_compose = compose_path
         .components()
@@ -3214,6 +3277,15 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
             if force_rebuild || !compose_out.exists() {
                 let compose = ComposeDefinition::try_from(&config)?;
                 compose.write_to(&compose_out, force_rebuild)?;
+                // The synthesized caddy/nginx proxy service mounts a config file
+                // (./Caddyfile, ./nginx/conf.d) from the compose directory. For
+                // local/server deploys the tfa proxy role does NOT run, so the
+                // CLI must render that file itself — otherwise Docker bind-mounts
+                // a nonexistent path (creating an empty directory) and the proxy
+                // serves nothing. Cloud deploys strip this service and let the
+                // role render it remotely, so the generated file is simply unused
+                // there. Idempotent-friendly: regenerated alongside the compose.
+                write_local_proxy_config(&config, &output_dir)?;
             } else {
                 eprintln!(
                     "  Using existing {}/docker-compose.yml (use --force-rebuild to regenerate)",
@@ -5228,6 +5300,39 @@ services:
                 .any(|(_, args)| args.iter().any(|a| a.contains("build.sh"))),
             "Expected a sh call with build.sh in args"
         );
+    }
+
+    #[test]
+    fn write_local_proxy_config_renders_caddyfile_from_domains() {
+        // The synthesized caddy service mounts ./Caddyfile; for local/server
+        // deploys the CLI must render it so the bind mount is a real file.
+        let config = StackerConfig::from_str(
+            "name: t\napp:\n  type: custom\n  image: app:1\nproxy:\n  type: caddy\n  domains:\n    - domain: a.example.com\n      ssl: \"off\"\n      upstream: app:80\n    - domain: b.example.com\n      ssl: auto\n      upstream: api:9000\n",
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        write_local_proxy_config(&config, dir.path()).unwrap();
+        let caddyfile = std::fs::read_to_string(dir.path().join("Caddyfile")).unwrap();
+        assert!(
+            caddyfile.contains("http://a.example.com {") && caddyfile.contains("reverse_proxy app:80"),
+            "ssl:off site must use http:// scheme:\n{caddyfile}"
+        );
+        assert!(
+            caddyfile.contains("b.example.com {") && caddyfile.contains("reverse_proxy api:9000"),
+            "ssl:auto site must use the bare domain:\n{caddyfile}"
+        );
+    }
+
+    #[test]
+    fn write_local_proxy_config_noop_without_domains() {
+        // No proxy.domains → nothing to render, no file written.
+        let config = StackerConfig::from_str(
+            "name: t\napp:\n  type: custom\n  image: app:1\nproxy:\n  type: caddy\n",
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        write_local_proxy_config(&config, dir.path()).unwrap();
+        assert!(!dir.path().join("Caddyfile").exists());
     }
 
     #[test]
