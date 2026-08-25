@@ -3920,6 +3920,16 @@ impl DeployCommand {
                         if l.ssh_port.is_none() {
                             l.ssh_port = Some(server_cfg.port);
                         }
+                        // `from_result` always initializes ssh_key to None —
+                        // without this, every successful server deploy wrote
+                        // ssh_key: null to the lock regardless of what was
+                        // correctly configured/resolved in stacker.yml, so any
+                        // later command that reads the *lock* (not
+                        // stacker.yml) for connection details would fail SSH
+                        // key auth. See GH issue #225.
+                        if l.ssh_key.is_none() {
+                            l.ssh_key = server_cfg.ssh_key.clone();
+                        }
                     }
                 }
 
@@ -5139,6 +5149,64 @@ deploy:\n  target: server\n  server:\n    host: ${EXISTING_SERVER_HOST}\n    use
             }
             other => panic!("expected a DeployFailed(target: Cloud) error, got: {:?}", other),
         }
+    }
+
+    // Regression test for GH issue #225: `stacker deploy --target server`
+    // (and by extension `stacker target server`, which reuses the same
+    // lock) permanently wrote `ssh_key: null` to the deployment lock after
+    // a successful deploy, because `DeploymentLock::from_result` always
+    // initializes `ssh_key: None` and `save_deployment_lock`'s
+    // DeployTarget::Server branch copied server_ip/ssh_user/ssh_port from
+    // `stacker.yml`'s resolved `deploy.server` but never copied `ssh_key`.
+    // Any later command reading the lock (not stacker.yml) for connection
+    // details then failed SSH key auth, regardless of how correctly
+    // EXISTING_SERVER_KEY-style env vars were configured.
+    #[test]
+    fn test_save_deployment_lock_carries_ssh_key_for_server_target() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\n\
+deploy:\n  target: server\n  server:\n    host: 203.0.113.5\n    user: deploy\n    ssh_key: /home/me/.ssh/stacker-project-test\n";
+        let dir = setup_local_project(&[("stacker.yml", config)]);
+
+        let cmd = DeployCommand {
+            service: None,
+            target: Some("server".to_string()),
+            environment: None,
+            file: None,
+            dry_run: false,
+            force_rebuild: false,
+            project_name: None,
+            key_name: None,
+            key_id: None,
+            server_name: None,
+            watch: None,
+            lock: false,
+            force_new: false,
+            runtime: "runc".to_string(),
+            plan: false,
+            apply_plan: None,
+            no_hooks: false,
+            allow_untrusted_hooks: false,
+            notify: false,
+        };
+        let result = DeployResult {
+            target: DeployTarget::Server,
+            message: "ok".to_string(),
+            server_ip: None,
+            deployment_id: None,
+            project_id: None,
+            server_name: None,
+        };
+
+        cmd.save_deployment_lock(dir.path(), &result, false).unwrap();
+
+        let lock = DeploymentLock::load_for_target(dir.path(), "server")
+            .unwrap()
+            .expect("server lock should have been written");
+        assert_eq!(
+            lock.ssh_key,
+            Some(PathBuf::from("/home/me/.ssh/stacker-project-test")),
+            "ssh_key from stacker.yml's deploy.server must survive into the lock"
+        );
     }
 
     #[test]
