@@ -217,17 +217,45 @@ impl<S: CredentialStore> CredentialsManager<S> {
 
     /// Load credentials and ensure they are present and not expired.
     /// Returns `CliError::LoginRequired` when absent,
-    /// `CliError::TokenExpired` when expired.
+    /// `CliError::TokenExpired` when expired and no refresh was possible.
+    ///
+    /// When the access token has expired but a `refresh_token` is on file,
+    /// transparently exchanges it for a new access token (RFC 6749 §6
+    /// `grant_type=refresh_token`) and persists the result before
+    /// returning it — the caller never sees `TokenExpired` for a session
+    /// that could be silently renewed. See GH issue #214.
     pub fn require_valid_token(&self, feature: &str) -> Result<StoredCredentials, CliError> {
+        self.require_valid_token_with_oauth(feature, &HttpOAuthClient)
+    }
+
+    /// Same as [`require_valid_token`](Self::require_valid_token), but with
+    /// the OAuth client injectable for testing.
+    pub fn require_valid_token_with_oauth<O: OAuthClient>(
+        &self,
+        feature: &str,
+        oauth: &O,
+    ) -> Result<StoredCredentials, CliError> {
         let creds = self.store.load()?.ok_or_else(|| CliError::LoginRequired {
             feature: feature.to_string(),
         })?;
 
-        if creds.is_expired() {
-            return Err(CliError::TokenExpired);
+        if !creds.is_expired() {
+            return Ok(creds);
         }
 
-        Ok(creds)
+        // No auth URL to refresh against (never logged in via this
+        // machine's env/UserConfig) is just another "refresh not
+        // possible" case, same as a missing refresh_token below.
+        if let Ok(auth_url) = resolve_auth_url_from(None) {
+            if let Some(refreshed) = try_refresh_token(&creds, oauth, &auth_url) {
+                // Best-effort: if persisting the refreshed token fails, the
+                // caller still gets a valid in-memory token for this run.
+                let _ = self.store.save(&refreshed);
+                return Ok(refreshed);
+            }
+        }
+
+        Err(CliError::TokenExpired)
     }
 
     /// Returns the bearer token header value if credentials are valid.
@@ -235,6 +263,35 @@ impl<S: CredentialStore> CredentialsManager<S> {
         let creds = self.require_valid_token(feature)?;
         Ok(format!("{} {}", creds.token_type, creds.access_token))
     }
+}
+
+/// Attempt to renew `creds` via its `refresh_token`. Returns `None` (never
+/// an error) for every case where refresh isn't possible or fails — the
+/// caller's job is to fall back to the existing `TokenExpired` prompt, not
+/// to surface a refresh attempt's internal failure as a new/different
+/// error the user has no context for.
+fn try_refresh_token<O: OAuthClient>(
+    creds: &StoredCredentials,
+    oauth: &O,
+    auth_url: &str,
+) -> Option<StoredCredentials> {
+    let refresh_token = creds.refresh_token.as_deref()?;
+    let token_resp = oauth.refresh_token(auth_url, refresh_token).ok()?;
+
+    let mut refreshed: StoredCredentials = token_resp.into();
+    // The refresh response only carries token fields; carry over identity
+    // fields From<TokenResponse> can't know about.
+    refreshed.email = creds.email.clone();
+    refreshed.server_url = creds.server_url.clone();
+    refreshed.org = creds.org.clone();
+    refreshed.domain = creds.domain.clone();
+    // Some OAuth servers omit refresh_token on a refresh response, meaning
+    // "reuse the one you already have" rather than "you no longer have one".
+    if refreshed.refresh_token.is_none() {
+        refreshed.refresh_token = creds.refresh_token.clone();
+    }
+
+    Some(refreshed)
 }
 
 impl CredentialsManager<FileCredentialStore> {
@@ -258,10 +315,29 @@ fn is_direct_login_endpoint(auth_url: &str) -> bool {
         || url.ends_with("/login")
 }
 
-fn resolve_auth_url(request: &LoginRequest) -> Result<String, CliError> {
-    request
-        .auth_url
-        .clone()
+/// Compute the refresh endpoint URL for a login `auth_url`. The User
+/// Service's `.../auth/refresh` is registered right alongside
+/// `.../auth/login` (see `app/auth/views.py`), so this mirrors
+/// `request_token`'s own two supported `auth_url` shapes:
+///   - a full login URL (e.g. an explicit `--auth-url` ending in
+///     `/auth/login` or `/login`) -> swap the last segment for `/refresh`.
+///   - a base URL (e.g. `https://try.direct/server/user`, the shape
+///     persisted in `UserConfig` — `request_token` appends `TOKEN_ENDPOINT`
+///     to this at request time) -> append `/auth/refresh`.
+fn refresh_url_for(auth_url: &str) -> Option<String> {
+    let trimmed = auth_url.trim_end_matches('/');
+    if is_direct_login_endpoint(trimmed) {
+        trimmed
+            .strip_suffix("/login")
+            .map(|base| format!("{base}/refresh"))
+    } else {
+        Some(format!("{trimmed}/auth/refresh"))
+    }
+}
+
+fn resolve_auth_url_from(explicit: Option<&str>) -> Result<String, CliError> {
+    explicit
+        .map(str::to_string)
         .or_else(|| std::env::var("STACKER_AUTH_URL").ok())
         .or_else(|| std::env::var("STACKER_API_URL").ok())
         .or_else(|| crate::cli::user_config::UserConfig::load().auth_url)
@@ -270,6 +346,10 @@ fn resolve_auth_url(request: &LoginRequest) -> Result<String, CliError> {
                 "Missing auth URL. Pass `stacker login --auth-url <user-service-url> --server-url <stacker-api-url>` or set STACKER_AUTH_URL (or STACKER_API_URL) and STACKER_URL.".to_string(),
             )
         })
+}
+
+fn resolve_auth_url(request: &LoginRequest) -> Result<String, CliError> {
+    resolve_auth_url_from(request.auth_url.as_deref())
 }
 
 fn resolve_server_url(request: &LoginRequest) -> Result<String, CliError> {
@@ -306,6 +386,15 @@ pub trait OAuthClient: Send + Sync {
         email: &str,
         password: &str,
     ) -> Result<TokenResponse, CliError>;
+
+    /// Exchange a stored `refresh_token` for a new access token via the
+    /// standard OAuth2 `grant_type=refresh_token` grant (RFC 6749 §6),
+    /// posted to the same token endpoint used for login. Returns an error
+    /// when the endpoint doesn't support this grant (e.g. a legacy direct
+    /// email/password login endpoint with no OAuth refresh concept) — the
+    /// caller treats that as "refresh not possible" and falls back to
+    /// prompting `stacker login`, never surfacing it as a harder failure.
+    fn refresh_token(&self, auth_url: &str, refresh_token: &str) -> Result<TokenResponse, CliError>;
 }
 
 /// Production OAuth client using `reqwest::blocking`.
@@ -374,6 +463,47 @@ impl OAuthClient for HttpOAuthClient {
             .map_err(|e| CliError::AuthFailed(format!("Invalid token response: {e}")))?;
 
         Ok(token_resp)
+    }
+
+    fn refresh_token(&self, auth_url: &str, refresh_token: &str) -> Result<TokenResponse, CliError> {
+        // The login endpoint (`.../auth/login`) mints tokens directly,
+        // bypassing OAuth client authentication entirely — clients here
+        // (CLI, web) never have a client_id/secret, so a generic
+        // `grant_type=refresh_token` POST to a standard OAuth token
+        // endpoint would fail with invalid_client. The User Service
+        // exposes a sibling `.../auth/refresh` endpoint with the same
+        // no-client-auth treatment: POST `refresh_token`, get a fresh
+        // `{access_token, refresh_token, ...}` back, same shape as login.
+        // Only known for the literal "/login"-suffixed auth_url shape —
+        // any other shape has no verified refresh endpoint to target.
+        let Some(url) = refresh_url_for(auth_url) else {
+            return Err(CliError::AuthFailed(
+                "Auth endpoint shape not recognized for token refresh".to_string(),
+            ));
+        };
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| CliError::AuthFailed(format!("HTTP client error: {e}")))?;
+
+        let resp = client
+            .post(&url)
+            .form(&[("refresh_token", refresh_token)])
+            .send()
+            .map_err(|e| CliError::AuthFailed(format!("Network error: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            let body_preview: String = body.chars().take(240).collect();
+            return Err(CliError::AuthFailed(format!(
+                "Token refresh failed (HTTP {status}): {body_preview}"
+            )));
+        }
+
+        resp.json()
+            .map_err(|e| CliError::AuthFailed(format!("Invalid token response: {e}")))
     }
 }
 
@@ -681,6 +811,14 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
+    /// Serializes tests that mutate STACKER_AUTH_URL/STACKER_API_URL, so
+    /// they don't race with each other (or with resolve_auth_url_from's
+    /// other callers) when the suite runs in parallel.
+    fn credentials_env_lock() -> &'static Mutex<()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        &LOCK
+    }
+
     #[test]
     fn test_is_direct_login_endpoint_detection() {
         assert!(is_direct_login_endpoint(
@@ -690,6 +828,37 @@ mod tests {
             "https://dev.try.direct/server/user/auth/login/"
         ));
         assert!(!is_direct_login_endpoint("https://api.try.direct"));
+    }
+
+    #[test]
+    fn test_refresh_url_for_swaps_login_for_refresh() {
+        assert_eq!(
+            refresh_url_for("https://dev.try.direct/server/user/auth/login"),
+            Some("https://dev.try.direct/server/user/auth/refresh".to_string())
+        );
+        // Trailing slash tolerated the same way is_direct_login_endpoint is.
+        assert_eq!(
+            refresh_url_for("https://dev.try.direct/server/user/auth/login/"),
+            Some("https://dev.try.direct/server/user/auth/refresh".to_string())
+        );
+        assert_eq!(
+            refresh_url_for("https://api.try.direct/auth/login"),
+            Some("https://api.try.direct/auth/refresh".to_string())
+        );
+    }
+
+    #[test]
+    fn test_refresh_url_for_appends_auth_refresh_for_base_url() {
+        // The shape UserConfig actually persists (request_token appends
+        // TOKEN_ENDPOINT to this at login time, so refresh mirrors that).
+        assert_eq!(
+            refresh_url_for("https://try.direct/server/user"),
+            Some("https://try.direct/server/user/auth/refresh".to_string())
+        );
+        assert_eq!(
+            refresh_url_for("https://api.try.direct"),
+            Some("https://api.try.direct/auth/refresh".to_string())
+        );
     }
 
     // ── In-memory mock store ────────────────────────
@@ -895,11 +1064,114 @@ mod tests {
 
     #[test]
     fn test_require_valid_token_expired() {
+        // Uses require_valid_token_with_oauth + a mock that fails the
+        // refresh attempt, so this stays deterministic and network-free
+        // regardless of ambient STACKER_AUTH_URL/UserConfig state — the
+        // production `require_valid_token()` (real HttpOAuthClient) would
+        // otherwise attempt a real refresh call here now that expired_creds()
+        // carries a refresh_token, see test_require_valid_token_expired_*
+        // below for coverage of the actual refresh path.
         let (manager, _) = make_manager();
         manager.save(&expired_creds()).unwrap();
-        let err = manager.require_valid_token("cloud deploy").unwrap_err();
+        let oauth = MockOAuthClient::failure("refresh not supported");
+        let err = manager
+            .require_valid_token_with_oauth("cloud deploy", &oauth)
+            .unwrap_err();
         let msg = format!("{}", err);
         assert!(msg.contains("expired"));
+    }
+
+    // try_refresh_token takes an explicit auth_url (not resolved from
+    // env/UserConfig internally) specifically so this stays a pure,
+    // deterministic unit test — no ambient STACKER_AUTH_URL/UserConfig
+    // state to race with other tests in this file.
+    #[test]
+    fn test_try_refresh_token_success_carries_identity_fields() {
+        let oauth = MockOAuthClient::success();
+        let refreshed = try_refresh_token(&expired_creds(), &oauth, "https://auth.example.test")
+            .expect("mock refresh should succeed");
+
+        assert_eq!(refreshed.access_token, "mock-access-token");
+        assert!(!refreshed.is_expired());
+        // Identity fields a token response doesn't carry must survive the
+        // refresh, taken from the credentials being refreshed.
+        assert_eq!(refreshed.email.as_deref(), Some("old@example.com"));
+    }
+
+    #[test]
+    fn test_try_refresh_token_reuses_old_refresh_token_when_response_omits_one() {
+        let oauth = MockOAuthClient {
+            response: Some(TokenResponse {
+                access_token: "new-access".into(),
+                refresh_token: None, // server didn't rotate the refresh token
+                token_type: Some("Bearer".into()),
+                scope: None,
+                expires_in: Some(3600),
+            }),
+            error_msg: None,
+        };
+
+        let refreshed = try_refresh_token(&expired_creds(), &oauth, "https://auth.example.test")
+            .expect("mock refresh should succeed");
+
+        assert_eq!(refreshed.refresh_token.as_deref(), Some("expired-refresh"));
+    }
+
+    #[test]
+    fn test_require_valid_token_expired_persists_refreshed_credentials() {
+        // Full wiring, including auth_url resolution — scoped to this test
+        // via STACKER_AUTH_URL like the file's other env-var-driven tests
+        // (see e.g. the XDG_CONFIG_HOME-based FileCredentialStore tests
+        // below), since resolve_auth_url_from() falls back to real env vars.
+        let _env_guard = credentials_env_lock().lock().unwrap();
+        std::env::set_var("STACKER_AUTH_URL", "https://auth.example.test");
+
+        let (manager, store) = make_manager();
+        manager.save(&expired_creds()).unwrap();
+        let oauth = MockOAuthClient::success();
+
+        let creds = manager
+            .require_valid_token_with_oauth("cloud deploy", &oauth)
+            .expect("should transparently refresh instead of erroring");
+        assert_eq!(creds.access_token, "mock-access-token");
+
+        // The refreshed token must be persisted, not just returned in-memory,
+        // so the next command doesn't have to refresh again.
+        let persisted = store.load().unwrap().unwrap();
+        assert_eq!(persisted.access_token, "mock-access-token");
+
+        std::env::remove_var("STACKER_AUTH_URL");
+    }
+
+    #[test]
+    fn test_require_valid_token_expired_falls_back_when_refresh_fails() {
+        let (manager, _) = make_manager();
+        manager.save(&expired_creds()).unwrap();
+        let oauth = MockOAuthClient::failure("refresh token invalid or expired");
+
+        let err = manager
+            .require_valid_token_with_oauth("cloud deploy", &oauth)
+            .unwrap_err();
+
+        assert!(matches!(err, CliError::TokenExpired));
+    }
+
+    #[test]
+    fn test_require_valid_token_expired_without_refresh_token_skips_refresh_attempt() {
+        let (manager, _) = make_manager();
+        manager.save(&StoredCredentials {
+            refresh_token: None,
+            ..expired_creds()
+        }).unwrap();
+        // A mock that would succeed if called — proves it's never called
+        // when there's no refresh_token to use.
+        let oauth = MockOAuthClient::success();
+
+        let err = manager
+            .require_valid_token_with_oauth("cloud deploy", &oauth)
+            .unwrap_err();
+
+        assert!(matches!(err, CliError::TokenExpired));
     }
 
     #[test]
@@ -1030,6 +1302,19 @@ mod tests {
             _auth_url: &str,
             _email: &str,
             _password: &str,
+        ) -> Result<TokenResponse, CliError> {
+            match &self.response {
+                Some(resp) => Ok(resp.clone()),
+                None => Err(CliError::AuthFailed(
+                    self.error_msg.clone().unwrap_or_default(),
+                )),
+            }
+        }
+
+        fn refresh_token(
+            &self,
+            _auth_url: &str,
+            _refresh_token: &str,
         ) -> Result<TokenResponse, CliError> {
             match &self.response {
                 Some(resp) => Ok(resp.clone()),
