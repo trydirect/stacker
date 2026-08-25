@@ -703,7 +703,7 @@ fn resolve_compose_cmd(executor: &dyn CommandExecutor) -> (&'static str, Vec<&'s
 /// would recreate/destroy another project's containers, and `down` would
 /// report unrelated projects' containers as orphans of the "stacker"
 /// project. See GH issue #235.
-fn local_compose_project_name(config: &StackerConfig) -> String {
+pub fn local_compose_project_name(config: &StackerConfig) -> String {
     let identity = config
         .project
         .identity

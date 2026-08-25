@@ -4,7 +4,7 @@ use crate::cli::config_parser::{CloudOrchestrator, DeployTarget, ProxyType, Stac
 use crate::cli::credentials::{CredentialsManager, StoredCredentials};
 use crate::cli::error::CliError;
 use crate::cli::install_runner::{CommandExecutor, CommandOutput, ShellExecutor};
-use crate::cli::local_compose::resolve_local_compose_path;
+use crate::cli::local_compose::{resolve_local_compose_path, resolve_local_compose_project_name};
 use crate::cli::notify;
 use crate::cli::stacker_client::{self, DeploymentStatusInfo, ServerInfo, StackerClient};
 use crate::console::commands::cli::ssh_key::{format_ssh_command, local_backup_private_key_path};
@@ -38,9 +38,16 @@ impl StatusCommand {
 }
 
 /// Build `docker compose ps` arguments.
-pub fn build_status_args(compose_path: &str, json: bool) -> Vec<String> {
+///
+/// `project_name` must be passed via `-p` — without it Compose falls back
+/// to the compose file's directory basename, `.stacker` for every project,
+/// so `stacker status` for one project could report another, unrelated
+/// project's containers under the same shared default scope. See GH #235.
+pub fn build_status_args(compose_path: &str, project_name: &str, json: bool) -> Vec<String> {
     let mut args = vec![
         "compose".to_string(),
+        "-p".to_string(),
+        project_name.to_string(),
         "-f".to_string(),
         compose_path.to_string(),
         "ps".to_string(),
@@ -63,7 +70,8 @@ pub fn run_status(
     let compose_path = resolve_local_compose_path(project_dir)?;
 
     let compose_str = compose_path.to_string_lossy().to_string();
-    let args = build_status_args(&compose_str, json);
+    let project_name = resolve_local_compose_project_name(project_dir);
+    let args = build_status_args(&compose_str, &project_name, json);
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
     let output = executor.execute("docker", &args_refs)?;
@@ -826,13 +834,16 @@ mod tests {
 
     #[test]
     fn test_status_local_constructs_query() {
-        let args = build_status_args("/path/compose.yml", false);
-        assert_eq!(args, vec!["compose", "-f", "/path/compose.yml", "ps"]);
+        let args = build_status_args("/path/compose.yml", "myproject", false);
+        assert_eq!(
+            args,
+            vec!["compose", "-p", "myproject", "-f", "/path/compose.yml", "ps"]
+        );
     }
 
     #[test]
     fn test_status_json_flag() {
-        let args = build_status_args("/path/compose.yml", true);
+        let args = build_status_args("/path/compose.yml", "myproject", true);
         assert!(args.contains(&"--format".to_string()));
         assert!(args.contains(&"json".to_string()));
     }
@@ -898,12 +909,65 @@ mod tests {
 
         let calls = executor.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
+        let f_index = calls[0].iter().position(|a| a == "-f").unwrap();
         assert_eq!(
-            calls[0][2],
+            calls[0][f_index + 1],
             dir.path()
                 .join("docker/local/compose.yml")
                 .to_string_lossy()
         );
+    }
+
+    // Regression test for GH issue #235: `stacker status` previously never
+    // passed `-p <project>`, so it queried Compose's shared directory-basename
+    // default scope ("stacker") — the same project name every project's
+    // `.stacker/` compose file falls back to — risking a status report that
+    // shows another, unrelated project's containers.
+    #[test]
+    fn test_status_namespaces_compose_project_by_identity() {
+        struct MockExec {
+            calls: std::sync::Mutex<Vec<Vec<String>>>,
+        }
+
+        impl CommandExecutor for MockExec {
+            fn execute(&self, _p: &str, args: &[&str]) -> Result<CommandOutput, CliError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(args.iter().map(|arg| arg.to_string()).collect());
+                Ok(CommandOutput {
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                })
+            }
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".stacker")).unwrap();
+        std::fs::write(
+            dir.path().join(".stacker/docker-compose.yml"),
+            "services: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(DEFAULT_CONFIG_FILE),
+            "name: Miniflux Prod\ndeploy:\n  target: local\n",
+        )
+        .unwrap();
+
+        let executor = MockExec {
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+
+        run_status(dir.path(), false, &executor).unwrap();
+
+        let calls = executor.calls.lock().unwrap();
+        let p_index = calls[0]
+            .iter()
+            .position(|a| a == "-p")
+            .expect("docker compose ps should pass -p <project-name>");
+        assert_eq!(calls[0].get(p_index + 1).map(String::as_str), Some("miniflux-prod"));
     }
 
     #[test]

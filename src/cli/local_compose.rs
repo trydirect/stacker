@@ -7,6 +7,29 @@ use crate::cli::error::CliError;
 const OUTPUT_DIR: &str = ".stacker";
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 
+/// Resolve the Compose project name for a local project, the same way
+/// `LocalDeploy` does: from `stacker.yml`'s `project.identity`/`name`,
+/// sanitized (see `install_runner::local_compose_project_name`). Every
+/// caller that runs `docker compose` against a project's `.stacker/`
+/// compose file (deploy, destroy, status, ...) must pass this via `-p` —
+/// without it, Compose falls back to the compose file's containing
+/// directory basename, which is `.stacker` for every project, so every
+/// project defaults to the same shared scope ("stacker"). Operating on
+/// that shared scope from one project's directory can recreate, remove, or
+/// misreport another, unrelated project's containers. See GH issue #235.
+///
+/// Falls back to the literal "stacker" only when `stacker.yml` is
+/// missing/unparseable (e.g. deleted after a deploy) — there's no project
+/// identity left to recover in that case, so this is a best-effort
+/// default, not a guarantee of isolation.
+pub fn resolve_local_compose_project_name(project_dir: &Path) -> String {
+    let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
+    StackerConfig::from_file(&config_path)
+        .ok()
+        .map(|config| crate::cli::install_runner::local_compose_project_name(&config))
+        .unwrap_or_else(|| "stacker".to_string())
+}
+
 pub fn resolve_local_compose_path(project_dir: &Path) -> Result<PathBuf, CliError> {
     let generated = project_dir.join(OUTPUT_DIR).join("docker-compose.yml");
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
