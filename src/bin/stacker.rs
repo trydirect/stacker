@@ -1280,6 +1280,23 @@ enum PipeCommands {
         /// Use ML-based field matching (n-gram cosine similarity)
         #[arg(long, conflicts_with_all = ["ai", "no_ai"])]
         ml: bool,
+        /// Manual source endpoint "METHOD /path" (e.g. "GET /items"); bypasses
+        /// endpoint discovery. Requires --target-endpoint.
+        #[arg(long, requires = "target_endpoint")]
+        source_endpoint: Option<String>,
+        /// Manual target endpoint "METHOD /path" (e.g. "POST /pipetest");
+        /// bypasses endpoint discovery. Requires --source-endpoint.
+        #[arg(long, requires = "source_endpoint")]
+        target_endpoint: Option<String>,
+        /// Comma-separated source field names (manual mode)
+        #[arg(long, value_delimiter = ',')]
+        source_fields: Vec<String>,
+        /// Comma-separated target field names (manual mode)
+        #[arg(long, value_delimiter = ',')]
+        target_fields: Vec<String>,
+        /// Pipe name (skips the interactive name prompt)
+        #[arg(long)]
+        name: Option<String>,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -2510,10 +2527,27 @@ fn get_command(
                     ai,
                     no_ai,
                     ml,
+                    source_endpoint,
+                    target_endpoint,
+                    source_fields,
+                    target_fields,
+                    name,
                     json,
                     deployment,
                 } => Box::new(pipe::PipeCreateCommand::new(
-                    source, target, manual, ai, no_ai, ml, json, deployment,
+                    source,
+                    target,
+                    manual,
+                    ai,
+                    no_ai,
+                    ml,
+                    source_endpoint,
+                    target_endpoint,
+                    source_fields,
+                    target_fields,
+                    name,
+                    json,
+                    deployment,
                 )),
                 PipeCommands::List { json, deployment } => {
                     Box::new(pipe::PipeListCommand::new(json, deployment))

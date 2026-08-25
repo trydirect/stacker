@@ -2145,11 +2145,19 @@ pub struct PipeCreateCommand {
     pub ai: bool,
     pub no_ai: bool,
     pub ml: bool,
+    /// Manual "METHOD /path" source endpoint; when set (with target_endpoint)
+    /// discovery is skipped entirely.
+    pub source_endpoint: Option<String>,
+    pub target_endpoint: Option<String>,
+    pub source_fields: Vec<String>,
+    pub target_fields: Vec<String>,
+    pub name: Option<String>,
     pub json: bool,
     pub deployment: Option<String>,
 }
 
 impl PipeCreateCommand {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         source: String,
         target: String,
@@ -2157,6 +2165,11 @@ impl PipeCreateCommand {
         ai: bool,
         no_ai: bool,
         ml: bool,
+        source_endpoint: Option<String>,
+        target_endpoint: Option<String>,
+        source_fields: Vec<String>,
+        target_fields: Vec<String>,
+        name: Option<String>,
         json: bool,
         deployment: Option<String>,
     ) -> Self {
@@ -2167,6 +2180,11 @@ impl PipeCreateCommand {
             ai,
             no_ai,
             ml,
+            source_endpoint,
+            target_endpoint,
+            source_fields,
+            target_fields,
+            name,
             json,
             deployment,
         }
@@ -2844,6 +2862,48 @@ mod selectable_operation_tests {
     use tempfile::tempdir;
 
     #[test]
+    fn parse_manual_endpoint_splits_method_and_path() {
+        assert_eq!(
+            parse_manual_endpoint("POST /pipetest"),
+            ("POST".to_string(), "/pipetest".to_string())
+        );
+        // lowercase method is upper-cased
+        assert_eq!(
+            parse_manual_endpoint("get /items"),
+            ("GET".to_string(), "/items".to_string())
+        );
+        // bare path defaults to GET
+        assert_eq!(
+            parse_manual_endpoint("/status"),
+            ("GET".to_string(), "/status".to_string())
+        );
+    }
+
+    #[test]
+    fn manual_operation_carries_fields_and_no_container() {
+        let op = manual_operation("POST /pipetest", &["message".to_string()]);
+        assert_eq!(op.method, "POST");
+        assert_eq!(op.path, "/pipetest");
+        assert_eq!(op.fields, vec!["message".to_string()]);
+        assert!(op.container.is_none() && op.adapter.is_none());
+    }
+
+    #[test]
+    fn build_manual_field_mapping_matches_by_name_then_position_then_identity() {
+        // same-name match
+        let m = build_manual_field_mapping(&["message".into()], &["message".into()]);
+        assert_eq!(m["message"], json!("$.message"));
+        // positional fallback when names differ
+        let m = build_manual_field_mapping(&["body".into()], &["message".into()]);
+        assert_eq!(m["message"], json!("$.body"));
+        // identity when no source field is available
+        let m = build_manual_field_mapping(&[], &["message".into()]);
+        assert_eq!(m["message"], json!("$.message"));
+        // empty target → empty (pass-through) mapping
+        assert_eq!(build_manual_field_mapping(&["x".into()], &[]), json!({}));
+    }
+
+    #[test]
     fn extract_operations_includes_html_forms_and_container() {
         let info = AgentCommandInfo {
             command_id: "local".to_string(),
@@ -3126,6 +3186,57 @@ mod selectable_operation_tests {
     }
 }
 
+/// Parse a manual endpoint spec ("METHOD /path" or a bare "/path" → GET) into
+/// an (uppercased method, path) pair. Matches the documented manual-endpoint
+/// formats in docs/pipe-howto.md.
+fn parse_manual_endpoint(spec: &str) -> (String, String) {
+    let trimmed = spec.trim();
+    let mut parts = trimmed.splitn(2, char::is_whitespace);
+    let first = parts.next().unwrap_or("").trim();
+    match parts.next().map(str::trim) {
+        Some(rest) if !rest.is_empty() => (first.to_ascii_uppercase(), rest.to_string()),
+        // Bare path (no method token) defaults to GET.
+        _ => ("GET".to_string(), first.to_string()),
+    }
+}
+
+/// Build a SelectableOperation from an explicit endpoint spec, bypassing
+/// discovery. Used by the manual-endpoint fast path so apps whose APIs aren't
+/// auto-discoverable (or arbitrary URLs) can still be piped and scripted.
+fn manual_operation(spec: &str, fields: &[String]) -> SelectableOperation {
+    let (method, path) = parse_manual_endpoint(spec);
+    SelectableOperation {
+        container: None,
+        adapter: None,
+        method,
+        path,
+        summary: "manual endpoint".to_string(),
+        fields: fields.to_vec(),
+        sample: None,
+    }
+}
+
+/// Deterministic field mapping for the manual path: each target field draws from
+/// a same-named source field, else the positionally-aligned source field, else
+/// itself (identity). An empty target list yields an empty map (pass-through).
+fn build_manual_field_mapping(src: &[String], tgt: &[String]) -> serde_json::Value {
+    let mut mapping = serde_json::Map::new();
+    for (idx, target_field) in tgt.iter().enumerate() {
+        let source_ref = if src.iter().any(|s| s == target_field) {
+            target_field.clone()
+        } else if let Some(s) = src.get(idx) {
+            s.clone()
+        } else {
+            target_field.clone()
+        };
+        mapping.insert(
+            target_field.clone(),
+            serde_json::Value::String(format!("$.{}", source_ref)),
+        );
+    }
+    serde_json::Value::Object(mapping)
+}
+
 impl CallableTrait for PipeCreateCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let project_dir = std::env::current_dir().map_err(CliError::Io)?;
@@ -3146,12 +3257,18 @@ impl CallableTrait for PipeCreateCommand {
         };
         let create_protocols = default_pipe_create_protocols();
 
+        // Manual-endpoint fast path: when both endpoints are given explicitly,
+        // skip discovery entirely (clap guarantees they come as a pair). This
+        // lets apps whose APIs aren't auto-discoverable be piped, and makes
+        // `pipe create` fully scriptable/non-interactive.
+        let manual_endpoints = self.source_endpoint.is_some() && self.target_endpoint.is_some();
+
         let source_adapter_meta =
             builtin_adapter_for_selector(&self.source, PipeAdapterRole::Source);
         let target_adapter_meta =
             builtin_adapter_for_selector(&self.target, PipeAdapterRole::Target);
 
-        let source_run = if source_adapter_meta.is_none() {
+        let source_run = if !manual_endpoints && source_adapter_meta.is_none() {
             Some(if local_mode {
                 println!(
                     "{}Preparing local discovery for source '{}'...",
@@ -3184,7 +3301,7 @@ impl CallableTrait for PipeCreateCommand {
         } else {
             None
         };
-        let target_run = if target_adapter_meta.is_none() {
+        let target_run = if !manual_endpoints && target_adapter_meta.is_none() {
             Some(if local_mode {
                 println!(
                     "{}Preparing local discovery for target '{}'...",
@@ -3256,13 +3373,23 @@ impl CallableTrait for PipeCreateCommand {
             return Ok(());
         }
 
-        // Step 2: Extract discovered endpoints
-        let source_ops = if let Some(metadata) = &source_adapter_meta {
+        // Step 2: Extract discovered endpoints (or synthesize from manual flags)
+        let source_ops = if manual_endpoints {
+            vec![manual_operation(
+                self.source_endpoint.as_deref().expect("source endpoint"),
+                &self.source_fields,
+            )]
+        } else if let Some(metadata) = &source_adapter_meta {
             vec![synthetic_adapter_operation(metadata)]
         } else {
             extract_operations(&source_run.as_ref().expect("source discovery").info)
         };
-        let target_ops = if let Some(metadata) = &target_adapter_meta {
+        let target_ops = if manual_endpoints {
+            vec![manual_operation(
+                self.target_endpoint.as_deref().expect("target endpoint"),
+                &self.target_fields,
+            )]
+        } else if let Some(metadata) = &target_adapter_meta {
             vec![synthetic_adapter_operation(metadata)]
         } else {
             extract_operations(&target_run.as_ref().expect("target discovery").info)
@@ -3335,10 +3462,13 @@ impl CallableTrait for PipeCreateCommand {
         let tgt_fields = &tgt_op.fields;
 
         // Step 5: Build field mapping (smart matching with sample data)
-        let (field_mapping, match_result) = if !self.manual
-            && !src_fields.is_empty()
-            && !tgt_fields.is_empty()
-        {
+        let (field_mapping, match_result) = if manual_endpoints {
+            println!("\n  Manual endpoints — building field mapping from provided fields.");
+            (
+                build_manual_field_mapping(&self.source_fields, &self.target_fields),
+                None,
+            )
+        } else if !self.manual && !src_fields.is_empty() && !tgt_fields.is_empty() {
             let matcher = select_field_matcher(self.ai, self.no_ai, self.ml);
             let result = matcher.match_fields(src_fields, tgt_fields, src_sample.as_ref());
             let mode_label = match result.mode {
@@ -3420,12 +3550,16 @@ impl CallableTrait for PipeCreateCommand {
             (serde_json::json!({}), None)
         };
 
-        // Step 6: Ask for pipe name
+        // Step 6: Pipe name — use --name when given (non-interactive), else prompt.
         let default_name = format!("{}-to-{}", self.source, self.target);
-        let pipe_name: String = dialoguer::Input::new()
-            .with_prompt("Pipe name")
-            .default(default_name)
-            .interact_text()?;
+        let pipe_name: String = if let Some(name) = &self.name {
+            name.clone()
+        } else {
+            dialoguer::Input::new()
+                .with_prompt("Pipe name")
+                .default(default_name)
+                .interact_text()?
+        };
 
         // Step 7: Create template via API — include matching metadata in config
         let mut config = serde_json::json!({"retry_count": 3});
