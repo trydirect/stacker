@@ -2933,6 +2933,18 @@ pub fn run_deploy_for_environment_with_policy(
     )
 }
 
+/// True when `host` is still a literal, unresolved `${VAR}` placeholder.
+///
+/// `StackerConfig::from_file_for_target` intentionally leaves `deploy.server`
+/// unresolved for a cloud deploy (its env vars aren't required — GH #239).
+/// Any code that inspects `deploy.server.host` for a cloud-target deploy
+/// must check this first: `is_private_host` would otherwise misclassify the
+/// template string itself as a private/intranet host (it contains no '.')
+/// and silently switch the deploy target based on garbage.
+fn host_is_unresolved_placeholder(host: &str) -> bool {
+    host.contains("${") && host.contains('}')
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_deploy_with_credentials_manager<S: CredentialStore>(
     project_dir: &Path,
@@ -2985,7 +2997,9 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     let mut lock_server_name: Option<String> = None;
     if deploy_target == DeployTarget::Cloud && !force_new {
         if let Some(ref server_cfg) = config.deploy.server {
-            if crate::helpers::ip::is_private_host(&server_cfg.host) {
+            if host_is_unresolved_placeholder(&server_cfg.host) {
+                // fall through — cloud target stays as-is
+            } else if crate::helpers::ip::is_private_host(&server_cfg.host) {
                 // Private/intranet host — skip SSH check and switch to Server target.
                 // The russh client cannot reliably reach intranet IPs from the CLI's
                 // routing stack (EHOSTUNREACH), but the local SSH binary can. Trust
@@ -5051,6 +5065,80 @@ services:
             "Expected login error, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn test_host_is_unresolved_placeholder() {
+        assert!(host_is_unresolved_placeholder("${EXISTING_SERVER_HOST}"));
+        assert!(host_is_unresolved_placeholder("${BASE_PATH}/host"));
+        assert!(!host_is_unresolved_placeholder("203.0.113.10"));
+        assert!(!host_is_unresolved_placeholder("my.example.com"));
+        assert!(!host_is_unresolved_placeholder(""));
+    }
+
+    // Regression test for GH #239: a dual-target stacker.yml with both
+    // deploy.server (host: ${EXISTING_SERVER_HOST}) and deploy.cloud
+    // previously crashed on the missing env var entirely. After that fix,
+    // `deploy.server` is left deliberately unresolved for a cloud deploy —
+    // but the pre-existing "auto-switch to server if deploy.server looks
+    // private/intranet" check then misclassified the literal `${...}`
+    // placeholder as a private host (it contains no '.') and silently
+    // switched the target, attempting a nonsense server deploy instead of
+    // the requested cloud one.
+    #[test]
+    fn test_deploy_cloud_with_unresolved_server_placeholder_stays_cloud() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\n\
+deploy:\n  target: server\n  server:\n    host: ${EXISTING_SERVER_HOST}\n    user: ${EXISTING_SERVER_USER}\n\
+  cloud:\n    provider: hetzner\n    region: eu-central\n    size: cpx11\n";
+        let dir = setup_local_project(&[("stacker.yml", config)]);
+        let executor = MockExecutor::success();
+        let store = FileCredentialStore::new(dir.path().join("credentials.json"));
+        let cred_manager = CredentialsManager::new(store);
+        cred_manager
+            .save(&StoredCredentials {
+                access_token: "test-token".to_string(),
+                refresh_token: None,
+                token_type: "Bearer".to_string(),
+                expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+                email: Some("test@example.com".to_string()),
+                server_url: Some("https://example.test".to_string()),
+                org: None,
+                domain: None,
+            })
+            .unwrap();
+
+        // No EXISTING_SERVER_HOST/EXISTING_SERVER_USER set anywhere. This
+        // dry-run still reaches out to the (fake, unreachable) Stacker API
+        // to resolve the cloud project, so it's expected to fail here on a
+        // network/DNS error — the point of this test is that the failure's
+        // `target` stays Cloud, proving the deploy target was never
+        // silently switched to Server by the unresolved-placeholder host.
+        let result = run_deploy_with_credentials_manager(
+            dir.path(),
+            None,
+            Some("cloud"),
+            None,
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+            &cred_manager,
+            HookPolicy::default(),
+        );
+
+        match result {
+            Err(CliError::DeployFailed { target, .. }) => {
+                assert_eq!(
+                    target,
+                    DeployTarget::Cloud,
+                    "deploy target must not be silently switched to Server because of an \
+                     unresolved deploy.server.host placeholder"
+                );
+            }
+            other => panic!("expected a DeployFailed(target: Cloud) error, got: {:?}", other),
+        }
     }
 
     #[test]
