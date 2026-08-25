@@ -2713,6 +2713,53 @@ fn add_agent_install_scope_contract(deploy_form: &mut serde_json::Value) {
     }));
 }
 
+/// Pick the server record `stacker agent install`'s cloud-install path
+/// should target, out of every server the Stacker backend has on file for
+/// this project.
+///
+/// When `configured_server` is `Some` (the user has `deploy.server` set
+/// locally, i.e. they have a specific existing server in mind), the match
+/// must be by IP, not just by project id — a project can accumulate more
+/// than one server record over time (e.g. an earlier `--target cloud`
+/// attempt before switching to an existing server), and blindly taking the
+/// first project-matching server silently installed against/created a
+/// deployment for an unrelated server instead of the one in stacker.yml.
+/// See GH issue #223.
+fn select_server_for_agent_install(
+    servers: Vec<crate::cli::stacker_client::ServerInfo>,
+    project_id: i32,
+    configured_server: Option<&crate::cli::config_parser::ServerConfig>,
+    project_name: &str,
+    target_label: &str,
+) -> Result<crate::cli::stacker_client::ServerInfo, CliError> {
+    let matching_by_project: Vec<_> = servers
+        .into_iter()
+        .filter(|s| s.project_id == project_id)
+        .collect();
+
+    if let Some(server_cfg) = configured_server {
+        matching_by_project
+            .into_iter()
+            .find(|s| s.srv_ip.as_deref() == Some(server_cfg.host.as_str()))
+            .ok_or_else(|| {
+                CliError::ConfigValidation(format!(
+                    "deploy.server.host ({}) is configured in stacker.yml, but no matching \
+                     server was found on the Stacker server for project '{}' (id={}).\n\
+                     Deploy to this server first with: stacker deploy --target {}",
+                    server_cfg.host, project_name, project_id, target_label
+                ))
+            })
+    } else {
+        matching_by_project.into_iter().next().ok_or_else(|| {
+            CliError::ConfigValidation(format!(
+                "No server found for project '{}' (id={}).\n\
+                 Deploy the project first with: stacker deploy --target {}",
+                project_name, project_id, target_label
+            ))
+        })
+    }
+}
+
 fn build_agent_install_deploy_request(
     config: &crate::cli::config_parser::StackerConfig,
     server: &crate::cli::stacker_client::ServerInfo,
@@ -3022,16 +3069,13 @@ impl CallableTrait for AgentInstallCommand {
             // 2. Find the server for this project
             progress::update_message(&pb, "Finding server...");
             let servers = ctx.client.list_servers().await?;
-            let server = servers
-                .into_iter()
-                .find(|s| s.project_id == project.id)
-                .ok_or_else(|| {
-                    CliError::ConfigValidation(format!(
-                        "No server found for project '{}' (id={}).\n\
-                     Deploy the project first with: stacker deploy --target {}",
-                        project_name, project.id, target_label
-                    ))
-                })?;
+            let server = select_server_for_agent_install(
+                servers,
+                project.id,
+                config.deploy.server.as_ref(),
+                &project_name,
+                &target_label,
+            )?;
 
             // 3. Build a minimal deploy form with only the statuspanel feature
             progress::update_message(&pb, "Preparing deploy payload...");
@@ -3170,6 +3214,79 @@ mod tests {
             connection_mode: "ssh".to_string(),
             key_status: "uploaded".to_string(),
         }
+    }
+
+    // Regression tests for GH issue #223: `stacker agent install` picked
+    // the first server matching the project id, without checking it was
+    // actually the server configured in stacker.yml's `deploy.server` —
+    // installing against/creating a deployment for a stale/unrelated
+    // server left over from an earlier deploy attempt.
+    #[test]
+    fn select_server_for_agent_install_matches_configured_host() {
+        let servers = vec![
+            crate::cli::stacker_client::ServerInfo {
+                srv_ip: Some("198.51.100.1".to_string()),
+                ..sample_server_info()
+            },
+            crate::cli::stacker_client::ServerInfo {
+                srv_ip: Some("203.0.113.10".to_string()),
+                ..sample_server_info()
+            },
+        ];
+        let server_cfg = crate::cli::config_parser::ServerConfig {
+            host: "203.0.113.10".to_string(),
+            user: "root".to_string(),
+            ssh_key: None,
+            port: 22,
+        };
+
+        let selected =
+            select_server_for_agent_install(servers, 42, Some(&server_cfg), "demo", "server")
+                .expect("should find the matching server");
+
+        assert_eq!(selected.srv_ip.as_deref(), Some("203.0.113.10"));
+    }
+
+    #[test]
+    fn select_server_for_agent_install_fails_clearly_when_no_server_matches_configured_host() {
+        let servers = vec![crate::cli::stacker_client::ServerInfo {
+            srv_ip: Some("198.51.100.1".to_string()),
+            ..sample_server_info()
+        }];
+        let server_cfg = crate::cli::config_parser::ServerConfig {
+            host: "203.0.113.10".to_string(),
+            user: "root".to_string(),
+            ssh_key: None,
+            port: 22,
+        };
+
+        let err =
+            select_server_for_agent_install(servers, 42, Some(&server_cfg), "demo", "server")
+                .expect_err("should not silently pick an unrelated server");
+
+        let message = err.to_string();
+        assert!(message.contains("203.0.113.10"));
+        assert!(message.contains("stacker deploy --target server"));
+    }
+
+    #[test]
+    fn select_server_for_agent_install_falls_back_to_project_match_without_configured_server() {
+        let servers = vec![sample_server_info()];
+
+        let selected = select_server_for_agent_install(servers, 42, None, "demo", "cloud")
+            .expect("should fall back to the project-matching server");
+
+        assert_eq!(selected.project_id, 42);
+    }
+
+    #[test]
+    fn select_server_for_agent_install_fails_when_no_server_for_project() {
+        let servers = vec![sample_server_info()];
+
+        let err = select_server_for_agent_install(servers, 999, None, "demo", "cloud")
+            .expect_err("no server should match an unrelated project id");
+
+        assert!(err.to_string().contains("No server found for project"));
     }
 
     fn stack_var_value<'a>(deploy_form: &'a serde_json::Value, key: &str) -> Option<&'a str> {
