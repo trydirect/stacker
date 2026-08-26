@@ -760,6 +760,65 @@ pub struct MonitoringConfig {
 
     #[serde(default)]
     pub metrics: Option<MetricsConfig>,
+
+    /// Container-down alerting for `stacker monitor`. Absent → no alarm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alerts: Option<AlertConfig>,
+}
+
+/// Config for the `stacker monitor` container-health alarm (§10 of the PIPE
+/// IaC/resilience plan). Reuses `HandlerRef` as the notification target, so an
+/// alert can hit a webhook (ntfy/Slack) or, later, run a pipe.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AlertConfig {
+    /// Poll interval in seconds for the watch loop (default 60).
+    #[serde(default = "default_alert_interval")]
+    pub interval: u64,
+    /// Where to deliver the alert (required).
+    pub target: AlertTarget,
+    /// Also notify when containers recover to healthy (default true).
+    #[serde(default = "default_true")]
+    pub on_recovery: bool,
+}
+
+/// Alert delivery target — a YAML-friendly, untagged view (distinguished by the
+/// `url` vs `pipe` key) that maps onto the shared `HandlerRef` for dispatch:
+///
+/// ```yaml
+/// target: { terminal: true }                                  # terminal + desktop
+/// target: { url: "https://ntfy.example.com/alerts", method: POST }   # webhook
+/// target: { pipe: oncall-notify }                             # run a pipe
+/// ```
+///
+/// (A dedicated type, rather than reusing `HandlerRef` directly, because
+/// `serde_yaml` renders externally-tagged enums as `!tag` — awkward in a config
+/// file — whereas this untagged form reads naturally.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AlertTarget {
+    /// Terminal + desktop notification (OS notification, terminal bell, stderr).
+    Terminal { terminal: bool },
+    /// HTTP webhook (ntfy/Slack/…). `method` defaults to POST.
+    Webhook {
+        url: String,
+        #[serde(default = "default_notify_method_alert")]
+        method: String,
+    },
+    /// Run a declared pipe by name.
+    Pipe { pipe: String },
+}
+
+fn default_notify_method_alert() -> String {
+    "POST".to_string()
+}
+
+
+fn default_alert_interval() -> u64 {
+    60
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Healthcheck settings.

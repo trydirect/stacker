@@ -3173,6 +3173,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "health-monitor"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7036,6 +7044,7 @@ dependencies = [
  "futures-lite 2.6.1",
  "futures-util",
  "glob",
+ "health-monitor",
  "hmac 0.12.1",
  "indexmap 2.14.0",
  "indicatif",

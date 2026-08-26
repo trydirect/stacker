@@ -4821,6 +4821,7 @@ mod tests {
                 status_panel: true,
                 healthcheck: None,
                 metrics: None,
+                alerts: None,
             })
             .build()
             .unwrap();
@@ -4884,6 +4885,7 @@ mod tests {
                 status_panel: true,
                 healthcheck: None,
                 metrics: None,
+                alerts: None,
             })
             .build()
             .unwrap();
@@ -5284,6 +5286,7 @@ mod tests {
                 status_panel: true,
                 healthcheck: None,
                 metrics: None,
+                alerts: None,
             })
             .build()
             .unwrap();

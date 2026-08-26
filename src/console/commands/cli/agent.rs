@@ -2260,7 +2260,7 @@ fn run_logs_command(
     )
 }
 
-fn fetch_live_containers(
+pub(crate) fn fetch_live_containers(
     ctx: &CliRuntime,
     deployment_hash: &str,
 ) -> Result<Option<Vec<serde_json::Value>>, CliError> {

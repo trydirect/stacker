@@ -305,6 +305,18 @@ enum StackerCommands {
         #[command(subcommand)]
         command: DeploymentCommands,
     },
+    /// Watch container health and alert on problems (config: monitoring.alerts)
+    Monitor {
+        /// Run a single check and exit (cron-friendly); otherwise loops
+        #[arg(long)]
+        once: bool,
+        /// Override the poll interval in seconds (default from monitoring.alerts)
+        #[arg(long)]
+        interval: Option<u64>,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
     /// Explain path and topology decisions
     Explain {
         #[command(subcommand)]
@@ -2122,6 +2134,13 @@ fn get_command(
             notify,
         } => Box::new(stacker::console::commands::cli::status::StatusCommand::new(
             json, watch, notify,
+        )),
+        StackerCommands::Monitor {
+            once,
+            interval,
+            deployment,
+        } => Box::new(stacker::console::commands::cli::monitor::MonitorCommand::new(
+            once, interval, deployment,
         )),
         StackerCommands::Deployment { command } => match command {
             DeploymentCommands::State {
