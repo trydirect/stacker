@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Stacker v0.3.1 — AI Infrastructure CLI by TryDirect</title>
-  <meta name="description" content="Stacker v0.3.1 scans your project, deploys to cloud or bare metal, manages remote service secrets, cloud firewalls, agents, and app pipes — all from your terminal.">
+  <title>Stacker v0.3.2 — AI Infrastructure CLI by TryDirect</title>
+  <meta name="description" content="Stacker v0.3.2 scans your project, deploys to cloud or bare metal, manages remote service secrets, cloud firewalls, agents, and app pipes — all from your terminal.">
   <meta name="theme-color" content="#7e57c2">
   <link rel="icon" type="image/png" href="assets/stacker-logo.png">
   <link rel="stylesheet" href="styles.css">
@@ -61,7 +61,7 @@
       <div class="hero__content">
         <div class="hero__badge" data-animate="fade-up">
           <span class="hero__badge-dot"></span>
-          New Release v0.3.1 &middot; AI-Powered &middot; Cloud + Bare Metal
+          New Release v0.3.2 &middot; AI-Powered &middot; Cloud + Bare Metal
         </div>
         <h1 class="hero__title" data-animate="fade-up" data-delay="100">
           Ship your stack from code to server<br>
@@ -83,20 +83,21 @@
           </a>
         </div>
         <div class="hero__release" data-animate="fade-up" data-delay="350">
-          <div class="hero__release-version">v0.3.1</div>
+          <div class="hero__release-version">v0.3.2</div>
           <p class="hero__release-text">
-            Latest release includes <strong>AI config setup CLI</strong>, <strong>OAuth device auth</strong>,
-            <strong>.env bootstrapping</strong>, <strong>Hetzner location fixes</strong>, and hardened agent health &amp; logs.
+            Latest release adds <strong>container-health alerts</strong> (<code>stacker monitor</code>),
+            <strong>declarative pipes</strong>, <strong>manual pipe endpoints</strong>, <strong>pipe retries</strong>,
+            and <strong>full reverse-proxy routing</strong> (Traefik, Caddy, NPM).
           </p>
           <div class="hero__release-chips">
-            <span class="hero__release-chip">AI setup CLI</span>
-            <span class="hero__release-chip">Device auth</span>
-            <span class="hero__release-chip">.env bootstrap</span>
-            <span class="hero__release-chip">Preflight checks</span>
-            <span class="hero__release-chip">npm networking</span>
-            <span class="hero__release-chip">Agent health</span>
-            <span class="hero__release-chip">Config promote</span>
-            <span class="hero__release-chip">Hetzner fixes</span>
+            <span class="hero__release-chip">stacker monitor</span>
+            <span class="hero__release-chip">Container alerts</span>
+            <span class="hero__release-chip">Declarative pipes</span>
+            <span class="hero__release-chip">pipe diff / apply</span>
+            <span class="hero__release-chip">Manual endpoints</span>
+            <span class="hero__release-chip">Pipe retries</span>
+            <span class="hero__release-chip">Proxy routing</span>
+            <span class="hero__release-chip">Traefik · Caddy · NPM</span>
           </div>
         </div>
         <div class="hero__terminal" data-animate="fade-up" data-delay="400">
@@ -212,29 +213,29 @@
     <div class="container">
       <div class="section__header" data-animate="fade-up">
         <span class="section__label">Latest Release</span>
-        <h2 class="section__title">Stacker v0.3.1<br><span class="gradient-text">brings smarter onboarding &amp; deploy reliability.</span></h2>
-        <p class="section__desc">The newest release adds AI config setup from the CLI, OAuth device auth, .env bootstrapping on deploy, improved Hetzner support, and hardened agent health and log workflows.</p>
+        <h2 class="section__title">Stacker v0.3.2<br><span class="gradient-text">adds container-health alerts, declarative pipes &amp; full proxy routing.</span></h2>
+        <p class="section__desc">The newest release introduces the <code>stacker monitor</code> container-down alarm, declarative pipes as Infrastructure-as-Code (<code>pipe diff</code> / <code>pipe apply</code>), manual pipe endpoints, pipe retry policies, and working reverse-proxy routing for Traefik, Caddy, and Nginx Proxy Manager.</p>
       </div>
       <div class="release__grid">
         <article class="release-card" data-animate="fade-up" data-delay="0">
-          <span class="release-card__eyebrow">AI Setup</span>
-          <h3 class="release-card__title">stacker config setup ai</h3>
-          <p class="release-card__desc">Configure your AI provider, endpoint, model, and tasks directly from the CLI — Ollama-friendly with <code>--provider</code>, <code>--endpoint</code>, and <code>--model</code> flags.</p>
+          <span class="release-card__eyebrow">Monitoring</span>
+          <h3 class="release-card__title">stacker monitor</h3>
+          <p class="release-card__desc">A built-in container-down alarm. Declare a <code>monitoring.alerts</code> block and get notified — terminal, webhook (ntfy/Slack), or pipe — the moment a container stops and when it recovers. Edge-triggered and cron-friendly with <code>--once</code>.</p>
         </article>
         <article class="release-card" data-animate="fade-up" data-delay="100">
-          <span class="release-card__eyebrow">Auth</span>
-          <h3 class="release-card__title">OAuth device authorization</h3>
-          <p class="release-card__desc">Browser-free device auth flow with default auth and API URLs stored in <code>~/.config/stacker/config.yml</code>. <code>stacker login</code> now works in headless environments.</p>
+          <span class="release-card__eyebrow">Pipes</span>
+          <h3 class="release-card__title">Declarative pipes (IaC)</h3>
+          <p class="release-card__desc">Declare pipes in <code>stacker.yml</code> and reconcile them: <code>stacker pipe diff</code> previews changes, <code>stacker pipe apply</code> creates them (idempotent), and <code>--prune</code> removes ones no longer declared.</p>
         </article>
         <article class="release-card" data-animate="fade-up" data-delay="200">
-          <span class="release-card__eyebrow">Deploy</span>
-          <h3 class="release-card__title">.env bootstrapping</h3>
-          <p class="release-card__desc">Cloud and server deploys automatically create missing <code>.env</code> files from adjacent <code>.env.example</code> files, with restrictive local permissions where supported.</p>
+          <span class="release-card__eyebrow">Pipes</span>
+          <h3 class="release-card__title">Manual endpoints &amp; retries</h3>
+          <p class="release-card__desc">Create pipes non-interactively with <code>--source-endpoint</code> / <code>--target-endpoint</code> — works for any HTTP API. Attach a retry policy and <code>--on-failure</code> / <code>--on-success</code> handlers.</p>
         </article>
         <article class="release-card" data-animate="fade-up" data-delay="300">
-          <span class="release-card__eyebrow">Reliability</span>
-          <h3 class="release-card__title">Preflight checks</h3>
-          <p class="release-card__desc">New preflight validation catches config-bundle issues, rejects absolute destinations, and lists file mappings before sending deploy requests to avoid silent failures.</p>
+          <span class="release-card__eyebrow">Proxy</span>
+          <h3 class="release-card__title">Reverse-proxy routing</h3>
+          <p class="release-card__desc">Working routing for Traefik (labels), Caddy (Caddyfile), and Nginx Proxy Manager (proxy hosts), all driven by <code>proxy.domains</code> — platform-managed, so no double-deploy or port collisions.</p>
         </article>
         <article class="release-card" data-animate="fade-up" data-delay="0">
           <span class="release-card__eyebrow">Networking</span>
