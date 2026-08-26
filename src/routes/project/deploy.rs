@@ -49,6 +49,9 @@ fn map_marketplace_access_error(err: services::MarketplaceAccessError) -> actix_
             JsonResponse::<models::Project>::build()
                 .internal_server_error("Failed to validate marketplace access")
         }
+        services::MarketplaceAccessError::NoPaymentMethod { .. } => {
+            JsonResponse::<models::Project>::build().payment_required(err.to_string())
+        }
         services::MarketplaceAccessError::MissingUserToken
         | services::MarketplaceAccessError::InsufficientFeaturePlan
         | services::MarketplaceAccessError::InsufficientTemplatePlan { .. }
@@ -269,20 +272,6 @@ struct HetznerIpv4 {
     ip: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct HetznerServerTypesResponse {
-    #[serde(default)]
-    server_types: Vec<HetznerServerTypeEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HetznerServerTypeEntry {
-    name: String,
-    /// Non-null when Hetzner has deprecated this type; value is an ISO-8601 timestamp.
-    #[serde(default)]
-    deprecated: Option<String>,
-}
-
 fn hetzner_api_base_url() -> String {
     std::env::var("STACKER_HETZNER_API_URL")
         .unwrap_or_else(|_| "https://api.hetzner.cloud/v1".to_string())
@@ -468,90 +457,16 @@ async fn validate_hetzner_server_type(
         None => return Ok(()),
     };
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(8))
-        .build()
-        .map_err(|err| format!("Could not initialize Hetzner API client: {}", err))?;
-
-    let url = match region {
-        Some(loc) => format!("{}/server_types?location={}", hetzner_api_base_url(), loc),
-        None => format!("{}/server_types", hetzner_api_base_url()),
-    };
-
-    let response = match client.get(&url).bearer_auth(&token).send().await {
-        Ok(r) => r,
-        Err(err) => {
-            tracing::warn!(
-                "Could not reach Hetzner API to validate server type '{}': {}; proceeding",
-                server_type,
-                err
-            );
-            return Ok(());
-        }
-    };
-
-    if !response.status().is_success() {
-        tracing::warn!(
-            "Hetzner server_types API returned HTTP {}; skipping server type validation",
-            response.status().as_u16()
-        );
-        return Ok(());
-    }
-
-    let body = match response.json::<HetznerServerTypesResponse>().await {
-        Ok(b) => b,
-        Err(err) => {
-            tracing::warn!(
-                "Invalid Hetzner server types response: {}; skipping validation",
-                err
-            );
-            return Ok(());
-        }
-    };
-
-    // Check if the requested type is deprecated before checking availability.
-    if let Some(entry) = body
-        .server_types
-        .iter()
-        .find(|t| t.name.eq_ignore_ascii_case(server_type))
-    {
-        if entry.deprecated.is_some() {
-            let active: Vec<&str> = body
-                .server_types
-                .iter()
-                .filter(|t| t.deprecated.is_none())
-                .map(|t| t.name.as_str())
-                .collect();
-            return Err(format!(
-                "Server type '{}' is deprecated in Hetzner and can no longer be used to create new servers. \
-                 Set `deploy.cloud.size` in stacker.yml to an active type: {}",
-                server_type,
-                if active.is_empty() {
-                    "none found".to_string()
-                } else {
-                    active.join(", ")
-                }
-            ));
-        }
-        return Ok(());
-    }
-
-    let available: Vec<&str> = body
-        .server_types
-        .iter()
-        .filter(|t| t.deprecated.is_none())
-        .map(|t| t.name.as_str())
-        .collect();
-
-    Err(format!(
-        "Server type '{}' is not available in Hetzner. Available types: {}",
+    // Delegate to the shared connector so the route handler and the CLI
+    // local-orchestrator path enforce identical rules. See
+    // `crate::connectors::hetzner::validate_server_type_availability`.
+    crate::connectors::hetzner::validate_server_type_availability(
+        &hetzner_api_base_url(),
+        &token,
         server_type,
-        if available.is_empty() {
-            "none found".to_string()
-        } else {
-            available.join(", ")
-        }
-    ))
+        region,
+    )
+    .await
 }
 
 async fn validate_template_server_capacity_requirements(
@@ -1307,6 +1222,20 @@ fn apply_deploy_bundle(
     Ok(compose_content)
 }
 
+/// Extract a compose file from `custom.marketplace_config_files` if present.
+///
+/// Marketplace templates with YAML-embed definitions (ComposeYaml, StackerConfig)
+/// store their compose YAML here rather than in the structured web/service/feature
+/// arrays that `DcBuilder` reads.  This helper lets `execute_deployment` fall
+/// back to the embedded compose before resorting to `DcBuilder::build()`.
+fn embedded_marketplace_compose(metadata: &serde_json::Value) -> Option<String> {
+    let cf = metadata
+        .get("custom")
+        .and_then(|c| c.get("marketplace_config_files"))
+        .filter(|v| is_non_empty_json(v))?;
+    compose_content_from_config_files(cf).ok().flatten()
+}
+
 async fn load_project_template_version(
     pg_pool: &PgPool,
     project: &models::Project,
@@ -1349,14 +1278,21 @@ async fn execute_deployment(
     sync_runtime_artifact_bundle(settings, &mut project)
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
 
+    // For marketplace templates with YAML-embed definitions (ComposeYaml,
+    // StackerConfig), the compose is stored in custom.marketplace_config_files
+    // rather than the structured web/service/feature arrays.  Extract it
+    // before DcBuilder::new() moves `project`.
+    let marketplace_compose = embedded_marketplace_compose(&project.metadata);
+
     let id = project.id;
     let dc = DcBuilder::new(project);
-    let fc = match deploy_compose {
-        Some(compose) => compose,
-        None => dc
-            .build()
-            .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?,
-    };
+    let fc = deploy_compose
+        .or(marketplace_compose)
+        .map(Ok)
+        .unwrap_or_else(|| {
+            dc.build()
+                .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
+        })?;
 
     let mut new_public_key: Option<String> = None;
     let mut bootstrap_private_key: Option<String> = None;
@@ -1435,6 +1371,23 @@ async fn execute_deployment(
         server
     };
 
+    // Merge any additional public keys (e.g., user's own SSH key from
+    // deploy.cloud.ssh_key) into the new_public_key so the Install Service
+    // installs all of them in authorized_keys.
+    if let Some(additional) = form.server.additional_public_keys.as_ref() {
+        if !additional.is_empty() {
+            let combined = match new_public_key.take() {
+                Some(vault_key) => {
+                    let mut keys = vec![vault_key];
+                    keys.extend(additional.iter().cloned());
+                    keys.join("\n")
+                }
+                None => additional.join("\n"),
+            };
+            new_public_key = Some(combined);
+        }
+    }
+
     let has_existing_ip = server.srv_ip.as_ref().map_or(false, |ip| !ip.is_empty());
     if has_existing_ip && new_public_key.is_none() && server.vault_key_path.is_none() {
         tracing::error!(
@@ -1503,6 +1456,18 @@ async fn execute_deployment(
                         .collect(),
                 ),
             );
+        }
+    }
+
+    // Record reverse-proxy routing domains on the deployment's request_json for
+    // audit/rollback. NOTE: this stored record is NOT what reaches the Install
+    // Service — the MQ payload is built from the project + form in
+    // `install_service.deploy()`, so actual delivery is via `payload.proxy_domains`
+    // (threaded through the deploy call below). AppVarsMapper reads it as the
+    // `stacker_proxy_domains` extra var.
+    if let Some(ref proxy_domains) = form.proxy_domains {
+        if let Some(obj) = json_request.as_object_mut() {
+            obj.insert("proxy_domains".to_string(), proxy_domains.clone());
         }
     }
     let deployment_hash = format!("deployment_{}", Uuid::new_v4());
@@ -1575,6 +1540,7 @@ async fn execute_deployment(
             mq_manager,
             new_public_key,
             new_private_key,
+            form.proxy_domains.clone(),
         )
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
@@ -2275,8 +2241,8 @@ mod tests {
     use super::{
         apply_deploy_bundle, build_runtime_artifact_bundle, compose_content_from_config_files,
         default_status_panel_npm_credentials, derive_public_ports_from_metadata,
-        ensure_trailing_newline, find_matching_hetzner_server, hetzner_server_ip,
-        preserve_marketplace_runtime_artifacts, resolve_provided_ssh_keypair,
+        embedded_marketplace_compose, ensure_trailing_newline, find_matching_hetzner_server,
+        hetzner_server_ip, preserve_marketplace_runtime_artifacts, resolve_provided_ssh_keypair,
         should_seed_default_status_panel_npm_credentials, sync_runtime_artifact_bundle,
         validate_min_cpu_requirement, validate_min_disk_requirement, validate_min_ram_requirement,
         HetznerIpv4, HetznerPublicNet, HetznerServer,
@@ -2309,6 +2275,8 @@ mod tests {
             price: None,
             billing_cycle: None,
             currency: None,
+            daily_rate: None,
+            monthly_cap: None,
             created_at: None,
             updated_at: None,
             approved_at: None,
@@ -3026,5 +2994,44 @@ mod tests {
             "custom": {"web": [{"shared_ports": [{"container_port": "not-a-number"}, 42]}]}
         });
         assert!(derive_public_ports_from_metadata(&malformed).is_empty());
+    }
+
+    #[test]
+    fn embedded_marketplace_compose_extracts_from_config_files() {
+        let compose_yaml = "version: '3.8'\nservices:\n  ghost:\n    image: ghost:5-alpine\n";
+        let metadata = json!({
+            "custom": {
+                "marketplace_config_files": [
+                    {"name": "docker-compose.yml", "content": compose_yaml}
+                ]
+            }
+        });
+        let result = embedded_marketplace_compose(&metadata);
+        assert_eq!(result.as_deref(), Some(compose_yaml));
+    }
+
+    #[test]
+    fn embedded_marketplace_compose_returns_none_when_empty() {
+        let metadata = json!({"custom": {"marketplace_config_files": []}});
+        assert!(embedded_marketplace_compose(&metadata).is_none());
+
+        let metadata = json!({"custom": {}});
+        assert!(embedded_marketplace_compose(&metadata).is_none());
+
+        let metadata = json!({});
+        assert!(embedded_marketplace_compose(&metadata).is_none());
+    }
+
+    #[test]
+    fn embedded_marketplace_compose_ignores_non_compose_files() {
+        let metadata = json!({
+            "custom": {
+                "marketplace_config_files": [
+                    {"name": ".env", "content": "KEY=value"},
+                    {"name": "nginx.conf", "content": "server {}"}
+                ]
+            }
+        });
+        assert!(embedded_marketplace_compose(&metadata).is_none());
     }
 }

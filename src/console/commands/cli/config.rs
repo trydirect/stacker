@@ -18,15 +18,37 @@ use crate::cli::config_promote::{
 };
 use crate::cli::debug::cli_debug_enabled;
 use crate::cli::deployment_lock::DeploymentLock;
-use crate::cli::error::CliError;
+use crate::cli::error::{CliError, Severity};
 use crate::cli::runtime::CliRuntime;
 use crate::cli::stacker_client::ProjectAppInfo;
 use crate::console::commands::cli::init::full_config_reference_example;
 use crate::console::commands::CallableTrait;
-use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path};
+use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path_for};
 use crate::services::runtime_env_contract_response;
 
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
+
+/// Surgically modify specific keys in stacker.yml without losing other keys.
+/// Reads the file as raw YAML, applies the mutation closure, and writes back.
+/// Creates a .bak backup before writing.
+fn edit_stacker_yml<F>(config_path: &Path, mutate: F) -> Result<(), CliError>
+where
+    F: FnOnce(&mut serde_yaml::Mapping) -> Result<(), CliError>,
+{
+    let raw = std::fs::read_to_string(config_path)?;
+    let mut doc: serde_yaml::Value = serde_yaml::from_str(&raw)
+        .map_err(|e| CliError::ConfigValidation(format!("Invalid YAML: {}", e)))?;
+    let root = doc
+        .as_mapping_mut()
+        .ok_or_else(|| CliError::ConfigValidation("stacker.yml must be a YAML mapping".into()))?;
+    mutate(root)?;
+    let yaml = serde_yaml::to_string(&doc)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize: {}", e)))?;
+    let backup_path = format!("{}.bak", config_path.display());
+    std::fs::copy(config_path, &backup_path)?;
+    std::fs::write(config_path, yaml)?;
+    Ok(())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RawPathIssueKind {
@@ -363,7 +385,7 @@ pub fn run_generate_remote_payload(
         });
     }
 
-    let mut config = StackerConfig::from_file_raw(path)?;
+    let config = StackerConfig::from_file_raw(path)?;
     let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
 
     let output_path = match output {
@@ -447,38 +469,61 @@ pub fn run_generate_remote_payload(
         .map(PathBuf::from)
         .unwrap_or_else(|_| output_path.clone());
 
-    let existing_cloud = config.deploy.cloud.clone().unwrap_or(CloudConfig {
-        provider,
-        orchestrator: CloudOrchestrator::Remote,
-        region: Some(default_region_for_provider(provider).to_string()),
-        size: Some(default_size_for_provider(provider).to_string()),
-        install_image: None,
-        remote_payload_file: None,
-        ssh_key: None,
-        key: None,
-        server: None,
-        public_ports: Vec::new(),
-    });
-
-    config.deploy.target = DeployTarget::Cloud;
-    config.deploy.cloud = Some(CloudConfig {
-        provider: existing_cloud.provider,
-        orchestrator: CloudOrchestrator::Remote,
-        region: existing_cloud.region,
-        size: existing_cloud.size,
-        install_image: existing_cloud.install_image,
-        remote_payload_file: Some(remote_payload_file),
-        ssh_key: existing_cloud.ssh_key,
-        key: existing_cloud.key,
-        server: existing_cloud.server,
-        public_ports: existing_cloud.public_ports,
-    });
-
-    let backup_path = format!("{}.bak", config_path);
-    std::fs::copy(config_path, &backup_path)?;
-    let yaml = serde_yaml::to_string(&config)
-        .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
-    std::fs::write(config_path, yaml)?;
+    // Surgically update only the deploy section to avoid losing other keys.
+    // The JSON payload uses the short provider code ("htz") for the install service,
+    // but stacker.yml must use the config enum name ("hetzner") for round-trip parsing.
+    let cloud_provider_yaml = serde_yaml::to_string(&provider)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    edit_stacker_yml(path, |root| {
+        // Ensure deploy section exists
+        if !root.contains_key(&serde_yaml::Value::String("deploy".to_string())) {
+            root.insert(
+                serde_yaml::Value::String("deploy".to_string()),
+                serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            );
+        }
+        if let Some(deploy) = root.get_mut("deploy") {
+            if let Some(deploy_map) = deploy.as_mapping_mut() {
+                deploy_map.insert(
+                    serde_yaml::Value::String("target".to_string()),
+                    serde_yaml::Value::String("cloud".to_string()),
+                );
+                // Update cloud section
+                if !deploy_map.contains_key(&serde_yaml::Value::String("cloud".to_string())) {
+                    let mut cloud_map = serde_yaml::Mapping::new();
+                    cloud_map.insert(
+                        serde_yaml::Value::String("provider".to_string()),
+                        serde_yaml::Value::String(cloud_provider_yaml.clone()),
+                    );
+                    cloud_map.insert(
+                        serde_yaml::Value::String("orchestrator".to_string()),
+                        serde_yaml::Value::String("remote".to_string()),
+                    );
+                    deploy_map.insert(
+                        serde_yaml::Value::String("cloud".to_string()),
+                        serde_yaml::Value::Mapping(cloud_map),
+                    );
+                }
+                if let Some(cloud) = deploy_map.get_mut("cloud") {
+                    if let Some(cloud_map) = cloud.as_mapping_mut() {
+                        cloud_map.insert(
+                            serde_yaml::Value::String("orchestrator".to_string()),
+                            serde_yaml::Value::String("remote".to_string()),
+                        );
+                        cloud_map.insert(
+                            serde_yaml::Value::String("remote_payload_file".to_string()),
+                            serde_yaml::Value::String(
+                                remote_payload_file.to_string_lossy().to_string(),
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    })?;
 
     Ok(vec![
         format!(
@@ -488,7 +533,6 @@ pub fn run_generate_remote_payload(
         "Set deploy.target=cloud and deploy.cloud.orchestrator=remote (advanced mode)".to_string(),
         "Tip: regular users can skip this and run `stacker deploy --target cloud` directly"
             .to_string(),
-        format!("Backup written to {}", backup_path),
     ])
 }
 
@@ -645,20 +689,69 @@ pub fn run_setup_ai(
     config.ai.timeout = timeout;
     config.ai.tasks = tasks;
 
-    let backup_path = format!("{}.bak", config_path);
-    std::fs::copy(config_path, &backup_path)?;
-    let yaml = serde_yaml::to_string(&config)
-        .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
-    std::fs::write(config_path, yaml)?;
+    // Surgically update only the ai section to avoid losing other keys.
+    let ai_provider_str = config.ai.provider.to_string();
+    let ai_model = config.ai.model.clone();
+    let ai_endpoint = config.ai.endpoint.clone();
+    let ai_tasks = config.ai.tasks.clone();
+    edit_stacker_yml(path, |root| {
+        if !root.contains_key(&serde_yaml::Value::String("ai".to_string())) {
+            root.insert(
+                serde_yaml::Value::String("ai".to_string()),
+                serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            );
+        }
+        if let Some(ai) = root.get_mut("ai") {
+            if let Some(ai_map) = ai.as_mapping_mut() {
+                ai_map.insert(
+                    serde_yaml::Value::String("enabled".to_string()),
+                    serde_yaml::Value::Bool(true),
+                );
+                ai_map.insert(
+                    serde_yaml::Value::String("provider".to_string()),
+                    serde_yaml::Value::String(ai_provider_str.clone()),
+                );
+                if let Some(model) = &ai_model {
+                    ai_map.insert(
+                        serde_yaml::Value::String("model".to_string()),
+                        serde_yaml::Value::String(model.clone()),
+                    );
+                }
+                if let Some(endpoint) = &ai_endpoint {
+                    ai_map.insert(
+                        serde_yaml::Value::String("endpoint".to_string()),
+                        serde_yaml::Value::String(endpoint.clone()),
+                    );
+                }
+                ai_map.insert(
+                    serde_yaml::Value::String("timeout".to_string()),
+                    serde_yaml::Value::Number(timeout.into()),
+                );
+                if !ai_tasks.is_empty() {
+                    let tasks_seq: Vec<serde_yaml::Value> = ai_tasks
+                        .iter()
+                        .map(|t| serde_yaml::Value::String(t.clone()))
+                        .collect();
+                    ai_map.insert(
+                        serde_yaml::Value::String("tasks".to_string()),
+                        serde_yaml::Value::Sequence(tasks_seq),
+                    );
+                }
+            }
+        }
+        Ok(())
+    })?;
 
     Ok(vec![
         "Enabled ai configuration".to_string(),
-        format!("Set ai.provider={}", config.ai.provider),
-        format!("Backup written to {}", backup_path),
+        format!("Set ai.provider={}", ai_provider_str),
     ])
 }
 
-pub fn run_setup_cloud_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
+pub fn run_setup_cloud_interactive(
+    config_path: &str,
+    available_clouds: Option<&[crate::cli::stacker_client::CloudInfo]>,
+) -> Result<Vec<String>, CliError> {
     let path = Path::new(config_path);
     if !path.exists() {
         return Err(CliError::ConfigNotFound {
@@ -727,6 +820,31 @@ pub fn run_setup_cloud_interactive(config_path: &str) -> Result<Vec<String>, Cli
     };
 
     apply_cloud_settings(&mut config, provider, region_opt, size_opt, ssh_key_opt);
+
+    // Prompt for saved cloud credential name (deploy.cloud.key).
+    // If available_clouds was provided, show the list of available credentials.
+    if let Some(clouds) = available_clouds {
+        if !clouds.is_empty() {
+            let names: Vec<&str> = clouds.iter().map(|c| c.name.as_str()).collect();
+            eprintln!("Available cloud credentials: {}", names.join(", "));
+        }
+    }
+    let key_default = config
+        .deploy
+        .cloud
+        .as_ref()
+        .and_then(|c| c.key.clone())
+        .unwrap_or_default();
+    let key_input = prompt_with_default(
+        "Cloud credential name (from `stacker list clouds`, leave empty to skip)",
+        &key_default,
+    )?;
+    if !key_input.trim().is_empty() {
+        if let Some(cloud) = config.deploy.cloud.as_mut() {
+            cloud.key = Some(key_input.trim().to_string());
+            applied.push(format!("Set deploy.cloud.key={}", key_input.trim()));
+        }
+    }
 
     let backup_path = format!("{}.bak", config_path);
     std::fs::copy(config_path, &backup_path)?;
@@ -932,7 +1050,10 @@ pub fn run_fix_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
 }
 
 /// Core validate logic — loads config, runs semantic checks, returns issues.
-pub fn run_validate(config_path: &str) -> Result<Vec<String>, CliError> {
+pub fn run_validate(
+    config_path: &str,
+    target_override: Option<&str>,
+) -> Result<Vec<String>, CliError> {
     let path = Path::new(config_path);
     if !path.exists() {
         return Err(CliError::ConfigNotFound {
@@ -957,9 +1078,21 @@ pub fn run_validate(config_path: &str) -> Result<Vec<String>, CliError> {
         Err(_) => Vec::new(),
     };
 
-    let config = StackerConfig::from_file(path)?;
+    let config = StackerConfig::from_file_for_target(path, target_override)?;
     let issues = config.validate_semantics();
-    messages.extend(issues.iter().map(|i| format!("{:?}", i)));
+    messages.extend(issues.iter().map(|issue| {
+        let severity = match issue.severity {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+            Severity::Info => "info",
+        };
+        match &issue.field {
+            Some(field) => {
+                format!("[{}] {} ({}): {}", issue.code, severity, field, issue.message)
+            }
+            None => format!("[{}] {}: {}", issue.code, severity, issue.message),
+        }
+    }));
     Ok(messages)
 }
 
@@ -1010,7 +1143,7 @@ pub fn run_show_resolved(config_path: &str) -> Result<String, CliError> {
     Ok(format!(
         "resolved_config:\n  local_env_file: {}\n  remote_runtime_env_file: {}\n  compose_env_file: {}\n  config_version: local\n  config_hash: unavailable_until_deploy\n  runtime_env_contract_version: {}\n  runtime_env_contract_order: {}\n  layers:\n{}\n",
         local_env_file,
-        remote_runtime_env_path(),
+        remote_runtime_env_path_for(&crate::models::project::sanitize_project_name(&config.name)),
         compose_env_file_reference(),
         runtime_env_contract.version,
         runtime_env_contract.order,
@@ -1031,18 +1164,19 @@ fn resolve_display_path(config_dir: &Path, env_file: &Path) -> String {
 /// Validates a stacker.yml configuration file.
 pub struct ConfigValidateCommand {
     pub file: Option<String>,
+    pub target: Option<String>,
 }
 
 impl ConfigValidateCommand {
-    pub fn new(file: Option<String>) -> Self {
-        Self { file }
+    pub fn new(file: Option<String>, target: Option<String>) -> Self {
+        Self { file, target }
     }
 }
 
 impl CallableTrait for ConfigValidateCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let path = resolve_config_path(&self.file);
-        let issues = run_validate(&path)?;
+        let issues = run_validate(&path, self.target.as_deref())?;
 
         if issues.is_empty() {
             eprintln!("✓ Configuration is valid");
@@ -1356,7 +1490,15 @@ impl ConfigSetupCloudCommand {
 impl CallableTrait for ConfigSetupCloudCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let path = resolve_config_path(&self.file);
-        let applied = run_setup_cloud_interactive(&path)?;
+        // Try to create a runtime to fetch available cloud credentials.
+        // Non-fatal if the user isn't logged in — the wizard will still work,
+        // just without showing the list of saved credentials.
+        let clouds: Option<Vec<crate::cli::stacker_client::CloudInfo>> =
+            crate::cli::runtime::CliRuntime::new("config setup cloud")
+                .ok()
+                .and_then(|ctx| ctx.block_on(async { ctx.client.list_clouds().await }).ok());
+        let clouds_ref = clouds.as_deref();
+        let applied = run_setup_cloud_interactive(&path, clouds_ref)?;
 
         eprintln!("✓ Updated {}", path);
         for item in applied {
@@ -2151,14 +2293,14 @@ mod tests {
     fn test_validate_returns_ok_for_valid_config() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = write_config(dir.path(), minimal_config_yaml());
-        let result = run_validate(&path).unwrap();
+        let result = run_validate(&path, None).unwrap();
         // Minimal valid config should have zero or few issues
         assert!(result.len() < 5);
     }
 
     #[test]
     fn test_validate_missing_file_returns_error() {
-        let result = run_validate("/nonexistent/stacker.yml");
+        let result = run_validate("/nonexistent/stacker.yml", None);
         assert!(result.is_err());
     }
 
@@ -2175,7 +2317,7 @@ app:
 "#,
         );
 
-        let issues = run_validate(&path).unwrap();
+        let issues = run_validate(&path, None).unwrap();
         assert!(issues.iter().any(|issue| issue.contains("app.path")));
         assert!(issues
             .iter()

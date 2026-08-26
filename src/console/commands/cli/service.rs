@@ -14,14 +14,14 @@ use crate::cli::compose_service_sync::{
 use crate::cli::config_parser::{ServiceDefinition, StackerConfig};
 use crate::cli::credentials::CredentialsManager;
 use crate::cli::error::CliError;
-use crate::cli::service_catalog::ServiceCatalog;
+use crate::cli::service_catalog::{catalog_inputs, CatalogInput, InputDefault, ServiceCatalog};
 use crate::cli::service_import::{
     import_plan_from_compose_file, parse_renames, ComposeImportRequest, ServiceImportPlan,
     ServiceImportReview,
 };
 use crate::cli::stacker_client::{self, StackerClient};
 use crate::console::commands::CallableTrait;
-use dialoguer::{Confirm, FuzzySelect};
+use dialoguer::{Confirm, FuzzySelect, Input, Password};
 use serde::Serialize;
 
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
@@ -55,6 +55,13 @@ impl CallableTrait for ServiceAddCommand {
                 path: path.to_path_buf(),
             }));
         }
+
+        // Load raw YAML as Value so we can surgically update only the
+        // `services` array when writing back. This preserves every other
+        // key (config_contract, deploy, proxy, etc.) exactly as the user
+        // authored it — including null-free Option fields and comments.
+        let raw_text = std::fs::read_to_string(path)?;
+        let mut root: serde_yaml::Value = serde_yaml::from_str(&raw_text)?;
 
         // Load existing config without resolving ${VAR} placeholders so
         // that sensitive values from .env are not written back to the file.
@@ -107,8 +114,10 @@ impl CallableTrait for ServiceAddCommand {
 
         let entry = rt.block_on(catalog.resolve(&canonical))?;
 
-        // Check if the service has dependencies that are missing
-        let mut services_to_add: Vec<ServiceDefinition> = Vec::new();
+        // Add missing dependencies first, then the requested service, tracking
+        // the canonical codes so we can resolve their configurable inputs.
+        let mut added_codes: Vec<String> = Vec::new();
+        let mut added_services: Vec<serde_yaml::Value> = Vec::new();
         for dep in &entry.service.depends_on {
             if !config.services.iter().any(|s| &s.name == dep) {
                 // Try to resolve the dependency too
@@ -117,19 +126,51 @@ impl CallableTrait for ServiceAddCommand {
                         "  + Adding dependency: {} ({})",
                         dep_entry.name, dep_entry.service.image
                     );
-                    services_to_add.push(dep_entry.service);
+                    config.services.push(dep_entry.service.clone());
+                    added_codes.push(dep_entry.code);
+                    added_services.push(serde_yaml::to_value(&dep_entry.service)?);
                 }
             }
         }
-
-        // Add dependencies first, then the requested service
-        for dep_svc in services_to_add {
-            config.services.push(dep_svc);
-        }
         config.services.push(entry.service.clone());
+        added_codes.push(entry.code.clone());
+        added_services.push(serde_yaml::to_value(&entry.service)?);
 
-        // Serialize back to YAML
-        let yaml = serde_yaml::to_string(&config).map_err(|e| {
+        // Resolve configurable inputs (passwords, etc.) for the added services
+        // and persist them to `.env`. The service definitions reference `${KEY}`,
+        // so secrets never land in stacker.yml. Existing `.env` keys are only
+        // overwritten with the user's permission.
+        let inputs: Vec<CatalogInput> = added_codes
+            .iter()
+            .flat_map(|code| catalog_inputs(code))
+            .collect();
+        if !inputs.is_empty() {
+            let env_path = project_dir_for_config(path).join(".env");
+            apply_service_inputs(&env_path, &inputs)?;
+        }
+
+        // Surgically append new services to the raw YAML Value instead of
+        // re-serializing the entire StackerConfig. This preserves every
+        // field exactly as the user authored it — no null injection, no
+        // config_contract collapse.
+        if let Some(services) = root.get_mut("services") {
+            if let Some(arr) = services.as_sequence_mut() {
+                for svc in added_services {
+                    arr.push(svc);
+                }
+            } else {
+                // services was null or not a sequence — replace with a new array
+                *services = serde_yaml::Value::Sequence(added_services);
+            }
+        } else {
+            // No services key at all — add it
+            root.as_mapping_mut().unwrap().insert(
+                serde_yaml::Value::String("services".to_string()),
+                serde_yaml::Value::Sequence(added_services),
+            );
+        }
+
+        let yaml = serde_yaml::to_string(&root).map_err(|e| {
             CliError::ConfigValidation(format!("Failed to serialize config: {}", e))
         })?;
 
@@ -583,7 +624,7 @@ impl CallableTrait for ServiceRemoveCommand {
             }));
         }
 
-        let mut config = StackerConfig::from_file_raw(path)?;
+        let config = StackerConfig::from_file_raw(path)?;
         let canonical = ServiceCatalog::resolve_alias(&self.name);
 
         if !config.services.iter().any(|s| s.name == canonical) {
@@ -602,9 +643,23 @@ impl CallableTrait for ServiceRemoveCommand {
             return Ok(());
         }
 
-        config.services.retain(|s| s.name != canonical);
+        // Read raw YAML and surgically remove only the matching service
+        // from the services array, preserving all other fields exactly.
+        let raw_text = std::fs::read_to_string(path)?;
+        let mut root: serde_yaml::Value = serde_yaml::from_str(&raw_text)?;
 
-        let yaml = serde_yaml::to_string(&config).map_err(|e| {
+        if let Some(services) = root.get_mut("services") {
+            if let Some(arr) = services.as_sequence_mut() {
+                arr.retain(|v| {
+                    v.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|n| n != canonical)
+                        .unwrap_or(true)
+                });
+            }
+        }
+
+        let yaml = serde_yaml::to_string(&root).map_err(|e| {
             CliError::ConfigValidation(format!("Failed to serialize config: {}", e))
         })?;
 
@@ -647,14 +702,36 @@ fn validate_no_duplicate_services(
 
 fn import_services_into_config(
     path: &Path,
-    mut config: StackerConfig,
+    _config: StackerConfig,
     plan: &ServiceImportPlan,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    for service in &plan.services {
-        config.services.push(service.clone());
+    // Read raw YAML to surgically append services without losing other keys.
+    let raw_text = std::fs::read_to_string(path)?;
+    let mut root: serde_yaml::Value = serde_yaml::from_str(&raw_text)?;
+
+    // Convert ServiceDefinition to serde_yaml::Value for insertion
+    let new_services: Vec<serde_yaml::Value> = plan
+        .services
+        .iter()
+        .map(|svc| serde_yaml::to_value(svc).unwrap_or_default())
+        .collect();
+
+    if let Some(services) = root.get_mut("services") {
+        if let Some(arr) = services.as_sequence_mut() {
+            for svc in new_services {
+                arr.push(svc);
+            }
+        }
+    } else {
+        // No services key exists — create it
+        if let Some(map) = root.as_mapping_mut() {
+            let key = serde_yaml::Value::String("services".to_string());
+            let val = serde_yaml::Value::Sequence(new_services);
+            map.insert(key, val);
+        }
     }
 
-    let yaml = serde_yaml::to_string(&config)
+    let yaml = serde_yaml::to_string(&root)
         .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
 
     let config_path = path.to_string_lossy().to_string();
@@ -724,6 +801,148 @@ fn project_dir_for_config(path: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Read the top-level keys already defined in a `.env` file (ignoring comments
+/// and blanks). Returns an empty set if the file doesn't exist.
+fn env_file_keys(env_path: &Path) -> std::collections::HashSet<String> {
+    std::fs::read_to_string(env_path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            line.split_once('=').map(|(key, _)| key.trim().to_string())
+        })
+        .collect()
+}
+
+/// Generate a random 32-char alphanumeric secret (no shell-special chars).
+fn generate_secret() -> String {
+    use rand::{distributions::Alphanumeric, Rng};
+    rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(32)
+        .map(char::from)
+        .collect()
+}
+
+/// Resolve a single catalog input to a value (generate / prompt / default).
+fn resolve_input_value(input: &CatalogInput, interactive: bool) -> Result<String, CliError> {
+    let prompt_err = |e| CliError::ConfigValidation(format!("Prompt failed: {e}"));
+    match &input.default {
+        InputDefault::GeneratedSecret => Ok(generate_secret()),
+        InputDefault::Literal(default) if interactive => Input::new()
+            .with_prompt(&input.prompt)
+            .default(default.clone())
+            .interact_text()
+            .map_err(prompt_err),
+        InputDefault::Literal(default) => Ok(default.clone()),
+        InputDefault::Required if !interactive => Err(CliError::ConfigValidation(format!(
+            "Input '{}' is required; re-run interactively to provide it.",
+            input.key
+        ))),
+        InputDefault::Required if input.secret => Password::new()
+            .with_prompt(&input.prompt)
+            .interact()
+            .map_err(prompt_err),
+        InputDefault::Required => Input::new()
+            .with_prompt(&input.prompt)
+            .interact_text()
+            .map_err(prompt_err),
+    }
+}
+
+/// Resolve catalog inputs and persist them to `.env`, referenced as `${KEY}` in
+/// the service definitions. Keys already present in `.env` are only overwritten
+/// after the user confirms (never in a non-interactive session).
+fn apply_service_inputs(env_path: &Path, inputs: &[CatalogInput]) -> Result<(), CliError> {
+    use std::io::IsTerminal;
+    let interactive = std::io::stdin().is_terminal();
+    let existing_keys = env_file_keys(env_path);
+
+    let conflicting: Vec<&str> = inputs
+        .iter()
+        .map(|input| input.key.as_str())
+        .filter(|key| existing_keys.contains(*key))
+        .collect();
+
+    let overwrite = if conflicting.is_empty() {
+        true
+    } else if !interactive {
+        eprintln!(
+            "  ℹ {} already set in {} — keeping existing value(s) (re-run interactively to overwrite).",
+            conflicting.join(", "),
+            env_path.display()
+        );
+        false
+    } else {
+        Confirm::new()
+            .with_prompt(format!(
+                "{} already set in {}. Overwrite?",
+                conflicting.join(", "),
+                env_path.display()
+            ))
+            .default(false)
+            .interact()
+            .map_err(|e| CliError::ConfigValidation(format!("Prompt failed: {e}")))?
+    };
+
+    let mut updates: Vec<(String, String)> = Vec::new();
+    for input in inputs {
+        if existing_keys.contains(&input.key) && !overwrite {
+            eprintln!("  = {} (kept existing)", input.key);
+            continue;
+        }
+        updates.push((input.key.clone(), resolve_input_value(input, interactive)?));
+    }
+
+    if updates.is_empty() {
+        return Ok(());
+    }
+    write_env_updates(env_path, &updates)?;
+    for (key, _) in &updates {
+        eprintln!("  ✓ {} → {}", key, env_path.display());
+    }
+    Ok(())
+}
+
+/// Upsert `KEY=value` lines into `.env`, preserving all unrelated lines. Creates
+/// the file if missing.
+fn write_env_updates(env_path: &Path, updates: &[(String, String)]) -> Result<(), CliError> {
+    let existing = std::fs::read_to_string(env_path).unwrap_or_default();
+    let update_map: std::collections::HashMap<&str, &str> = updates
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let mut written: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut out_lines: Vec<String> = Vec::new();
+
+    for line in existing.lines() {
+        if let Some((key, _)) = line.trim_start().split_once('=') {
+            let key = key.trim();
+            if let Some(value) = update_map.get(key) {
+                out_lines.push(format!("{}={}", key, value));
+                written.insert(key);
+                continue;
+            }
+        }
+        out_lines.push(line.to_string());
+    }
+    for (key, value) in updates {
+        if !written.contains(key.as_str()) {
+            out_lines.push(format!("{}={}", key, value));
+        }
+    }
+
+    let mut content = out_lines.join("\n");
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    std::fs::write(env_path, content)?;
+    Ok(())
+}
+
 fn print_compose_sync_result(result: &ComposeServiceSyncResult) {
     if result.updated_services.is_empty() {
         return;
@@ -775,6 +994,61 @@ mod tests {
         let path = dir.path().join("stacker.yml");
         std::fs::write(&path, body).unwrap();
         path
+    }
+
+    #[test]
+    fn generate_secret_is_long_and_alphanumeric() {
+        let s = generate_secret();
+        assert_eq!(s.len(), 32);
+        assert!(s.chars().all(|c| c.is_ascii_alphanumeric()));
+        assert_ne!(s, generate_secret(), "secrets should differ");
+    }
+
+    #[test]
+    fn env_file_keys_ignores_comments_and_blanks() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "# comment\n\nFOO=1\nBAR = two\n").unwrap();
+        let keys = env_file_keys(&path);
+        assert!(keys.contains("FOO"));
+        assert!(keys.contains("BAR"));
+        assert_eq!(keys.len(), 2);
+        // Missing file → empty set.
+        assert!(env_file_keys(&dir.path().join("nope.env")).is_empty());
+    }
+
+    #[test]
+    fn write_env_updates_upserts_and_preserves_other_lines() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "# header\nKEEP=me\nPOSTGRES_PASSWORD=old\n").unwrap();
+
+        write_env_updates(
+            &path,
+            &[
+                ("POSTGRES_PASSWORD".to_string(), "new".to_string()),
+                ("REDIS_PASSWORD".to_string(), "fresh".to_string()),
+            ],
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("# header"), "comment preserved");
+        assert!(content.contains("KEEP=me"), "unrelated key preserved");
+        assert!(
+            content.contains("POSTGRES_PASSWORD=new"),
+            "existing key replaced"
+        );
+        assert!(!content.contains("POSTGRES_PASSWORD=old"), "old value gone");
+        assert!(content.contains("REDIS_PASSWORD=fresh"), "new key appended");
+    }
+
+    #[test]
+    fn write_env_updates_creates_file_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".env");
+        write_env_updates(&path, &[("K".to_string(), "v".to_string())]).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "K=v\n");
     }
 
     fn write_compose(dir: &TempDir, body: &str) -> PathBuf {

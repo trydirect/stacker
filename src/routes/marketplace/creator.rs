@@ -84,6 +84,10 @@ pub struct CreateTemplateRequest {
     pub price: Option<f64>,
     /// ISO 4217 currency code, default "USD"
     pub currency: Option<String>,
+    /// Daily rate for deployment_daily billing (USD)
+    pub daily_rate: Option<f64>,
+    /// Monthly cap for deployment_daily billing (USD)
+    pub monthly_cap: Option<f64>,
     pub infrastructure_requirements: Option<serde_json::Value>,
     /// Public ports: [{"name": "web", "port": 8080}, ...]
     pub public_ports: Option<serde_json::Value>,

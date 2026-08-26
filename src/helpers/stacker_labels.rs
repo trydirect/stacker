@@ -9,6 +9,31 @@ pub const DNS: &str = "my.stacker.dns";
 pub const SCOPE_PROJECT: &str = "project";
 pub const SCOPE_PLATFORM: &str = "platform";
 
+/// Normalize a project/app name into the stable code used to identify a service
+/// to the status-panel agent. Mirrors the deploy-time stack-code derivation so
+/// the `my.stacker.service` label matches the app code the agent resolves by
+/// (lowercase alphanumerics, runs of other characters collapsed to `-`).
+pub fn sanitize_service_code(name: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for ch in name.chars() {
+        let c = ch.to_ascii_lowercase();
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() {
+        "app-stack".to_string()
+    } else {
+        out
+    }
+}
+
 pub fn insert_runtime_labels(
     labels: &mut HashMap<String, String>,
     project_id: Option<impl ToString>,

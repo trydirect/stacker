@@ -23,6 +23,7 @@ struct TemplatePricing {
     price: Option<f64>,
     billing_cycle: Option<String>,
     required_plan_name: Option<String>,
+    creator_name: Option<String>,
 }
 
 async fn enrich_items_with_pricing(pg_pool: &PgPool, items: &mut [serde_json::Value]) {
@@ -41,7 +42,7 @@ async fn enrich_items_with_pricing(pg_pool: &PgPool, items: &mut [serde_json::Va
 
     let pricing = sqlx::query_as::<_, TemplatePricing>(
         r#"
-        SELECT slug, price, billing_cycle, required_plan_name
+        SELECT slug, price, billing_cycle, required_plan_name, creator_name
         FROM stack_template
         WHERE slug = ANY($1) AND status = 'approved'
         "#,
@@ -72,6 +73,9 @@ async fn enrich_items_with_pricing(pg_pool: &PgPool, items: &mut [serde_json::Va
             }
             if let Some(ref plan) = p.required_plan_name {
                 item["required_plan_name"] = serde_json::json!(plan);
+            }
+            if let Some(ref creator) = p.creator_name {
+                item["creator_name"] = serde_json::json!(creator);
             }
         }
     }

@@ -4,6 +4,118 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-08-26
+
+### Added — Container-health monitoring & alerts (`stacker monitor`)
+
+- New `stacker monitor` command: watches the deployment's live container health
+  (via the Status Panel agent) and raises an alert when a container is not
+  running, then again when everything recovers. Edge-triggered — it notifies
+  once per transition, not on every poll.
+- `stacker monitor --once` runs a single check and exits (cron-friendly);
+  without it, the command loops on an interval. `--interval <seconds>` overrides
+  the configured poll interval.
+- New `monitoring.alerts` block in `stacker.yml` configures the alarm:
+
+  ```yaml
+  monitoring:
+    alerts:
+      interval: 60          # poll interval, seconds (default 60)
+      on_recovery: true     # also notify when containers recover (default true)
+      target:
+        terminal: true                                   # terminal + desktop notification
+        # url: "https://ntfy.example.com/alerts"         # or: HTTP webhook
+        # method: POST
+        # pipe: oncall-notify                            # or: run a declared pipe (deferred)
+  ```
+
+- Alert state is persisted to `.stacker/monitor.state`, so `--once` invocations
+  stay edge-triggered across cron runs.
+- The alarm logic lives in a new, dependency-free `health-monitor` crate (pure
+  health evaluation + transition detection), reusable by the CLI and, later, the
+  agent.
+
+### Added — Declarative pipes (Infrastructure-as-Code)
+
+- New `pipes:` block in `stacker.yml` declares pipes as committable config
+  (name, source/target, endpoints, fields, trigger, retry, handlers) — the
+  same surface as the `pipe create` flags, now version-controllable.
+- `stacker pipe diff` compares the declared `pipes:` against what is deployed
+  and prints a plan: `create` (declared, not deployed), `update` (differs, with
+  the exact field changes), `unchanged`, and `orphan` (deployed, not declared).
+  `--json` for scripting; a clean tree reports "In sync".
+- `stacker pipe apply` reconciles the declaration into the deployment: creates
+  declared-but-missing pipes (template + instance) and, with `--prune`, deletes
+  deployed pipes not in `stacker.yml`. `--dry-run` shows the plan without acting;
+  re-running is idempotent.
+
+### Added — Manual pipe endpoints & non-interactive `pipe create`
+
+- `stacker pipe create` now accepts explicit endpoints, bypassing endpoint
+  discovery entirely: `--source-endpoint "METHOD /path"`,
+  `--target-endpoint "METHOD /path"`, `--source-fields`, `--target-fields`, and
+  `--name`. This lets any app (or arbitrary HTTP endpoint) be piped — including
+  apps whose APIs aren't at auto-discoverable paths — and makes pipe creation
+  fully scriptable.
+
+### Added — Pipe resilience: retry policy & lifecycle handlers
+
+- `stacker pipe create` gained `--retry <n>`, `--retry-backoff-ms <base>`,
+  `--retry-backoff-max-ms <max>`, `--on-failure <pipe>`, and
+  `--on-success <pipe>`. These are persisted in the pipe's typed config
+  (retry policy + handler references) so the runtime can honor them.
+
+### Added — Reverse-proxy routing (traefik, caddy, nginx-proxy-manager)
+
+- `proxy.type` now produces working routing for all supported proxies:
+  Traefik via container labels, Caddy via a generated `Caddyfile`, and
+  Nginx Proxy Manager via auto-created proxy hosts — all driven by
+  `proxy.domains` (`{domain, upstream, ssl}`), which is now forwarded end-to-end
+  to the Install Service.
+- Proxies are **platform-managed**: the synthesized proxy service is stripped
+  from the compose shipped to the server (deployed by its own role instead), so
+  a `proxy:` block no longer double-deploys the proxy or collides on ports
+  80/443/81.
+- For `--target local`, the CLI now renders the proxy config file itself
+  (`.stacker/Caddyfile`) so the bind mount is a real file locally.
+
+### Fixed — Proxy config validation & port-conflict detection
+
+- New `W003` warning: a `proxy:` block plus a service publishing the same
+  ingress host port (80/443/81) is flagged as a likely conflict.
+- Fixed `W001` host-port comparison to correctly handle the
+  `ip:host:container` binding form (previously produced false positives and
+  false negatives on loopback bindings).
+
+### Fixed — SSH backup key saved during provisioning
+
+- The local emergency SSH backup keypair is now saved the moment the server
+  first appears during a cloud deploy's watch loop, instead of only after the
+  watch completes. Interrupting the watch (timeout / Ctrl-C / network) no longer
+  loses SSH access to a successfully-deployed server.
+
+### Fixed — Remote compose cleanup
+
+- Stripping a platform-managed proxy from the remote compose now also prunes the
+  named volumes only that proxy used (e.g. `caddy_data`/`caddy_config`), instead
+  of leaving orphaned top-level volume declarations.
+
+### Added — Deployment command aliases and `--pinned` flag
+
+- Added `stacker deployment status` as a visible alias for `stacker deployment state`.
+- Added `stacker ps` as a visible alias for `stacker deployments`.
+- `stacker deployment state` and `stacker deployment events` now default to the
+  latest deployment from the server instead of the `deployment_hash` stored in
+  the local `stacker.yml`. Use `--pinned` to read the hash from `stacker.yml`
+  instead (the previous default behavior). The `--deployment <hash>` flag
+  continues to take highest priority.
+
+### Added — `stacker keys` and `stacker cloud keys` aliases
+
+- Added `stacker keys` as a top-level shortcut for `stacker list clouds`.
+- Added `stacker cloud keys` as a nested alias under the `cloud` command group.
+- Both aliases dispatch to the same `ListCloudsCommand` and accept `--json`.
+
 ### Added — Remote project initialization via `--from-github`
 
 - Added `stacker init --from-github <url>` (short flag: `-g`) to automatically

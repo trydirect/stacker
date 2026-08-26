@@ -9,6 +9,16 @@ use reqwest::StatusCode;
 use serde_json::json;
 use sqlx::Row;
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TwoUserTestApp {
+    common::get_or_init_two_user_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 /// Insert a private pipe template for the given user. Returns its UUID.
 async fn seed_pipe_template(pool: &sqlx::PgPool, user_id: &str) -> uuid::Uuid {
     let name = format!("test-tmpl-{}", uuid::Uuid::new_v4());

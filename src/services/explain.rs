@@ -185,7 +185,7 @@ fn to_layer(name: &str, layer: &HashMap<String, String>) -> ExplainEnvLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helpers::{remote_runtime_compose_path, remote_runtime_env_path};
+    use crate::helpers::{remote_runtime_compose_path_for, remote_runtime_env_path_for};
 
     fn sample_input() -> EnvRenderInput {
         let mut input = EnvRenderInput {
@@ -217,14 +217,17 @@ mod tests {
             "deployment_state_online",
             "device-api",
             "docker/prod/.env",
-            remote_runtime_env_path(),
-            remote_runtime_compose_path(),
+            &remote_runtime_env_path_for("test-project"),
+            &remote_runtime_compose_path_for("test-project"),
             sample_input(),
         )
         .expect("explain env should build");
 
         assert_eq!(explain.schema_version, EXPLAIN_SCHEMA_VERSION);
-        assert_eq!(explain.destination.path, remote_runtime_env_path());
+        assert_eq!(
+            explain.destination.path,
+            "/home/trydirect/test-project/.env"
+        );
         assert!(explain.rendered_env.service_secrets_override_server_secrets);
         assert!(explain.layers.iter().any(|layer| layer.name == "generated"));
         assert!(!explain
@@ -243,9 +246,9 @@ mod tests {
             "deployment_state_online",
             "cloud",
             "docker/prod/compose.yml",
-            remote_runtime_compose_path(),
+            &remote_runtime_compose_path_for("test-project"),
             "docker/prod/.env",
-            remote_runtime_env_path(),
+            &remote_runtime_env_path_for("test-project"),
             vec![
                 ExplainTopologyService {
                     code: "device-api".to_string(),
@@ -260,8 +263,14 @@ mod tests {
             ],
         );
 
-        assert_eq!(topology.runtime_compose_path, remote_runtime_compose_path());
-        assert_eq!(topology.runtime_env_path, remote_runtime_env_path());
+        assert_eq!(
+            topology.runtime_compose_path,
+            "/home/trydirect/test-project/docker-compose.yml"
+        );
+        assert_eq!(
+            topology.runtime_env_path,
+            "/home/trydirect/test-project/.env"
+        );
         assert_eq!(topology.services.len(), 2);
     }
 }

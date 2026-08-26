@@ -73,6 +73,7 @@ impl ToolHandler for GetAppEnvVarsTool {
             "environment_entries": env_entries,
             "count": redacted_env.as_object().map(|o| o.len()).unwrap_or(0),
             "secure_count": secure_count,
+            "runtime_env_contract": crate::services::runtime_env_contract_response(),
             "note": "Sensitive values are redacted for security. Vault-backed variables are marked with secure=true."
         });
 
@@ -151,6 +152,27 @@ impl ToolHandler for SetAppEnvVarTool {
         .await
         .map_err(|e| format!("Failed to fetch app: {}", e))?
         .ok_or_else(|| format!("App '{}' not found in project", params.app_code))?;
+
+        // Reject if this name is managed as a remote service secret, mirroring the
+        // REST route's ensure_no_service_secret_key_conflicts check.
+        let service_secrets = db::remote_secret::list_service_secrets(
+            &context.pg_pool,
+            &context.user.id,
+            params.project_id,
+            &params.app_code,
+        )
+        .await
+        .map_err(|e| format!("Failed to load remote service secrets: {}", e))?;
+
+        if service_secrets
+            .iter()
+            .any(|secret| secret.name == params.name)
+        {
+            return Err(format!(
+                "Environment variable '{}' is managed as a remote service secret. Use 'stacker secrets set {} --scope service --project {} --service {}' instead.",
+                params.name, params.name, params.project_id, params.app_code
+            ));
+        }
 
         // Update environment variable
         let mut env = app.environment.clone().unwrap_or_else(|| json!({}));
@@ -358,7 +380,14 @@ impl ToolHandler for GetAppConfigTool {
 
         // Build config response with redacted sensitive data
         let env_vars = app.environment.clone().unwrap_or_default();
-        let redacted_env = redact_sensitive_env_vars(&env_vars);
+        let secure_keys = load_remote_secret_names(
+            &context.pg_pool,
+            &context.user.id,
+            params.project_id,
+            &params.app_code,
+        )
+        .await?;
+        let redacted_env = redact_sensitive_env_vars_with_secure_keys(&env_vars, &secure_keys);
 
         let result = json!({
             "project_id": params.project_id,
@@ -373,6 +402,7 @@ impl ToolHandler for GetAppConfigTool {
             "restart_policy": app.restart_policy.clone().unwrap_or_else(|| "unless-stopped".to_string()),
             "resources": app.resources,
             "depends_on": app.depends_on,
+            "runtime_env_contract": crate::services::runtime_env_contract_response(),
             "note": "Sensitive environment variable values are redacted for security."
         });
 
@@ -753,17 +783,20 @@ fn should_redact_env_var(name: &str, secure_keys: &HashSet<String>) -> bool {
 }
 
 fn is_sensitive_env_var_name(name: &str) -> bool {
+    // Note: bare "key" is intentionally excluded — it's too broad and false-positives
+    // on benign names like "VISIBLE_KEY" or "PUBLIC_KEY_ID". "api_key"/"apikey" already
+    // cover the common secret-key naming conventions.
     const SENSITIVE_PATTERNS: &[&str] = &[
         "password",
         "passwd",
         "username",
         "secret",
         "token",
-        "key",
         "auth",
         "credential",
         "api_key",
         "apikey",
+        "access_key",
         "private",
         "cert",
         "jwt",

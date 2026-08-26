@@ -33,6 +33,8 @@ async fn test_deployment_free_template_allowed() {
         price: None,
         billing_cycle: None,
         currency: None,
+        daily_rate: None,
+        monthly_cap: None,
         tags: serde_json::json!(["free"]),
         tech_stack: serde_json::json!([]),
         status: "approved".to_string(),
@@ -84,6 +86,8 @@ async fn test_deployment_plan_requirement_validated() {
         price: None,
         billing_cycle: None,
         currency: None,
+        daily_rate: None,
+        monthly_cap: None,
         tags: serde_json::json!(["professional"]),
         tech_stack: serde_json::json!([]),
         status: "approved".to_string(),
@@ -139,6 +143,8 @@ async fn test_deployment_owned_paid_template_allowed() {
         price: None,
         billing_cycle: None,
         currency: None,
+        daily_rate: None,
+        monthly_cap: None,
         tags: serde_json::json!(["ai", "agents", "paid"]),
         tech_stack: serde_json::json!([]),
         status: "approved".to_string(),
@@ -204,6 +210,7 @@ fn test_webhook_payload_for_template_approval() {
             "supported_clouds": ["hetzner"],
             "min_ram_mb": 2048
         })),
+        ..Default::default()
     };
 
     // Verify payload has all required fields for approval
@@ -255,6 +262,7 @@ fn test_webhook_payload_for_template_update_price() {
             "supported_os": ["ubuntu-22.04"],
             "min_disk_gb": 20
         })),
+        ..Default::default()
     };
 
     assert_eq!(payload.action, "template_updated");
@@ -283,6 +291,8 @@ fn test_webhook_payload_for_template_rejection() {
         price: None,
         billing_cycle: None,
         currency: None,
+        daily_rate: None,
+        monthly_cap: None,
         vendor_user_id: None,
         vendor_name: None,
         category: None,
@@ -298,6 +308,7 @@ fn test_webhook_payload_for_template_rejection() {
         next_action_hint: None,
         vendor_email: None,
         infrastructure_requirements: None,
+        ..Default::default()
     };
 
     assert_eq!(payload.action, "template_rejected");
@@ -339,6 +350,7 @@ fn test_webhook_payload_for_template_needs_changes() {
         ),
         vendor_email: None,
         infrastructure_requirements: Some(serde_json::json!({"min_ram_mb": 2048})),
+        ..Default::default()
     };
 
     assert_eq!(payload.action, "template_needs_changes");
@@ -369,6 +381,8 @@ async fn test_deployment_validation_flow_with_connector() {
         price: None,
         billing_cycle: None,
         currency: None,
+        daily_rate: None,
+        monthly_cap: None,
         tags: serde_json::json!([]),
         tech_stack: serde_json::json!([]),
         status: "approved".to_string(),
@@ -412,6 +426,8 @@ async fn test_deployment_validation_flow_with_connector() {
         price: None,
         billing_cycle: None,
         currency: None,
+        daily_rate: None,
+        monthly_cap: None,
         tags: serde_json::json!([]),
         tech_stack: serde_json::json!([]),
         status: "approved".to_string(),
@@ -536,6 +552,8 @@ async fn test_multiple_deployments_mixed_templates() {
         price: None,
         billing_cycle: None,
         currency: None,
+        daily_rate: None,
+        monthly_cap: None,
         tags: serde_json::json!([]),
         tech_stack: serde_json::json!([]),
         status: "approved".to_string(),
@@ -579,6 +597,8 @@ async fn test_multiple_deployments_mixed_templates() {
         price: None,
         billing_cycle: None,
         currency: None,
+        daily_rate: None,
+        monthly_cap: None,
         tags: serde_json::json!([]),
         tech_stack: serde_json::json!([]),
         status: "approved".to_string(),
@@ -627,6 +647,8 @@ async fn test_multiple_deployments_mixed_templates() {
         price: None,
         billing_cycle: None,
         currency: None,
+        daily_rate: None,
+        monthly_cap: None,
         tags: serde_json::json!([]),
         tech_stack: serde_json::json!([]),
         status: "approved".to_string(),
@@ -692,6 +714,8 @@ fn test_template_status_values() {
         price: None,
         billing_cycle: None,
         currency: None,
+        daily_rate: None,
+        monthly_cap: None,
         tags: serde_json::json!([]),
         tech_stack: serde_json::json!([]),
         status: "approved".to_string(),

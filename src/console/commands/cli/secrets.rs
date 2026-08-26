@@ -1529,7 +1529,9 @@ mod tests {
             env_file: None,
             env: Default::default(),
             config_contract: Default::default(),
+            pipes: Vec::new(),
             origin: Default::default(),
+            app_present: false,
         };
 
         assert_eq!(

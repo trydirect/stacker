@@ -16,6 +16,7 @@
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use stacker::console::commands::cli::secrets::RemoteSecretScope;
+use std::path::PathBuf;
 
 fn print_banner() {
     let version = env!("CARGO_PKG_VERSION");
@@ -159,7 +160,7 @@ enum StackerCommands {
         #[arg(long)]
         lock: bool,
         /// Skip server pre-check; force fresh cloud provision even if deploy.server exists
-        #[arg(long)]
+        #[arg(long, conflicts_with = "force_rebuild")]
         force_new: bool,
         /// Container runtime: "runc" (default) or "kata" for hardware-isolated containers
         #[arg(long, value_name = "RUNTIME", default_value = "runc")]
@@ -179,6 +180,9 @@ enum StackerCommands {
         /// marketplace. Only pass this after reviewing the hook scripts.
         #[arg(long)]
         allow_untrusted_hooks: bool,
+        /// Send a terminal/desktop notification when deploy finishes.
+        #[arg(long)]
+        notify: bool,
     },
     /// Attach this directory to an existing deployment from the dashboard
     Connect {
@@ -253,6 +257,21 @@ enum StackerCommands {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
+        /// Name of saved cloud credential to reuse (overrides auto-detected default)
+        #[arg(long, value_name = "KEY_NAME")]
+        key: Option<String>,
+        /// ID of saved cloud credential to reuse (from `stacker list clouds`)
+        #[arg(long, value_name = "CLOUD_ID")]
+        key_id: Option<i32>,
+        /// Cloud region for the new server (e.g. nbg1, fsn1)
+        #[arg(long, value_name = "REGION")]
+        region: Option<String>,
+        /// Cloud server size/type (e.g. cx23, cpx21)
+        #[arg(long, value_name = "SIZE")]
+        size: Option<String>,
+        /// Cloud provider (hetzner|digitalocean|aws|linode|vultr). Overrides provider from saved credential.
+        #[arg(long, value_name = "PROVIDER")]
+        provider: Option<String>,
     },
     /// Show container logs
     Logs {
@@ -274,14 +293,29 @@ enum StackerCommands {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
-        /// Watch for changes (refresh periodically)
+        /// Watch for changes (refresh periodically); notifies on completion by default
         #[arg(long)]
         watch: bool,
+        /// Send a terminal/desktop notification when deployment reaches a terminal state (on by default in --watch mode)
+        #[arg(long)]
+        notify: bool,
     },
     /// Deployment inspection commands
     Deployment {
         #[command(subcommand)]
         command: DeploymentCommands,
+    },
+    /// Watch container health and alert on problems (config: monitoring.alerts)
+    Monitor {
+        /// Run a single check and exit (cron-friendly); otherwise loops
+        #[arg(long)]
+        once: bool,
+        /// Override the poll interval in seconds (default from monitoring.alerts)
+        #[arg(long)]
+        interval: Option<u64>,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
     },
     /// Explain path and topology decisions
     Explain {
@@ -330,6 +364,7 @@ enum StackerCommands {
         json: bool,
     },
     /// List deployments (alias for `stacker list deployments`)
+    #[command(visible_alias = "ps")]
     Deployments {
         /// Filter by project ID
         #[arg(long)]
@@ -337,6 +372,21 @@ enum StackerCommands {
         /// Limit number of results
         #[arg(long)]
         limit: Option<i64>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pull project configuration to local directory
+    Pull {
+        /// Project ID or name
+        #[arg(value_name = "PROJECT_REF")]
+        project_ref: String,
+        /// Overwrite existing files without asking
+        #[arg(long)]
+        force: bool,
+        /// Target directory (default: current)
+        #[arg(long)]
+        dir: Option<PathBuf>,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -356,6 +406,12 @@ enum StackerCommands {
     },
     /// List saved cloud credentials (alias for `stacker list clouds`)
     Clouds {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// List saved cloud credentials (alias for `stacker list clouds`)
+    Keys {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -470,6 +526,12 @@ enum CloudCommands {
     Firewall {
         #[command(subcommand)]
         command: CloudFirewallCommands,
+    },
+    /// List saved cloud credentials
+    Keys {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -745,6 +807,7 @@ enum ServiceCommands {
 #[derive(Debug, Subcommand)]
 enum DeploymentCommands {
     /// Show canonical deployment state
+    #[command(visible_alias = "status")]
     State {
         /// Output in JSON format
         #[arg(long)]
@@ -752,6 +815,9 @@ enum DeploymentCommands {
         /// Override deployment hash instead of using stacker.yml
         #[arg(long)]
         deployment: Option<String>,
+        /// Use the deployment hash from stacker.yml instead of the latest
+        #[arg(long)]
+        pinned: bool,
     },
     /// Show structured deployment events
     Events {
@@ -761,6 +827,9 @@ enum DeploymentCommands {
         /// Override deployment hash instead of using stacker.yml
         #[arg(long)]
         deployment: Option<String>,
+        /// Use the deployment hash from stacker.yml instead of the latest
+        #[arg(long)]
+        pinned: bool,
     },
     /// Preview or apply a deployment rollback
     Rollback {
@@ -806,6 +875,12 @@ enum ConfigCommands {
     Validate {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
+        /// Deploy target to validate against (local, cloud, server). Skips
+        /// env-var resolution for the inactive deploy.server/deploy.cloud
+        /// section in dual-target configs. Defaults to deploy.target in
+        /// the file when omitted.
+        #[arg(long)]
+        target: Option<String>,
     },
     /// Show resolved configuration
     Show {
@@ -1217,6 +1292,63 @@ enum PipeCommands {
         /// Use ML-based field matching (n-gram cosine similarity)
         #[arg(long, conflicts_with_all = ["ai", "no_ai"])]
         ml: bool,
+        /// Manual source endpoint "METHOD /path" (e.g. "GET /items"); bypasses
+        /// endpoint discovery. Requires --target-endpoint.
+        #[arg(long, requires = "target_endpoint")]
+        source_endpoint: Option<String>,
+        /// Manual target endpoint "METHOD /path" (e.g. "POST /pipetest");
+        /// bypasses endpoint discovery. Requires --source-endpoint.
+        #[arg(long, requires = "source_endpoint")]
+        target_endpoint: Option<String>,
+        /// Comma-separated source field names (manual mode)
+        #[arg(long, value_delimiter = ',')]
+        source_fields: Vec<String>,
+        /// Comma-separated target field names (manual mode)
+        #[arg(long, value_delimiter = ',')]
+        target_fields: Vec<String>,
+        /// Pipe name (skips the interactive name prompt)
+        #[arg(long)]
+        name: Option<String>,
+        /// Max delivery retries before the pipe is marked failed (default 3)
+        #[arg(long)]
+        retry: Option<u32>,
+        /// Base backoff between retries, milliseconds (default 1000)
+        #[arg(long)]
+        retry_backoff_ms: Option<u64>,
+        /// Max backoff cap between retries, milliseconds (default 30000)
+        #[arg(long)]
+        retry_backoff_max_ms: Option<u64>,
+        /// Run another pipe (by name) when delivery fails after retries
+        #[arg(long)]
+        on_failure: Option<String>,
+        /// Run another pipe (by name) after a successful delivery
+        #[arg(long)]
+        on_success: Option<String>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Compare declaratively-defined pipes (`pipes:` in stacker.yml) against
+    /// what's deployed. Read-only; run `pipe apply` to reconcile.
+    Diff {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Reconcile the declared `pipes:` into the deployment (creates missing pipes).
+    Apply {
+        /// Signal intent to remove deployed pipes not in stacker.yml
+        #[arg(long)]
+        prune: bool,
+        /// Show what would change without creating anything
+        #[arg(long)]
+        dry_run: bool,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -1753,7 +1885,54 @@ fn resolved_config_environment(
     Ok(config.selected_environment(None))
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// `println!`/`print!` panic on write failure, including EPIPE when a
+/// downstream reader (e.g. `stacker agent logs | head`, or a command that
+/// errors out early like `stacker ai ask`) closes stdout before we're done
+/// writing. Unix tools conventionally exit quietly when that happens rather
+/// than dumping a panic backtrace, so swallow just that failure mode here.
+fn install_broken_pipe_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let is_broken_pipe = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(|s| s.contains("Broken pipe"))
+            .or_else(|| {
+                info.payload()
+                    .downcast_ref::<&str>()
+                    .map(|s| s.contains("Broken pipe"))
+            })
+            .unwrap_or(false);
+        if is_broken_pipe {
+            std::process::exit(0);
+        }
+        default_hook(info);
+    }));
+}
+
+/// Thin wrapper around `run()` so a closed downstream pipe (e.g.
+/// `stacker <cmd> | head`, or a piped command that exits early) is treated
+/// as a normal, quiet exit rather than an error — matching how `?`-propagated
+/// `io::Error`s would otherwise surface as a raw `Error: Os { code: 32, .. }`
+/// Debug dump from the default `Result`-returning `main` termination path.
+fn main() -> std::process::ExitCode {
+    install_broken_pipe_panic_hook();
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(err) => {
+            let is_broken_pipe = err
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::BrokenPipe);
+            if is_broken_pipe {
+                return std::process::ExitCode::SUCCESS;
+            }
+            eprintln!("Error: {:?}", err);
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => {
@@ -1917,6 +2096,7 @@ fn get_command(
             apply_plan,
             no_hooks,
             allow_untrusted_hooks,
+            notify,
         } => Box::new(
             stacker::console::commands::cli::deploy::DeployCommand::new(
                 target,
@@ -1934,7 +2114,8 @@ fn get_command(
             .with_runtime(runtime)
             .with_plan(plan)
             .with_apply_plan(apply_plan)
-            .with_hook_flags(no_hooks, allow_untrusted_hooks),
+            .with_hook_flags(no_hooks, allow_untrusted_hooks)
+            .with_notify(notify),
         ),
         StackerCommands::Connect { handoff } => {
             Box::new(stacker::console::commands::cli::connect::ConnectCommand::new(handoff))
@@ -1947,18 +2128,37 @@ fn get_command(
         } => Box::new(stacker::console::commands::cli::logs::LogsCommand::new(
             service, follow, tail, since,
         )),
-        StackerCommands::Status { json, watch } => Box::new(
-            stacker::console::commands::cli::status::StatusCommand::new(json, watch),
-        ),
+        StackerCommands::Status {
+            json,
+            watch,
+            notify,
+        } => Box::new(stacker::console::commands::cli::status::StatusCommand::new(
+            json, watch, notify,
+        )),
+        StackerCommands::Monitor {
+            once,
+            interval,
+            deployment,
+        } => Box::new(stacker::console::commands::cli::monitor::MonitorCommand::new(
+            once, interval, deployment,
+        )),
         StackerCommands::Deployment { command } => match command {
-            DeploymentCommands::State { json, deployment } => Box::new(
+            DeploymentCommands::State {
+                json,
+                deployment,
+                pinned,
+            } => Box::new(
                 stacker::console::commands::cli::deployment::DeploymentStateCommand::new(
-                    json, deployment,
+                    json, deployment, pinned,
                 ),
             ),
-            DeploymentCommands::Events { json, deployment } => Box::new(
+            DeploymentCommands::Events {
+                json,
+                deployment,
+                pinned,
+            } => Box::new(
                 stacker::console::commands::cli::deployment::DeploymentEventsCommand::new(
-                    json, deployment,
+                    json, deployment, pinned,
                 ),
             ),
             DeploymentCommands::Rollback {
@@ -1988,9 +2188,9 @@ fn get_command(
             stacker::console::commands::cli::rollback::RollbackCommand::new(version, confirm),
         ),
         StackerCommands::Config { command: cfg_cmd } => match cfg_cmd {
-            ConfigCommands::Validate { file } => {
-                Box::new(stacker::console::commands::cli::config::ConfigValidateCommand::new(file))
-            }
+            ConfigCommands::Validate { file, target } => Box::new(
+                stacker::console::commands::cli::config::ConfigValidateCommand::new(file, target),
+            ),
             ConfigCommands::Show { file, resolved } => Box::new(
                 stacker::console::commands::cli::config::ConfigShowCommand::new(file, resolved),
             ),
@@ -2107,6 +2307,17 @@ fn get_command(
                 json, project, limit,
             ),
         ),
+        StackerCommands::Pull {
+            project_ref,
+            force,
+            dir,
+            json,
+        } => Box::new(stacker::console::commands::cli::pull::PullCommand::new(
+            project_ref,
+            force,
+            dir,
+            json,
+        )),
         StackerCommands::Servers { json } => {
             Box::new(stacker::console::commands::cli::list::ListServersCommand::new(json))
         }
@@ -2114,6 +2325,9 @@ fn get_command(
             Box::new(stacker::console::commands::cli::list::ListSshKeysCommand::new(json))
         }
         StackerCommands::Clouds { json } => {
+            Box::new(stacker::console::commands::cli::list::ListCloudsCommand::new(json))
+        }
+        StackerCommands::Keys { json } => {
             Box::new(stacker::console::commands::cli::list::ListCloudsCommand::new(json))
         }
         StackerCommands::SshKey { command: ssh_cmd } => match ssh_cmd {
@@ -2419,11 +2633,47 @@ fn get_command(
                     ai,
                     no_ai,
                     ml,
+                    source_endpoint,
+                    target_endpoint,
+                    source_fields,
+                    target_fields,
+                    name,
+                    retry,
+                    retry_backoff_ms,
+                    retry_backoff_max_ms,
+                    on_failure,
+                    on_success,
                     json,
                     deployment,
                 } => Box::new(pipe::PipeCreateCommand::new(
-                    source, target, manual, ai, no_ai, ml, json, deployment,
+                    source,
+                    target,
+                    manual,
+                    ai,
+                    no_ai,
+                    ml,
+                    source_endpoint,
+                    target_endpoint,
+                    source_fields,
+                    target_fields,
+                    name,
+                    retry,
+                    retry_backoff_ms,
+                    retry_backoff_max_ms,
+                    on_failure,
+                    on_success,
+                    json,
+                    deployment,
                 )),
+                PipeCommands::Diff { json, deployment } => {
+                    Box::new(pipe::PipeDiffCommand::new(json, deployment))
+                }
+                PipeCommands::Apply {
+                    prune,
+                    dry_run,
+                    json,
+                    deployment,
+                } => Box::new(pipe::PipeApplyCommand::new(prune, dry_run, json, deployment)),
                 PipeCommands::List { json, deployment } => {
                     Box::new(pipe::PipeListCommand::new(json, deployment))
                 }
@@ -2668,6 +2918,9 @@ fn get_command(
                     ),
                 ),
             },
+            CloudCommands::Keys { json } => {
+                Box::new(stacker::console::commands::cli::list::ListCloudsCommand::new(json))
+            }
         },
         StackerCommands::Submit {
             file,
@@ -2706,9 +2959,15 @@ fn get_command(
             json,
             domain,
             set_values,
+            key,
+            key_id,
+            region,
+            size,
+            provider,
         } => Box::new(
             stacker::console::commands::cli::marketplace::MarketplaceInstallCommand::new(
-                template, name, file, force, json, domain, set_values,
+                template, name, file, force, json, domain, set_values, key, key_id, region, size,
+                provider,
             ),
         ),
         StackerCommands::Marketplace { command: mkt_cmd } => match mkt_cmd {

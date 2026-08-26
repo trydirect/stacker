@@ -81,6 +81,7 @@ pub enum ProxyType {
     Nginx,
     NginxProxyManager,
     Traefik,
+    Caddy,
     None,
 }
 
@@ -90,6 +91,7 @@ impl fmt::Display for ProxyType {
             Self::Nginx => write!(f, "nginx"),
             Self::NginxProxyManager => write!(f, "nginx-proxy-manager"),
             Self::Traefik => write!(f, "traefik"),
+            Self::Caddy => write!(f, "caddy"),
             Self::None => write!(f, "none"),
         }
     }
@@ -379,6 +381,80 @@ pub struct DomainConfig {
     pub ssl: SslMode,
 
     pub upstream: String,
+}
+
+/// A declaratively-defined pipe (`pipes:` block in stacker.yml). This is the
+/// committable source of truth reconciled by `stacker pipe apply` / `pipe diff`
+/// against the deployed templates+instances. Fields mirror the `pipe create`
+/// flags so the imperative and declarative surfaces stay 1:1.
+///
+/// See `config/docs/PIPE_IAC_AND_RESILIENCE_PLAN.md` §5.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PipeSpec {
+    /// Unique pipe name (identity for reconcile).
+    pub name: String,
+    /// Source app code (container/service selector).
+    pub source: String,
+    /// Target app code.
+    pub target: String,
+    /// Source endpoint "METHOD /path".
+    pub source_endpoint: String,
+    /// Target endpoint "METHOD /path".
+    pub target_endpoint: String,
+    #[serde(default)]
+    pub source_fields: Vec<String>,
+    #[serde(default)]
+    pub target_fields: Vec<String>,
+    /// Trigger mode: manual | webhook | poll (default webhook, matching the CLI).
+    #[serde(default = "default_pipe_trigger")]
+    pub trigger: String,
+    /// Poll interval (seconds) when trigger = poll.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll_interval: Option<u32>,
+    /// Max delivery retries (→ pipe config).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_backoff_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_backoff_max_ms: Option<u64>,
+    /// Run another pipe (by name) on failure / success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_failure: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_success: Option<String>,
+}
+
+fn default_pipe_trigger() -> String {
+    "webhook".to_string()
+}
+
+impl PipeSpec {
+    /// Build the typed resilience/lifecycle config for this pipe (empty when no
+    /// retry/handler was declared, so it round-trips cleanly).
+    pub fn to_pipe_config(&self) -> crate::models::pipe_config::PipeConfig {
+        use crate::models::agent_protocol::RetryPolicy;
+        use crate::models::pipe_config::{HandlerRef, PipeConfig};
+
+        let d = RetryPolicy::default();
+        let retry = if self.retry.is_some()
+            || self.retry_backoff_ms.is_some()
+            || self.retry_backoff_max_ms.is_some()
+        {
+            Some(RetryPolicy {
+                max_retries: self.retry.unwrap_or(d.max_retries),
+                backoff_base_ms: self.retry_backoff_ms.unwrap_or(d.backoff_base_ms),
+                backoff_max_ms: self.retry_backoff_max_ms.unwrap_or(d.backoff_max_ms),
+            })
+        } else {
+            None
+        };
+        PipeConfig {
+            retry,
+            on_failure: self.on_failure.clone().map(HandlerRef::Pipe),
+            on_success: self.on_success.clone().map(HandlerRef::Pipe),
+        }
+    }
 }
 
 /// Docker registry credentials for pulling private images during deployment.
@@ -684,6 +760,65 @@ pub struct MonitoringConfig {
 
     #[serde(default)]
     pub metrics: Option<MetricsConfig>,
+
+    /// Container-down alerting for `stacker monitor`. Absent → no alarm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alerts: Option<AlertConfig>,
+}
+
+/// Config for the `stacker monitor` container-health alarm (§10 of the PIPE
+/// IaC/resilience plan). Reuses `HandlerRef` as the notification target, so an
+/// alert can hit a webhook (ntfy/Slack) or, later, run a pipe.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AlertConfig {
+    /// Poll interval in seconds for the watch loop (default 60).
+    #[serde(default = "default_alert_interval")]
+    pub interval: u64,
+    /// Where to deliver the alert (required).
+    pub target: AlertTarget,
+    /// Also notify when containers recover to healthy (default true).
+    #[serde(default = "default_true")]
+    pub on_recovery: bool,
+}
+
+/// Alert delivery target — a YAML-friendly, untagged view (distinguished by the
+/// `url` vs `pipe` key) that maps onto the shared `HandlerRef` for dispatch:
+///
+/// ```yaml
+/// target: { terminal: true }                                  # terminal + desktop
+/// target: { url: "https://ntfy.example.com/alerts", method: POST }   # webhook
+/// target: { pipe: oncall-notify }                             # run a pipe
+/// ```
+///
+/// (A dedicated type, rather than reusing `HandlerRef` directly, because
+/// `serde_yaml` renders externally-tagged enums as `!tag` — awkward in a config
+/// file — whereas this untagged form reads naturally.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AlertTarget {
+    /// Terminal + desktop notification (OS notification, terminal bell, stderr).
+    Terminal { terminal: bool },
+    /// HTTP webhook (ntfy/Slack/…). `method` defaults to POST.
+    Webhook {
+        url: String,
+        #[serde(default = "default_notify_method_alert")]
+        method: String,
+    },
+    /// Run a declared pipe by name.
+    Pipe { pipe: String },
+}
+
+fn default_notify_method_alert() -> String {
+    "POST".to_string()
+}
+
+
+fn default_alert_interval() -> u64 {
+    60
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Healthcheck settings.
@@ -725,6 +860,15 @@ pub struct HookConfig {
 
     #[serde(default)]
     pub on_failure: Option<PathBuf>,
+
+    /// Send a terminal/desktop notification on deploy completion.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub notify: bool,
+}
+
+/// Serde helper: skip serializing when `false`.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Project identity metadata.
@@ -838,6 +982,11 @@ pub struct StackerConfig {
     #[serde(default)]
     pub config_contract: ConfigContract,
 
+    /// Declaratively-defined pipes reconciled by `stacker pipe apply` / `diff`.
+    /// Absent → empty, so existing configs are unaffected.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pipes: Vec<PipeSpec>,
+
     /// Provenance of this config. Not serialized — computed at load time.
     ///
     /// Defaults to `UserAuthored`. `from_file`/`from_str` flip to
@@ -845,6 +994,18 @@ pub struct StackerConfig {
     /// [`MARKETPLACE_ORIGIN_MARKER`].
     #[serde(skip)]
     pub origin: ConfigOrigin,
+
+    /// Whether the source config explicitly declared an `app:` section.
+    ///
+    /// `app` is a non-optional field with serde defaults, so a config that
+    /// omits `app:` still deserializes to a default `AppSource`. This flag
+    /// distinguishes "user/template actually declared an app to build" from
+    /// "app was defaulted in". Set at load time by `from_file`/`from_str`
+    /// (raw key present) and by `ConfigBuilder` (app setters used). The compose
+    /// generator uses it to avoid synthesizing a phantom `app` service for
+    /// services-only configs. Not serialized.
+    #[serde(skip)]
+    pub app_present: bool,
 }
 
 impl StackerConfig {
@@ -862,6 +1023,29 @@ impl StackerConfig {
     /// config and write it back to disk, use [`from_file_raw`] instead so
     /// that `${VAR}` placeholders are preserved.
     pub fn from_file(path: &Path) -> Result<Self, CliError> {
+        Self::from_file_for_target(path, None)
+    }
+
+    /// Load config from a file path like [`from_file`], but skip `${VAR}`
+    /// resolution inside whichever of `deploy.server` / `deploy.cloud` is
+    /// **not** the active target — determined by `target_override` (e.g.
+    /// the CLI's `--target` flag) or, absent that, the literal
+    /// `deploy.target` value in the file.
+    ///
+    /// A project commonly defines both `deploy.server` and `deploy.cloud`
+    /// (see the dual-target pattern) so it can be pointed at either without
+    /// editing `stacker.yml`. Without this, `stacker deploy --target cloud`
+    /// would fail on a missing `${EXISTING_SERVER_HOST}` even though the
+    /// server section is never used for a cloud deploy — see GH #239.
+    ///
+    /// When the effective target can't be determined (no override, no
+    /// literal `deploy.target` in the file, or a multi-target `deploy.targets`
+    /// config), both sections are resolved as before — this only skips a
+    /// section when we're confident it's inactive.
+    pub fn from_file_for_target(
+        path: &Path,
+        target_override: Option<&str>,
+    ) -> Result<Self, CliError> {
         if !path.exists() {
             return Err(CliError::ConfigNotFound {
                 path: path.to_path_buf(),
@@ -872,9 +1056,18 @@ impl StackerConfig {
         let origin = detect_origin_from_raw(&raw_content);
         let mut parsed: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
         let env_file_vars = load_env_file_vars_from_yaml(path, &raw_content);
-        resolve_env_placeholders_in_value(&mut parsed, &env_file_vars)?;
+
+        let (skip_server, skip_cloud) = inactive_deploy_sections(&parsed, target_override);
+        resolve_env_placeholders_in_value_skipping_deploy(
+            &mut parsed,
+            &env_file_vars,
+            skip_server,
+            skip_cloud,
+        )?;
+        let app_present = parsed.get("app").is_some();
         let mut config = deserialize_config_value(parsed)?;
         config.origin = origin;
+        config.app_present = app_present;
         Ok(config)
     }
 
@@ -894,8 +1087,25 @@ impl StackerConfig {
         let raw_content = std::fs::read_to_string(path)?;
         let origin = detect_origin_from_raw(&raw_content);
         let parsed: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
+        let app_present = parsed.get("app").is_some();
         let mut config = deserialize_config_value(parsed)?;
         config.origin = origin;
+        config.app_present = app_present;
+        Ok(config)
+    }
+
+    /// Load config from a YAML string **without** resolving `${VAR}` placeholders.
+    ///
+    /// Use this for validation/preview where referenced variables (e.g.
+    /// config_contract install inputs) are not yet known. `${VAR}` references
+    /// are kept as-is so a missing variable does not fail the parse.
+    pub fn from_str_raw(yaml: &str) -> Result<Self, CliError> {
+        let origin = detect_origin_from_raw(yaml);
+        let parsed: serde_yaml::Value = serde_yaml::from_str(yaml)?;
+        let app_present = parsed.get("app").is_some();
+        let mut config = deserialize_config_value(parsed)?;
+        config.origin = origin;
+        config.app_present = app_present;
         Ok(config)
     }
 
@@ -904,8 +1114,10 @@ impl StackerConfig {
         let origin = detect_origin_from_raw(yaml);
         let mut parsed: serde_yaml::Value = serde_yaml::from_str(yaml)?;
         resolve_env_placeholders_in_value(&mut parsed, &HashMap::new())?;
+        let app_present = parsed.get("app").is_some();
         let mut config = deserialize_config_value(parsed)?;
         config.origin = origin;
+        config.app_present = app_present;
         Ok(config)
     }
 
@@ -1052,15 +1264,19 @@ impl StackerConfig {
             });
         }
 
-        // Port conflict detection across services
+        // Port conflict detection across services, keyed by the *published
+        // host port*. Only services that publish a fixed host port can collide;
+        // the container-only form (no host port) is skipped. `host_port_binding`
+        // correctly handles the `ip:host:container` form — extracting the host
+        // port, not the leading IP — so two loopback services on different
+        // ports (e.g. `127.0.0.1:5432:5432` and `127.0.0.1:6379:6379`) are no
+        // longer misreported as sharing a port.
         let mut port_map: HashMap<String, Vec<String>> = HashMap::new();
         for svc in &self.services {
             for port_str in &svc.ports {
-                let host_port = extract_host_port(port_str);
-                port_map
-                    .entry(host_port.clone())
-                    .or_default()
-                    .push(svc.name.clone());
+                if let Some(host_port) = host_port_binding(port_str) {
+                    port_map.entry(host_port).or_default().push(svc.name.clone());
+                }
             }
         }
         for (port, services) in &port_map {
@@ -1074,6 +1290,57 @@ impl StackerConfig {
                         services.join(", ")
                     ),
                     field: Some("services.ports".to_string()),
+                });
+            }
+        }
+
+        // W003 — a `proxy:` block deploys a *platform-managed* reverse proxy
+        // that owns the ingress host ports on the target. Any app/service that
+        // also publishes one of those host ports collides with it: the managed
+        // proxy takes precedence and the user's binding is shadowed. Detect by
+        // host-port overlap (not by image name) so it also catches a plain app
+        // accidentally bound to :80, not only a rival proxy.
+        if self.proxy.proxy_type != ProxyType::None {
+            let ingress_ports: &[&str] = match self.proxy.proxy_type {
+                ProxyType::NginxProxyManager => &["80", "443", "81"],
+                ProxyType::Nginx | ProxyType::Traefik | ProxyType::Caddy => &["80", "443"],
+                ProxyType::None => &[],
+            };
+
+            let mut published: Vec<(String, String)> = Vec::new();
+            for port in &self.app.ports {
+                if let Some(host_port) = host_port_binding(port) {
+                    published.push(("app".to_string(), host_port));
+                }
+            }
+            for svc in &self.services {
+                for port in &svc.ports {
+                    if let Some(host_port) = host_port_binding(port) {
+                        published.push((svc.name.clone(), host_port));
+                    }
+                }
+            }
+
+            let mut conflicts: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for (service, host_port) in published {
+                if ingress_ports.contains(&host_port.as_str()) {
+                    conflicts.entry(service).or_default().push(host_port);
+                }
+            }
+            for (service, ports) in conflicts {
+                issues.push(ValidationIssue {
+                    severity: Severity::Warning,
+                    code: "W003".to_string(),
+                    message: format!(
+                        "Service '{service}' publishes host port(s) {} that the platform-managed \
+                         '{}' proxy (configured via the proxy: block) also claims on the deploy \
+                         target. The managed proxy takes precedence, so '{service}' is ignored on \
+                         those ports. Remove the proxy: block to keep your own service there, or \
+                         change its host port.",
+                        ports.join(", "),
+                        self.proxy.proxy_type
+                    ),
+                    field: Some("proxy.type".to_string()),
                 });
             }
         }
@@ -1287,14 +1554,116 @@ fn load_env_file_vars_from_yaml(path: &Path, raw_content: &str) -> HashMap<Strin
 }
 
 /// Extract the host port from a port mapping string like "8080:80" → "8080".
-fn extract_host_port(port_str: &str) -> String {
-    port_str.split(':').next().unwrap_or(port_str).to_string()
+/// Extract the *published host* port from a compose port spec, or `None` when
+/// the spec publishes no host port (container-only form). Handles the protocol
+/// suffix and all three binding forms:
+///   `"80"` -> None (ephemeral), `"80:80"` -> `"80"`,
+///   `"127.0.0.1:80:80"` -> `"80"`, `"80:80/tcp"` -> `"80"`.
+fn host_port_binding(port_str: &str) -> Option<String> {
+    let spec = port_str.split('/').next().unwrap_or(port_str);
+    let parts: Vec<&str> = spec.split(':').collect();
+    match parts.as_slice() {
+        [_container] => None,
+        [host, _container] => Some((*host).to_string()),
+        [_ip, host, _container] => Some((*host).to_string()),
+        _ => None,
+    }
 }
 
 /// Resolve `${VAR_NAME}` references in a string using process environment.
 #[allow(dead_code)]
 fn resolve_env_vars(content: &str) -> Result<String, CliError> {
     resolve_env_vars_with_fallback(content, &HashMap::new())
+}
+
+/// Decide which of `deploy.server` / `deploy.cloud` (legacy single-block
+/// form) is inactive for the effective target, so env-var resolution can
+/// skip it entirely. Returns `(skip_server, skip_cloud)`.
+///
+/// Only acts when the effective target is confidently known — from
+/// `target_override` (e.g. `--target`) or a literal (non-templated)
+/// `deploy.target` in the file. Multi-target `deploy.targets.<name>`
+/// configs are left untouched: each named profile already carries only
+/// its own `server` or `cloud`, so there's no ambiguity to resolve.
+fn inactive_deploy_sections(
+    parsed: &serde_yaml::Value,
+    target_override: Option<&str>,
+) -> (bool, bool) {
+    let Some(root) = parsed.as_mapping() else {
+        return (false, false);
+    };
+    let Some(deploy) = root
+        .get(serde_yaml::Value::String("deploy".to_string()))
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return (false, false);
+    };
+
+    let has_named_targets = deploy
+        .get(serde_yaml::Value::String("targets".to_string()))
+        .and_then(serde_yaml::Value::as_mapping)
+        .map(|m| !m.is_empty())
+        .unwrap_or(false);
+    if has_named_targets {
+        return (false, false);
+    }
+
+    let effective_target = target_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase)
+        .or_else(|| {
+            deploy
+                .get(serde_yaml::Value::String("target".to_string()))
+                .and_then(serde_yaml::Value::as_str)
+                .filter(|s| !s.contains("${")) // don't trust an unresolved literal
+                .map(|s| s.trim().to_lowercase())
+        });
+
+    match effective_target.as_deref() {
+        Some("cloud") => (true, false),
+        Some("server") => (false, true),
+        Some("local") => (true, true),
+        _ => (false, false),
+    }
+}
+
+/// Like [`resolve_env_placeholders_in_value`], but leaves `deploy.server`
+/// and/or `deploy.cloud` completely untouched (placeholders and all) when
+/// `skip_server`/`skip_cloud` say that section is inactive for this deploy.
+fn resolve_env_placeholders_in_value_skipping_deploy(
+    value: &mut serde_yaml::Value,
+    fallback_vars: &HashMap<String, String>,
+    skip_server: bool,
+    skip_cloud: bool,
+) -> Result<(), CliError> {
+    if !skip_server && !skip_cloud {
+        return resolve_env_placeholders_in_value(value, fallback_vars);
+    }
+
+    let Some(root) = value.as_mapping_mut() else {
+        return resolve_env_placeholders_in_value(value, fallback_vars);
+    };
+
+    for (key, map_value) in root.iter_mut() {
+        if key.as_str() != Some("deploy") {
+            resolve_env_placeholders_in_value(map_value, fallback_vars)?;
+            continue;
+        }
+        let Some(deploy_map) = map_value.as_mapping_mut() else {
+            continue;
+        };
+        for (deploy_key, deploy_value) in deploy_map.iter_mut() {
+            let skip = (deploy_key.as_str() == Some("server") && skip_server)
+                || (deploy_key.as_str() == Some("cloud") && skip_cloud);
+            if skip {
+                continue;
+            }
+            resolve_env_placeholders_in_value(deploy_value, fallback_vars)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn resolve_env_placeholders_in_value(
@@ -1374,6 +1743,7 @@ pub struct ConfigBuilder {
     services: Vec<ServiceDefinition>,
     proxy: Option<ProxyConfig>,
     deploy_target: Option<DeployTarget>,
+    deployment_hash: Option<String>,
     cloud: Option<CloudConfig>,
     server: Option<ServerConfig>,
     registry: Option<RegistryConfig>,
@@ -1454,6 +1824,11 @@ impl ConfigBuilder {
         self
     }
 
+    pub fn deployment_hash<S: Into<String>>(mut self, hash: S) -> Self {
+        self.deployment_hash = Some(hash.into());
+        self
+    }
+
     pub fn cloud(mut self, cloud: CloudConfig) -> Self {
         self.cloud = Some(cloud);
         self
@@ -1500,6 +1875,14 @@ impl ConfigBuilder {
             .name
             .ok_or_else(|| CliError::ConfigValidation("name is required".into()))?;
 
+        // Any app-related builder setter marks the app as explicitly declared,
+        // so the compose generator materializes it even alongside services.
+        let app_present = self.app_type.is_some()
+            || self.app_image.is_some()
+            || self.app_dockerfile.is_some()
+            || !self.app_volumes.is_empty()
+            || !self.build_args.is_empty();
+
         let build_config = if self.build_args.is_empty() {
             None
         } else {
@@ -1534,7 +1917,7 @@ impl ConfigBuilder {
                 target: self.deploy_target.unwrap_or_default(),
                 environment: None,
                 compose_file: None,
-                deployment_hash: None,
+                deployment_hash: self.deployment_hash,
                 cloud: self.cloud,
                 server: self.server,
                 registry: self.registry,
@@ -1549,7 +1932,9 @@ impl ConfigBuilder {
             env_file: self.env_file,
             env: self.env,
             config_contract: ConfigContract::default(),
+            pipes: Vec::new(),
             origin: ConfigOrigin::UserAuthored,
+            app_present,
         })
     }
 }
@@ -1884,6 +2269,125 @@ deploy:
         assert_eq!(config.app.image.as_deref(), Some("node:14-alpine"));
     }
 
+    // Regression tests for GH #239: `stacker deploy --target cloud` failed
+    // on a missing `${EXISTING_SERVER_HOST}` even though `deploy.server` is
+    // never used for a cloud deploy — env-var resolution walked the whole
+    // file unconditionally, including the inactive dual-target section.
+    fn dual_target_yaml() -> &'static str {
+        r#"
+name: dual-target-app
+app:
+    type: custom
+    path: .
+    image: myorg/myapp:latest
+deploy:
+    target: server
+    server:
+        host: ${EXISTING_SERVER_HOST}
+        user: ${EXISTING_SERVER_USER}
+        ssh_key: /tmp/id_ed25519
+    cloud:
+        provider: hetzner
+        region: fsn1
+        size: cpx22
+        public_ports: ["3579"]
+"#
+    }
+
+    #[test]
+    fn test_from_file_for_target_cloud_skips_missing_server_vars() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        fs::write(&config_path, dual_target_yaml()).unwrap();
+
+        // No EXISTING_SERVER_HOST/USER anywhere (env or .env) — must not
+        // fail, since --target cloud never touches deploy.server.
+        let config = StackerConfig::from_file_for_target(&config_path, Some("cloud")).unwrap();
+        let resolved = config.with_resolved_deploy_target(Some("cloud")).unwrap();
+        assert_eq!(resolved.deploy.target, DeployTarget::Cloud);
+        assert!(resolved.deploy.cloud.is_some());
+    }
+
+    #[test]
+    fn test_from_file_for_target_server_skips_cloud_section() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        // Cloud section left var-free here on purpose — this test only
+        // asserts the server branch resolves independent of cloud content.
+        fs::write(
+            &config_path,
+            r#"
+name: dual-target-app
+app:
+    type: custom
+    path: .
+    image: myorg/myapp:latest
+deploy:
+    target: server
+    server:
+        host: 203.0.113.5
+        user: deployer
+        ssh_key: /tmp/id_ed25519
+    cloud:
+        provider: hetzner
+        region: ${UNSET_REGION_VAR}
+"#,
+        )
+        .unwrap();
+
+        let config = StackerConfig::from_file_for_target(&config_path, Some("server")).unwrap();
+        assert_eq!(
+            config.deploy.server.as_ref().map(|s| s.host.as_str()),
+            Some("203.0.113.5")
+        );
+    }
+
+    #[test]
+    fn test_from_file_for_target_falls_back_to_literal_deploy_target_in_file() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        fs::write(&config_path, dual_target_yaml()).unwrap();
+
+        // No override passed — `deploy.target: server` in the file is a
+        // plain literal, so it should still be trusted as the effective
+        // target and fail exactly like before (this isn't a behavior
+        // change for callers that already relied on the file's own target).
+        let result = StackerConfig::from_file_for_target(&config_path, None);
+        assert!(
+            result.is_err(),
+            "server section is active, so its missing vars must still error"
+        );
+    }
+
+    #[test]
+    fn test_from_file_for_target_unresolvable_target_resolves_both_sections_as_before() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        fs::write(&config_path, dual_target_yaml()).unwrap();
+
+        // Override doesn't match a known target keyword — falls back to
+        // resolving everything, matching the pre-fix strict behavior.
+        let result = StackerConfig::from_file_for_target(&config_path, Some("bogus"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_validate_respects_target_override() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        fs::write(&config_path, dual_target_yaml()).unwrap();
+
+        let path_str = config_path.to_string_lossy().to_string();
+        assert!(
+            crate::console::commands::cli::config::run_validate(&path_str, Some("cloud")).is_ok(),
+            "config validate --target cloud must not fail on unset server vars"
+        );
+        assert!(
+            crate::console::commands::cli::config::run_validate(&path_str, None).is_err(),
+            "without an override, the file's own deploy.target: server is still active"
+        );
+    }
+
     #[test]
     fn test_parse_invalid_app_type_returns_error() {
         let yaml = r#"
@@ -1991,6 +2495,65 @@ proxy:
         assert_eq!(config.proxy.domains[0].ssl, SslMode::Auto);
         assert_eq!(config.proxy.domains[0].upstream, "app:3000");
         assert_eq!(config.proxy.domains[1].ssl, SslMode::Off);
+    }
+
+    #[test]
+    fn test_parse_pipes_block() {
+        let yaml = r#"
+name: pipes-test
+pipes:
+  - name: apprise-to-ntfy
+    source: app
+    target: ntfy
+    source_endpoint: "GET /status"
+    target_endpoint: "POST /pipetest"
+    source_fields: [message]
+    target_fields: [message]
+    trigger: manual
+    retry: 5
+    retry_backoff_ms: 500
+    on_failure: oncall-notify
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert_eq!(config.pipes.len(), 1);
+        let p = &config.pipes[0];
+        assert_eq!(p.name, "apprise-to-ntfy");
+        assert_eq!(p.source_endpoint, "GET /status");
+        assert_eq!(p.trigger, "manual");
+        // The declared retry/handler flow into the typed PipeConfig …
+        let cfg = p.to_pipe_config();
+        let retry = cfg.retry.as_ref().expect("retry declared");
+        assert_eq!(retry.max_retries, 5);
+        assert_eq!(retry.backoff_base_ms, 500);
+        assert_eq!(retry.backoff_max_ms, 30_000); // default filled in
+        assert_eq!(
+            cfg.on_failure,
+            Some(crate::models::pipe_config::HandlerRef::Pipe("oncall-notify".into()))
+        );
+    }
+
+    #[test]
+    fn test_pipes_absent_defaults_empty_and_trigger_default() {
+        // No pipes: block → empty (back-compat). Minimal pipe → webhook trigger,
+        // empty PipeConfig (no retry/handlers declared).
+        let config = StackerConfig::from_str("name: no-pipes\n").unwrap();
+        assert!(config.pipes.is_empty());
+
+        let yaml = r#"
+name: t
+pipes:
+  - name: p
+    source: a
+    target: b
+    source_endpoint: "GET /x"
+    target_endpoint: "POST /y"
+"#;
+        let c = StackerConfig::from_str(yaml).unwrap();
+        assert_eq!(c.pipes[0].trigger, "webhook");
+        assert_eq!(
+            c.pipes[0].to_pipe_config(),
+            crate::models::pipe_config::PipeConfig::default()
+        );
     }
 
     #[test]
@@ -2180,6 +2743,138 @@ services:
     }
 
     #[test]
+    fn w001_does_not_false_positive_on_distinct_loopback_ports() {
+        // Regression: `ip:host:container` bindings must key on the host *port*,
+        // not the IP. Two loopback services on different ports do NOT conflict.
+        let config = StackerConfig::from_str(
+            r#"
+name: demo
+app:
+  type: custom
+  image: myapp:latest
+services:
+  - name: postgres
+    image: postgres:16-alpine
+    ports:
+      - "127.0.0.1:5432:5432"
+  - name: redis
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            !config
+                .validate_semantics()
+                .iter()
+                .any(|issue| issue.code == "W001"),
+            "distinct loopback host ports must not be reported as a conflict"
+        );
+    }
+
+    #[test]
+    fn w001_detects_real_host_port_conflict_across_binding_forms() {
+        // A 2-part `80:80` and a 3-part `127.0.0.1:80:80` both publish host
+        // port 80 → real conflict, previously missed by the IP-first extractor.
+        let config = StackerConfig::from_str(
+            r#"
+name: demo
+app:
+  type: custom
+  image: myapp:latest
+services:
+  - name: web
+    image: nginx:alpine
+    ports:
+      - "80:80"
+  - name: legacy
+    image: httpd:alpine
+    ports:
+      - "127.0.0.1:80:80"
+"#,
+        )
+        .unwrap();
+
+        let w001: Vec<_> = config
+            .validate_semantics()
+            .into_iter()
+            .filter(|issue| issue.code == "W001")
+            .collect();
+        assert_eq!(w001.len(), 1, "expected one W001 for the port-80 clash: {w001:?}");
+        assert!(w001[0].message.contains("80"));
+        assert!(w001[0].message.contains("web") && w001[0].message.contains("legacy"));
+    }
+
+    #[test]
+    fn proxy_block_warns_when_user_service_publishes_an_ingress_port() {
+        // A `proxy:` block deploys a platform-managed proxy owning 80/443/81.
+        // A user's own reverse-proxy service on 80/443 collides → one W003.
+        let config = StackerConfig::from_str(
+            r#"
+name: demo
+app:
+  type: custom
+  image: myapp:latest
+services:
+  - name: my-own-traefik
+    image: traefik:v2.10
+    ports:
+      - "80:80"
+      - "443:443"
+proxy:
+  type: nginx-proxy-manager
+"#,
+        )
+        .unwrap();
+
+        let w003: Vec<_> = config
+            .validate_semantics()
+            .into_iter()
+            .filter(|issue| issue.code == "W003")
+            .collect();
+        assert_eq!(w003.len(), 1, "expected exactly one W003, got: {w003:?}");
+        assert_eq!(w003[0].severity, Severity::Warning);
+        assert!(w003[0].message.contains("my-own-traefik"));
+        // Both conflicting ports are reported in the single per-service warning.
+        assert!(w003[0].message.contains("80"));
+        assert!(w003[0].message.contains("443"));
+    }
+
+    #[test]
+    fn proxy_block_does_not_warn_for_nonconflicting_ports() {
+        // The app on :8080 (with `127.0.0.1:` host-scoped DB elsewhere) does not
+        // overlap the proxy's ingress ports → no W003.
+        let config = StackerConfig::from_str(
+            r#"
+name: demo
+app:
+  type: custom
+  image: myapp:latest
+  ports:
+    - "8080:8080"
+services:
+  - name: db
+    image: postgres:16-alpine
+    ports:
+      - "127.0.0.1:5432:5432"
+proxy:
+  type: nginx-proxy-manager
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            !config
+                .validate_semantics()
+                .iter()
+                .any(|issue| issue.code == "W003"),
+            "no ingress overlap should produce no W003"
+        );
+    }
+
+    #[test]
     fn test_validate_semantics_multi_target_requires_default_for_multiple_profiles() {
         let config = StackerConfig::from_str(
             r#"
@@ -2237,7 +2932,7 @@ deploy:
                 provider: CloudProvider::Hetzner,
                 orchestrator: CloudOrchestrator::Remote,
                 region: Some("nbg1".to_string()),
-                size: Some("cpx11".to_string()),
+                size: Some("cx23".to_string()),
                 install_image: None,
                 remote_payload_file: None,
                 ssh_key: None,

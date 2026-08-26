@@ -134,6 +134,20 @@ pub async fn approve_handler(
             JsonResponse::<serde_json::Value>::build().not_found("Template not found")
         })?;
 
+    // Fetch the latest version so the webhook can federate the stack_definition
+    // (compose) to the User Service cache — without it, /applications serves a
+    // null definition and installs produce an empty compose. Best-effort: a
+    // missing version must not block approval.
+    let latest_version = db::marketplace::get_latest_version(pg_pool.get_ref(), id)
+        .await
+        .unwrap_or_else(|err| {
+            tracing::warn!(
+                "Failed to load latest version for webhook federation: {}",
+                err
+            );
+            None
+        });
+
     // Send webhook asynchronously (non-blocking)
     // Don't fail the approval if webhook send fails - template is already approved
     let template_clone = template.clone();
@@ -149,6 +163,7 @@ pub async fn approve_handler(
                         &template_clone,
                         &template_clone.creator_user_id,
                         template_clone.category_code.clone(),
+                        latest_version.as_ref(),
                     )
                     .instrument(span)
                     .await
@@ -494,6 +509,10 @@ pub struct AdminPricingRequest {
     pub billing_cycle: Option<String>,
     pub required_plan_name: Option<String>,
     pub currency: Option<String>,
+    /// Daily rate for deployment_daily billing (USD)
+    pub daily_rate: Option<f64>,
+    /// Monthly cap for deployment_daily billing (USD)
+    pub monthly_cap: Option<f64>,
 }
 
 #[tracing::instrument(name = "Admin update template pricing", skip_all)]
@@ -515,6 +534,8 @@ pub async fn pricing_handler(
         req.billing_cycle.as_deref(),
         req.required_plan_name.as_deref(),
         req.currency.as_deref(),
+        req.daily_rate,
+        req.monthly_cap,
     )
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err))?;

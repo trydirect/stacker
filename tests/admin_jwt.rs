@@ -4,6 +4,16 @@ use chrono::{Duration, Utc};
 use reqwest::StatusCode;
 use serde_json::json;
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TestApp {
+    common::get_or_init_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 fn create_jwt(role: &str, email: &str, expires_in: Duration) -> String {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
@@ -23,10 +33,7 @@ fn create_jwt(role: &str, email: &str, expires_in: Duration) -> String {
 
 #[tokio::test]
 async fn admin_templates_accepts_valid_jwt() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
     let token = create_jwt("admin_service", "ops@test.com", Duration::minutes(30));
 
@@ -55,10 +62,7 @@ async fn admin_templates_accepts_valid_jwt() {
 
 #[tokio::test]
 async fn admin_templates_rejects_expired_jwt() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
     let token = create_jwt("admin_service", "ops@test.com", Duration::minutes(-5));
 
@@ -83,10 +87,7 @@ async fn admin_templates_rejects_expired_jwt() {
 
 #[tokio::test]
 async fn admin_templates_requires_admin_role() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
     let token = create_jwt("group_user", "user@test.com", Duration::minutes(10));
 

@@ -1,5 +1,15 @@
 mod common;
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TwoUserTestApp {
+    common::get_or_init_two_user_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 /// IDOR security tests for /project endpoints.
 /// Verify that User B cannot list, read, update, or delete User A's projects.
 #[tokio::test]
@@ -72,7 +82,7 @@ async fn test_update_project_rejects_other_user() {
     let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
     let client = reqwest::Client::new();
 
-    // User B tries to PUT User A's project → 400 (bad_request = IDOR guard)
+    // User B tries to PUT User A's project → 404 (commit 145b8c96: avoid leaking resource existence via IDOR)
     let resp = client
         .put(format!("{}/project/{}", &app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
@@ -83,7 +93,7 @@ async fn test_update_project_rejects_other_user() {
         .expect("request failed");
     assert_eq!(
         resp.status(),
-        reqwest::StatusCode::BAD_REQUEST,
+        reqwest::StatusCode::NOT_FOUND,
         "User B must not update User A's project"
     );
 }
@@ -97,7 +107,7 @@ async fn test_delete_project_rejects_other_user() {
     let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
     let client = reqwest::Client::new();
 
-    // User B tries to DELETE User A's project → 400 (bad_request = IDOR guard)
+    // User B tries to DELETE User A's project → 404 (commit 145b8c96: avoid leaking resource existence via IDOR)
     let resp = client
         .delete(format!("{}/project/{}", &app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
@@ -106,7 +116,7 @@ async fn test_delete_project_rejects_other_user() {
         .expect("request failed");
     assert_eq!(
         resp.status(),
-        reqwest::StatusCode::BAD_REQUEST,
+        reqwest::StatusCode::NOT_FOUND,
         "User B must not delete User A's project"
     );
 }

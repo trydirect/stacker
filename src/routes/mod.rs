@@ -1,4 +1,5 @@
 pub(crate) mod agent;
+pub mod audit;
 pub mod client;
 pub(crate) mod command;
 pub(crate) mod deployment;
@@ -6,6 +7,7 @@ pub(crate) mod dockerhub;
 pub(crate) mod handoff;
 pub mod health_checks;
 pub(crate) mod legacy_installations;
+pub(crate) mod oneclick_deploy;
 pub(crate) mod rating;
 pub(crate) mod test;
 

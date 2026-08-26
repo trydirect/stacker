@@ -469,10 +469,11 @@ fn extract_port_from_docker_ps_entry(spec: &str) -> Option<String> {
 
 /// Ask Docker for the host ports currently bound by THIS compose project's containers.
 ///
-/// Uses `docker compose -f <path> ps --format "{{.Ports}}"`.
+/// Uses `docker compose -p <project_name> -f <path> ps --format "{{.Ports}}"`.
 /// Returns an empty set if Docker is unavailable or the project has no running containers.
 fn get_own_compose_running_ports(
     compose_path: &Path,
+    project_name: &str,
     executor: &dyn CommandExecutor,
 ) -> std::collections::HashSet<String> {
     let compose_str = compose_path.to_string_lossy();
@@ -480,6 +481,8 @@ fn get_own_compose_running_ports(
         "docker",
         &[
             "compose",
+            "-p",
+            project_name,
             "-f",
             &compose_str,
             "ps",
@@ -638,6 +641,7 @@ fn format_preflight_port_conflicts(target: &str, conflicts: &[String]) -> String
 /// Docker access still work.
 fn check_local_host_port_conflicts(
     compose_path: &Path,
+    project_name: &str,
     executor: &dyn CommandExecutor,
 ) -> Vec<String> {
     use std::net::TcpListener;
@@ -662,7 +666,7 @@ fn check_local_host_port_conflicts(
 
     // Exclude ports that belong to OUR own currently-running project containers —
     // docker compose up will stop-and-restart them without a conflict.
-    let own_ports = get_own_compose_running_ports(compose_path, executor);
+    let own_ports = get_own_compose_running_ports(compose_path, project_name, executor);
 
     occupied
         .into_iter()
@@ -689,6 +693,23 @@ fn resolve_compose_cmd(executor: &dyn CommandExecutor) -> (&'static str, Vec<&'s
         }
     }
     ("docker-compose", vec![])
+}
+
+/// Compose project name for local deploys, derived from the project's own
+/// identity rather than left to Compose's default (the containing
+/// directory's basename). Every project's generated compose file lives
+/// under `.stacker/`, so without an explicit name every project defaulted
+/// to the same Compose project ("stacker") — deploying one project locally
+/// would recreate/destroy another project's containers, and `down` would
+/// report unrelated projects' containers as orphans of the "stacker"
+/// project. See GH issue #235.
+pub fn local_compose_project_name(config: &StackerConfig) -> String {
+    let identity = config
+        .project
+        .identity
+        .clone()
+        .unwrap_or_else(|| config.name.clone());
+    sanitize_stack_code(&identity)
 }
 
 pub struct LocalDeploy;
@@ -721,10 +742,12 @@ impl DeployStrategy for LocalDeploy {
         }
 
         let compose_path = context.compose_path.to_string_lossy().to_string();
+        let project_name = local_compose_project_name(config);
 
         // Pre-flight: catch host port conflicts before docker compose up so the
         // error is actionable rather than buried in Docker daemon output.
-        let port_conflicts = check_local_host_port_conflicts(&context.compose_path, executor);
+        let port_conflicts =
+            check_local_host_port_conflicts(&context.compose_path, &project_name, executor);
         if !port_conflicts.is_empty() {
             return Err(CliError::DeployFailed {
                 target: DeployTarget::Local,
@@ -737,6 +760,9 @@ impl DeployStrategy for LocalDeploy {
 
         let (cmd, base_args) = resolve_compose_cmd(executor);
         let mut args: Vec<String> = base_args.iter().map(|s| s.to_string()).collect();
+
+        args.push("-p".into());
+        args.push(project_name);
 
         if let Some(ref env_file) = config.env_file {
             let env_file_path = if env_file.is_absolute() {
@@ -790,6 +816,9 @@ impl DeployStrategy for LocalDeploy {
 
         let (cmd, base_args) = resolve_compose_cmd(executor);
         let mut args: Vec<String> = base_args.iter().map(|s| s.to_string()).collect();
+
+        args.push("-p".into());
+        args.push(local_compose_project_name(config));
 
         if let Some(ref env_file) = config.env_file {
             let env_file_path = if env_file.is_absolute() {
@@ -1051,6 +1080,7 @@ impl DeployStrategy for CloudDeploy {
                             config,
                             &context.compose_path,
                         )?;
+                    stacker_client::require_app_image_for_remote_deploy(&project_config)?;
                     let mut project_body = stacker_client::build_project_body(&project_config);
                     if let Some(bundle) = &context.config_bundle {
                         stacker_client::attach_config_bundle_to_project_body(
@@ -1334,6 +1364,46 @@ impl DeployStrategy for CloudDeploy {
                     project_id: project_id.map(|id| id as i64),
                     server_name: effective_server_name,
                 });
+            }
+        }
+
+        // Pre-flight: reject a server type Hetzner can't create in the chosen
+        // region BEFORE the Terraform container runs, so we fail fast with a
+        // clear message instead of a swallowed "unsupported location" Terraform
+        // error that surfaces only as a paused deploy. Mirrors the server-side
+        // guard in the deploy route — both call the shared connector.
+        if let Some(cloud_cfg) = &config.deploy.cloud {
+            if matches!(
+                cloud_cfg.provider,
+                crate::cli::config_parser::CloudProvider::Hetzner
+            ) {
+                if let Some(server_type) =
+                    cloud_cfg.size.as_deref().filter(|s| !s.trim().is_empty())
+                {
+                    if let Some(token) = first_non_empty_env(cloud_env::token_env_vars("htz")) {
+                        let base_url = crate::connectors::hetzner::api_base_url();
+                        let region = cloud_cfg.region.clone();
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .map_err(|e| CliError::DeployFailed {
+                                target: DeployTarget::Cloud,
+                                reason: format!("Failed to initialize async runtime: {}", e),
+                            })?;
+                        rt.block_on(
+                            crate::connectors::hetzner::validate_server_type_availability(
+                                &base_url,
+                                &token,
+                                server_type,
+                                region.as_deref(),
+                            ),
+                        )
+                        .map_err(|reason| CliError::DeployFailed {
+                            target: DeployTarget::Cloud,
+                            reason,
+                        })?;
+                    }
+                }
             }
         }
 
@@ -1872,6 +1942,13 @@ pub(crate) fn resolve_docker_registry_credentials(
     }
     if let Some(s) = server {
         creds.insert("docker_registry".to_string(), serde_json::Value::String(s));
+    } else {
+        // Always send docker_registry so the install service overrides any
+        // regional Vault defaults (e.g. Aliyun) with Docker Hub (empty string).
+        creds.insert(
+            "docker_registry".to_string(),
+            serde_json::Value::String(String::new()),
+        );
     }
 
     creds
@@ -1909,7 +1986,7 @@ fn build_remote_deploy_payload(config: &StackerConfig) -> serde_json::Value {
         .unwrap_or_else(|| "nbg1".to_string());
     let server = cloud
         .and_then(|c| c.size.clone())
-        .unwrap_or_else(|| "cpx11".to_string());
+        .unwrap_or_else(|| "cx23".to_string());
     let stack_code = config
         .project
         .identity
@@ -2215,6 +2292,46 @@ fn deploy_to_intranet_server(
         });
     }
 
+    // 1b. Pre-flight: verify Docker is installed on the remote server.
+    // Fail fast with an actionable message instead of letting docker compose
+    // fail later with a cryptic error.
+    {
+        let docker_check = std::process::Command::new("ssh")
+            .args(&ssh_args)
+            .arg(&user_at_host)
+            .arg("docker --version 2>/dev/null && docker compose version 2>/dev/null")
+            .output()
+            .map_err(|e| CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: format!("Failed to run ssh: {}", e),
+            })?;
+
+        let docker_ok = docker_check.status.success()
+            && !String::from_utf8_lossy(&docker_check.stdout)
+                .trim()
+                .is_empty();
+
+        if !docker_ok {
+            return Err(CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: format!(
+                    "Docker is not installed on {}.\n\
+                     \n\
+                     Install Docker and Docker Compose on the server, then retry:\n\
+                     \n\
+                       ssh -i {} -p {} {} 'curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker {}'\n\
+                     \n\
+                     After installing, log out and back in (or run `newgrp docker`), then retry the deploy.",
+                    server_cfg.host,
+                    ssh_key_path.display(),
+                    server_cfg.port,
+                    user_at_host,
+                    server_cfg.user,
+                ),
+            });
+        }
+    }
+
     // 2. Sync project files to remote (rsync preferred, tar+ssh fallback)
     let project_src = format!("{}/", context.project_dir.display());
     let remote_dest = format!("{}:{}/", user_at_host, remote_dir_abs);
@@ -2471,6 +2588,7 @@ impl DeployStrategy for ServerDeploy {
             config,
             &context.compose_path,
         )?;
+        stacker_client::require_app_image_for_remote_deploy(&project_config)?;
         let mut project_body = stacker_client::build_project_body(&project_config);
         if let Some(bundle) = &context.config_bundle {
             stacker_client::attach_config_bundle_to_project_body(&mut project_body, bundle);
@@ -2713,7 +2831,7 @@ fn resolve_ssh_key_path_with_home(path: &Path, home_dir: Option<&Path>) -> PathB
     path.to_path_buf()
 }
 
-fn resolve_ssh_key_path(path: &Path) -> PathBuf {
+pub(crate) fn resolve_ssh_key_path(path: &Path) -> PathBuf {
     let home_dir = std::env::var_os("HOME").map(PathBuf::from);
     resolve_ssh_key_path_with_home(path, home_dir.as_deref())
 }
@@ -3055,7 +3173,7 @@ mod tests {
         let payload = serde_json::json!({
             "provider": "htz",
             "region": "nbg1",
-            "server": "cpx11",
+            "server": "cx23",
             "os": "ubuntu-22.04",
             "stack_code": "demo",
             "selected_plan": "free",
@@ -3073,7 +3191,7 @@ mod tests {
         let payload = serde_json::json!({
             "provider": "htz",
             "region": "nbg1",
-            "server": "cpx11",
+            "server": "cx23",
             "os": "ubuntu-22.04",
             "commonDomain": "example.com",
             "stack_code": "",
@@ -3094,7 +3212,7 @@ mod tests {
         let payload = serde_json::json!({
             "provider": "htz",
             "region": "nbg1",
-            "server": "cpx11",
+            "server": "cx23",
             "os": "ubuntu-22.04",
             "commonDomain": "localhost",
             "stack_code": "demo-stack",
@@ -3338,6 +3456,72 @@ mod tests {
         assert!(args.contains(&"--build".to_string()));
     }
 
+    // Regression test for GH issue #235: without an explicit `-p`, Compose
+    // derives the project name from the compose file's containing directory
+    // — since every project's compose lives under `.stacker/`, every
+    // project defaulted to the same Compose project ("stacker"), so
+    // deploying project B would recreate/destroy project A's containers.
+    #[test]
+    fn test_local_deploy_namespaces_compose_project_by_identity() {
+        let config = ConfigBuilder::new().name("Miniflux Prod").build().unwrap();
+        let context = sample_context(false);
+        let executor = MockExecutor::success();
+        let strategy = LocalDeploy;
+
+        strategy.deploy(&config, &context, &executor).unwrap();
+
+        let args = executor.last_args();
+        let p_index = args
+            .iter()
+            .position(|a| a == "-p")
+            .expect("docker compose up should pass -p <project-name>");
+        assert_eq!(
+            args.get(p_index + 1).map(String::as_str),
+            Some("miniflux-prod"),
+            "project name should be derived from stacker.yml's name/identity, not the compose \
+             file's directory, got args: {:?}",
+            args
+        );
+    }
+
+    #[test]
+    fn test_local_deploy_uses_project_identity_over_name_for_project_name() {
+        let config = ConfigBuilder::new()
+            .name("stacker") // matches the old universal default — must not collide
+            .project_identity("miniflux-blue")
+            .build()
+            .unwrap();
+        let context = sample_context(false);
+        let executor = MockExecutor::success();
+        let strategy = LocalDeploy;
+
+        strategy.deploy(&config, &context, &executor).unwrap();
+
+        let args = executor.last_args();
+        let p_index = args.iter().position(|a| a == "-p").unwrap();
+        assert_eq!(
+            args.get(p_index + 1).map(String::as_str),
+            Some("miniflux-blue")
+        );
+    }
+
+    #[test]
+    fn test_local_destroy_uses_same_project_name_as_deploy() {
+        let config = ConfigBuilder::new().name("ntfy").build().unwrap();
+        let context = sample_context(false);
+        let executor = MockExecutor::success();
+        let strategy = LocalDeploy;
+
+        strategy.destroy(&config, &context, &executor).unwrap();
+
+        let args = executor.last_args();
+        let p_index = args
+            .iter()
+            .position(|a| a == "-p")
+            .expect("docker compose down should pass -p <project-name>");
+        assert_eq!(args.get(p_index + 1).map(String::as_str), Some("ntfy"));
+    }
+
     #[test]
     fn test_local_deploy_failure() {
         let config = ConfigBuilder::new().name("local-app").build().unwrap();
@@ -3535,6 +3719,19 @@ mod tests {
         assert_eq!(
             creds.get("docker_registry").and_then(|v| v.as_str()),
             Some("docker.io")
+        );
+    }
+
+    #[test]
+    fn test_resolve_docker_registry_credentials_sends_empty_when_no_config() {
+        let config = ConfigBuilder::new().name("public-app").build().unwrap();
+
+        let creds = resolve_docker_registry_credentials(&config);
+        assert!(creds.get("docker_username").is_none());
+        assert!(creds.get("docker_password").is_none());
+        assert_eq!(
+            creds.get("docker_registry").and_then(|v| v.as_str()),
+            Some("")
         );
     }
 
@@ -3744,7 +3941,7 @@ services:
     #[test]
     fn test_check_local_host_port_conflicts_free_port() {
         use std::io::Write;
-        // Pick an ephemeral port that should be free
+        // Use a high ephemeral port unlikely to be occupied by another process
         let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
         let free_port = listener.local_addr().unwrap().port();
         drop(listener); // release it
@@ -3758,7 +3955,7 @@ services:
         .unwrap();
 
         let executor = MockExecutor::success();
-        let conflicts = check_local_host_port_conflicts(tmp.path(), &executor);
+        let conflicts = check_local_host_port_conflicts(tmp.path(), "myproject", &executor);
         assert!(
             conflicts.is_empty(),
             "expected no conflicts for free port {}: {:?}",
@@ -3788,7 +3985,7 @@ services:
         let ps_output = format!("0.0.0.0:{}->80/tcp", port);
         let executor = MockExecutor::success_with_stdout(&ps_output);
 
-        let conflicts = check_local_host_port_conflicts(tmp.path(), &executor);
+        let conflicts = check_local_host_port_conflicts(tmp.path(), "myproject", &executor);
         drop(listener);
         assert!(
             conflicts.is_empty(),
@@ -3817,7 +4014,7 @@ services:
         // Simulate `docker compose ps` returning empty (no own containers on this port)
         let executor = MockExecutor::success_with_stdout("");
 
-        let conflicts = check_local_host_port_conflicts(tmp.path(), &executor);
+        let conflicts = check_local_host_port_conflicts(tmp.path(), "myproject", &executor);
         drop(listener);
         assert!(
             !conflicts.is_empty(),

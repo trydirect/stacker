@@ -6,6 +6,12 @@ use actix_web::{delete, get, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 
+use crate::connectors::config::HetznerConfig;
+use crate::connectors::hetzner::{
+    HetznerCloudClient, HetznerCloudConnector, HetznerSnapshotTarget,
+};
+use crate::connectors::user_service::UserServiceConnector;
+
 /// Preview what would be deleted if the server is removed.
 /// Returns: ssh_key_shared, affected_deployments, agent_count
 #[tracing::instrument(name = "Preview server deletion impact.", skip_all)]
@@ -78,6 +84,7 @@ pub async fn item(
     path: web::Path<(i32,)>,
     pg_pool: web::Data<PgPool>,
     vault_client: web::Data<VaultClient>,
+    user_service: web::Data<Arc<dyn UserServiceConnector>>,
 ) -> Result<impl Responder> {
     let (id,) = path.into_inner();
 
@@ -120,7 +127,40 @@ pub async fn item(
     if let Ok(Some(deployment)) =
         db::deployment::fetch_by_project_id(pg_pool.get_ref(), server.project_id).await
     {
-        // Delete agent record
+        // 3a. Stop daily billing for deployment_daily authorizations
+        if let Ok(Some(auth)) = db::marketplace_billing::find_by_deployment_hash(
+            pg_pool.get_ref(),
+            &deployment.deployment_hash,
+        )
+        .await
+        {
+            if auth.billing_cycle.as_deref() == Some("deployment_daily")
+                && auth.server_deleted_at.is_none()
+            {
+                tracing::info!(
+                    "Marking deployment_daily authorization {} as server_deleted",
+                    auth.authorization_id
+                );
+                if let Err(err) = db::marketplace_billing::mark_server_deleted(
+                    pg_pool.get_ref(),
+                    &auth.authorization_id,
+                )
+                .await
+                {
+                    tracing::warn!("mark_server_deleted error: {}", err);
+                }
+                // Void remaining hold
+                let service_token = std::env::var("STACKER_SERVICE_TOKEN").unwrap_or_default();
+                if let Err(err) = user_service
+                    .void_install_charge(&service_token, &auth.authorization_id, "server_deleted")
+                    .await
+                {
+                    tracing::warn!("void_install_charge after server delete failed: {}", err);
+                }
+            }
+        }
+
+        // 3b. Delete agent record
         if let Ok(Some(agent)) =
             db::agent::fetch_by_deployment_hash(pg_pool.get_ref(), &deployment.deployment_hash)
                 .await

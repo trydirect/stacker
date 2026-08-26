@@ -1,7 +1,6 @@
 target
 .idea/
 files
-access_control.conf
 configuration.yaml
 configuration.yaml.backup
 configuration.yaml.orig
@@ -17,3 +16,5 @@ plan/
 .stacker
 done.txt
 post-deploy-ran.txt
+
+bake/

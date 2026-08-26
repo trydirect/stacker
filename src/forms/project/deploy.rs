@@ -80,6 +80,14 @@ pub struct Deploy {
     /// Each string is a port number or "port/protocol" (e.g. "8000" or "8000/tcp").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) public_ports: Option<Vec<String>>,
+
+    /// Reverse-proxy routing domains (from `proxy.domains` in stacker.yml),
+    /// forwarded verbatim to the Install Service for config-file proxies
+    /// (caddy Caddyfile, nginx conf.d). Pass-through JSON array of
+    /// `{domain, upstream, ssl}`. Traefik routes via container labels and does
+    /// not use this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) proxy_domains: Option<Value>,
 }
 
 impl std::fmt::Debug for Deploy {

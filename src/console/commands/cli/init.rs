@@ -94,7 +94,7 @@ pub fn full_config_reference_example() -> &'static str {
 #     # orchestrator: local | remote
 #     orchestrator: "remote"
 #     region: "nbg1"
-#     size: "cpx11"
+#     size: "cx23"
 #     # install_image: "trydirect/install-service:latest" # local orchestrator only
 #     # remote_payload_file: "./stacker.remote.deploy.json" # remote orchestrator request payload
 #     # ssh_key: "~/.ssh/id_rsa"
@@ -131,6 +131,7 @@ pub fn full_config_reference_example() -> &'static str {
 #   # pre_build: "./scripts/pre-build.sh"
 #   # post_deploy: "./scripts/post-deploy.sh"
 #   # on_failure: "./scripts/on-failure.sh"
+#   # notify: true    # terminal/desktop notification on deploy finish
 # -----------------------------------------------------------------------------"#
 }
 
@@ -307,12 +308,12 @@ fn default_cloud_region(provider: &str) -> &'static str {
 
 fn default_cloud_size(provider: &str) -> &'static str {
     match provider {
-        "hetzner" => "cpx11",
+        "hetzner" => "cx23",
         "digitalocean" => "s-1vcpu-1gb",
         "linode" => "g6-nanode-1",
         "vultr" => "vc2-1c-1gb",
         "aws" => "t3.micro",
-        _ => "cpx11",
+        _ => "cx23",
     }
 }
 
@@ -811,7 +812,7 @@ fn generate_config_template_path(
     Ok(config_path.to_path_buf())
 }
 
-fn serialize_generated_config(config: &StackerConfig) -> Result<String, CliError> {
+pub fn serialize_generated_config(config: &StackerConfig) -> Result<String, CliError> {
     let mut value = serde_yaml::to_value(config)
         .map_err(|e| CliError::GeneratorError(format!("Failed to serialize config: {e}")))?;
 
@@ -822,7 +823,7 @@ fn serialize_generated_config(config: &StackerConfig) -> Result<String, CliError
         .map_err(|e| CliError::GeneratorError(format!("Failed to serialize config: {e}")))
 }
 
-fn prune_generated_config_value(value: &mut serde_yaml::Value) {
+pub fn prune_generated_config_value(value: &mut serde_yaml::Value) {
     match value {
         serde_yaml::Value::Mapping(map) => {
             let keys = map.keys().cloned().collect::<Vec<_>>();
@@ -857,7 +858,7 @@ fn is_noise_generated_config_value(value: &serde_yaml::Value) -> bool {
     }
 }
 
-fn remove_disabled_generated_ai_section(value: &mut serde_yaml::Value) {
+pub fn remove_disabled_generated_ai_section(value: &mut serde_yaml::Value) {
     let serde_yaml::Value::Mapping(root) = value else {
         return;
     };
@@ -1658,7 +1659,10 @@ fn convert_compose_to_stacker(ai_output: &str, repo_name: &str) -> Option<Stacke
         env_file: None,
         env: HashMap::new(),
         config_contract: crate::cli::config_parser::ConfigContract::default(),
+        pipes: Vec::new(),
         origin: crate::cli::config_parser::ConfigOrigin::UserAuthored,
+        // `init` always writes an explicit `app:` section for the detected app.
+        app_present: true,
     };
 
     // Strip port ranges
@@ -2024,8 +2028,9 @@ impl CallableTrait for InitCommand {
             if self.with_cloud {
                 eprintln!("☁ Running cloud setup wizard...");
                 let path_str = config_path.to_string_lossy().to_string();
-                let applied =
-                    crate::console::commands::cli::config::run_setup_cloud_interactive(&path_str)?;
+                let applied = crate::console::commands::cli::config::run_setup_cloud_interactive(
+                    &path_str, None,
+                )?;
                 for item in applied {
                     eprintln!("  - {}", item);
                 }
@@ -2355,7 +2360,8 @@ mod tests {
         let path = generate_config(dir.path(), None, false, false, false).unwrap();
         let rendered = std::fs::read_to_string(&path).unwrap();
         let issues =
-            crate::console::commands::cli::config::run_validate(&path.to_string_lossy()).unwrap();
+            crate::console::commands::cli::config::run_validate(&path.to_string_lossy(), None)
+                .unwrap();
 
         assert_eq!(issues, Vec::<String>::new());
         assert!(rendered.contains("target: local"));

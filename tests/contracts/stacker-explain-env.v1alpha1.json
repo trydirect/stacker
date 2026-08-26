@@ -3,8 +3,8 @@
   "deploymentHash": "deployment_state_online",
   "appCode": "device-api",
   "localAuthoringEnvPath": "docker/prod/.env",
-  "runtimeEnvPath": "/home/trydirect/project/.env",
-  "runtimeComposePath": "/home/trydirect/project/docker-compose.yml",
+  "runtimeEnvPath": "/home/trydirect/test-project/.env",
+  "runtimeComposePath": "/home/trydirect/test-project/docker-compose.yml",
   "layers": [
     {
       "name": "base",
@@ -26,7 +26,7 @@
     }
   ],
   "destination": {
-    "path": "/home/trydirect/project/.env",
+    "path": "/home/trydirect/test-project/.env",
     "writePolicy": "drift-protected",
     "driftProtection": true
   },

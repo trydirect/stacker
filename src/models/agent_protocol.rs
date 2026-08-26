@@ -38,7 +38,7 @@ pub struct StepResultMsg {
 }
 
 /// Retry policy configuration for step execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RetryPolicy {
     pub max_retries: u32,
     pub backoff_base_ms: u64,

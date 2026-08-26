@@ -27,6 +27,36 @@ pub struct Application {
     /// Default config file templates from app_var (with attachment_path)
     #[serde(default)]
     pub default_config_files: Option<serde_json::Value>,
+    /// Member services for a multi-service stack catalog entry (kind == "stack").
+    /// Present only when the catalog code resolves to a stack rather than a
+    /// single app; each entry carries its own real container image.
+    #[serde(default)]
+    pub services: Option<Vec<CatalogService>>,
+}
+
+/// A single member service of a stack catalog entry (from /applications/catalog
+/// for a stack code). Its `docker_image` is the member app's real container
+/// image, never the stack's cloud OS image.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogService {
+    #[serde(rename = "_id", default)]
+    pub id: Option<i64>,
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(rename = "type", default)]
+    pub service_type: Option<String>,
+    #[serde(default)]
+    pub docker_image: Option<String>,
+    #[serde(default)]
+    pub default_ports: Option<serde_json::Value>,
+    #[serde(default)]
+    pub default_env: Option<serde_json::Value>,
+    #[serde(default)]
+    pub default_config_files: Option<serde_json::Value>,
 }
 
 impl UserServiceClient {
@@ -216,5 +246,6 @@ fn application_from_catalog(item: serde_json::Value) -> Option<Application> {
         default_env: None,
         default_ports: None,
         default_config_files: None,
+        services: None,
     })
 }

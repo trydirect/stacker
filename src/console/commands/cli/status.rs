@@ -4,7 +4,8 @@ use crate::cli::config_parser::{CloudOrchestrator, DeployTarget, ProxyType, Stac
 use crate::cli::credentials::{CredentialsManager, StoredCredentials};
 use crate::cli::error::CliError;
 use crate::cli::install_runner::{CommandExecutor, CommandOutput, ShellExecutor};
-use crate::cli::local_compose::resolve_local_compose_path;
+use crate::cli::local_compose::{resolve_local_compose_path, resolve_local_compose_project_name};
+use crate::cli::notify;
 use crate::cli::stacker_client::{self, DeploymentStatusInfo, ServerInfo, StackerClient};
 use crate::console::commands::cli::ssh_key::{format_ssh_command, local_backup_private_key_path};
 use crate::console::commands::CallableTrait;
@@ -23,18 +24,30 @@ const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 pub struct StatusCommand {
     pub json: bool,
     pub watch: bool,
+    pub notify: bool,
 }
 
 impl StatusCommand {
-    pub fn new(json: bool, watch: bool) -> Self {
-        Self { json, watch }
+    pub fn new(json: bool, watch: bool, notify: bool) -> Self {
+        Self {
+            json,
+            watch,
+            notify,
+        }
     }
 }
 
 /// Build `docker compose ps` arguments.
-pub fn build_status_args(compose_path: &str, json: bool) -> Vec<String> {
+///
+/// `project_name` must be passed via `-p` — without it Compose falls back
+/// to the compose file's directory basename, `.stacker` for every project,
+/// so `stacker status` for one project could report another, unrelated
+/// project's containers under the same shared default scope. See GH #235.
+pub fn build_status_args(compose_path: &str, project_name: &str, json: bool) -> Vec<String> {
     let mut args = vec![
         "compose".to_string(),
+        "-p".to_string(),
+        project_name.to_string(),
         "-f".to_string(),
         compose_path.to_string(),
         "ps".to_string(),
@@ -57,7 +70,8 @@ pub fn run_status(
     let compose_path = resolve_local_compose_path(project_dir)?;
 
     let compose_str = compose_path.to_string_lossy().to_string();
-    let args = build_status_args(&compose_str, json);
+    let project_name = resolve_local_compose_project_name(project_dir);
+    let args = build_status_args(&compose_str, &project_name, json);
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
     let output = executor.execute("docker", &args_refs)?;
@@ -145,6 +159,27 @@ fn emergency_ssh_command(server: &ServerInfo) -> Option<String> {
         ip,
         ssh_port,
     ))
+}
+
+/// Formats the main `app:` container as a "Services" list entry, mirroring
+/// how `config.services` entries are printed. Returns `None` when the config
+/// carries no real `app:` section (services-only stacks), so a phantom `app`
+/// line never appears.
+fn app_service_line(config: &StackerConfig) -> Option<String> {
+    let app = &config.app;
+    let app_declared = config.app_present
+        || app.image.is_some()
+        || app.dockerfile.is_some()
+        || app.build.is_some();
+    if !app_declared {
+        return None;
+    }
+    let ports_str = if app.ports.is_empty() {
+        String::new()
+    } else {
+        format!(" (ports: {})", app.ports.join(", "))
+    };
+    Some(format!("• app{}", ports_str))
 }
 
 /// Pretty-print a deployment status with optional server/config context.
@@ -276,8 +311,12 @@ fn print_deployment_status_rich(info: &DeploymentStatusInfo, json: bool, ctx: &S
         let srv_ip = ctx.server.and_then(|s| s.srv_ip.as_deref());
 
         // Services
-        if !config.services.is_empty() {
+        let app_line = app_service_line(config);
+        if app_line.is_some() || !config.services.is_empty() {
             println!("\n── Services ───────────────────────────────");
+            if let Some(line) = app_line {
+                println!("  {}", line);
+            }
             for svc in &config.services {
                 let ports_str = if svc.ports.is_empty() {
                     String::new()
@@ -416,7 +455,11 @@ fn containers_signature(containers: &[serde_json::Value]) -> String {
 }
 
 /// Query remote deployment status from the Stacker server, optionally watching.
-fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn run_remote_status(
+    json: bool,
+    watch: bool,
+    notify: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Load stacker.yml to find project name
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
@@ -433,6 +476,10 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
 
     let project_name = resolve_project_name(&config);
     let deploy_target = config.deploy.target;
+
+    // In --watch mode, notify by default (the user is waiting for completion).
+    // In single-query mode, only notify when explicitly requested.
+    let should_notify = watch || notify || config.hooks.notify;
 
     // Load credentials
     let cred_manager = CredentialsManager::with_default_store();
@@ -516,6 +563,10 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
                             }
 
                             if is_terminal(&info.status) {
+                                if should_notify {
+                                    let success = info.status == "completed";
+                                    notify::deploy_notify(success, &project_name);
+                                }
                                 if !json {
                                     eprintln!(
                                         "\nDeployment reached terminal status: {}",
@@ -642,6 +693,10 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
                         }
 
                         if is_terminal(&info.status) {
+                            if should_notify {
+                                let success = info.status == "completed";
+                                notify::deploy_notify(success, &project_name);
+                            }
                             if !json {
                                 eprintln!("\nDeployment reached terminal status: {}", info.status);
                             }
@@ -705,7 +760,7 @@ impl CallableTrait for StatusCommand {
 
         if is_remote_deployment(&project_dir) {
             // Remote deployment — query Stacker server
-            run_remote_status(self.json, self.watch)?;
+            run_remote_status(self.json, self.watch, self.notify)?;
         } else {
             // Local deployment — docker compose ps
             let executor = ShellExecutor;
@@ -735,15 +790,60 @@ mod tests {
     // cargo runs lib tests in parallel threads.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    // Regression tests for GH issue #219: `stacker status --watch` omits the
+    // main `app` container from the printed "Services" list — only
+    // `config.services` (db/redis/sidekiq-style backend services) were shown.
+    #[test]
+    fn test_app_service_line_included_for_dockerfile_app() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("mastodon")
+            .app_dockerfile("Dockerfile")
+            .build()
+            .unwrap();
+
+        let line = app_service_line(&config).expect("declared app: section should be listed");
+        assert_eq!(line, "• app");
+    }
+
+    #[test]
+    fn test_app_service_line_includes_ports() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("mastodon")
+            .app_image("myorg/mastodon:latest")
+            .build()
+            .unwrap();
+        let mut config = config;
+        config.app.ports = vec!["127.0.0.1:3000:3000".to_string()];
+
+        let line = app_service_line(&config).unwrap();
+        assert_eq!(line, "• app (ports: 127.0.0.1:3000:3000)");
+    }
+
+    #[test]
+    fn test_app_service_line_absent_for_services_only_stack() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("services-only")
+            .build()
+            .unwrap();
+
+        assert!(
+            app_service_line(&config).is_none(),
+            "a config with no declared app: section should not synthesize a phantom app line"
+        );
+    }
+
     #[test]
     fn test_status_local_constructs_query() {
-        let args = build_status_args("/path/compose.yml", false);
-        assert_eq!(args, vec!["compose", "-f", "/path/compose.yml", "ps"]);
+        let args = build_status_args("/path/compose.yml", "myproject", false);
+        assert_eq!(
+            args,
+            vec!["compose", "-p", "myproject", "-f", "/path/compose.yml", "ps"]
+        );
     }
 
     #[test]
     fn test_status_json_flag() {
-        let args = build_status_args("/path/compose.yml", true);
+        let args = build_status_args("/path/compose.yml", "myproject", true);
         assert!(args.contains(&"--format".to_string()));
         assert!(args.contains(&"json".to_string()));
     }
@@ -809,12 +909,65 @@ mod tests {
 
         let calls = executor.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
+        let f_index = calls[0].iter().position(|a| a == "-f").unwrap();
         assert_eq!(
-            calls[0][2],
+            calls[0][f_index + 1],
             dir.path()
                 .join("docker/local/compose.yml")
                 .to_string_lossy()
         );
+    }
+
+    // Regression test for GH issue #235: `stacker status` previously never
+    // passed `-p <project>`, so it queried Compose's shared directory-basename
+    // default scope ("stacker") — the same project name every project's
+    // `.stacker/` compose file falls back to — risking a status report that
+    // shows another, unrelated project's containers.
+    #[test]
+    fn test_status_namespaces_compose_project_by_identity() {
+        struct MockExec {
+            calls: std::sync::Mutex<Vec<Vec<String>>>,
+        }
+
+        impl CommandExecutor for MockExec {
+            fn execute(&self, _p: &str, args: &[&str]) -> Result<CommandOutput, CliError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(args.iter().map(|arg| arg.to_string()).collect());
+                Ok(CommandOutput {
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                })
+            }
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".stacker")).unwrap();
+        std::fs::write(
+            dir.path().join(".stacker/docker-compose.yml"),
+            "services: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(DEFAULT_CONFIG_FILE),
+            "name: Miniflux Prod\ndeploy:\n  target: local\n",
+        )
+        .unwrap();
+
+        let executor = MockExec {
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+
+        run_status(dir.path(), false, &executor).unwrap();
+
+        let calls = executor.calls.lock().unwrap();
+        let p_index = calls[0]
+            .iter()
+            .position(|a| a == "-p")
+            .expect("docker compose ps should pass -p <project-name>");
+        assert_eq!(calls[0].get(p_index + 1).map(String::as_str), Some("miniflux-prod"));
     }
 
     #[test]

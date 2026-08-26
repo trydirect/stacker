@@ -26,8 +26,9 @@
     }
   },
   "runtime": {
-    "composePath": "/home/trydirect/project/docker-compose.yml",
-    "envPath": "/home/trydirect/project/.env"
+    "composePath": "/home/trydirect/syncopia/docker-compose.yml",
+    "envPath": "/home/trydirect/syncopia/.env",
+    "stackCode": "syncopia"
   },
   "apps": [
     {

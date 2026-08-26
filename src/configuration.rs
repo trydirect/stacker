@@ -34,6 +34,12 @@ pub struct Settings {
     pub marketplace_assets: MarketplaceAssetSettings,
     #[serde(default)]
     pub payouts: PayoutSettings,
+    /// Global kill switch for the per-install billing model.
+    /// When false (the default), `billing_cycle="per_install"` templates
+    /// behave as `one_time` — no authorize/capture, no ownership check via
+    /// the new gate. See migration `20260718130000`
+    #[serde(default = "Settings::default_per_install_billing_enabled")]
+    pub per_install_billing_enabled: bool,
 }
 
 impl std::fmt::Debug for Settings {
@@ -91,6 +97,7 @@ impl Default for Settings {
             deployment: DeploymentSettings::default(),
             marketplace_assets: MarketplaceAssetSettings::default(),
             payouts: PayoutSettings::default(),
+            per_install_billing_enabled: Self::default_per_install_billing_enabled(),
         }
     }
 }
@@ -118,6 +125,10 @@ impl Settings {
 
     fn default_casbin_reload_enabled() -> bool {
         true
+    }
+
+    fn default_per_install_billing_enabled() -> bool {
+        false
     }
 
     fn default_casbin_reload_interval_secs() -> u64 {
@@ -665,6 +676,10 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
     // Overlay Deployment settings with environment variables if present
     if let Ok(base_path) = std::env::var("DEPLOYMENT_CONFIG_BASE_PATH") {
         config.deployment.config_base_path = base_path;
+    }
+
+    if let Ok(enabled) = std::env::var("STACKER_PER_INSTALL_BILLING_ENABLED") {
+        config.per_install_billing_enabled = parse_bool_env(&enabled);
     }
 
     Ok(config)

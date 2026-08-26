@@ -22,6 +22,11 @@ const POSTGRES_STARTUP_RETRY_DELAY: Duration = Duration::from_secs(1);
 pub async fn spawn_bdd_app() -> Option<BddTestApp> {
     let mut configuration = get_configuration().expect("Failed to get configuration");
 
+    // Disable DockerHub connector in tests to skip Redis connection timeout
+    if let Some(ref mut cfg) = configuration.connectors.dockerhub_service {
+        cfg.enabled = false;
+    }
+
     // Start mock auth server (token-aware: "user-b" → User B, anything else → User A)
     let auth_listener =
         TcpListener::bind("127.0.0.1:0").expect("Failed to bind port for BDD auth server");
@@ -92,7 +97,11 @@ async fn configure_database(config: &DatabaseSettings) -> Result<PgPool, sqlx::E
     connection
         .execute(format!(r#"CREATE DATABASE "{}""#, config.database_name).as_str())
         .await?;
-    let pool = PgPool::connect(&config.connection_string()).await?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(32)
+        .acquire_timeout(std::time::Duration::from_secs(120))
+        .connect(&config.connection_string())
+        .await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
     Ok(pool)
 }
