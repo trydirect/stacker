@@ -3098,6 +3098,61 @@ impl StackerClient {
             .ok_or_else(|| CliError::ConfigValidation("Empty status response".to_string()))
     }
 
+    /// Delete a pipe template. `DELETE /api/v1/pipes/templates/{id}`.
+    /// Idempotent from the caller's view: a 404 (already gone) is treated as
+    /// success so `pipe apply --prune` can be re-run safely.
+    pub async fn delete_pipe_template(&self, template_id: &str) -> Result<(), CliError> {
+        let url = format!("{}/api/v1/pipes/templates/{}", self.base_url, template_id);
+        let resp = self
+            .http
+            .delete(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to delete pipe template: {}", e))
+            })?;
+        if resp.status().is_success() || resp.status().as_u16() == 404 {
+            return Ok(());
+        }
+        let status_code = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        Err(CliError::ConfigValidation(stacker_api_failure_with_message(
+            "Delete pipe template failed",
+            &format!("DELETE /api/v1/pipes/templates/{template_id}"),
+            status_code,
+            &body,
+            cli_debug_enabled(),
+        )))
+    }
+
+    /// Delete a pipe instance. `DELETE /api/v1/pipes/instances/{id}`.
+    /// 404 → treated as success (idempotent).
+    pub async fn delete_pipe_instance(&self, instance_id: &str) -> Result<(), CliError> {
+        let url = format!("{}/api/v1/pipes/instances/{}", self.base_url, instance_id);
+        let resp = self
+            .http
+            .delete(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to delete pipe instance: {}", e))
+            })?;
+        if resp.status().is_success() || resp.status().as_u16() == 404 {
+            return Ok(());
+        }
+        let status_code = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        Err(CliError::ConfigValidation(stacker_api_failure_with_message(
+            "Delete pipe instance failed",
+            &format!("DELETE /api/v1/pipes/instances/{instance_id}"),
+            status_code,
+            &body,
+            cli_debug_enabled(),
+        )))
+    }
+
     /// List pipe templates visible to the current user.
     ///
     /// `GET /api/v1/pipes/templates`

@@ -383,6 +383,80 @@ pub struct DomainConfig {
     pub upstream: String,
 }
 
+/// A declaratively-defined pipe (`pipes:` block in stacker.yml). This is the
+/// committable source of truth reconciled by `stacker pipe apply` / `pipe diff`
+/// against the deployed templates+instances. Fields mirror the `pipe create`
+/// flags so the imperative and declarative surfaces stay 1:1.
+///
+/// See `config/docs/PIPE_IAC_AND_RESILIENCE_PLAN.md` §5.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PipeSpec {
+    /// Unique pipe name (identity for reconcile).
+    pub name: String,
+    /// Source app code (container/service selector).
+    pub source: String,
+    /// Target app code.
+    pub target: String,
+    /// Source endpoint "METHOD /path".
+    pub source_endpoint: String,
+    /// Target endpoint "METHOD /path".
+    pub target_endpoint: String,
+    #[serde(default)]
+    pub source_fields: Vec<String>,
+    #[serde(default)]
+    pub target_fields: Vec<String>,
+    /// Trigger mode: manual | webhook | poll (default webhook, matching the CLI).
+    #[serde(default = "default_pipe_trigger")]
+    pub trigger: String,
+    /// Poll interval (seconds) when trigger = poll.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll_interval: Option<u32>,
+    /// Max delivery retries (→ pipe config).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_backoff_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_backoff_max_ms: Option<u64>,
+    /// Run another pipe (by name) on failure / success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_failure: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_success: Option<String>,
+}
+
+fn default_pipe_trigger() -> String {
+    "webhook".to_string()
+}
+
+impl PipeSpec {
+    /// Build the typed resilience/lifecycle config for this pipe (empty when no
+    /// retry/handler was declared, so it round-trips cleanly).
+    pub fn to_pipe_config(&self) -> crate::models::pipe_config::PipeConfig {
+        use crate::models::agent_protocol::RetryPolicy;
+        use crate::models::pipe_config::{HandlerRef, PipeConfig};
+
+        let d = RetryPolicy::default();
+        let retry = if self.retry.is_some()
+            || self.retry_backoff_ms.is_some()
+            || self.retry_backoff_max_ms.is_some()
+        {
+            Some(RetryPolicy {
+                max_retries: self.retry.unwrap_or(d.max_retries),
+                backoff_base_ms: self.retry_backoff_ms.unwrap_or(d.backoff_base_ms),
+                backoff_max_ms: self.retry_backoff_max_ms.unwrap_or(d.backoff_max_ms),
+            })
+        } else {
+            None
+        };
+        PipeConfig {
+            retry,
+            on_failure: self.on_failure.clone().map(HandlerRef::Pipe),
+            on_success: self.on_success.clone().map(HandlerRef::Pipe),
+        }
+    }
+}
+
 /// Docker registry credentials for pulling private images during deployment.
 ///
 /// TODO: Currently these credentials are passed through on every deploy (env vars or stacker.yml).
@@ -848,6 +922,11 @@ pub struct StackerConfig {
 
     #[serde(default)]
     pub config_contract: ConfigContract,
+
+    /// Declaratively-defined pipes reconciled by `stacker pipe apply` / `diff`.
+    /// Absent → empty, so existing configs are unaffected.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pipes: Vec<PipeSpec>,
 
     /// Provenance of this config. Not serialized — computed at load time.
     ///
@@ -1794,6 +1873,7 @@ impl ConfigBuilder {
             env_file: self.env_file,
             env: self.env,
             config_contract: ConfigContract::default(),
+            pipes: Vec::new(),
             origin: ConfigOrigin::UserAuthored,
             app_present,
         })
@@ -2356,6 +2436,65 @@ proxy:
         assert_eq!(config.proxy.domains[0].ssl, SslMode::Auto);
         assert_eq!(config.proxy.domains[0].upstream, "app:3000");
         assert_eq!(config.proxy.domains[1].ssl, SslMode::Off);
+    }
+
+    #[test]
+    fn test_parse_pipes_block() {
+        let yaml = r#"
+name: pipes-test
+pipes:
+  - name: apprise-to-ntfy
+    source: app
+    target: ntfy
+    source_endpoint: "GET /status"
+    target_endpoint: "POST /pipetest"
+    source_fields: [message]
+    target_fields: [message]
+    trigger: manual
+    retry: 5
+    retry_backoff_ms: 500
+    on_failure: oncall-notify
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert_eq!(config.pipes.len(), 1);
+        let p = &config.pipes[0];
+        assert_eq!(p.name, "apprise-to-ntfy");
+        assert_eq!(p.source_endpoint, "GET /status");
+        assert_eq!(p.trigger, "manual");
+        // The declared retry/handler flow into the typed PipeConfig …
+        let cfg = p.to_pipe_config();
+        let retry = cfg.retry.as_ref().expect("retry declared");
+        assert_eq!(retry.max_retries, 5);
+        assert_eq!(retry.backoff_base_ms, 500);
+        assert_eq!(retry.backoff_max_ms, 30_000); // default filled in
+        assert_eq!(
+            cfg.on_failure,
+            Some(crate::models::pipe_config::HandlerRef::Pipe("oncall-notify".into()))
+        );
+    }
+
+    #[test]
+    fn test_pipes_absent_defaults_empty_and_trigger_default() {
+        // No pipes: block → empty (back-compat). Minimal pipe → webhook trigger,
+        // empty PipeConfig (no retry/handlers declared).
+        let config = StackerConfig::from_str("name: no-pipes\n").unwrap();
+        assert!(config.pipes.is_empty());
+
+        let yaml = r#"
+name: t
+pipes:
+  - name: p
+    source: a
+    target: b
+    source_endpoint: "GET /x"
+    target_endpoint: "POST /y"
+"#;
+        let c = StackerConfig::from_str(yaml).unwrap();
+        assert_eq!(c.pipes[0].trigger, "webhook");
+        assert_eq!(
+            c.pipes[0].to_pipe_config(),
+            crate::models::pipe_config::PipeConfig::default()
+        );
     }
 
     #[test]

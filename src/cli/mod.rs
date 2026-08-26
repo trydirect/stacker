@@ -28,6 +28,7 @@ pub mod local_compose;
 pub mod local_pipe_store;
 pub mod ml_field_matcher;
 pub mod notify;
+pub mod pipe_apply;
 pub mod progress;
 pub mod proxy_manager;
 pub mod runtime;

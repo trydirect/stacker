@@ -1297,6 +1297,46 @@ enum PipeCommands {
         /// Pipe name (skips the interactive name prompt)
         #[arg(long)]
         name: Option<String>,
+        /// Max delivery retries before the pipe is marked failed (default 3)
+        #[arg(long)]
+        retry: Option<u32>,
+        /// Base backoff between retries, milliseconds (default 1000)
+        #[arg(long)]
+        retry_backoff_ms: Option<u64>,
+        /// Max backoff cap between retries, milliseconds (default 30000)
+        #[arg(long)]
+        retry_backoff_max_ms: Option<u64>,
+        /// Run another pipe (by name) when delivery fails after retries
+        #[arg(long)]
+        on_failure: Option<String>,
+        /// Run another pipe (by name) after a successful delivery
+        #[arg(long)]
+        on_success: Option<String>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Compare declaratively-defined pipes (`pipes:` in stacker.yml) against
+    /// what's deployed. Read-only; run `pipe apply` to reconcile.
+    Diff {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Reconcile the declared `pipes:` into the deployment (creates missing pipes).
+    Apply {
+        /// Signal intent to remove deployed pipes not in stacker.yml
+        #[arg(long)]
+        prune: bool,
+        /// Show what would change without creating anything
+        #[arg(long)]
+        dry_run: bool,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -1833,7 +1873,54 @@ fn resolved_config_environment(
     Ok(config.selected_environment(None))
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// `println!`/`print!` panic on write failure, including EPIPE when a
+/// downstream reader (e.g. `stacker agent logs | head`, or a command that
+/// errors out early like `stacker ai ask`) closes stdout before we're done
+/// writing. Unix tools conventionally exit quietly when that happens rather
+/// than dumping a panic backtrace, so swallow just that failure mode here.
+fn install_broken_pipe_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let is_broken_pipe = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(|s| s.contains("Broken pipe"))
+            .or_else(|| {
+                info.payload()
+                    .downcast_ref::<&str>()
+                    .map(|s| s.contains("Broken pipe"))
+            })
+            .unwrap_or(false);
+        if is_broken_pipe {
+            std::process::exit(0);
+        }
+        default_hook(info);
+    }));
+}
+
+/// Thin wrapper around `run()` so a closed downstream pipe (e.g.
+/// `stacker <cmd> | head`, or a piped command that exits early) is treated
+/// as a normal, quiet exit rather than an error — matching how `?`-propagated
+/// `io::Error`s would otherwise surface as a raw `Error: Os { code: 32, .. }`
+/// Debug dump from the default `Result`-returning `main` termination path.
+fn main() -> std::process::ExitCode {
+    install_broken_pipe_panic_hook();
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(err) => {
+            let is_broken_pipe = err
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::BrokenPipe);
+            if is_broken_pipe {
+                return std::process::ExitCode::SUCCESS;
+            }
+            eprintln!("Error: {:?}", err);
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => {
@@ -2532,6 +2619,11 @@ fn get_command(
                     source_fields,
                     target_fields,
                     name,
+                    retry,
+                    retry_backoff_ms,
+                    retry_backoff_max_ms,
+                    on_failure,
+                    on_success,
                     json,
                     deployment,
                 } => Box::new(pipe::PipeCreateCommand::new(
@@ -2546,9 +2638,23 @@ fn get_command(
                     source_fields,
                     target_fields,
                     name,
+                    retry,
+                    retry_backoff_ms,
+                    retry_backoff_max_ms,
+                    on_failure,
+                    on_success,
                     json,
                     deployment,
                 )),
+                PipeCommands::Diff { json, deployment } => {
+                    Box::new(pipe::PipeDiffCommand::new(json, deployment))
+                }
+                PipeCommands::Apply {
+                    prune,
+                    dry_run,
+                    json,
+                    deployment,
+                } => Box::new(pipe::PipeApplyCommand::new(prune, dry_run, json, deployment)),
                 PipeCommands::List { json, deployment } => {
                     Box::new(pipe::PipeListCommand::new(json, deployment))
                 }

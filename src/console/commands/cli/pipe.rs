@@ -2152,6 +2152,14 @@ pub struct PipeCreateCommand {
     pub source_fields: Vec<String>,
     pub target_fields: Vec<String>,
     pub name: Option<String>,
+    /// Retry policy for delivery, written into the pipe's `config` so the agent
+    /// can honor it. `None` on each → engine default (3 / 1000ms / 30000ms).
+    pub retry: Option<u32>,
+    pub retry_backoff_ms: Option<u64>,
+    pub retry_backoff_max_ms: Option<u64>,
+    /// Lifecycle handlers (another pipe by name) → pipe `config`.
+    pub on_failure: Option<String>,
+    pub on_success: Option<String>,
     pub json: bool,
     pub deployment: Option<String>,
 }
@@ -2170,6 +2178,11 @@ impl PipeCreateCommand {
         source_fields: Vec<String>,
         target_fields: Vec<String>,
         name: Option<String>,
+        retry: Option<u32>,
+        retry_backoff_ms: Option<u64>,
+        retry_backoff_max_ms: Option<u64>,
+        on_failure: Option<String>,
+        on_success: Option<String>,
         json: bool,
         deployment: Option<String>,
     ) -> Self {
@@ -2185,8 +2198,39 @@ impl PipeCreateCommand {
             source_fields,
             target_fields,
             name,
+            retry,
+            retry_backoff_ms,
+            retry_backoff_max_ms,
+            on_failure,
+            on_success,
             json,
             deployment,
+        }
+    }
+
+    /// Build the typed `PipeConfig` from the retry/handler flags (empty when no
+    /// flag was given, so existing behavior is unchanged).
+    fn pipe_config_from_flags(&self) -> crate::models::pipe_config::PipeConfig {
+        use crate::models::agent_protocol::RetryPolicy;
+        use crate::models::pipe_config::{HandlerRef, PipeConfig};
+
+        let default = RetryPolicy::default();
+        let retry = if self.retry.is_some()
+            || self.retry_backoff_ms.is_some()
+            || self.retry_backoff_max_ms.is_some()
+        {
+            Some(RetryPolicy {
+                max_retries: self.retry.unwrap_or(default.max_retries),
+                backoff_base_ms: self.retry_backoff_ms.unwrap_or(default.backoff_base_ms),
+                backoff_max_ms: self.retry_backoff_max_ms.unwrap_or(default.backoff_max_ms),
+            })
+        } else {
+            None
+        };
+        PipeConfig {
+            retry,
+            on_failure: self.on_failure.clone().map(HandlerRef::Pipe),
+            on_success: self.on_success.clone().map(HandlerRef::Pipe),
         }
     }
 }
@@ -2903,6 +2947,64 @@ mod selectable_operation_tests {
         assert_eq!(build_manual_field_mapping(&["x".into()], &[]), json!({}));
     }
 
+    /// Build a bare create command, overriding only the resilience flags.
+    fn create_cmd_with_retry(
+        retry: Option<u32>,
+        base: Option<u64>,
+        max: Option<u64>,
+        on_failure: Option<&str>,
+    ) -> PipeCreateCommand {
+        PipeCreateCommand::new(
+            "app".into(),
+            "ntfy".into(),
+            false,
+            false,
+            false,
+            false,
+            None,
+            None,
+            vec![],
+            vec![],
+            None,
+            retry,
+            base,
+            max,
+            on_failure.map(str::to_string),
+            None,
+            false,
+            None,
+        )
+    }
+
+    #[test]
+    fn pipe_config_from_flags_is_empty_without_flags() {
+        // No resilience flags → default (empty) config, so create is unchanged.
+        let cmd = create_cmd_with_retry(None, None, None, None);
+        assert_eq!(
+            cmd.pipe_config_from_flags(),
+            crate::models::pipe_config::PipeConfig::default()
+        );
+    }
+
+    #[test]
+    fn pipe_config_from_flags_builds_retry_and_handler() {
+        // A single --retry fills the rest of the policy from engine defaults.
+        let cmd = create_cmd_with_retry(Some(5), None, None, Some("oncall"));
+        let cfg = cmd.pipe_config_from_flags();
+        let retry = cfg.retry.as_ref().expect("retry set");
+        assert_eq!(retry.max_retries, 5);
+        assert_eq!(retry.backoff_base_ms, 1000); // default
+        assert_eq!(retry.backoff_max_ms, 30_000); // default
+        assert_eq!(
+            cfg.on_failure,
+            Some(crate::models::pipe_config::HandlerRef::Pipe("oncall".into()))
+        );
+        // And it merges into an existing config without clobbering other keys.
+        let merged = cfg.merge_into(Some(json!({ "retry_count": 3, "matching_mode": "manual" })));
+        assert_eq!(merged["retry"]["max_retries"], json!(5));
+        assert_eq!(merged["matching_mode"], json!("manual"));
+    }
+
     #[test]
     fn extract_operations_includes_html_forms_and_container() {
         let info = AgentCommandInfo {
@@ -3586,6 +3688,14 @@ impl CallableTrait for PipeCreateCommand {
                     })
                     .collect::<Vec<_>>());
             }
+        }
+
+        // Merge typed retry/handler settings (from --retry / --on-failure / …)
+        // into the config blob, preserving the matching metadata above. No-op
+        // when no resilience flag was given, so default behavior is unchanged.
+        let pipe_config = self.pipe_config_from_flags();
+        if pipe_config != crate::models::pipe_config::PipeConfig::default() {
+            config = pipe_config.merge_into(Some(config));
         }
 
         let template_request = CreatePipeTemplateApiRequest {
@@ -4361,8 +4471,324 @@ async fn run_local_target_adapter(
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// stacker pipe activate — activate a pipe instance
+// stacker pipe diff — compare declared `pipes:` vs deployed (read-only)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Normalize a deployed template's endpoint JSON (`{method,path}`) to
+/// "METHOD /path" for comparison with the declarative spec.
+fn deployed_endpoint_string(endpoint: &serde_json::Value) -> String {
+    let method = endpoint["method"].as_str().unwrap_or("GET");
+    let path = endpoint["path"].as_str().unwrap_or("/");
+    format!("{} {}", method.to_ascii_uppercase(), path)
+}
+
+pub struct PipeDiffCommand {
+    pub json: bool,
+    pub deployment: Option<String>,
+}
+
+impl PipeDiffCommand {
+    pub fn new(json: bool, deployment: Option<String>) -> Self {
+        Self { json, deployment }
+    }
+}
+
+impl CallableTrait for PipeDiffCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::cli::pipe_apply::{diff_pipes, plan_is_clean, DeployedPipe, PipeAction};
+
+        let project_dir = std::env::current_dir().map_err(CliError::Io)?;
+        let config_path = project_dir.join("stacker.yml");
+        let config = crate::cli::config_parser::StackerConfig::from_file(&config_path)
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to read stacker.yml: {e}")))?;
+
+        // Fetch deployed pipe templates for this deployment and reduce them to
+        // the comparable view.
+        let ctx = CliRuntime::new("pipe diff")?;
+        let deploy_ctx = resolve_deployment_context(&self.deployment, &ctx)?;
+        let hash = match &deploy_ctx {
+            DeploymentContext::Remote(hash) => hash.clone(),
+            DeploymentContext::Local => String::new(),
+        };
+        let pb = progress::spinner("Fetching deployed pipes...");
+        let templates = ctx
+            .block_on(ctx.client.list_pipe_templates(None, None))
+            .map_err(|e| {
+                progress::finish_error(&pb, "Failed to fetch deployed pipes");
+                e
+            })?;
+        progress::finish_success(&pb, "Fetched deployed pipes");
+        let _ = hash; // deployment scoping is applied server-side by auth/context
+
+        let deployed: Vec<DeployedPipe> = templates
+            .iter()
+            .map(|t| DeployedPipe {
+                name: t.name.clone(),
+                source_app: t.source_app_type.clone(),
+                target_app: t.target_app_type.clone(),
+                source_endpoint: deployed_endpoint_string(&t.source_endpoint),
+                target_endpoint: deployed_endpoint_string(&t.target_endpoint),
+            })
+            .collect();
+
+        let plan = diff_pipes(&config.pipes, &deployed);
+
+        if self.json {
+            let rows: Vec<serde_json::Value> = plan
+                .iter()
+                .map(|e| {
+                    let (action, changes) = match &e.action {
+                        PipeAction::Create => ("create", vec![]),
+                        PipeAction::Update { changes } => ("update", changes.clone()),
+                        PipeAction::Unchanged => ("unchanged", vec![]),
+                        PipeAction::Orphan => ("orphan", vec![]),
+                    };
+                    serde_json::json!({ "name": e.name, "action": action, "changes": changes })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "clean": plan_is_clean(&plan),
+                    "pipes": rows,
+                }))?
+            );
+            return Ok(());
+        }
+
+        if config.pipes.is_empty() && deployed.is_empty() {
+            println!("No pipes declared in stacker.yml and none deployed.");
+            return Ok(());
+        }
+
+        for e in &plan {
+            match &e.action {
+                PipeAction::Create => println!("  + {}  (create)", e.name),
+                PipeAction::Unchanged => println!("  = {}  (unchanged)", e.name),
+                PipeAction::Orphan => {
+                    println!("  - {}  (deployed but not declared; `apply --prune` to remove)", e.name)
+                }
+                PipeAction::Update { changes } => {
+                    println!("  ~ {}  (update)", e.name);
+                    for c in changes {
+                        println!("      {}", c);
+                    }
+                }
+            }
+        }
+
+        if plan_is_clean(&plan) {
+            println!("\n✓ In sync — declared pipes match what's deployed.");
+        } else {
+            println!("\nRun `stacker pipe apply` to reconcile.");
+        }
+        Ok(())
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// stacker pipe apply — reconcile declared `pipes:` into the deployment
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub struct PipeApplyCommand {
+    pub prune: bool,
+    pub dry_run: bool,
+    pub json: bool,
+    pub deployment: Option<String>,
+}
+
+impl PipeApplyCommand {
+    pub fn new(prune: bool, dry_run: bool, json: bool, deployment: Option<String>) -> Self {
+        Self {
+            prune,
+            dry_run,
+            json,
+            deployment,
+        }
+    }
+}
+
+impl CallableTrait for PipeApplyCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::cli::pipe_apply::{
+            diff_pipes, endpoint_to_json, field_mapping_for, DeployedPipe, PipeAction,
+        };
+
+        let project_dir = std::env::current_dir().map_err(CliError::Io)?;
+        let config_path = project_dir.join("stacker.yml");
+        let config = crate::cli::config_parser::StackerConfig::from_file(&config_path)
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to read stacker.yml: {e}")))?;
+
+        if config.pipes.is_empty() {
+            println!("No `pipes:` declared in stacker.yml — nothing to apply.");
+            return Ok(());
+        }
+
+        let ctx = CliRuntime::new("pipe apply")?;
+        let deploy_ctx = resolve_deployment_context(&self.deployment, &ctx)?;
+        let hash = match &deploy_ctx {
+            DeploymentContext::Remote(h) => h.clone(),
+            DeploymentContext::Local => {
+                return Err(CliError::ConfigValidation(
+                    "`pipe apply` targets a deployed stack; no active deployment was resolved."
+                        .into(),
+                )
+                .into())
+            }
+        };
+
+        let templates = ctx.block_on(ctx.client.list_pipe_templates(None, None))?;
+        let deployed: Vec<DeployedPipe> = templates
+            .iter()
+            .map(|t| DeployedPipe {
+                name: t.name.clone(),
+                source_app: t.source_app_type.clone(),
+                target_app: t.target_app_type.clone(),
+                source_endpoint: deployed_endpoint_string(&t.source_endpoint),
+                target_endpoint: deployed_endpoint_string(&t.target_endpoint),
+            })
+            .collect();
+
+        // Instances are only needed to prune orphans (delete instance → template).
+        let instances = if self.prune && !self.dry_run {
+            ctx.block_on(ctx.client.list_pipe_instances(&hash))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        let plan = diff_pipes(&config.pipes, &deployed);
+        let mut created = Vec::new();
+        let mut skipped_update = Vec::new();
+        let mut skipped_orphan = Vec::new();
+        let mut pruned = Vec::new();
+
+        for entry in &plan {
+            match &entry.action {
+                PipeAction::Unchanged => {}
+                PipeAction::Create => {
+                    let spec = config
+                        .pipes
+                        .iter()
+                        .find(|s| s.name == entry.name)
+                        .expect("plan create refers to a declared pipe");
+
+                    if self.dry_run {
+                        created.push(format!("{} (dry-run)", spec.name));
+                        continue;
+                    }
+
+                    // 1. Template carries the routing + typed config (retry/handlers).
+                    let config_value = spec.to_pipe_config().merge_into(None);
+                    let template_request =
+                        crate::cli::stacker_client::CreatePipeTemplateApiRequest {
+                            name: spec.name.clone(),
+                            description: Some(format!(
+                                "{} → {}",
+                                spec.source_endpoint, spec.target_endpoint
+                            )),
+                            source_app_type: spec.source.clone(),
+                            source_endpoint: endpoint_to_json(&spec.source_endpoint),
+                            target_app_type: spec.target.clone(),
+                            target_endpoint: endpoint_to_json(&spec.target_endpoint),
+                            target_external_url: None,
+                            field_mapping: field_mapping_for(
+                                &spec.source_fields,
+                                &spec.target_fields,
+                            ),
+                            config: Some(config_value),
+                            is_public: Some(false),
+                        };
+                    let template = ctx
+                        .block_on(ctx.client.create_pipe_template(&template_request))?;
+
+                    // 2. Instance binds the template to this deployment's containers.
+                    let instance_request =
+                        crate::cli::stacker_client::CreatePipeInstanceApiRequest {
+                            deployment_hash: Some(hash.clone()),
+                            source_adapter: None,
+                            source_container: spec.source.clone(),
+                            target_adapter: None,
+                            target_container: Some(spec.target.clone()),
+                            target_url: None,
+                            template_id: Some(template.id.clone()),
+                            field_mapping_override: None,
+                            config_override: None,
+                        };
+                    ctx.block_on(ctx.client.create_pipe_instance(&instance_request))?;
+                    created.push(spec.name.clone());
+                }
+                PipeAction::Update { .. } => skipped_update.push(entry.name.clone()),
+                PipeAction::Orphan => {
+                    if self.prune && !self.dry_run {
+                        // Resolve the orphan's template, delete its instances
+                        // first (FK), then the template itself.
+                        if let Some(tmpl) = templates.iter().find(|t| t.name == entry.name) {
+                            for inst in instances
+                                .iter()
+                                .filter(|i| i.template_id.as_deref() == Some(tmpl.id.as_str()))
+                            {
+                                ctx.block_on(ctx.client.delete_pipe_instance(&inst.id))?;
+                            }
+                            ctx.block_on(ctx.client.delete_pipe_template(&tmpl.id))?;
+                            pruned.push(entry.name.clone());
+                        } else {
+                            skipped_orphan.push(entry.name.clone());
+                        }
+                    } else {
+                        skipped_orphan.push(entry.name.clone());
+                    }
+                }
+            }
+        }
+
+        if self.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "created": created,
+                    "pruned": pruned,
+                    "skipped_update": skipped_update,
+                    "orphans": skipped_orphan,
+                    "dry_run": self.dry_run,
+                }))?
+            );
+            return Ok(());
+        }
+
+        for name in &created {
+            println!("  ✓ created {name}");
+        }
+        for name in &pruned {
+            println!("  ✓ pruned {name}");
+        }
+        // In-place update needs an API endpoint that doesn't exist yet (only
+        // template/instance create + delete and status-update are available).
+        for name in &skipped_update {
+            println!(
+                "  ! {name}: differs from the deployed pipe — in-place update not \
+                 yet supported (re-apply with `--prune`, or edit via the API)."
+            );
+        }
+        for name in &skipped_orphan {
+            println!("  - {name}: deployed but not declared (pass `--prune` to remove).");
+        }
+
+        println!(
+            "\n{} created, {} pruned, {} needing update, {} orphan(s).{}",
+            created.len(),
+            pruned.len(),
+            skipped_update.len(),
+            skipped_orphan.len(),
+            if self.dry_run { "  (dry-run — nothing applied)" } else { "" }
+        );
+        Ok(())
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// stacker pipe activate — activate a pipe instance
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub struct PipeActivateCommand {
     pub pipe_id: String,
@@ -4440,7 +4866,7 @@ impl CallableTrait for PipeActivateCommand {
         progress::finish_success(&pb, "Pipe found");
 
         // Get template info for endpoint details (if linked)
-        let (source_endpoint, source_method, target_endpoint, target_method, field_mapping) =
+        let (source_endpoint, source_method, target_endpoint, target_method, field_mapping, config) =
             if let Some(ref tid) = pipe.template_id {
                 let templates = ctx.block_on(ctx.client.list_pipe_templates(None, None))?;
                 if let Some(tmpl) = templates.iter().find(|t| &t.id == tid) {
@@ -4464,6 +4890,9 @@ impl CallableTrait for PipeActivateCommand {
                         pipe.field_mapping_override
                             .clone()
                             .unwrap_or(tmpl.field_mapping.clone()),
+                        // Instance override wins over the template config, so the
+                        // agent gets the effective retry policy + handlers.
+                        pipe.config_override.clone().or_else(|| tmpl.config.clone()),
                     )
                 } else {
                     (
@@ -4472,6 +4901,7 @@ impl CallableTrait for PipeActivateCommand {
                         "/".to_string(),
                         "POST".to_string(),
                         serde_json::json!({}),
+                        pipe.config_override.clone(),
                     )
                 }
             } else {
@@ -4483,6 +4913,7 @@ impl CallableTrait for PipeActivateCommand {
                     pipe.field_mapping_override
                         .clone()
                         .unwrap_or(serde_json::json!({})),
+                    pipe.config_override.clone(),
                 )
             };
 
@@ -4510,6 +4941,9 @@ impl CallableTrait for PipeActivateCommand {
             "field_mapping": field_mapping,
             "trigger_type": self.trigger,
             "poll_interval_secs": self.poll_interval,
+            // Effective pipe config (retry policy + on_failure/on_success) so the
+            // agent can apply resilience/lifecycle behavior. null when unset.
+            "config": config,
         });
 
         let request = AgentEnqueueRequest::new(&hash, "activate_pipe").with_raw_parameters(params);
