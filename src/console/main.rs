@@ -240,6 +240,9 @@ enum StackerConfigCommands {
     Validate {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
+        /// Deploy target to validate against (local, cloud, server).
+        #[arg(long)]
+        target: Option<String>,
     },
     /// Show resolved configuration
     Show {
@@ -513,8 +516,10 @@ fn get_command(
                 stacker::console::commands::cli::rollback::RollbackCommand::new(version, confirm),
             )),
             StackerCommands::Config { command: cfg_cmd } => match cfg_cmd {
-                StackerConfigCommands::Validate { file } => Ok(Box::new(
-                    stacker::console::commands::cli::config::ConfigValidateCommand::new(file),
+                StackerConfigCommands::Validate { file, target } => Ok(Box::new(
+                    stacker::console::commands::cli::config::ConfigValidateCommand::new(
+                        file, target,
+                    ),
                 )),
                 StackerConfigCommands::Show { file, resolved } => Ok(Box::new(
                     stacker::console::commands::cli::config::ConfigShowCommand::new(file, resolved),

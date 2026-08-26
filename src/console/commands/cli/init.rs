@@ -1659,6 +1659,7 @@ fn convert_compose_to_stacker(ai_output: &str, repo_name: &str) -> Option<Stacke
         env_file: None,
         env: HashMap::new(),
         config_contract: crate::cli::config_parser::ConfigContract::default(),
+        pipes: Vec::new(),
         origin: crate::cli::config_parser::ConfigOrigin::UserAuthored,
         // `init` always writes an explicit `app:` section for the detected app.
         app_present: true,
@@ -2359,7 +2360,8 @@ mod tests {
         let path = generate_config(dir.path(), None, false, false, false).unwrap();
         let rendered = std::fs::read_to_string(&path).unwrap();
         let issues =
-            crate::console::commands::cli::config::run_validate(&path.to_string_lossy()).unwrap();
+            crate::console::commands::cli::config::run_validate(&path.to_string_lossy(), None)
+                .unwrap();
 
         assert_eq!(issues, Vec::<String>::new());
         assert!(rendered.contains("target: local"));

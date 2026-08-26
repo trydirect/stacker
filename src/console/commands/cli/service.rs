@@ -56,6 +56,13 @@ impl CallableTrait for ServiceAddCommand {
             }));
         }
 
+        // Load raw YAML as Value so we can surgically update only the
+        // `services` array when writing back. This preserves every other
+        // key (config_contract, deploy, proxy, etc.) exactly as the user
+        // authored it — including null-free Option fields and comments.
+        let raw_text = std::fs::read_to_string(path)?;
+        let mut root: serde_yaml::Value = serde_yaml::from_str(&raw_text)?;
+
         // Load existing config without resolving ${VAR} placeholders so
         // that sensitive values from .env are not written back to the file.
         let mut config = StackerConfig::from_file_raw(path)?;
@@ -110,6 +117,7 @@ impl CallableTrait for ServiceAddCommand {
         // Add missing dependencies first, then the requested service, tracking
         // the canonical codes so we can resolve their configurable inputs.
         let mut added_codes: Vec<String> = Vec::new();
+        let mut added_services: Vec<serde_yaml::Value> = Vec::new();
         for dep in &entry.service.depends_on {
             if !config.services.iter().any(|s| &s.name == dep) {
                 // Try to resolve the dependency too
@@ -118,13 +126,15 @@ impl CallableTrait for ServiceAddCommand {
                         "  + Adding dependency: {} ({})",
                         dep_entry.name, dep_entry.service.image
                     );
-                    config.services.push(dep_entry.service);
+                    config.services.push(dep_entry.service.clone());
                     added_codes.push(dep_entry.code);
+                    added_services.push(serde_yaml::to_value(&dep_entry.service)?);
                 }
             }
         }
         config.services.push(entry.service.clone());
         added_codes.push(entry.code.clone());
+        added_services.push(serde_yaml::to_value(&entry.service)?);
 
         // Resolve configurable inputs (passwords, etc.) for the added services
         // and persist them to `.env`. The service definitions reference `${KEY}`,
@@ -139,8 +149,28 @@ impl CallableTrait for ServiceAddCommand {
             apply_service_inputs(&env_path, &inputs)?;
         }
 
-        // Serialize back to YAML
-        let yaml = serde_yaml::to_string(&config).map_err(|e| {
+        // Surgically append new services to the raw YAML Value instead of
+        // re-serializing the entire StackerConfig. This preserves every
+        // field exactly as the user authored it — no null injection, no
+        // config_contract collapse.
+        if let Some(services) = root.get_mut("services") {
+            if let Some(arr) = services.as_sequence_mut() {
+                for svc in added_services {
+                    arr.push(svc);
+                }
+            } else {
+                // services was null or not a sequence — replace with a new array
+                *services = serde_yaml::Value::Sequence(added_services);
+            }
+        } else {
+            // No services key at all — add it
+            root.as_mapping_mut().unwrap().insert(
+                serde_yaml::Value::String("services".to_string()),
+                serde_yaml::Value::Sequence(added_services),
+            );
+        }
+
+        let yaml = serde_yaml::to_string(&root).map_err(|e| {
             CliError::ConfigValidation(format!("Failed to serialize config: {}", e))
         })?;
 
@@ -594,7 +624,7 @@ impl CallableTrait for ServiceRemoveCommand {
             }));
         }
 
-        let mut config = StackerConfig::from_file_raw(path)?;
+        let config = StackerConfig::from_file_raw(path)?;
         let canonical = ServiceCatalog::resolve_alias(&self.name);
 
         if !config.services.iter().any(|s| s.name == canonical) {
@@ -613,9 +643,23 @@ impl CallableTrait for ServiceRemoveCommand {
             return Ok(());
         }
 
-        config.services.retain(|s| s.name != canonical);
+        // Read raw YAML and surgically remove only the matching service
+        // from the services array, preserving all other fields exactly.
+        let raw_text = std::fs::read_to_string(path)?;
+        let mut root: serde_yaml::Value = serde_yaml::from_str(&raw_text)?;
 
-        let yaml = serde_yaml::to_string(&config).map_err(|e| {
+        if let Some(services) = root.get_mut("services") {
+            if let Some(arr) = services.as_sequence_mut() {
+                arr.retain(|v| {
+                    v.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|n| n != canonical)
+                        .unwrap_or(true)
+                });
+            }
+        }
+
+        let yaml = serde_yaml::to_string(&root).map_err(|e| {
             CliError::ConfigValidation(format!("Failed to serialize config: {}", e))
         })?;
 
@@ -658,14 +702,36 @@ fn validate_no_duplicate_services(
 
 fn import_services_into_config(
     path: &Path,
-    mut config: StackerConfig,
+    _config: StackerConfig,
     plan: &ServiceImportPlan,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    for service in &plan.services {
-        config.services.push(service.clone());
+    // Read raw YAML to surgically append services without losing other keys.
+    let raw_text = std::fs::read_to_string(path)?;
+    let mut root: serde_yaml::Value = serde_yaml::from_str(&raw_text)?;
+
+    // Convert ServiceDefinition to serde_yaml::Value for insertion
+    let new_services: Vec<serde_yaml::Value> = plan
+        .services
+        .iter()
+        .map(|svc| serde_yaml::to_value(svc).unwrap_or_default())
+        .collect();
+
+    if let Some(services) = root.get_mut("services") {
+        if let Some(arr) = services.as_sequence_mut() {
+            for svc in new_services {
+                arr.push(svc);
+            }
+        }
+    } else {
+        // No services key exists — create it
+        if let Some(map) = root.as_mapping_mut() {
+            let key = serde_yaml::Value::String("services".to_string());
+            let val = serde_yaml::Value::Sequence(new_services);
+            map.insert(key, val);
+        }
     }
 
-    let yaml = serde_yaml::to_string(&config)
+    let yaml = serde_yaml::to_string(&root)
         .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
 
     let config_path = path.to_string_lossy().to_string();

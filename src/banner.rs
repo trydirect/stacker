@@ -3,6 +3,8 @@ pub fn print_banner() {
     let version = env!("CARGO_PKG_VERSION");
     let name = env!("CARGO_PKG_NAME");
 
+    let git_hash = option_env!("STACKER_GIT_SHORT_HASH").unwrap_or("unknown");
+
     let banner = format!(
         r#"
         _              | |                
@@ -13,15 +15,14 @@ pub fn print_banner() {
 
 ──────────────────────────────────────────
   {}
-  Version: {}
-  Build: {}   
+  Version: {} (git: {})
   Edition: {}  
 ─────────────────────────────────────────
 
 "#,
         capitalize(name),
         version,
-        env!("CARGO_PKG_VERSION"),
+        git_hash,
         "2021"
     );
 

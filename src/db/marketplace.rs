@@ -2173,6 +2173,8 @@ pub async fn admin_update_pricing(
     billing_cycle: Option<&str>,
     required_plan_name: Option<&str>,
     currency: Option<&str>,
+    daily_rate: Option<f64>,
+    monthly_cap: Option<f64>,
 ) -> Result<bool, String> {
     let query_span = tracing::info_span!(
         "marketplace_admin_update_pricing",
@@ -2190,7 +2192,9 @@ pub async fn admin_update_pricing(
             price = COALESCE($2, price),
             billing_cycle = COALESCE($3, billing_cycle),
             required_plan_name = COALESCE($4, required_plan_name),
-            currency = COALESCE($5, currency)
+            currency = COALESCE($5, currency),
+            daily_rate = COALESCE($6, daily_rate),
+            monthly_cap = COALESCE($7, monthly_cap)
         WHERE id = $1"#,
     )
     .bind(*template_id)
@@ -2198,6 +2202,8 @@ pub async fn admin_update_pricing(
     .bind(billing_cycle)
     .bind(required_plan_name)
     .bind(currency)
+    .bind(daily_rate)
+    .bind(monthly_cap)
     .execute(pool)
     .instrument(query_span)
     .await
@@ -2646,4 +2652,50 @@ pub async fn get_template_events_by_creator(
     _end_date: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<Vec<crate::models::marketplace::MarketplaceEvent>, String> {
     Err("get_template_events_by_creator not implemented - requires owner-scoped query".to_string())
+}
+
+/// Fetch an approved template by slug. Used by the one-click clone endpoint
+/// to look up billing_cycle and pricing fields.
+pub async fn get_approved_by_slug(
+    pool: &PgPool,
+    slug: &str,
+) -> Result<Option<StackTemplate>, String> {
+    sqlx::query_as::<_, StackTemplate>(
+        r#"SELECT
+            t.id,
+            t.creator_user_id,
+            t.creator_name,
+            t.name,
+            t.slug,
+            t.short_description,
+            t.long_description,
+            c.name AS category_code,
+            t.product_id,
+            t.tags,
+            t.tech_stack,
+            t.status,
+            t.is_configurable,
+            t.view_count,
+            t.deploy_count,
+            t.required_plan_name,
+            t.price,
+            t.billing_cycle,
+            t.currency,
+            t.daily_rate::float8,
+            t.monthly_cap::float8,
+            t.created_at,
+            t.updated_at,
+            t.approved_at,
+            t.verifications,
+            t.infrastructure_requirements,
+            t.public_ports,
+            t.vendor_url
+        FROM stack_template t
+        LEFT JOIN stack_category c ON t.category_id = c.id
+        WHERE t.slug = $1 AND t.status = 'approved'"#,
+    )
+    .bind(slug)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("get_approved_by_slug: {}", e))
 }

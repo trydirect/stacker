@@ -678,6 +678,10 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
         config.deployment.config_base_path = base_path;
     }
 
+    if let Ok(enabled) = std::env::var("STACKER_PER_INSTALL_BILLING_ENABLED") {
+        config.per_install_billing_enabled = parse_bool_env(&enabled);
+    }
+
     Ok(config)
 }
 

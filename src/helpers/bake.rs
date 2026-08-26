@@ -143,9 +143,20 @@ mod tests {
         async fn list_server_types(
             &self,
             _t: &str,
-            _l: Option<&str>,
         ) -> Result<Vec<String>, crate::connectors::ConnectorError> {
             Ok(vec![])
+        }
+        async fn add_ssh_key(
+            &self,
+            _t: &str,
+            _n: &str,
+            _k: &str,
+        ) -> Result<crate::connectors::hetzner::HetznerSshKey, crate::connectors::ConnectorError>
+        {
+            Ok(crate::connectors::hetzner::HetznerSshKey {
+                id: 1,
+                name: "mock".into(),
+            })
         }
     }
 

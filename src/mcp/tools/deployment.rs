@@ -960,7 +960,8 @@ mod tests {
             },
             runtime: DeploymentRuntimeState {
                 compose_path: "/opt/stacker/docker-compose.remote.yml".to_string(),
-                env_path: "/home/trydirect/project/.env".to_string(),
+                env_path: "/home/trydirect/test-project/.env".to_string(),
+                stack_code: "test-project".to_string(),
             },
             apps: vec![],
             drift: DeploymentDriftState {

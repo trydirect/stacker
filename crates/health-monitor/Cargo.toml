@@ -1,0 +1,12 @@
+[package]
+name = "health-monitor"
+version = "0.1.0"
+edition = "2021"
+description = "Pure container-health alarm engine for TryDirect Stacker: evaluate container health snapshots, edge-detect down/recovery transitions, and format alerts. No I/O, network, or scheduler — the CLI/agent drive it."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+default = []

@@ -3,10 +3,9 @@ use std::path::Path;
 use crate::cli::config_parser::DeployTarget;
 use crate::cli::error::CliError;
 use crate::cli::install_runner::{CommandExecutor, ShellExecutor};
-use crate::cli::local_compose::resolve_local_compose_path;
+use crate::cli::local_compose::{resolve_local_compose_path, resolve_local_compose_project_name};
 use crate::console::commands::CallableTrait;
 
-#[allow(dead_code)]
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 
 /// `stacker destroy [--volumes] [--confirm]`
@@ -24,9 +23,20 @@ impl DestroyCommand {
 }
 
 /// Build `docker compose down` arguments.
-pub fn build_destroy_args(compose_path: &str, volumes: bool) -> Vec<String> {
+///
+/// `project_name` MUST be passed via `-p` — without it Compose falls back to
+/// the compose file's containing directory basename, which is the same
+/// `.stacker/` for every project, defaulting to the shared project name
+/// "stacker" for all of them. `down` on that shared scope removes/orphans
+/// *any* running container whose service name happens to match one in the
+/// current project's compose file, regardless of which project actually
+/// started it — the same collision `LocalDeploy::deploy`/`destroy` in
+/// install_runner.rs were fixed for. See GH issue #235.
+pub fn build_destroy_args(compose_path: &str, project_name: &str, volumes: bool) -> Vec<String> {
     let mut args = vec![
         "compose".to_string(),
+        "-p".to_string(),
+        project_name.to_string(),
         "-f".to_string(),
         compose_path.to_string(),
         "down".to_string(),
@@ -61,7 +71,8 @@ pub fn run_destroy(
     })?;
 
     let compose_str = compose_path.to_string_lossy().to_string();
-    let args = build_destroy_args(&compose_str, volumes);
+    let project_name = resolve_local_compose_project_name(project_dir);
+    let args = build_destroy_args(&compose_str, &project_name, volumes);
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
     let output = executor.execute("docker", &args_refs)?;
@@ -149,8 +160,62 @@ mod tests {
 
     #[test]
     fn test_destroy_with_volumes_flag() {
-        let args = build_destroy_args("/path/compose.yml", true);
+        let args = build_destroy_args("/path/compose.yml", "myproject", true);
         assert!(args.contains(&"--volumes".to_string()));
+    }
+
+    // Regression test for GH issue #235: `stacker destroy` previously never
+    // passed `-p <project>`, so Compose fell back to the shared ".stacker"
+    // directory-basename project name ("stacker") for every project — a
+    // `destroy` in one project's directory could remove/orphan another,
+    // unrelated project's containers sharing that same default scope.
+    #[test]
+    fn test_destroy_namespaces_compose_project_by_identity() {
+        let dir = setup_with_compose();
+        std::fs::write(
+            dir.path().join(DEFAULT_CONFIG_FILE),
+            "name: Miniflux Prod\ndeploy:\n  target: local\n",
+        )
+        .unwrap();
+        let executor = MockExecutor::new();
+
+        run_destroy(dir.path(), false, true, &executor).unwrap();
+
+        let calls = executor.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        let args = &calls[0].1;
+        let p_index = args
+            .iter()
+            .position(|a| a == "-p")
+            .expect("docker compose down should pass -p <project-name>");
+        assert_eq!(
+            args.get(p_index + 1).map(String::as_str),
+            Some("miniflux-prod"),
+            "project name should be derived from stacker.yml's name/identity, not the \
+             compose file's directory, got args: {:?}",
+            args
+        );
+    }
+
+    #[test]
+    fn test_destroy_uses_project_identity_over_name_for_project_name() {
+        let dir = setup_with_compose();
+        std::fs::write(
+            dir.path().join(DEFAULT_CONFIG_FILE),
+            "name: stacker\nproject:\n  identity: miniflux-blue\ndeploy:\n  target: local\n",
+        )
+        .unwrap();
+        let executor = MockExecutor::new();
+
+        run_destroy(dir.path(), false, true, &executor).unwrap();
+
+        let calls = executor.recorded_calls();
+        let args = &calls[0].1;
+        let p_index = args.iter().position(|a| a == "-p").unwrap();
+        assert_eq!(
+            args.get(p_index + 1).map(String::as_str),
+            Some("miniflux-blue")
+        );
     }
 
     #[test]
@@ -195,8 +260,10 @@ mod tests {
 
         let calls = executor.recorded_calls();
         assert_eq!(calls.len(), 1);
+        let args = &calls[0].1;
+        let f_index = args.iter().position(|a| a == "-f").unwrap();
         assert_eq!(
-            calls[0].1[2],
+            args[f_index + 1],
             dir.path()
                 .join("docker/local/compose.yml")
                 .to_string_lossy()

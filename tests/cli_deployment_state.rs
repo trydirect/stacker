@@ -96,8 +96,9 @@ fn deployment_state_json_fetches_canonical_payload() {
             }
         },
         "runtime": {
-            "composePath": "/home/trydirect/project/docker-compose.yml",
-            "envPath": "/home/trydirect/project/.env"
+            "composePath": "/home/trydirect/remote-project-17/docker-compose.yml",
+            "envPath": "/home/trydirect/remote-project-17/.env",
+            "stackCode": "remote-project-17"
         },
         "apps": [],
         "drift": {
@@ -133,7 +134,7 @@ fn deployment_state_json_fetches_canonical_payload() {
                     "\"deploymentHash\": \"deployment_state_online\"",
                 ))
                 .and(predicate::str::contains(
-                    "\"composePath\": \"/home/trydirect/project/docker-compose.yml\"",
+                    "\"composePath\": \"/home/trydirect/remote-project-17/docker-compose.yml\"",
                 )),
         );
 

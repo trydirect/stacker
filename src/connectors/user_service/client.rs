@@ -749,6 +749,38 @@ impl UserServiceConnector for UserServiceClient {
         let text = resp.text().await.unwrap_or_default();
         Err(map_billing_error_status(status.as_u16(), &text))
     }
+
+    async fn daily_capture_install_charge(
+        &self,
+        auth_token: &str,
+        authorization_id: &str,
+        amount_minor: i64,
+        deployment_hash: &str,
+    ) -> Result<AuthorizationHandle, ConnectorError> {
+        let url = format!(
+            "{}/api/1.0/marketplace/billing/daily-capture",
+            self.base_url
+        );
+        let payload = serde_json::json!({
+            "payment_intent_id": authorization_id,
+            "amount_minor": amount_minor,
+            "deployment_hash": deployment_hash,
+        });
+        let resp = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", auth_token))
+            .json(&payload)
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await.map_err(ConnectorError::from)?;
+        if !status.is_success() {
+            return Err(map_billing_error_status(status.as_u16(), &text));
+        }
+        serde_json::from_str::<AuthorizationHandle>(&text)
+            .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
+    }
 }
 
 /// Map a non-2xx billing response to the appropriate ConnectorError.

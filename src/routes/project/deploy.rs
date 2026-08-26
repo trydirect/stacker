@@ -272,20 +272,6 @@ struct HetznerIpv4 {
     ip: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct HetznerServerTypesResponse {
-    #[serde(default)]
-    server_types: Vec<HetznerServerTypeEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HetznerServerTypeEntry {
-    name: String,
-    /// Non-null when Hetzner has deprecated this type; value is an ISO-8601 timestamp.
-    #[serde(default)]
-    deprecated: Option<String>,
-}
-
 fn hetzner_api_base_url() -> String {
     std::env::var("STACKER_HETZNER_API_URL")
         .unwrap_or_else(|_| "https://api.hetzner.cloud/v1".to_string())
@@ -471,90 +457,16 @@ async fn validate_hetzner_server_type(
         None => return Ok(()),
     };
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(8))
-        .build()
-        .map_err(|err| format!("Could not initialize Hetzner API client: {}", err))?;
-
-    let url = match region {
-        Some(loc) => format!("{}/server_types?location={}", hetzner_api_base_url(), loc),
-        None => format!("{}/server_types", hetzner_api_base_url()),
-    };
-
-    let response = match client.get(&url).bearer_auth(&token).send().await {
-        Ok(r) => r,
-        Err(err) => {
-            tracing::warn!(
-                "Could not reach Hetzner API to validate server type '{}': {}; proceeding",
-                server_type,
-                err
-            );
-            return Ok(());
-        }
-    };
-
-    if !response.status().is_success() {
-        tracing::warn!(
-            "Hetzner server_types API returned HTTP {}; skipping server type validation",
-            response.status().as_u16()
-        );
-        return Ok(());
-    }
-
-    let body = match response.json::<HetznerServerTypesResponse>().await {
-        Ok(b) => b,
-        Err(err) => {
-            tracing::warn!(
-                "Invalid Hetzner server types response: {}; skipping validation",
-                err
-            );
-            return Ok(());
-        }
-    };
-
-    // Check if the requested type is deprecated before checking availability.
-    if let Some(entry) = body
-        .server_types
-        .iter()
-        .find(|t| t.name.eq_ignore_ascii_case(server_type))
-    {
-        if entry.deprecated.is_some() {
-            let active: Vec<&str> = body
-                .server_types
-                .iter()
-                .filter(|t| t.deprecated.is_none())
-                .map(|t| t.name.as_str())
-                .collect();
-            return Err(format!(
-                "Server type '{}' is deprecated in Hetzner and can no longer be used to create new servers. \
-                 Set `deploy.cloud.size` in stacker.yml to an active type: {}",
-                server_type,
-                if active.is_empty() {
-                    "none found".to_string()
-                } else {
-                    active.join(", ")
-                }
-            ));
-        }
-        return Ok(());
-    }
-
-    let available: Vec<&str> = body
-        .server_types
-        .iter()
-        .filter(|t| t.deprecated.is_none())
-        .map(|t| t.name.as_str())
-        .collect();
-
-    Err(format!(
-        "Server type '{}' is not available in Hetzner. Available types: {}",
+    // Delegate to the shared connector so the route handler and the CLI
+    // local-orchestrator path enforce identical rules. See
+    // `crate::connectors::hetzner::validate_server_type_availability`.
+    crate::connectors::hetzner::validate_server_type_availability(
+        &hetzner_api_base_url(),
+        &token,
         server_type,
-        if available.is_empty() {
-            "none found".to_string()
-        } else {
-            available.join(", ")
-        }
-    ))
+        region,
+    )
+    .await
 }
 
 async fn validate_template_server_capacity_requirements(
@@ -1459,6 +1371,23 @@ async fn execute_deployment(
         server
     };
 
+    // Merge any additional public keys (e.g., user's own SSH key from
+    // deploy.cloud.ssh_key) into the new_public_key so the Install Service
+    // installs all of them in authorized_keys.
+    if let Some(additional) = form.server.additional_public_keys.as_ref() {
+        if !additional.is_empty() {
+            let combined = match new_public_key.take() {
+                Some(vault_key) => {
+                    let mut keys = vec![vault_key];
+                    keys.extend(additional.iter().cloned());
+                    keys.join("\n")
+                }
+                None => additional.join("\n"),
+            };
+            new_public_key = Some(combined);
+        }
+    }
+
     let has_existing_ip = server.srv_ip.as_ref().map_or(false, |ip| !ip.is_empty());
     if has_existing_ip && new_public_key.is_none() && server.vault_key_path.is_none() {
         tracing::error!(
@@ -1527,6 +1456,18 @@ async fn execute_deployment(
                         .collect(),
                 ),
             );
+        }
+    }
+
+    // Record reverse-proxy routing domains on the deployment's request_json for
+    // audit/rollback. NOTE: this stored record is NOT what reaches the Install
+    // Service — the MQ payload is built from the project + form in
+    // `install_service.deploy()`, so actual delivery is via `payload.proxy_domains`
+    // (threaded through the deploy call below). AppVarsMapper reads it as the
+    // `stacker_proxy_domains` extra var.
+    if let Some(ref proxy_domains) = form.proxy_domains {
+        if let Some(obj) = json_request.as_object_mut() {
+            obj.insert("proxy_domains".to_string(), proxy_domains.clone());
         }
     }
     let deployment_hash = format!("deployment_{}", Uuid::new_v4());
@@ -1599,6 +1540,7 @@ async fn execute_deployment(
             mq_manager,
             new_public_key,
             new_private_key,
+            form.proxy_domains.clone(),
         )
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
@@ -2333,6 +2275,8 @@ mod tests {
             price: None,
             billing_cycle: None,
             currency: None,
+            daily_rate: None,
+            monthly_cap: None,
             created_at: None,
             updated_at: None,
             approved_at: None,

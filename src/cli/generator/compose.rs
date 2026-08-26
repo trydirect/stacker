@@ -4,7 +4,7 @@ use std::fmt;
 use std::path::Path;
 
 use crate::cli::config_parser::{
-    AppType, ComposeHealthcheck, DomainConfig, ProxyType, ServiceDefinition, StackerConfig,
+    AppType, ComposeHealthcheck, DomainConfig, ProxyType, ServiceDefinition, SslMode, StackerConfig,
 };
 use crate::cli::error::CliError;
 
@@ -151,16 +151,32 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
 
         // --- Proxy service ---
         if let Some(proxy_svc) = build_proxy_service(config) {
+            // Collect named volumes (e.g. Caddy's `caddy_data`/`caddy_config`
+            // persistence volumes) — without this they'd be referenced by
+            // the service but never declared under top-level `volumes:`,
+            // the same class of bug fixed for the server-side renderer in
+            // GH #236.
+            for vol in &proxy_svc.volumes {
+                if let Some(named) = extract_named_volume(vol) {
+                    if !named_volumes.contains(&named) {
+                        named_volumes.push(named);
+                    }
+                }
+            }
             compose.services.push(proxy_svc);
         }
 
         // --- Set top-level volumes ---
         compose.volumes = named_volumes;
 
-        // --- Auto-inject default_network for NginxProxyManager-proxied services ---
-        if config.proxy.proxy_type == ProxyType::NginxProxyManager
-            && !config.proxy.domains.is_empty()
-        {
+        // --- Auto-inject the shared external `default_network` onto proxied
+        // services ---
+        // Every proxy type is platform-managed: on remote deploys the proxy
+        // container is stripped from this compose (see build_config_bundle)
+        // and installed by its own backend role, which joins the external
+        // `default_network`. So the proxied app service(s) must also sit on
+        // `default_network` for the managed proxy to reach them by name/label.
+        if config.proxy.proxy_type != ProxyType::None && !config.proxy.domains.is_empty() {
             let proxied: Vec<String> = config
                 .proxy
                 .domains
@@ -181,6 +197,62 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
                 compose
                     .external_networks
                     .push("default_network".to_string());
+            }
+        }
+
+        // --- Traefik: derive router/service labels from config.proxy.domains ---
+        // Traefik routes via labels on the *target* container (unlike Nginx/Caddy,
+        // which route via a separate config file), so `build_proxy_service`
+        // alone can't wire up routing — it only starts the Traefik container.
+        if config.proxy.proxy_type == ProxyType::Traefik {
+            let has_acme = admin_email_from_config(config).is_some();
+            for domain in &config.proxy.domains {
+                let Some(target_name) = upstream_service_name_from_domain(domain) else {
+                    continue;
+                };
+                let Some(port) = upstream_port_from_domain(domain) else {
+                    continue;
+                };
+                let Some(svc) = compose.services.iter_mut().find(|s| s.name == target_name) else {
+                    continue;
+                };
+
+                let router = traefik_router_name(&domain.domain);
+                svc.labels
+                    .insert("traefik.enable".to_string(), "true".to_string());
+                svc.labels.insert(
+                    format!("traefik.http.routers.{router}.rule"),
+                    format!("Host(`{}`)", domain.domain),
+                );
+                svc.labels.insert(
+                    format!("traefik.http.services.{router}.loadbalancer.server.port"),
+                    port.to_string(),
+                );
+
+                match domain.ssl {
+                    SslMode::Off => {
+                        svc.labels.insert(
+                            format!("traefik.http.routers.{router}.entrypoints"),
+                            "web".to_string(),
+                        );
+                    }
+                    SslMode::Auto | SslMode::Manual => {
+                        svc.labels.insert(
+                            format!("traefik.http.routers.{router}.entrypoints"),
+                            "websecure".to_string(),
+                        );
+                        svc.labels.insert(
+                            format!("traefik.http.routers.{router}.tls"),
+                            "true".to_string(),
+                        );
+                        if domain.ssl == SslMode::Auto && has_acme {
+                            svc.labels.insert(
+                                format!("traefik.http.routers.{router}.tls.certresolver"),
+                                "letsencrypt".to_string(),
+                            );
+                        }
+                    }
+                }
             }
         }
 
@@ -307,6 +379,14 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
             };
             svc.volumes
                 .push("./nginx/conf.d:/etc/nginx/conf.d:ro".to_string());
+            crate::helpers::stacker_labels::insert_runtime_labels(
+                &mut svc.labels,
+                None::<String>,
+                None,
+                crate::helpers::stacker_labels::SCOPE_PLATFORM,
+                "nginx",
+                "nginx",
+            );
             Some(svc)
         }
         ProxyType::NginxProxyManager => {
@@ -341,6 +421,69 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
             };
             svc.volumes
                 .push("/var/run/docker.sock:/var/run/docker.sock:ro".to_string());
+            svc.volumes.push("traefik_certs:/letsencrypt".to_string());
+
+            // Static config passed via CLI flags (Traefik supports this in
+            // place of a traefik.yml file). `exposedbydefault=false` means
+            // only services carrying `traefik.enable=true` labels — the
+            // ones generated below from `config.proxy.domains` — get a
+            // router; nothing else on the Docker network is exposed.
+            let mut args = vec![
+                "--providers.docker=true".to_string(),
+                "--providers.docker.exposedbydefault=false".to_string(),
+                "--entrypoints.web.address=:80".to_string(),
+                "--entrypoints.websecure.address=:443".to_string(),
+            ];
+            if let Some(email) = admin_email_from_config(config) {
+                args.push(
+                    "--certificatesresolvers.letsencrypt.acme.httpchallenge=true".to_string(),
+                );
+                args.push(
+                    "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+                        .to_string(),
+                );
+                args.push(format!(
+                    "--certificatesresolvers.letsencrypt.acme.email={}",
+                    email
+                ));
+                args.push(
+                    "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+                        .to_string(),
+                );
+            }
+            svc.command = Some(args.join(" "));
+            crate::helpers::stacker_labels::insert_runtime_labels(
+                &mut svc.labels,
+                None::<String>,
+                None,
+                crate::helpers::stacker_labels::SCOPE_PLATFORM,
+                "traefik",
+                "traefik",
+            );
+            Some(svc)
+        }
+        ProxyType::Caddy => {
+            let mut svc = ComposeService {
+                name: "caddy".to_string(),
+                image: Some("caddy:2-alpine".to_string()),
+                ports: vec!["80:80".to_string(), "443:443".to_string()],
+                depends_on: vec!["app".to_string()],
+                ..Default::default()
+            };
+            svc.volumes
+                .push("./Caddyfile:/etc/caddy/Caddyfile:ro".to_string());
+            // Named volumes so Caddy's ACME state/certificates survive
+            // container recreation instead of re-issuing on every restart.
+            svc.volumes.push("caddy_data:/data".to_string());
+            svc.volumes.push("caddy_config:/config".to_string());
+            crate::helpers::stacker_labels::insert_runtime_labels(
+                &mut svc.labels,
+                None::<String>,
+                None,
+                crate::helpers::stacker_labels::SCOPE_PLATFORM,
+                "caddy",
+                "caddy",
+            );
             Some(svc)
         }
         ProxyType::None => None,
@@ -360,6 +503,49 @@ fn upstream_service_name_from_domain(domain: &DomainConfig) -> Option<String> {
     } else {
         Some(name.to_string())
     }
+}
+
+/// Extract the port from a DomainConfig upstream like `svc:3000` or `http://svc:3000`.
+fn upstream_port_from_domain(domain: &DomainConfig) -> Option<u16> {
+    let s = domain
+        .upstream
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let host = s.split('/').next()?;
+    host.split(':').nth(1)?.parse().ok()
+}
+
+/// Admin email for ACME/Let's Encrypt registration, sourced from
+/// `install.inputs.admin_email` (a free-form marketplace-style install
+/// input, not a dedicated config field). Absent this, Traefik still
+/// terminates TLS (its own self-signed default cert) but without an ACME
+/// certresolver, since Traefik's ACME setup hard-requires a non-empty email.
+fn admin_email_from_config(config: &StackerConfig) -> Option<String> {
+    config
+        .install
+        .inputs
+        .get("admin_email")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// Sanitize a domain into a Traefik router/service name: alphanumerics only,
+/// everything else collapsed to `-` (router names must not contain `.`
+/// reliably across all label-parsing edge cases, so we normalize).
+fn traefik_router_name(domain: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for ch in domain.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    out.trim_matches('-').to_string()
 }
 
 /// Extract a named volume from a volume string like "my-data:/var/lib/data".
@@ -799,6 +985,230 @@ services:
     }
 
     #[test]
+    fn test_compose_caddy_proxy() {
+        let config = ConfigBuilder::new()
+            .name("caddy-app")
+            .app_type(AppType::Python)
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::Caddy,
+                auto_detect: true,
+                domains: Vec::new(),
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let caddy = compose
+            .services
+            .iter()
+            .find(|s| s.name == "caddy")
+            .expect("caddy service should be present");
+        assert_eq!(caddy.image.as_deref(), Some("caddy:2-alpine"));
+        assert!(caddy.ports.contains(&"80:80".to_string()));
+        assert!(caddy.ports.contains(&"443:443".to_string()));
+        assert!(caddy.depends_on.contains(&"app".to_string()));
+        assert!(caddy
+            .volumes
+            .contains(&"./Caddyfile:/etc/caddy/Caddyfile:ro".to_string()));
+    }
+
+    // Regression test: the proxy service's named volumes (Caddy's
+    // `caddy_data`/`caddy_config`) must be declared under top-level
+    // `volumes:`, the same class of bug fixed for the server-side renderer
+    // in GH #236 — a service referencing a named volume that's never
+    // declared produces an invalid compose file.
+    #[test]
+    fn test_compose_caddy_named_volumes_declared_at_top_level() {
+        let config = ConfigBuilder::new()
+            .name("caddy-app")
+            .app_type(AppType::Python)
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::Caddy,
+                auto_detect: true,
+                domains: Vec::new(),
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        assert!(compose.volumes.contains(&"caddy_data".to_string()));
+        assert!(compose.volumes.contains(&"caddy_config".to_string()));
+
+        let yaml = compose.render();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let top_level_volumes = doc
+            .get("volumes")
+            .and_then(|v| v.as_mapping())
+            .cloned()
+            .unwrap_or_default();
+        assert!(top_level_volumes.contains_key(serde_yaml::Value::String("caddy_data".to_string())));
+        assert!(
+            top_level_volumes.contains_key(serde_yaml::Value::String("caddy_config".to_string()))
+        );
+    }
+
+    // Regression tests: Traefik was previously a container-only stub — no
+    // labels were ever generated from `config.proxy.domains`, so it never
+    // actually routed anything (see GH discussion following #237). These
+    // cover the label-injection logic added to close that gap.
+
+    fn traefik_config_with_domain(ssl: SslMode) -> StackerConfig {
+        ConfigBuilder::new()
+            .name("traefik-app")
+            .app_type(AppType::Node)
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::Traefik,
+                auto_detect: true,
+                domains: vec![DomainConfig {
+                    domain: "app.example.com".to_string(),
+                    ssl,
+                    upstream: "app:3000".to_string(),
+                }],
+                config: None,
+            })
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_compose_traefik_labels_route_to_upstream_service() {
+        let config = traefik_config_with_domain(SslMode::Off);
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let app = compose.services.iter().find(|s| s.name == "app").unwrap();
+
+        assert_eq!(
+            app.labels.get("traefik.enable").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            app.labels
+                .get("traefik.http.routers.app-example-com.rule")
+                .map(String::as_str),
+            Some("Host(`app.example.com`)")
+        );
+        assert_eq!(
+            app.labels
+                .get("traefik.http.services.app-example-com.loadbalancer.server.port")
+                .map(String::as_str),
+            Some("3000")
+        );
+        assert_eq!(
+            app.labels
+                .get("traefik.http.routers.app-example-com.entrypoints")
+                .map(String::as_str),
+            Some("web"),
+            "SslMode::Off should route through the plain web entrypoint, no TLS label"
+        );
+        assert!(!app
+            .labels
+            .contains_key("traefik.http.routers.app-example-com.tls"));
+    }
+
+    #[test]
+    fn test_compose_traefik_labels_enable_tls_without_certresolver_when_no_admin_email() {
+        let config = traefik_config_with_domain(SslMode::Auto);
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let app = compose.services.iter().find(|s| s.name == "app").unwrap();
+
+        assert_eq!(
+            app.labels
+                .get("traefik.http.routers.app-example-com.entrypoints")
+                .map(String::as_str),
+            Some("websecure")
+        );
+        assert_eq!(
+            app.labels
+                .get("traefik.http.routers.app-example-com.tls")
+                .map(String::as_str),
+            Some("true")
+        );
+        assert!(
+            !app.labels
+                .contains_key("traefik.http.routers.app-example-com.tls.certresolver"),
+            "no admin_email configured, so no ACME certresolver should be wired up"
+        );
+    }
+
+    #[test]
+    fn test_compose_traefik_labels_use_acme_certresolver_when_admin_email_present() {
+        let mut config = traefik_config_with_domain(SslMode::Auto);
+        config.install.inputs.insert(
+            "admin_email".to_string(),
+            serde_json::json!("ops@example.com"),
+        );
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let app = compose.services.iter().find(|s| s.name == "app").unwrap();
+        assert_eq!(
+            app.labels
+                .get("traefik.http.routers.app-example-com.tls.certresolver")
+                .map(String::as_str),
+            Some("letsencrypt")
+        );
+
+        let traefik = compose
+            .services
+            .iter()
+            .find(|s| s.name == "traefik")
+            .unwrap();
+        let command = traefik.command.as_deref().unwrap_or_default();
+        assert!(command.contains("--certificatesresolvers.letsencrypt.acme.email=ops@example.com"));
+        assert!(command.contains("--certificatesresolvers.letsencrypt.acme.httpchallenge=true"));
+    }
+
+    #[test]
+    fn test_compose_traefik_static_config_and_certs_volume() {
+        let config = traefik_config_with_domain(SslMode::Off);
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let traefik = compose
+            .services
+            .iter()
+            .find(|s| s.name == "traefik")
+            .unwrap();
+
+        let command = traefik.command.as_deref().unwrap_or_default();
+        assert!(command.contains("--providers.docker=true"));
+        assert!(command.contains("--providers.docker.exposedbydefault=false"));
+        assert!(command.contains("--entrypoints.web.address=:80"));
+        assert!(command.contains("--entrypoints.websecure.address=:443"));
+
+        assert!(compose.volumes.contains(&"traefik_certs".to_string()));
+        let yaml = compose.render();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        assert!(doc["volumes"]
+            .as_mapping()
+            .unwrap()
+            .contains_key(serde_yaml::Value::String("traefik_certs".to_string())));
+    }
+
+    #[test]
+    fn test_compose_traefik_skips_domain_with_unresolvable_upstream_service() {
+        let config = ConfigBuilder::new()
+            .name("traefik-app")
+            .app_type(AppType::Node)
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::Traefik,
+                auto_detect: true,
+                domains: vec![DomainConfig {
+                    domain: "ghost.example.com".to_string(),
+                    ssl: SslMode::Off,
+                    upstream: "nonexistent-service:9999".to_string(),
+                }],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        // Must not panic — an upstream naming a service that doesn't exist
+        // in the compose is silently skipped rather than erroring the build.
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let app = compose.services.iter().find(|s| s.name == "app").unwrap();
+        assert!(!app.labels.contains_key("traefik.enable"));
+    }
+
+    #[test]
     fn test_compose_render_omits_obsolete_version() {
         let config = minimal_config(AppType::Static);
         let compose = ComposeDefinition::try_from(&config).unwrap();
@@ -1196,7 +1606,52 @@ services:
     }
 
     #[test]
-    fn non_npm_proxy_does_not_inject_default_network() {
+    fn every_proxy_type_labels_its_service_platform_scoped() {
+        // The synthesized proxy for every proxy type must carry
+        // `my.stacker.scope: platform` so the remote-bundle strip removes it
+        // and the backend role becomes its sole owner (no double-deploy).
+        for (proxy_type, service_name) in [
+            (ProxyType::Nginx, "nginx"),
+            (ProxyType::NginxProxyManager, "proxy-manager"),
+            (ProxyType::Traefik, "traefik"),
+            (ProxyType::Caddy, "caddy"),
+        ] {
+            let config = ConfigBuilder::new()
+                .name("proxy-scope-app")
+                .app_type(AppType::Node)
+                .proxy(ProxyConfig {
+                    proxy_type,
+                    auto_detect: false,
+                    domains: vec![],
+                    config: None,
+                })
+                .build()
+                .unwrap();
+
+            let compose = ComposeDefinition::try_from(&config).unwrap();
+            let proxy = compose
+                .services
+                .iter()
+                .find(|svc| svc.name == service_name)
+                .unwrap_or_else(|| panic!("{service_name} proxy service should be present"));
+            assert_eq!(
+                proxy
+                    .labels
+                    .get(crate::helpers::stacker_labels::SCOPE)
+                    .map(String::as_str),
+                Some(crate::helpers::stacker_labels::SCOPE_PLATFORM),
+                "{service_name} proxy must be platform-scoped"
+            );
+        }
+    }
+
+    #[test]
+    fn non_npm_proxy_injects_default_network_onto_proxied_service() {
+        // Every proxy type is platform-managed: on remote deploys the proxy
+        // container is stripped from this compose and installed by its own
+        // backend role, which joins the external `default_network`. So the
+        // proxied service must also join `default_network` for the managed
+        // proxy to reach it. (Previously only NginxProxyManager did this.)
         let svc = ServiceDefinition {
             name: "web".into(),
             image: "nginx:latest".into(),
@@ -1226,8 +1681,19 @@ services:
 
         let compose = ComposeDefinition::try_from(&config).unwrap();
         assert!(
-            compose.external_networks.is_empty(),
-            "Traefik proxy should not inject default_network"
+            compose
+                .external_networks
+                .contains(&"default_network".to_string()),
+            "Traefik proxy should inject the external default_network"
+        );
+        let web = compose
+            .services
+            .iter()
+            .find(|svc| svc.name == "web")
+            .expect("proxied 'web' service present");
+        assert!(
+            web.networks.contains(&"default_network".to_string()),
+            "the proxied service should join default_network"
         );
     }
 

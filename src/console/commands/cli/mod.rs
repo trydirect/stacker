@@ -6,6 +6,7 @@ pub mod config;
 pub mod connect;
 pub mod deploy;
 pub mod deployment;
+pub mod monitor;
 pub mod destroy;
 pub mod explain;
 pub mod init;

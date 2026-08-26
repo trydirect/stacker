@@ -81,6 +81,22 @@ pub async fn fetch_active_by_project(
     project_id: i32,
 ) -> Result<Option<models::Agent>, String> {
     let query_span = tracing::info_span!("Fetching active agent by project");
+    // Order by the deployment's own creation time, NOT agent heartbeat
+    // recency. A project can have multiple deployments (e.g. one to an
+    // existing server, one to cloud), each with its own agent/heartbeat.
+    // Ordering by `a.last_heartbeat` picked whichever agent happened to
+    // heartbeat most recently at query time — a moving target that could
+    // (and did, see GH stacker#234) flip between two calls milliseconds
+    // apart if an older, stale/paused deployment's agent was still
+    // heartbeating, causing `stacker agent status` and `stacker agent
+    // health` to silently resolve to *different* deployments for the same
+    // project. Deployment creation time is stable: "the project's active
+    // deployment" always means the most recently deployed one, regardless
+    // of which agent's heartbeat is momentarily freshest. Whether that
+    // deployment's agent is currently online is reported separately via
+    // `effective_status` in the snapshot handler — an offline agent for
+    // the latest deployment should be reported as offline, not silently
+    // swapped for an older deployment that happens to still be alive.
     sqlx::query_as::<_, models::Agent>(
         r#"
         SELECT a.id, a.deployment_hash, a.capabilities, a.version, a.system_info,
@@ -88,8 +104,8 @@ pub async fn fetch_active_by_project(
         FROM agents a
         JOIN deployment d ON a.deployment_hash = d.deployment_hash
         WHERE d.project_id = $1
-          AND a.last_heartbeat > NOW() - INTERVAL '5 minutes'
-        ORDER BY a.last_heartbeat DESC
+          AND d.deleted = false
+        ORDER BY d.created_at DESC
         LIMIT 1
         "#,
     )

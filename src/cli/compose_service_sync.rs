@@ -114,7 +114,7 @@ fn inject_external_network(
     changed
 }
 
-fn upsert_external_network(compose_doc: &mut serde_yaml::Value, network: &str) {
+pub(crate) fn upsert_external_network(compose_doc: &mut serde_yaml::Value, network: &str) {
     let Some(root) = compose_doc.as_mapping_mut() else {
         return;
     };

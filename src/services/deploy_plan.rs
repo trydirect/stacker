@@ -462,8 +462,9 @@ mod tests {
                 },
             },
             runtime: DeploymentRuntimeState {
-                compose_path: "/home/trydirect/project/docker-compose.yml".to_string(),
-                env_path: "/home/trydirect/project/.env".to_string(),
+                compose_path: "/home/trydirect/test-project/docker-compose.yml".to_string(),
+                env_path: "/home/trydirect/test-project/.env".to_string(),
+                stack_code: "test-project".to_string(),
             },
             apps: vec![
                 DeploymentAppState {

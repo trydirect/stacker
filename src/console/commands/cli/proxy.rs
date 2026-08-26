@@ -4,8 +4,8 @@ use crate::cli::config_parser::{
 use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::proxy_manager::{
-    detect_proxy, detect_proxy_from_snapshot, generate_nginx_server_block, ContainerRuntime,
-    DockerCliRuntime, ProxyDetection,
+    detect_proxy, detect_proxy_from_snapshot, generate_caddy_server_block,
+    generate_nginx_server_block, ContainerRuntime, DockerCliRuntime, ProxyDetection,
 };
 use crate::cli::runtime::CliRuntime;
 use crate::cli::stacker_client::AgentEnqueueRequest;
@@ -125,9 +125,117 @@ fn persist_proxy_config_to_stacker_yml(
         return Ok(None);
     }
 
-    let mut config = StackerConfig::from_file_raw(&config_path)?;
-    let changed = upsert_proxy_domain_config(&mut config, proxy_type, domain_config);
     let backup_path = PathBuf::from(format!("{}.bak", config_path.display()));
+
+    // Read raw YAML to surgically update proxy without losing other keys.
+    let raw_text = std::fs::read_to_string(&config_path)?;
+    let mut root: serde_yaml::Value = serde_yaml::from_str(&raw_text)
+        .map_err(|e| CliError::ConfigValidation(format!("Invalid YAML: {}", e)))?;
+
+    // Check if domain already exists and needs update
+    let changed = if let Some(proxy) = root.get_mut("proxy") {
+        // Ensure proxy type matches the requested provider even when the
+        // proxy section already exists (e.g. `type: none` -> nginx-proxy-manager).
+        let mut changed = false;
+        if let Some(map) = proxy.as_mapping_mut() {
+            let type_str = match proxy_type {
+                ProxyType::Nginx => "nginx".to_string(),
+                ProxyType::NginxProxyManager => "nginx-proxy-manager".to_string(),
+                ProxyType::Traefik => "traefik".to_string(),
+                ProxyType::Caddy => "caddy".to_string(),
+                ProxyType::None => "none".to_string(),
+            };
+            let type_key = serde_yaml::Value::String("type".to_string());
+            match map.get_mut(&type_key) {
+                Some(current) if current.as_str() != Some(type_str.as_str()) => {
+                    *current = serde_yaml::Value::String(type_str);
+                    changed = true;
+                }
+                None => {
+                    map.insert(type_key, serde_yaml::Value::String(type_str));
+                    changed = true;
+                }
+                _ => {}
+            }
+        }
+        if let Some(domains) = proxy.get_mut("domains") {
+            if let Some(arr) = domains.as_sequence_mut() {
+                let _domain_lower = domain_config.domain.to_lowercase();
+                let existing = arr.iter_mut().find(|entry| {
+                    entry
+                        .get("domain")
+                        .and_then(|v| v.as_str())
+                        .map(|d| d.eq_ignore_ascii_case(&domain_config.domain))
+                        .unwrap_or(false)
+                });
+                if let Some(entry) = existing {
+                    let mut entry_changed = false;
+                    if let Some(ssl) = entry.get_mut("ssl") {
+                        let new_ssl = serde_yaml::to_value(&domain_config.ssl).unwrap_or_default();
+                        if *ssl != new_ssl {
+                            *ssl = new_ssl;
+                            entry_changed = true;
+                        }
+                    }
+                    if let Some(upstream) = entry.get_mut("upstream") {
+                        let new_upstream =
+                            serde_yaml::Value::String(domain_config.upstream.clone());
+                        if *upstream != new_upstream {
+                            *upstream = new_upstream;
+                            entry_changed = true;
+                        }
+                    }
+                    changed = changed || entry_changed;
+                    changed
+                } else {
+                    // Add new domain entry
+                    let new_entry = serde_yaml::to_value(&domain_config).unwrap_or_default();
+                    arr.push(new_entry);
+                    true
+                }
+            } else {
+                // domains is not an array — replace it
+                *domains = serde_yaml::Value::Sequence(vec![
+                    serde_yaml::to_value(&domain_config).unwrap_or_default()
+                ]);
+                true
+            }
+        } else {
+            // No domains key — add it
+            if let Some(map) = proxy.as_mapping_mut() {
+                let key = serde_yaml::Value::String("domains".to_string());
+                let val = serde_yaml::Value::Sequence(vec![
+                    serde_yaml::to_value(&domain_config).unwrap_or_default()
+                ]);
+                map.insert(key, val);
+            }
+            true
+        }
+    } else {
+        // No proxy key — add it with type and domains
+        if let Some(map) = root.as_mapping_mut() {
+            let type_str = serde_yaml::Value::String(match proxy_type {
+                ProxyType::Nginx => "nginx".to_string(),
+                ProxyType::NginxProxyManager => "nginx-proxy-manager".to_string(),
+                ProxyType::Traefik => "traefik".to_string(),
+                ProxyType::Caddy => "caddy".to_string(),
+                ProxyType::None => "none".to_string(),
+            });
+            let mut proxy_map = serde_yaml::Mapping::new();
+            proxy_map.insert(serde_yaml::Value::String("type".to_string()), type_str);
+            proxy_map.insert(
+                serde_yaml::Value::String("domains".to_string()),
+                serde_yaml::Value::Sequence(vec![
+                    serde_yaml::to_value(&domain_config).unwrap_or_default()
+                ]),
+            );
+            map.insert(
+                serde_yaml::Value::String("proxy".to_string()),
+                serde_yaml::Value::Mapping(proxy_map),
+            );
+        }
+        true
+    };
 
     if !changed {
         return Ok(Some(ProxyConfigPersistence {
@@ -137,7 +245,7 @@ fn persist_proxy_config_to_stacker_yml(
         }));
     }
 
-    let yaml = serde_yaml::to_string(&config)
+    let yaml = serde_yaml::to_string(&root)
         .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
     std::fs::copy(&config_path, &backup_path)?;
     std::fs::write(&config_path, yaml)?;
@@ -263,6 +371,18 @@ impl CallableTrait for ProxyAddCommand {
             build_domain_config(&self.domain, self.upstream.as_deref(), self.ssl.as_deref());
         let use_agent = self.deployment.is_some() || is_cloud_or_remote(&project_dir);
         if use_agent {
+            // Persist to stacker.yml first — the local config update does not
+            // depend on the remote agent or Vault. If the agent call later
+            // fails, the user's config is still saved.
+            let persistence = persist_proxy_config_to_stacker_yml(
+                &project_dir,
+                ProxyType::NginxProxyManager,
+                domain_config,
+            )?;
+            if !self.json {
+                print_proxy_config_persistence(persistence.as_ref());
+            }
+
             let upstream = self.upstream.as_deref().unwrap_or("app:8080");
             let target = parse_proxy_upstream(upstream)?;
             let ssl_enabled = parse_ssl_mode(self.ssl.as_deref()) != SslMode::Off;
@@ -277,28 +397,68 @@ impl CallableTrait for ProxyAddCommand {
                 self.json,
                 self.deployment.clone(),
             );
-            command.call()?;
+            if let Err(err) = command.call() {
+                eprintln!(
+                    "  ⚠ Proxy config saved locally, but remote NPM configuration failed: {}",
+                    err
+                );
+                eprintln!(
+                    "    The proxy will be configured on the remote server on the next deploy."
+                );
+            }
+            return Ok(());
+        }
+
+        // Keep an already-configured Caddy/Traefik proxy as-is; default to
+        // nginx otherwise, matching prior behavior for everyone who hasn't
+        // opted into either.
+        let existing_proxy_type = StackerConfig::from_file(&project_dir.join("stacker.yml"))
+            .map(|config| config.proxy.proxy_type)
+            .unwrap_or(ProxyType::Nginx);
+
+        if existing_proxy_type == ProxyType::Traefik {
+            // Traefik routes via labels baked directly into the generated
+            // docker-compose.yml (see `ComposeDefinition::try_from`'s
+            // domain-driven label injection) — there's no separate config
+            // file to print and hand-apply like nginx/Caddy.
             let persistence = persist_proxy_config_to_stacker_yml(
                 &project_dir,
-                ProxyType::NginxProxyManager,
+                ProxyType::Traefik,
                 domain_config,
             )?;
             if !self.json {
                 print_proxy_config_persistence(persistence.as_ref());
             }
+            eprintln!(
+                "✓ Domain {} saved to stacker.yml; Traefik routing labels are generated \
+                 automatically on the target service the next time you run `stacker deploy`.",
+                self.domain
+            );
             return Ok(());
         }
 
-        let block = generate_nginx_server_block(&domain_config)?;
+        let (block, proxy_type, kind_label) = if existing_proxy_type == ProxyType::Caddy {
+            (
+                generate_caddy_server_block(&domain_config)?,
+                ProxyType::Caddy,
+                "Caddyfile",
+            )
+        } else {
+            (
+                generate_nginx_server_block(&domain_config)?,
+                ProxyType::Nginx,
+                "nginx",
+            )
+        };
         let persistence =
-            persist_proxy_config_to_stacker_yml(&project_dir, ProxyType::Nginx, domain_config)?;
+            persist_proxy_config_to_stacker_yml(&project_dir, proxy_type, domain_config)?;
         println!("{}", block);
         if !self.json {
             print_proxy_config_persistence(persistence.as_ref());
         }
         eprintln!(
-            "✓ Proxy config generated for {}; apply this nginx snippet to configure a local proxy",
-            self.domain
+            "✓ Proxy config generated for {}; apply this {} snippet to configure a local proxy",
+            self.domain, kind_label
         );
         Ok(())
     }

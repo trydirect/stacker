@@ -89,6 +89,64 @@ The wizard:
 5. Asks for a pipe name
 6. Creates a template + instance
 
+#### Manual endpoints (non-interactive) — *added in 0.3.2*
+
+Skip discovery entirely by naming both endpoints. This works for any app —
+including ones whose APIs aren't at auto-discoverable paths — and makes pipe
+creation fully scriptable:
+
+```bash
+stacker pipe create app ntfy \
+  --source-endpoint "GET /status" \
+  --target-endpoint "POST /pipetest" \
+  --source-fields message \
+  --target-fields message \
+  --name apprise-to-ntfy
+```
+
+- Endpoints are `"METHOD /path"` (a bare `/path` defaults to `GET`).
+- Fields map by name, then by position, then identity; an empty
+  `--target-fields` passes the whole payload through.
+- `--name` skips the interactive name prompt.
+
+#### Retry policy & lifecycle handlers — *added in 0.3.2*
+
+Attach a retry policy and success/failure handlers at creation time; they are
+persisted in the pipe's config so the runtime can honor them:
+
+```bash
+stacker pipe create app ntfy \
+  --source-endpoint "GET /status" --target-endpoint "POST /pipetest" \
+  --name apprise-to-ntfy \
+  --retry 5 --retry-backoff-ms 500 --retry-backoff-max-ms 30000 \
+  --on-failure oncall-notify --on-success audit-log
+```
+
+### Declarative pipes (Infrastructure-as-Code) — *added in 0.3.2*
+
+Instead of imperative `pipe create` commands, declare pipes in `stacker.yml`
+and reconcile them. See the [`pipes:` reference](./STACKER_YML_REFERENCE.md#pipes).
+
+```yaml
+pipes:
+  - name: apprise-to-ntfy
+    source: app
+    target: ntfy
+    source_endpoint: "GET /status"
+    target_endpoint: "POST /pipetest"
+    source_fields: [message]
+    target_fields: [message]
+    retry: 5
+    on_failure: oncall-notify
+```
+
+```bash
+stacker pipe diff             # preview: create / update / unchanged / orphan
+stacker pipe apply            # create declared-but-missing pipes (idempotent)
+stacker pipe apply --prune    # also delete deployed pipes not in stacker.yml
+stacker pipe apply --dry-run  # show the plan without applying
+```
+
 ### 3. Activate the pipe
 
 ```bash

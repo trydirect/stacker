@@ -3098,6 +3098,61 @@ impl StackerClient {
             .ok_or_else(|| CliError::ConfigValidation("Empty status response".to_string()))
     }
 
+    /// Delete a pipe template. `DELETE /api/v1/pipes/templates/{id}`.
+    /// Idempotent from the caller's view: a 404 (already gone) is treated as
+    /// success so `pipe apply --prune` can be re-run safely.
+    pub async fn delete_pipe_template(&self, template_id: &str) -> Result<(), CliError> {
+        let url = format!("{}/api/v1/pipes/templates/{}", self.base_url, template_id);
+        let resp = self
+            .http
+            .delete(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to delete pipe template: {}", e))
+            })?;
+        if resp.status().is_success() || resp.status().as_u16() == 404 {
+            return Ok(());
+        }
+        let status_code = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        Err(CliError::ConfigValidation(stacker_api_failure_with_message(
+            "Delete pipe template failed",
+            &format!("DELETE /api/v1/pipes/templates/{template_id}"),
+            status_code,
+            &body,
+            cli_debug_enabled(),
+        )))
+    }
+
+    /// Delete a pipe instance. `DELETE /api/v1/pipes/instances/{id}`.
+    /// 404 → treated as success (idempotent).
+    pub async fn delete_pipe_instance(&self, instance_id: &str) -> Result<(), CliError> {
+        let url = format!("{}/api/v1/pipes/instances/{}", self.base_url, instance_id);
+        let resp = self
+            .http
+            .delete(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to delete pipe instance: {}", e))
+            })?;
+        if resp.status().is_success() || resp.status().as_u16() == 404 {
+            return Ok(());
+        }
+        let status_code = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        Err(CliError::ConfigValidation(stacker_api_failure_with_message(
+            "Delete pipe instance failed",
+            &format!("DELETE /api/v1/pipes/instances/{instance_id}"),
+            status_code,
+            &body,
+            cli_debug_enabled(),
+        )))
+    }
+
     /// List pipe templates visible to the current user.
     ///
     /// `GET /api/v1/pipes/templates`
@@ -3739,6 +3794,29 @@ fn is_platform_managed_service(svc: &ServiceDefinition) -> bool {
     crate::project_app::is_platform_managed_app_identity(&svc.name, Some(&svc.image))
 }
 
+/// Cloud/server deploys go through the Stacker server API, which pulls a
+/// pre-built image on the remote host — it never receives the local build
+/// context. `app_source_to_app_json` silently drops the app from the deploy
+/// payload when `app.image` is unset, which previously produced a "deployed"
+/// project missing its main container. Call this before `build_project_body`
+/// so a build-only `app:` section (declared via `dockerfile:`/`build:`, no
+/// `image:`) fails fast with an actionable message instead of deploying
+/// everything except the app.
+pub fn require_app_image_for_remote_deploy(config: &StackerConfig) -> Result<(), CliError> {
+    let app = &config.app;
+    let app_declared = config.app_present || app.dockerfile.is_some() || app.build.is_some();
+    if app_declared && app.image.is_none() {
+        return Err(CliError::ConfigValidation(
+            "app.image is required for cloud/server deploys: the Stacker server pulls a \
+             pre-built image on the remote host and cannot build from app.dockerfile/app.build \
+             locally. Push your image to a registry and set `app.image`, or use \
+             `deploy.target: local` to build and run it on this machine."
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Convert the `app` section of stacker.yml into the Stacker server's app JSON
 /// format. Returns `None` if the app has no image (build-only local apps).
 fn app_source_to_app_json(
@@ -4129,9 +4207,9 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
         }
     }
 
-    // When proxy type is Nginx or NginxProxyManager, inject "nginx_proxy_manager"
-    // into extended_features so the install service's Ansible playbook runs the
-    // nginx_proxy_manager role (collect_roles checks selected_features).
+    // Inject the proxy role into extended_features so the install service's
+    // Ansible playbook runs the corresponding role (collect_roles checks
+    // selected_features).
     match config.proxy.proxy_type {
         crate::cli::config_parser::ProxyType::Nginx
         | crate::cli::config_parser::ProxyType::NginxProxyManager => {
@@ -4147,7 +4225,64 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
                 }
             }
         }
+        crate::cli::config_parser::ProxyType::Traefik => {
+            if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
+                let features = stack_obj
+                    .entry("extended_features")
+                    .or_insert_with(|| serde_json::json!([]));
+                if let Some(arr) = features.as_array_mut() {
+                    let role = serde_json::Value::String("traefik".to_string());
+                    if !arr.contains(&role) {
+                        arr.push(role);
+                    }
+                }
+            }
+        }
+        crate::cli::config_parser::ProxyType::Caddy => {
+            if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
+                let features = stack_obj
+                    .entry("extended_features")
+                    .or_insert_with(|| serde_json::json!([]));
+                if let Some(arr) = features.as_array_mut() {
+                    let role = serde_json::Value::String("caddy".to_string());
+                    if !arr.contains(&role) {
+                        arr.push(role);
+                    }
+                }
+            }
+        }
         _ => {}
+    }
+
+    // Proxy routing domains (proxy.domains) for platform-managed proxies that
+    // route via a config file — caddy (Caddyfile) and nginx (conf.d). Forwarded
+    // to the Install Service, which passes them to the proxy role as the
+    // `stacker_proxy_domains` extra var. (Traefik routes via container labels
+    // generated into the compose, so it does not need this.)
+    if !config.proxy.domains.is_empty() {
+        let domains: Vec<serde_json::Value> = config
+            .proxy
+            .domains
+            .iter()
+            .map(|d| {
+                let ssl = match d.ssl {
+                    crate::cli::config_parser::SslMode::Auto => "auto",
+                    crate::cli::config_parser::SslMode::Manual => "manual",
+                    crate::cli::config_parser::SslMode::Off => "off",
+                };
+                serde_json::json!({
+                    "domain": d.domain,
+                    "upstream": d.upstream,
+                    "ssl": ssl,
+                })
+            })
+            .collect();
+        if let Some(obj) = form.as_object_mut() {
+            obj.insert(
+                "proxy_domains".to_string(),
+                serde_json::Value::Array(domains),
+            );
+        }
     }
 
     // When monitoring.status_panel is enabled, inject the "statuspanel" role into
@@ -4191,6 +4326,44 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
                 "connection_mode".to_string(),
                 serde_json::Value::String("status_panel".to_string()),
             );
+        }
+    }
+
+    // If the user specified deploy.cloud.ssh_key, read the corresponding
+    // public key (.pub file) so the Install Service can install it alongside
+    // the Vault-managed key on the cloud VM.
+    if let Some(cloud_cfg) = config.deploy.cloud.as_ref() {
+        if let Some(ssh_key_path) = cloud_cfg.ssh_key.as_ref() {
+            let resolved = crate::cli::install_runner::resolve_ssh_key_path(ssh_key_path);
+            let pub_path = std::path::PathBuf::from(format!("{}.pub", resolved.display()));
+            match std::fs::read_to_string(&pub_path) {
+                Ok(pub_key) => {
+                    let pub_key = pub_key.trim().to_string();
+                    if !pub_key.is_empty() {
+                        if let Some(server_obj) =
+                            form.get_mut("server").and_then(|v| v.as_object_mut())
+                        {
+                            server_obj.insert(
+                                "additional_public_keys".to_string(),
+                                serde_json::json!([pub_key]),
+                            );
+                        }
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    eprintln!(
+                        "  note: SSH public key not found at {} — skipping user key installation",
+                        pub_path.display()
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "  warning: could not read SSH public key {}: {}",
+                        pub_path.display(),
+                        e
+                    );
+                }
+            }
         }
     }
 
@@ -4648,6 +4821,7 @@ mod tests {
                 status_panel: true,
                 healthcheck: None,
                 metrics: None,
+                alerts: None,
             })
             .build()
             .unwrap();
@@ -4711,6 +4885,7 @@ mod tests {
                 status_panel: true,
                 healthcheck: None,
                 metrics: None,
+                alerts: None,
             })
             .build()
             .unwrap();
@@ -4786,6 +4961,56 @@ mod tests {
             ext_features.contains(&serde_json::json!("nginx_proxy_manager")),
             "extended_features should contain 'nginx_proxy_manager': {:?}",
             ext_features
+        );
+    }
+
+    #[test]
+    fn test_build_deploy_form_serializes_proxy_domains() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::Caddy,
+                auto_detect: true,
+                domains: vec![
+                    crate::cli::config_parser::DomainConfig {
+                        domain: "app.example.com".to_string(),
+                        ssl: crate::cli::config_parser::SslMode::Auto,
+                        upstream: "app:8080".to_string(),
+                    },
+                    crate::cli::config_parser::DomainConfig {
+                        domain: "api.example.com".to_string(),
+                        ssl: crate::cli::config_parser::SslMode::Off,
+                        upstream: "app:9000".to_string(),
+                    },
+                ],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let form = build_deploy_form(&config);
+        let domains = form["proxy_domains"]
+            .as_array()
+            .expect("proxy_domains should be present in the deploy form");
+        assert_eq!(domains.len(), 2);
+        assert_eq!(domains[0]["domain"], "app.example.com");
+        assert_eq!(domains[0]["upstream"], "app:8080");
+        assert_eq!(domains[0]["ssl"], "auto");
+        assert_eq!(domains[1]["domain"], "api.example.com");
+        assert_eq!(domains[1]["ssl"], "off");
+    }
+
+    #[test]
+    fn test_build_deploy_form_omits_proxy_domains_when_none() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .build()
+            .unwrap();
+        let form = build_deploy_form(&config);
+        assert!(
+            form.get("proxy_domains").is_none(),
+            "proxy_domains must be absent when no proxy domains are declared"
         );
     }
 
@@ -5061,6 +5286,7 @@ mod tests {
                 status_panel: true,
                 healthcheck: None,
                 metrics: None,
+                alerts: None,
             })
             .build()
             .unwrap();
@@ -5087,6 +5313,74 @@ mod tests {
             features.is_empty(),
             "feature array should be empty when no proxy configured"
         );
+    }
+
+    // Regression test for GH issue #218: `app` service silently missing from
+    // the remote docker-compose.yml for cloud/server deploys. Root cause: a
+    // build-only `app:` section (declared via `dockerfile:`/`build:`, no
+    // `image:`) makes `app_source_to_app_json` return `None`, so
+    // `build_project_body` produces an empty `web` array and the server
+    // deploys everything except the app — silently. This must now be caught
+    // up front instead.
+    #[test]
+    fn test_build_project_body_drops_app_without_image() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("goaccess")
+            .app_dockerfile("Dockerfile")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .build()
+            .unwrap();
+
+        let body = build_project_body(&config);
+        assert!(
+            body["custom"]["web"].as_array().unwrap().is_empty(),
+            "documents the bug: app section has no image, so `web` stays empty \
+             even though app.dockerfile declares a real app"
+        );
+    }
+
+    #[test]
+    fn test_require_app_image_for_remote_deploy_rejects_dockerfile_only_app() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("goaccess")
+            .app_dockerfile("Dockerfile")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .build()
+            .unwrap();
+
+        let err = require_app_image_for_remote_deploy(&config)
+            .expect_err("build-only app (no image) must be rejected before remote deploy");
+        match err {
+            CliError::ConfigValidation(msg) => {
+                assert!(msg.contains("app.image"), "got: {msg}");
+            }
+            other => panic!("expected ConfigValidation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_require_app_image_for_remote_deploy_accepts_image_app() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("goaccess")
+            .app_image("nginx:alpine")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .build()
+            .unwrap();
+
+        require_app_image_for_remote_deploy(&config)
+            .expect("app with an explicit image should be allowed to deploy remotely");
+    }
+
+    #[test]
+    fn test_require_app_image_for_remote_deploy_accepts_services_only_stack() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("services-only")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .build()
+            .unwrap();
+
+        require_app_image_for_remote_deploy(&config)
+            .expect("a stack with no declared app: section should not be rejected");
     }
 
     #[test]

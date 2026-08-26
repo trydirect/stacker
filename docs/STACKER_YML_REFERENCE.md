@@ -26,7 +26,8 @@
 - [config_contract — Service Config Contracts](#config_contract)
 - [ai — AI Assistant](#ai)
 - [monitoring — Health & Metrics](#monitoring)
-  - [status_panel](#monitoringstatus_panel) · [healthcheck](#monitoringhealthcheck) · [metrics](#monitoringmetrics)
+  - [status_panel](#monitoringstatus_panel) · [healthcheck](#monitoringhealthcheck) · [metrics](#monitoringmetrics) · [alerts](#monitoringalerts)
+- [pipes — Declarative Pipes (IaC)](#pipes)
 - [hooks — Lifecycle Scripts](#hooks)
 - [env / env_file — Environment Variables](#env--env_file)
 - [Environment Variable Interpolation](#environment-variable-interpolation)
@@ -980,6 +981,103 @@ monitoring:
     telegraf: true
 ```
 
+### `monitoring.alerts`
+
+*Optional* · `object` · Default: none · *Added in 0.3.2*
+
+Container-down alarm for the `stacker monitor` command. When configured,
+`stacker monitor` polls the deployment's live container health and fires an
+alert on transitions: once when a container stops running, and once when
+everything recovers (edge-triggered — no repeat spam while a container stays
+down).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `interval` | `int` | `60` | Poll interval in seconds (overridable with `--interval`) |
+| `on_recovery` | `bool` | `true` | Also notify when containers recover to healthy |
+| `target` | `object` | — (required) | Where to deliver the alert (see below) |
+
+**`target`** is one of:
+
+| Shape | Delivery |
+|-------|----------|
+| `{ terminal: true }` | Terminal + desktop notification (OS notification, terminal bell, stderr) |
+| `{ url: "<webhook>", method: POST }` | HTTP webhook (ntfy, Slack, …); `method` defaults to `POST` |
+| `{ pipe: <name> }` | Run a declared pipe (deferred — see notes) |
+
+```yaml
+monitoring:
+  status_panel: true
+  alerts:
+    interval: 30
+    on_recovery: true
+    target:
+      terminal: true
+      # or a webhook:
+      # url: "https://ntfy.example.com/alerts"
+      # method: POST
+      # or a pipe:
+      # pipe: oncall-notify
+```
+
+Run it with `stacker monitor` (loops every `interval`) or `stacker monitor --once`
+(single check — ideal for cron). Alert state is persisted to
+`.stacker/monitor.state`, so one-shot `--once` runs stay edge-triggered.
+
+> The `pipe:` target is accepted but not yet dispatched (a follow-up); use a
+> `terminal` or `url` target today.
+
+---
+
+## `pipes`
+
+*Optional* · `array` · Default: none · *Added in 0.3.2*
+
+Declaratively-defined data pipes, reconciled with the deployment by
+`stacker pipe diff` (preview) and `stacker pipe apply` (create / `--prune`).
+Each entry mirrors the `stacker pipe create` flags, so pipes become
+committable, reviewable, and reproducible.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | `string` | — (required) | Unique pipe name (identity for reconcile) |
+| `source` | `string` | — (required) | Source app code (container/service) |
+| `target` | `string` | — (required) | Target app code |
+| `source_endpoint` | `string` | — (required) | `"METHOD /path"` on the source |
+| `target_endpoint` | `string` | — (required) | `"METHOD /path"` on the target |
+| `source_fields` | `[string]` | `[]` | Source field names for mapping |
+| `target_fields` | `[string]` | `[]` | Target field names for mapping |
+| `trigger` | `string` | `webhook` | `manual` \| `webhook` \| `poll` |
+| `poll_interval` | `int` | — | Poll interval (seconds) when `trigger: poll` |
+| `retry` | `int` | — | Max delivery retries |
+| `retry_backoff_ms` | `int` | — | Base retry backoff (ms) |
+| `retry_backoff_max_ms` | `int` | — | Max retry backoff (ms) |
+| `on_failure` | `string` | — | Pipe (by name) to run when delivery fails |
+| `on_success` | `string` | — | Pipe (by name) to run after success |
+
+```yaml
+pipes:
+  - name: apprise-to-ntfy
+    source: app
+    target: ntfy
+    source_endpoint: "GET /status"
+    target_endpoint: "POST /pipetest"
+    source_fields: [message]
+    target_fields: [message]
+    trigger: manual
+    retry: 5
+    on_failure: oncall-notify
+```
+
+Workflow:
+
+```bash
+stacker pipe diff             # preview: create / update / unchanged / orphan
+stacker pipe apply            # create declared-but-missing pipes (idempotent)
+stacker pipe apply --prune    # also delete deployed pipes not in stacker.yml
+stacker pipe apply --dry-run  # show the plan without applying
+```
+
 ---
 
 ## `hooks`
@@ -1352,6 +1450,7 @@ Stacker validates your configuration both syntactically (YAML structure) and sem
 |------|------|-------|
 | `W001` | Port conflict — multiple services bind the same host port | `services.ports` |
 | `W002` | Named volume referenced in `volumes` but not mounted by any service | `volumes` |
+| `W003` | A `proxy:` block plus a service publishing the same ingress host port (80/443/81) — likely conflict *(added in 0.3.2)* | `proxy` / `services.ports` |
 
 ### Example output
 
@@ -1403,6 +1502,10 @@ Configuration issues:
 | `stacker agent configure-firewall` | Configure guest OS firewall rules via the Status Panel agent |
 | `stacker agent history` | Show recent agent command execution history |
 | `stacker agent exec` | Execute a raw agent command with JSON parameters |
+| `stacker monitor` | Watch container health and alert on problems *(added in 0.3.2)*; `--once` for a single check, `--interval <s>` to override the poll interval. Requires `monitoring.alerts` in `stacker.yml`. |
+| `stacker pipe create` | Create a pipe. *(0.3.2)* Add `--source-endpoint`/`--target-endpoint`/`--source-fields`/`--target-fields`/`--name` for manual, non-interactive creation, and `--retry`/`--retry-backoff-ms`/`--retry-backoff-max-ms`/`--on-failure`/`--on-success` for a retry policy + lifecycle handlers |
+| `stacker pipe diff` | *(0.3.2)* Compare the declared `pipes:` block against deployed pipes (create/update/unchanged/orphan); `--json` |
+| `stacker pipe apply` | *(0.3.2)* Reconcile declared pipes into the deployment — creates missing pipes; `--prune` deletes orphans, `--dry-run` previews |
 | `stacker update` | Check for CLI updates |
 
 ### `stacker init` flags

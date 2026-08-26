@@ -138,6 +138,9 @@ jobs:
         run: cargo nextest run --partition count:${{ matrix.shard }}/${{ matrix.shards }} -E 'not binary(bdd)'
       # The `bdd` test uses a custom harness (harness = false), which nextest
       # cannot run, so execute it once on shard 1 with the standard test runner.
+      - name: Prepare config files for BDD tests
+        if: ${{ matrix.shard == 1 }}
+        run: cp access_control.conf.dist access_control.conf
       - name: Run BDD suite
         if: ${{ matrix.shard == 1 }}
         run: cargo test --test bdd

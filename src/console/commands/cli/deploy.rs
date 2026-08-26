@@ -487,6 +487,69 @@ fn print_server_unreachable_hint(server: &ServerConfig, check: &ssh_client::Syst
     eprintln!();
 }
 
+/// Render the config-file proxy's routing file (caddy `Caddyfile`, nginx
+/// `conf.d`) next to the generated compose, from `proxy.domains`.
+///
+/// The synthesized caddy/nginx proxy service bind-mounts this file from the
+/// compose directory. For `--target local` and `--target server` the tfa proxy
+/// role never runs, so without this the mount points at a nonexistent path and
+/// Docker silently creates an empty directory — the proxy then serves nothing.
+/// This mirrors what the tfa caddy/nginx role renders on cloud deploys, so the
+/// three targets produce identical routing. Traefik routes via labels and needs
+/// no file; NPM has no file (routing lives in its DB) — both are no-ops here.
+fn write_local_proxy_config(config: &StackerConfig, output_dir: &Path) -> Result<(), CliError> {
+    use crate::cli::config_parser::ProxyType;
+    use crate::cli::proxy_manager::{generate_caddy_server_block, generate_nginx_server_block};
+
+    if config.proxy.domains.is_empty() {
+        return Ok(());
+    }
+
+    match config.proxy.proxy_type {
+        ProxyType::Caddy => {
+            let mut content = String::new();
+            // Optional global ACME email block (matches the tfa caddy role).
+            if let Some(email) = config
+                .install
+                .inputs
+                .get("admin_email")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                content.push_str(&format!("{{\n    email {}\n}}\n\n", email));
+            }
+            for domain in &config.proxy.domains {
+                content.push_str(&generate_caddy_server_block(domain)?);
+            }
+            let path = output_dir.join("Caddyfile");
+            std::fs::write(&path, content)?;
+            eprintln!(
+                "  Generated {}/Caddyfile from proxy.domains ({} site(s))",
+                OUTPUT_DIR,
+                config.proxy.domains.len()
+            );
+        }
+        ProxyType::Nginx => {
+            let mut content = String::new();
+            for domain in &config.proxy.domains {
+                content.push_str(&generate_nginx_server_block(domain)?);
+            }
+            // The nginx service mounts ./nginx/conf.d; nginx.conf includes *.conf.
+            let conf_dir = output_dir.join("nginx").join("conf.d");
+            std::fs::create_dir_all(&conf_dir)?;
+            std::fs::write(conf_dir.join("stacker.conf"), content)?;
+            eprintln!(
+                "  Generated {}/nginx/conf.d/stacker.conf from proxy.domains ({} site(s))",
+                OUTPUT_DIR,
+                config.proxy.domains.len()
+            );
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError> {
     let is_stacker_compose = compose_path
         .components()
@@ -2870,6 +2933,18 @@ pub fn run_deploy_for_environment_with_policy(
     )
 }
 
+/// True when `host` is still a literal, unresolved `${VAR}` placeholder.
+///
+/// `StackerConfig::from_file_for_target` intentionally leaves `deploy.server`
+/// unresolved for a cloud deploy (its env vars aren't required — GH #239).
+/// Any code that inspects `deploy.server.host` for a cloud-target deploy
+/// must check this first: `is_private_host` would otherwise misclassify the
+/// template string itself as a private/intranet host (it contains no '.')
+/// and silently switch the deploy target based on garbage.
+fn host_is_unresolved_placeholder(host: &str) -> bool {
+    host.contains("${") && host.contains('}')
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_deploy_with_credentials_manager<S: CredentialStore>(
     project_dir: &Path,
@@ -2891,8 +2966,8 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         None => project_dir.join(DEFAULT_CONFIG_FILE),
     };
 
-    let mut config =
-        StackerConfig::from_file(&config_path)?.with_resolved_deploy_target(target_override)?;
+    let mut config = StackerConfig::from_file_for_target(&config_path, target_override)?
+        .with_resolved_deploy_target(target_override)?;
     let selected_environment = if let Some((environment, environment_config)) =
         config.resolve_environment_config(environment_override)?
     {
@@ -2922,7 +2997,9 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     let mut lock_server_name: Option<String> = None;
     if deploy_target == DeployTarget::Cloud && !force_new {
         if let Some(ref server_cfg) = config.deploy.server {
-            if crate::helpers::ip::is_private_host(&server_cfg.host) {
+            if host_is_unresolved_placeholder(&server_cfg.host) {
+                // fall through — cloud target stays as-is
+            } else if crate::helpers::ip::is_private_host(&server_cfg.host) {
                 // Private/intranet host — skip SSH check and switch to Server target.
                 // The russh client cannot reliably reach intranet IPs from the CLI's
                 // routing stack (EHOSTUNREACH), but the local SSH binary can. Trust
@@ -3214,6 +3291,15 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
             if force_rebuild || !compose_out.exists() {
                 let compose = ComposeDefinition::try_from(&config)?;
                 compose.write_to(&compose_out, force_rebuild)?;
+                // The synthesized caddy/nginx proxy service mounts a config file
+                // (./Caddyfile, ./nginx/conf.d) from the compose directory. For
+                // local/server deploys the tfa proxy role does NOT run, so the
+                // CLI must render that file itself — otherwise Docker bind-mounts
+                // a nonexistent path (creating an empty directory) and the proxy
+                // serves nothing. Cloud deploys strip this service and let the
+                // role render it remotely, so the generated file is simply unused
+                // there. Idempotent-friendly: regenerated alongside the compose.
+                write_local_proxy_config(&config, &output_dir)?;
             } else {
                 eprintln!(
                     "  Using existing {}/docker-compose.yml (use --force-rebuild to regenerate)",
@@ -3351,7 +3437,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
 
     let origin_trusted = config.is_trusted();
 
-    // 6a. Execute pre-build hook
+    // 6a. Execute pre-build hook (always runs locally — builds happen locally).
     if !dry_run {
         run_hook(
             executor,
@@ -3366,6 +3452,12 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     // 6b. Deploy
     let deploy_result = strategy.deploy(&config, &context, executor);
 
+    // Hooks that reference application binaries (post_deploy, on_failure)
+    // only make sense for local deploys. For cloud/server deploys, the app
+    // runs on the remote host — running the hook locally would fail with
+    // "command not found" and is a security concern (arbitrary remote exec).
+    let is_remote = matches!(deploy_target, DeployTarget::Cloud | DeployTarget::Server);
+
     match deploy_result {
         Ok(result) => {
             // 6c. Execute post-deploy hook on success.
@@ -3377,21 +3469,27 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
             // scrolls off the terminal. A clean-content hook that just
             // exits non-zero at runtime stays best-effort (WARN + Ok).
             if !dry_run {
-                match run_hook(
-                    executor,
-                    project_dir,
-                    &config.hooks.post_deploy,
-                    "post_deploy",
-                    hook_policy,
-                    origin_trusted,
-                ) {
-                    Ok(()) => {}
-                    Err(err @ CliError::HookRejected { .. }) => {
-                        eprintln!("  [ERROR] {}", err);
-                        return Err(err);
+                if is_remote {
+                    if config.hooks.post_deploy.is_some() {
+                        eprintln!("  ℹ post_deploy hook skipped — hooks run locally and cannot reach the remote host.");
                     }
-                    Err(err) => {
-                        eprintln!("  [WARN] post_deploy hook failed: {}", err);
+                } else {
+                    match run_hook(
+                        executor,
+                        project_dir,
+                        &config.hooks.post_deploy,
+                        "post_deploy",
+                        hook_policy,
+                        origin_trusted,
+                    ) {
+                        Ok(()) => {}
+                        Err(err @ CliError::HookRejected { .. }) => {
+                            eprintln!("  [ERROR] {}", err);
+                            return Err(err);
+                        }
+                        Err(err) => {
+                            eprintln!("  [WARN] post_deploy hook failed: {}", err);
+                        }
                     }
                 }
             }
@@ -3406,7 +3504,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
             // into the returned error, so the operator sees BOTH the
             // primary cause AND the fact that a hostile cleanup script
             // was refused.
-            if !dry_run {
+            if !dry_run && !is_remote {
                 match run_hook(
                     executor,
                     project_dir,
@@ -3607,7 +3705,7 @@ impl CallableTrait for DeployCommand {
                 // Ansible provisioning fails (e.g. nginx_proxy_manager port-conflict bug),
                 // so the user can always SSH into the created server.
                 self.save_local_backup_keypair_early(&result);
-                watch_outcome = watch_cloud_deployment(&result)?;
+                watch_outcome = watch_cloud_deployment(&result, self.force_new)?;
             }
             _ => {}
         }
@@ -3662,6 +3760,7 @@ impl DeployCommand {
             project_id as i32,
             DeployTarget::Cloud,
             result.server_name.as_deref(),
+            false,
         ) {
             Ok(Some(server)) => server,
             _ => return,
@@ -3696,6 +3795,7 @@ impl DeployCommand {
             project_id as i32,
             DeployTarget::Cloud,
             result.server_name.as_deref(),
+            false,
         ) {
             Ok(Some(server)) => server,
             Ok(None) => {
@@ -3820,6 +3920,16 @@ impl DeployCommand {
                         if l.ssh_port.is_none() {
                             l.ssh_port = Some(server_cfg.port);
                         }
+                        // `from_result` always initializes ssh_key to None —
+                        // without this, every successful server deploy wrote
+                        // ssh_key: null to the lock regardless of what was
+                        // correctly configured/resolved in stacker.yml, so any
+                        // later command that reads the *lock* (not
+                        // stacker.yml) for connection details would fail SSH
+                        // key auth. See GH issue #225.
+                        if l.ssh_key.is_none() {
+                            l.ssh_key = server_cfg.ssh_key.clone();
+                        }
                     }
                 }
 
@@ -3829,6 +3939,7 @@ impl DeployCommand {
                             project_id as i32,
                             DeployTarget::Server,
                             result.server_name.as_deref(),
+                            false,
                         ) {
                             Ok(Some(info)) => {
                                 l = l.with_server_info(
@@ -3883,6 +3994,7 @@ impl DeployCommand {
                             project_id as i32,
                             DeployTarget::Cloud,
                             result.server_name.as_deref(),
+                            self.force_new,
                         ) {
                             Ok(Some(info)) => {
                                 l = l.with_server_info(
@@ -4005,6 +4117,7 @@ fn fetch_server_for_project(
     project_id: i32,
     target: DeployTarget,
     preferred_server_name: Option<&str>,
+    force_new: bool,
 ) -> Result<Option<stacker_client::ServerInfo>, Box<dyn std::error::Error>> {
     use std::time::Duration;
 
@@ -4024,6 +4137,7 @@ fn fetch_server_for_project(
         let deploy_timeout = Duration::from_secs(600);
         let deploy_start = std::time::Instant::now();
         let mut fallback_server_ip: Option<String> = None;
+        let mut deployment_failed = false;
 
         loop {
             match client.get_deployment_status_by_project(project_id).await {
@@ -4033,7 +4147,8 @@ fn fetch_server_for_project(
                             .as_deref()
                             .and_then(extract_ipv4_from_text)
                     });
-                    if info.status != "completed" {
+                    deployment_failed = info.status != "completed";
+                    if deployment_failed {
                         eprintln!(
                             "  Deployment #{} finished with status '{}' — server IP may not be available.",
                             info.id, info.status
@@ -4067,13 +4182,15 @@ fn fetch_server_for_project(
         }
 
         // Phase 2: deployment is terminal (or timed out) — poll for the server IP.
-        let ip_retries = 6;
+        // When the deployment failed, skip the retry loop — no point waiting for
+        // an IP when provisioning failed.
+        let ip_retries = if deployment_failed { 1 } else { 6 };
         let ip_delay = Duration::from_secs(10);
 
         for attempt in 0..ip_retries {
             let servers = client.list_servers().await?;
 
-            let server = choose_server_for_project(servers, project_id, preferred_server_name);
+            let server = choose_server_for_project(servers, project_id, preferred_server_name, force_new);
 
             match server {
                 Some(ref s) if s.srv_ip.is_some() => {
@@ -4127,11 +4244,19 @@ fn choose_server_for_project(
     servers: Vec<stacker_client::ServerInfo>,
     project_id: i32,
     preferred_server_name: Option<&str>,
+    force_new: bool,
 ) -> Option<stacker_client::ServerInfo> {
     let mut matching: Vec<stacker_client::ServerInfo> = servers
         .into_iter()
         .filter(|server| server.project_id == project_id)
         .collect();
+
+    // When --force-new is set, prefer the most recently created server
+    // (highest id) to avoid picking a stale server from a previous deploy.
+    if force_new && matching.len() > 1 {
+        matching.sort_by(|a, b| b.id.cmp(&a.id));
+        return matching.into_iter().next();
+    }
 
     if let Some(preferred_name) = preferred_server_name
         .map(str::trim)
@@ -4301,6 +4426,7 @@ enum DeploymentWatchOutcome {
 /// Watch remote deployment status until it reaches a terminal state.
 fn watch_cloud_deployment(
     result: &DeployResult,
+    force_new: bool,
 ) -> Result<DeploymentWatchOutcome, Box<dyn std::error::Error>> {
     use std::time::Duration;
 
@@ -4337,8 +4463,42 @@ fn watch_cloud_deployment(
         let start = std::time::Instant::now();
         let mut last_status = String::new();
         let mut last_message: Option<String> = None;
+        // For `--force-new` cloud deploys the server is created *during*
+        // provisioning, so the pre-watch keypair save finds no server and
+        // skips. Save the local backup keypair the moment the server first
+        // appears here, so an interrupted watch (Ctrl-C / timeout) never
+        // leaves a reachable server without a local key. Runs once.
+        let mut keypair_saved = false;
 
         loop {
+            if !keypair_saved && result.target == DeployTarget::Cloud {
+                if let Ok(servers) = client.list_servers().await {
+                    if let Some(server) = choose_server_for_project(
+                        servers,
+                        project_id,
+                        result.server_name.as_deref(),
+                        force_new,
+                    ) {
+                        match crate::console::commands::cli::ssh_key::ensure_local_backup_keypair(
+                            server.id,
+                        ) {
+                            Ok(keypair) => {
+                                eprintln!(
+                                    "  ✓ Local SSH backup key saved: {}",
+                                    keypair.private_key_path.display()
+                                );
+                                keypair_saved = true;
+                            }
+                            Err(err) => {
+                                eprintln!("  ⚠ Could not save local backup SSH key: {}", err);
+                                // Don't hammer on a persistent failure.
+                                keypair_saved = true;
+                            }
+                        }
+                    }
+                }
+            }
+
             match client.get_deployment_status_by_project(project_id).await {
                 Ok(Some(info)) => {
                     let status_changed = info.status != last_status;
@@ -4586,7 +4746,7 @@ services:
             server_info(3, 75, Some("coolify-current"), None),
         ];
 
-        let selected = choose_server_for_project(servers, 75, Some("coolify-current"))
+        let selected = choose_server_for_project(servers, 75, Some("coolify-current"), false)
             .expect("matching server should be selected");
 
         assert_eq!(selected.id, 2);
@@ -4601,10 +4761,23 @@ services:
             server_info(3, 75, Some("ready"), Some("203.0.113.42")),
         ];
 
-        let selected = choose_server_for_project(servers, 75, None)
+        let selected = choose_server_for_project(servers, 75, None, false)
             .expect("server with IP should be selected");
 
         assert_eq!(selected.id, 3);
+    }
+
+    #[test]
+    fn choose_server_for_project_prefers_newest_on_force_new() {
+        let servers = vec![
+            server_info(10, 75, Some("old-server"), Some("203.0.113.10")),
+            server_info(20, 75, Some("new-server"), None),
+        ];
+
+        let selected = choose_server_for_project(servers, 75, None, true)
+            .expect("newest server should be selected on force_new");
+
+        assert_eq!(selected.id, 20);
     }
 
     #[test]
@@ -4905,6 +5078,138 @@ services:
     }
 
     #[test]
+    fn test_host_is_unresolved_placeholder() {
+        assert!(host_is_unresolved_placeholder("${EXISTING_SERVER_HOST}"));
+        assert!(host_is_unresolved_placeholder("${BASE_PATH}/host"));
+        assert!(!host_is_unresolved_placeholder("203.0.113.10"));
+        assert!(!host_is_unresolved_placeholder("my.example.com"));
+        assert!(!host_is_unresolved_placeholder(""));
+    }
+
+    // Regression test for GH #239: a dual-target stacker.yml with both
+    // deploy.server (host: ${EXISTING_SERVER_HOST}) and deploy.cloud
+    // previously crashed on the missing env var entirely. After that fix,
+    // `deploy.server` is left deliberately unresolved for a cloud deploy —
+    // but the pre-existing "auto-switch to server if deploy.server looks
+    // private/intranet" check then misclassified the literal `${...}`
+    // placeholder as a private host (it contains no '.') and silently
+    // switched the target, attempting a nonsense server deploy instead of
+    // the requested cloud one.
+    #[test]
+    fn test_deploy_cloud_with_unresolved_server_placeholder_stays_cloud() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\n\
+deploy:\n  target: server\n  server:\n    host: ${EXISTING_SERVER_HOST}\n    user: ${EXISTING_SERVER_USER}\n\
+  cloud:\n    provider: hetzner\n    region: eu-central\n    size: cpx11\n";
+        let dir = setup_local_project(&[("stacker.yml", config)]);
+        let executor = MockExecutor::success();
+        let store = FileCredentialStore::new(dir.path().join("credentials.json"));
+        let cred_manager = CredentialsManager::new(store);
+        cred_manager
+            .save(&StoredCredentials {
+                access_token: "test-token".to_string(),
+                refresh_token: None,
+                token_type: "Bearer".to_string(),
+                expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+                email: Some("test@example.com".to_string()),
+                server_url: Some("https://example.test".to_string()),
+                org: None,
+                domain: None,
+            })
+            .unwrap();
+
+        // No EXISTING_SERVER_HOST/EXISTING_SERVER_USER set anywhere. This
+        // dry-run still reaches out to the (fake, unreachable) Stacker API
+        // to resolve the cloud project, so it's expected to fail here on a
+        // network/DNS error — the point of this test is that the failure's
+        // `target` stays Cloud, proving the deploy target was never
+        // silently switched to Server by the unresolved-placeholder host.
+        let result = run_deploy_with_credentials_manager(
+            dir.path(),
+            None,
+            Some("cloud"),
+            None,
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+            &cred_manager,
+            HookPolicy::default(),
+        );
+
+        match result {
+            Err(CliError::DeployFailed { target, .. }) => {
+                assert_eq!(
+                    target,
+                    DeployTarget::Cloud,
+                    "deploy target must not be silently switched to Server because of an \
+                     unresolved deploy.server.host placeholder"
+                );
+            }
+            other => panic!("expected a DeployFailed(target: Cloud) error, got: {:?}", other),
+        }
+    }
+
+    // Regression test for GH issue #225: `stacker deploy --target server`
+    // (and by extension `stacker target server`, which reuses the same
+    // lock) permanently wrote `ssh_key: null` to the deployment lock after
+    // a successful deploy, because `DeploymentLock::from_result` always
+    // initializes `ssh_key: None` and `save_deployment_lock`'s
+    // DeployTarget::Server branch copied server_ip/ssh_user/ssh_port from
+    // `stacker.yml`'s resolved `deploy.server` but never copied `ssh_key`.
+    // Any later command reading the lock (not stacker.yml) for connection
+    // details then failed SSH key auth, regardless of how correctly
+    // EXISTING_SERVER_KEY-style env vars were configured.
+    #[test]
+    fn test_save_deployment_lock_carries_ssh_key_for_server_target() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\n\
+deploy:\n  target: server\n  server:\n    host: 203.0.113.5\n    user: deploy\n    ssh_key: /home/me/.ssh/stacker-project-test\n";
+        let dir = setup_local_project(&[("stacker.yml", config)]);
+
+        let cmd = DeployCommand {
+            service: None,
+            target: Some("server".to_string()),
+            environment: None,
+            file: None,
+            dry_run: false,
+            force_rebuild: false,
+            project_name: None,
+            key_name: None,
+            key_id: None,
+            server_name: None,
+            watch: None,
+            lock: false,
+            force_new: false,
+            runtime: "runc".to_string(),
+            plan: false,
+            apply_plan: None,
+            no_hooks: false,
+            allow_untrusted_hooks: false,
+            notify: false,
+        };
+        let result = DeployResult {
+            target: DeployTarget::Server,
+            message: "ok".to_string(),
+            server_ip: None,
+            deployment_id: None,
+            project_id: None,
+            server_name: None,
+        };
+
+        cmd.save_deployment_lock(dir.path(), &result, false).unwrap();
+
+        let lock = DeploymentLock::load_for_target(dir.path(), "server")
+            .unwrap()
+            .expect("server lock should have been written");
+        assert_eq!(
+            lock.ssh_key,
+            Some(PathBuf::from("/home/me/.ssh/stacker-project-test")),
+            "ssh_key from stacker.yml's deploy.server must survive into the lock"
+        );
+    }
+
+    #[test]
     fn test_deploy_cloud_requires_provider() {
         // Cloud target but no cloud config
         let config = "name: test-app\napp:\n  type: static\n  path: .\ndeploy:\n  target: cloud\n";
@@ -5151,6 +5456,39 @@ services:
                 .any(|(_, args)| args.iter().any(|a| a.contains("build.sh"))),
             "Expected a sh call with build.sh in args"
         );
+    }
+
+    #[test]
+    fn write_local_proxy_config_renders_caddyfile_from_domains() {
+        // The synthesized caddy service mounts ./Caddyfile; for local/server
+        // deploys the CLI must render it so the bind mount is a real file.
+        let config = StackerConfig::from_str(
+            "name: t\napp:\n  type: custom\n  image: app:1\nproxy:\n  type: caddy\n  domains:\n    - domain: a.example.com\n      ssl: \"off\"\n      upstream: app:80\n    - domain: b.example.com\n      ssl: auto\n      upstream: api:9000\n",
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        write_local_proxy_config(&config, dir.path()).unwrap();
+        let caddyfile = std::fs::read_to_string(dir.path().join("Caddyfile")).unwrap();
+        assert!(
+            caddyfile.contains("http://a.example.com {") && caddyfile.contains("reverse_proxy app:80"),
+            "ssl:off site must use http:// scheme:\n{caddyfile}"
+        );
+        assert!(
+            caddyfile.contains("b.example.com {") && caddyfile.contains("reverse_proxy api:9000"),
+            "ssl:auto site must use the bare domain:\n{caddyfile}"
+        );
+    }
+
+    #[test]
+    fn write_local_proxy_config_noop_without_domains() {
+        // No proxy.domains → nothing to render, no file written.
+        let config = StackerConfig::from_str(
+            "name: t\napp:\n  type: custom\n  image: app:1\nproxy:\n  type: caddy\n",
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        write_local_proxy_config(&config, dir.path()).unwrap();
+        assert!(!dir.path().join("Caddyfile").exists());
     }
 
     #[test]

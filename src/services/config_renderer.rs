@@ -10,7 +10,8 @@
 
 use crate::configuration::DeploymentSettings;
 use crate::db;
-use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path};
+use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path_for};
+use crate::models::project::sanitize_project_name;
 use crate::models::{Project, ProjectApp};
 use crate::services::env_model::{
     normalize_optional_json_env, reconcile_env_layers, EnvLayer, ReconciledEnv,
@@ -442,6 +443,13 @@ pub struct PortMapping {
     pub protocol: String,
 }
 
+/// True for a Compose named-volume reference (e.g. "postgres_data"), false
+/// for a bind mount (paths starting with `.`, `/`, or `~`), which Compose
+/// does not declare under top-level `volumes:`.
+fn is_named_volume(source: &str) -> bool {
+    !source.starts_with('.') && !source.starts_with('/') && !source.starts_with('~')
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VolumeMount {
     pub source: String,
@@ -547,10 +555,11 @@ impl ConfigRenderer {
             app_contexts.push(context);
 
             let rendered_env = self.render_env_file(app, deployment_hash, &environment)?;
+            let stack_code = format!("{}-{}", sanitize_project_name(&project.name), project.id);
             let config = AppConfig {
                 content: rendered_env.content,
                 content_type: "env".to_string(),
-                destination_path: remote_runtime_env_path().to_string(),
+                destination_path: remote_runtime_env_path_for(&stack_code),
                 file_mode: "0600".to_string(),
                 owner: Some("trydirect".to_string()),
                 group: Some("docker".to_string()),
@@ -905,14 +914,61 @@ impl ConfigRenderer {
         context.insert("project_id", &project.stack_id.to_string());
         context.insert("env_file", compose_env_file_reference());
 
-        // Extract network configuration from project metadata
-        let default_network = project
-            .metadata
-            .get("network")
-            .and_then(|v| v.as_str())
-            .unwrap_or("trydirect_network")
-            .to_string();
+        // The top-level `networks:` block must declare whatever name the
+        // per-app `networks:` list actually references (usually
+        // "default_network", resolved from the project's own network
+        // config — see `ProjectAppService::default_network_from_project`).
+        // `project.metadata["network"]` is an unrelated, never-populated
+        // field; falling back to it (or to the "trydirect_network" literal)
+        // when apps already carry a real network name produced a top-level
+        // declaration that didn't match any app's `networks:` entry —
+        // "service X refers to undefined network default_network".
+        let default_network = apps
+            .iter()
+            .find_map(|app| app.networks.first().cloned())
+            .or_else(|| {
+                project
+                    .metadata
+                    .get("network")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "trydirect_network".to_string());
+        // "default_network" is the platform's shared external network — the
+        // agent/status-panel and every project's containers all attach to
+        // the *same*, pre-existing host network by that literal name (see
+        // `forms::project::network::Network::default()` and
+        // `compose_service_sync::upsert_external_network`, which both
+        // always mark it `external: true`). Declaring it here as a plain
+        // `driver: bridge` network instead makes `docker compose -p
+        // <project> up` create a brand new project-scoped network
+        // (`<project>_default_network`) rather than joining the real
+        // shared one — the redeployed container ends up isolated from the
+        // rest of the stack (DNS lookups for sibling services fail). See
+        // GH #237. Any other network name (the "trydirect_network"
+        // fallback) keeps its own project-scoped bridge network, matching
+        // `Network::into()`'s `is_default` check.
+        let default_network_is_external = default_network == "default_network";
         context.insert("default_network", &default_network);
+        context.insert("default_network_is_external", &default_network_is_external);
+
+        // Same class of bug as the network mismatch above (GH #211): the
+        // per-service `volumes:` list can reference a named volume (e.g.
+        // "postgres_data"), but nothing declared it at the top level, so
+        // `docker compose` rejected the file with "service X refers to
+        // undefined volume postgres_data". Declare every named volume
+        // actually referenced by a service — bind mounts (paths starting
+        // with `.`, `/`, or `~`) are left alone, since those aren't
+        // declared under top-level `volumes:` at all.
+        let mut named_volumes: Vec<String> = Vec::new();
+        for app in apps {
+            for vol in &app.volumes {
+                if is_named_volume(&vol.source) && !named_volumes.contains(&vol.source) {
+                    named_volumes.push(vol.source.clone());
+                }
+            }
+        }
+        context.insert("named_volumes", &named_volumes);
 
         self.tera
             .render("docker-compose.yml.tera", &context)
@@ -956,10 +1012,11 @@ impl ConfigRenderer {
     ) -> Result<(AppConfig, String)> {
         let environment = self.resolve_app_environment(pool, project, app).await?;
         let rendered_env = self.render_env_file(app, deployment_hash, &environment)?;
+        let stack_code = format!("{}-{}", sanitize_project_name(&project.name), project.id);
         let config = AppConfig {
             content: rendered_env.content,
             content_type: "env".to_string(),
-            destination_path: remote_runtime_env_path().to_string(),
+            destination_path: remote_runtime_env_path_for(&stack_code),
             file_mode: "0600".to_string(),
             owner: Some("trydirect".to_string()),
             group: Some("docker".to_string()),
@@ -1186,7 +1243,17 @@ services:
 {% endfor %}
 networks:
   {{ default_network }}:
+{% if default_network_is_external %}
+    external: true
+{% else %}
     driver: bridge
+{% endif %}
+{% if named_volumes | length > 0 %}
+volumes:
+{% for vol in named_volumes %}
+  {{ vol }}:
+{% endfor %}
+{% endif %}
 "#;
 
 /// Individual service template (for partial updates)
@@ -1604,7 +1671,10 @@ mod tests {
     #[test]
     fn test_env_destination_path_format() {
         // Test that .env files have correct destination paths
-        assert_eq!(remote_runtime_env_path(), "/home/trydirect/project/.env");
+        assert_eq!(
+            remote_runtime_env_path_for("project"),
+            "/home/trydirect/project/.env"
+        );
     }
 
     #[test]
@@ -1613,7 +1683,7 @@ mod tests {
         let config = AppConfig {
             content: "FOO=bar\nBAZ=qux".to_string(),
             content_type: "env".to_string(),
-            destination_path: remote_runtime_env_path().to_string(),
+            destination_path: remote_runtime_env_path_for("test-project"),
             file_mode: "0600".to_string(),
             owner: Some("trydirect".to_string()),
             group: Some("docker".to_string()),
@@ -1621,7 +1691,7 @@ mod tests {
 
         assert_eq!(config.content_type, "env");
         assert_eq!(config.file_mode, "0600");
-        assert_eq!(config.destination_path, remote_runtime_env_path());
+        assert_eq!(config.destination_path, "/home/trydirect/test-project/.env");
     }
 
     #[test]
@@ -1654,7 +1724,7 @@ mod tests {
             AppConfig {
                 content: "INFLUX_TOKEN=xxx".to_string(),
                 content_type: "env".to_string(),
-                destination_path: remote_runtime_env_path().to_string(),
+                destination_path: remote_runtime_env_path_for("test-project"),
                 file_mode: "0600".to_string(),
                 owner: Some("trydirect".to_string()),
                 group: Some("docker".to_string()),
@@ -1666,7 +1736,7 @@ mod tests {
             AppConfig {
                 content: "DOMAIN=example.com".to_string(),
                 content_type: "env".to_string(),
-                destination_path: remote_runtime_env_path().to_string(),
+                destination_path: remote_runtime_env_path_for("test-project"),
                 file_mode: "0600".to_string(),
                 owner: Some("trydirect".to_string()),
                 group: Some("docker".to_string()),
@@ -1802,6 +1872,222 @@ mod tests {
         };
         let json = serde_json::to_value(&ctx).unwrap();
         assert!(json.get("runtime").is_none() || json["runtime"].is_null());
+    }
+
+    // Regression test for GH issue #211: the rendered compose's top-level
+    // `networks:` block must declare the same name each app's own
+    // `networks:` list references. Before the fix, the top-level block
+    // always used `project.metadata["network"]` (never populated in
+    // practice) falling back to the unrelated literal "trydirect_network",
+    // while apps carry the project's real network name (typically
+    // "default_network", resolved via `custom.networks`) — producing
+    // "service X refers to undefined network default_network: invalid
+    // compose project" on every single-app deploy_app re-render.
+    #[test]
+    fn render_compose_top_level_network_matches_app_networks() {
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project {
+            name: "miniflux".to_string(),
+            ..Project::default()
+        };
+        let app_ctx = AppRenderContext {
+            code: "app".to_string(),
+            name: "app".to_string(),
+            image: "miniflux/miniflux:latest".to_string(),
+            environment: HashMap::new(),
+            ports: vec![],
+            volumes: vec![],
+            domain: None,
+            ssl_enabled: false,
+            networks: vec!["default_network".to_string()],
+            depends_on: vec![],
+            restart_policy: "unless-stopped".to_string(),
+            resources: ResourceLimits::default(),
+            labels: HashMap::new(),
+            healthcheck: None,
+            runtime: None,
+        };
+        let db_ctx = AppRenderContext {
+            code: "postgres".to_string(),
+            networks: vec!["default_network".to_string()],
+            ..app_ctx.clone()
+        };
+
+        let compose = renderer
+            .render_compose(&[app_ctx, db_ctx], &project)
+            .unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&compose).unwrap();
+
+        for service in ["app", "postgres"] {
+            let service_networks: Vec<&str> = doc["services"][service]["networks"]
+                .as_sequence()
+                .unwrap_or_else(|| panic!("{service} should declare networks:\n{compose}"))
+                .iter()
+                .filter_map(|v| v.as_str())
+                .collect();
+            for network in &service_networks {
+                assert!(
+                    doc["networks"]
+                        .as_mapping()
+                        .map(|m| m.contains_key(serde_yaml::Value::String(network.to_string())))
+                        .unwrap_or(false),
+                    "{service} references network '{network}' but top-level networks: \
+                     never declares it:\n{compose}"
+                );
+            }
+        }
+    }
+
+    // Regression test for GH issue #237: declaring `default_network` as a
+    // plain `driver: bridge` network (rather than `external: true`) makes
+    // `docker compose -p <project> up` create a brand new project-scoped
+    // network instead of joining the shared external network the rest of
+    // the stack (and the agent/status-panel) actually run on — the
+    // redeployed container ends up isolated, unable to resolve sibling
+    // services by hostname. `default_network` must always render as
+    // `external: true`, matching `Network::default()` /
+    // `upsert_external_network` elsewhere in the codebase.
+    #[test]
+    fn render_compose_declares_default_network_as_external() {
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project {
+            name: "miniflux".to_string(),
+            ..Project::default()
+        };
+        let app_ctx = AppRenderContext {
+            code: "miniflux".to_string(),
+            name: "miniflux".to_string(),
+            image: "miniflux/miniflux:latest".to_string(),
+            environment: HashMap::new(),
+            ports: vec![],
+            volumes: vec![],
+            domain: None,
+            ssl_enabled: false,
+            networks: vec!["default_network".to_string()],
+            depends_on: vec![],
+            restart_policy: "unless-stopped".to_string(),
+            resources: ResourceLimits::default(),
+            labels: HashMap::new(),
+            healthcheck: None,
+            runtime: None,
+        };
+
+        let compose = renderer.render_compose(&[app_ctx], &project).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&compose).unwrap();
+
+        assert_eq!(
+            doc["networks"]["default_network"]["external"],
+            serde_yaml::Value::Bool(true),
+            "default_network must be declared external: true so `docker compose -p <project>` \
+             attaches to the real shared network instead of creating a project-scoped copy:\n{compose}"
+        );
+    }
+
+    // Regression test for GH issue #236: same class of bug as #211, but for
+    // volumes. A named volume referenced under a service's `volumes:` list
+    // must also be declared under the top-level `volumes:` block, or
+    // `docker compose` rejects the file with "service X refers to
+    // undefined volume Y". Bind mounts (host paths) must NOT be declared.
+    #[test]
+    fn render_compose_declares_named_volumes_referenced_by_services() {
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project {
+            name: "miniflux".to_string(),
+            ..Project::default()
+        };
+        let postgres_ctx = AppRenderContext {
+            code: "postgres".to_string(),
+            name: "postgres".to_string(),
+            image: "postgres:16-alpine".to_string(),
+            environment: HashMap::new(),
+            ports: vec![],
+            volumes: vec![
+                VolumeMount {
+                    source: "postgres_data".to_string(),
+                    target: "/var/lib/postgresql/data".to_string(),
+                    read_only: false,
+                },
+                VolumeMount {
+                    source: "./config".to_string(),
+                    target: "/etc/postgres".to_string(),
+                    read_only: true,
+                },
+            ],
+            domain: None,
+            ssl_enabled: false,
+            networks: vec!["default_network".to_string()],
+            depends_on: vec![],
+            restart_policy: "unless-stopped".to_string(),
+            resources: ResourceLimits::default(),
+            labels: HashMap::new(),
+            healthcheck: None,
+            runtime: None,
+        };
+
+        let compose = renderer.render_compose(&[postgres_ctx], &project).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&compose).unwrap();
+
+        let service_volumes: Vec<&str> = doc["services"]["postgres"]["volumes"]
+            .as_sequence()
+            .expect("postgres should declare volumes")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            service_volumes
+                .iter()
+                .any(|v| v.starts_with("postgres_data:")),
+            "expected postgres_data mount in {:?}",
+            service_volumes
+        );
+
+        let top_level_volumes = doc
+            .get("volumes")
+            .and_then(|v| v.as_mapping())
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            top_level_volumes.contains_key(serde_yaml::Value::String("postgres_data".to_string())),
+            "postgres references named volume 'postgres_data' but top-level volumes: \
+             never declares it:\n{compose}"
+        );
+        assert!(
+            !top_level_volumes.contains_key(serde_yaml::Value::String("./config".to_string())),
+            "bind mounts must not be declared under top-level volumes::\n{compose}"
+        );
+    }
+
+    #[test]
+    fn render_compose_omits_volumes_block_when_no_named_volumes() {
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project {
+            name: "demo".to_string(),
+            ..Project::default()
+        };
+        let ctx = AppRenderContext {
+            code: "web".to_string(),
+            name: "web".to_string(),
+            image: "nginx:latest".to_string(),
+            environment: HashMap::new(),
+            ports: vec![],
+            volumes: vec![],
+            domain: None,
+            ssl_enabled: false,
+            networks: vec![],
+            depends_on: vec![],
+            restart_policy: "unless-stopped".to_string(),
+            resources: ResourceLimits::default(),
+            labels: HashMap::new(),
+            healthcheck: None,
+            runtime: None,
+        };
+
+        let compose = renderer.render_compose(&[ctx], &project).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&compose).unwrap();
+        assert!(
+            doc.get("volumes").is_none(),
+            "no service declares a named volume, so volumes: should be omitted:\n{compose}"
+        );
     }
 
     #[test]

@@ -32,6 +32,15 @@ pub fn deploy_notify(success: bool, project_name: &str) {
     eprint!("\x07");
 }
 
+/// Fire an arbitrary terminal + desktop notification (used by `stacker monitor`
+/// with a `target: { terminal: true }` alert). Prints the message to stderr,
+/// rings the terminal bell, and shows an OS notification where available.
+pub fn notify_message(title: &str, body: &str) {
+    eprintln!("🔔 {title}: {body}");
+    os_notify(title, body, "Submarine");
+    eprint!("\x07");
+}
+
 // ── Platform-specific helpers ──────────────────────────
 
 #[cfg(target_os = "macos")]

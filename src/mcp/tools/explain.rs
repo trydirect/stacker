@@ -3,9 +3,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::db;
-use crate::helpers::{remote_runtime_compose_path, remote_runtime_env_path};
+use crate::helpers::{remote_runtime_compose_path_for, remote_runtime_env_path_for};
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
+use crate::models::project::sanitize_project_name;
 use crate::models::{Project, ProjectApp};
 use crate::services::config_renderer::EnvRenderInput;
 use crate::services::{
@@ -96,12 +97,13 @@ fn local_authoring_env_path(project: &Project) -> String {
 }
 
 fn runtime_compose_path(project: &Project) -> String {
+    let stack_code = format!("{}-{}", sanitize_project_name(&project.name), project.id);
     project
         .request_json
         .pointer("/custom/deployment_artifacts/config_bundle/remote_compose_path")
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned)
-        .unwrap_or_else(|| remote_runtime_compose_path().to_string())
+        .unwrap_or_else(|| remote_runtime_compose_path_for(&stack_code))
 }
 
 fn project_target(project: &Project) -> String {
@@ -252,11 +254,12 @@ impl ToolHandler for ExplainEnvTool {
             .or_else(|| apps.first())
             .ok_or_else(|| "No deployment apps found".to_string())?;
 
+        let stack_code = format!("{}-{}", sanitize_project_name(&project.name), project.id);
         let explain = build_explain_env(
             &deployment.deployment_hash,
             &app.code,
             &local_authoring_env_path(&project),
-            remote_runtime_env_path(),
+            &remote_runtime_env_path_for(&stack_code),
             &runtime_compose_path(&project),
             app_env_input(app),
         )
@@ -293,13 +296,14 @@ impl ToolHandler for ExplainTopologyTool {
                 .await
                 .map_err(|err| format!("Failed to fetch apps: {err}"))?;
 
+        let stack_code = format!("{}-{}", sanitize_project_name(&project.name), project.id);
         let topology = build_explain_topology(
             &deployment.deployment_hash,
             &project_target(&project),
             "stacker.yml",
             &runtime_compose_path(&project),
             &local_authoring_env_path(&project),
-            remote_runtime_env_path(),
+            &remote_runtime_env_path_for(&stack_code),
             topology_services(&apps),
         );
 
@@ -384,7 +388,7 @@ mod tests {
             &deployment.deployment_hash,
             &app.code,
             &local_authoring_env_path(&project),
-            remote_runtime_env_path(),
+            &remote_runtime_env_path_for("test-project"),
             &runtime_compose_path(&project),
             app_env_input(&app),
         )
@@ -407,8 +411,8 @@ mod tests {
             "deployment_demo",
             "api",
             "docker/prod/.env",
-            remote_runtime_env_path(),
-            remote_runtime_compose_path(),
+            &remote_runtime_env_path_for("test-project"),
+            &remote_runtime_compose_path_for("test-project"),
             app_env_input(&{
                 let mut app = ProjectApp::new(
                     1,
@@ -448,9 +452,9 @@ mod tests {
             "deployment_state_online",
             "cloud",
             "docker/prod/compose.yml",
-            remote_runtime_compose_path(),
+            &remote_runtime_compose_path_for("test-project"),
             "docker/prod/.env",
-            remote_runtime_env_path(),
+            &remote_runtime_env_path_for("test-project"),
             vec![ExplainTopologyService {
                 code: "upload".to_string(),
                 name: "Upload".to_string(),
