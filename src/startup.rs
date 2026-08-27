@@ -502,6 +502,10 @@ pub async fn run(
                     .service(crate::routes::chat::sessions::list::item)
                     .service(crate::routes::chat::sessions::create::item)
                     .service(crate::routes::chat::sessions::messages::item)
+                    .service(crate::routes::chat::sessions::append::item)
+                    .service(crate::routes::chat::sessions::rename::item)
+                    .service(crate::routes::chat::sessions::archive::archive)
+                    .service(crate::routes::chat::sessions::archive::unarchive)
                     .service(crate::routes::chat::sessions::delete::item),
             )
             .service(web::resource("/mcp").route(web::get().to(mcp::mcp_websocket)))

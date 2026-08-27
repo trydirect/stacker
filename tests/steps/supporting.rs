@@ -350,6 +350,65 @@ async fn delete_stored_session(world: &mut StepWorld) {
     world.delete(&format!("/chat/sessions/{}", id)).await;
 }
 
+#[when(regex = r#"^I append a message "(.+)" to that session$"#)]
+async fn append_message_to_stored_session(world: &mut StepWorld, content: String) {
+    let id = world
+        .stored_ids
+        .get("chat_session_id")
+        .expect("No stored chat_session_id")
+        .clone();
+    let body = json!({ "role": "user", "content": content });
+    world
+        .post_json(&format!("/chat/sessions/{}/messages", id), &body)
+        .await;
+}
+
+#[when(regex = r#"^I rename that session to "(.+)"$"#)]
+async fn rename_stored_session(world: &mut StepWorld, title: String) {
+    let id = world
+        .stored_ids
+        .get("chat_session_id")
+        .expect("No stored chat_session_id")
+        .clone();
+    let body = json!({ "title": title });
+    world.patch(&format!("/chat/sessions/{}", id), &body).await;
+}
+
+#[when(regex = r#"^I rename session "(.+)" to "(.+)"$"#)]
+async fn rename_literal_session(world: &mut StepWorld, id: String, title: String) {
+    let body = json!({ "title": title });
+    world.patch(&format!("/chat/sessions/{}", id), &body).await;
+}
+
+#[when("I archive that session")]
+async fn archive_stored_session(world: &mut StepWorld) {
+    let id = world
+        .stored_ids
+        .get("chat_session_id")
+        .expect("No stored chat_session_id")
+        .clone();
+    world
+        .post_json(&format!("/chat/sessions/{}/archive", id), &json!({}))
+        .await;
+}
+
+#[when("I unarchive that session")]
+async fn unarchive_stored_session(world: &mut StepWorld) {
+    let id = world
+        .stored_ids
+        .get("chat_session_id")
+        .expect("No stored chat_session_id")
+        .clone();
+    world
+        .post_json(&format!("/chat/sessions/{}/unarchive", id), &json!({}))
+        .await;
+}
+
+#[when("I list my archived chat sessions")]
+async fn list_archived_chat_sessions(world: &mut StepWorld) {
+    world.get("/chat/sessions?archived=true").await;
+}
+
 #[then(regex = r#"^the response body should not contain "(.+)"$"#)]
 async fn response_body_should_not_contain(world: &mut StepWorld, needle: String) {
     let body = world.response_body.as_deref().unwrap_or("");

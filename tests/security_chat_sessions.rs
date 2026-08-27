@@ -212,3 +212,164 @@ async fn test_delete_other_users_session_is_404_and_no_op() {
             .unwrap();
     assert_eq!(count, 1, "User A's session must survive User B's delete attempt");
 }
+
+#[tokio::test]
+async fn test_append_persists_and_stays_encrypted() {
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let (status, body) = create_session_via_api(&app.address, USER_A_TOKEN, "first message").await;
+    assert!(status.is_success());
+    let session_id = body["item"]["id"].as_str().unwrap().to_string();
+
+    // Append a second message
+    let secret_append = "APPENDED-SECRET-7c21";
+    let resp = client
+        .post(format!("{}/chat/sessions/{}/messages", &app.address, session_id))
+        .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
+        .header("Content-Type", "application/json")
+        .body(serde_json::json!({"role": "user", "content": secret_append}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "owner append failed: {}", resp.status());
+    let appended: serde_json::Value = resp.json().await.unwrap();
+    let arr = appended["item"].as_array().expect("item should be the message array");
+    assert_eq!(arr.len(), 2, "append should yield two messages");
+    assert_eq!(arr[1]["content"], secret_append);
+
+    // The appended content must be encrypted at rest, not plaintext
+    let stored: String =
+        sqlx::query_scalar("SELECT messages_encrypted FROM chat_sessions WHERE id = $1::uuid")
+            .bind(&session_id)
+            .fetch_one(&app.db_pool)
+            .await
+            .unwrap();
+    assert!(
+        !stored.contains(secret_append),
+        "appended plaintext leaked into the database column"
+    );
+}
+
+#[tokio::test]
+async fn test_append_to_other_users_session_is_404() {
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let a_id = insert_session(&app.db_pool, USER_A_ID, "A session").await;
+
+    let resp = client
+        .post(format!("{}/chat/sessions/{}/messages", &app.address, a_id))
+        .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
+        .header("Content-Type", "application/json")
+        .body(serde_json::json!({"role": "user", "content": "intrusion"}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "User B appending to User A's session must 404"
+    );
+}
+
+#[tokio::test]
+async fn test_rename_other_users_session_is_404() {
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let a_id = insert_session(&app.db_pool, USER_A_ID, "A session").await;
+
+    let resp = client
+        .patch(format!("{}/chat/sessions/{}", &app.address, a_id))
+        .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
+        .header("Content-Type", "application/json")
+        .body(serde_json::json!({"title": "hijacked"}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "User B renaming User A's session must 404"
+    );
+}
+
+#[tokio::test]
+async fn test_archive_moves_session_between_lists() {
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let (status, body) = create_session_via_api(&app.address, USER_A_TOKEN, "archive me").await;
+    assert!(status.is_success());
+    let session_id = body["item"]["id"].as_str().unwrap().to_string();
+
+    // Archive it
+    let resp = client
+        .post(format!("{}/chat/sessions/{}/archive", &app.address, session_id))
+        .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "owner archive failed: {}", resp.status());
+
+    // Default (active) list must NOT contain it
+    let active = client
+        .get(format!("{}/chat/sessions", &app.address))
+        .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        !active.contains(&session_id),
+        "archived session must not appear in the active list"
+    );
+
+    // Archived list MUST contain it
+    let archived = client
+        .get(format!("{}/chat/sessions?archived=true", &app.address))
+        .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        archived.contains(&session_id),
+        "archived session must appear in the archived list"
+    );
+}
+
+#[tokio::test]
+async fn test_archive_other_users_session_is_404() {
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let a_id = insert_session(&app.db_pool, USER_A_ID, "A session").await;
+
+    let resp = client
+        .post(format!("{}/chat/sessions/{}/archive", &app.address, a_id))
+        .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "User B archiving User A's session must 404"
+    );
+}

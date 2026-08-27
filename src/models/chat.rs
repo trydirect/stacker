@@ -24,6 +24,8 @@ pub struct ChatSession {
     pub title: Option<String>,
     #[serde(skip)] // ciphertext must never leak into an API response
     pub messages_encrypted: String,
+    /// NULL = active; a timestamp = the session was archived (soft-closed).
+    pub archived_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -37,6 +39,9 @@ pub struct ChatSessionSummary {
     pub user_id: String,
     pub project_id: Option<i32>,
     pub title: Option<String>,
+    /// NULL = active; a timestamp = archived. Lets the nav show/segregate
+    /// archived threads without a second request.
+    pub archived_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -48,6 +53,7 @@ impl From<ChatSession> for ChatSessionSummary {
             user_id: s.user_id,
             project_id: s.project_id,
             title: s.title,
+            archived_at: s.archived_at,
             created_at: s.created_at,
             updated_at: s.updated_at,
         }
