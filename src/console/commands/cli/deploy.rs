@@ -5147,7 +5147,10 @@ deploy:\n  target: server\n  server:\n    host: ${EXISTING_SERVER_HOST}\n    use
                      unresolved deploy.server.host placeholder"
                 );
             }
-            other => panic!("expected a DeployFailed(target: Cloud) error, got: {:?}", other),
+            other => panic!(
+                "expected a DeployFailed(target: Cloud) error, got: {:?}",
+                other
+            ),
         }
     }
 
@@ -5197,7 +5200,8 @@ deploy:\n  target: server\n  server:\n    host: 203.0.113.5\n    user: deploy\n 
             server_name: None,
         };
 
-        cmd.save_deployment_lock(dir.path(), &result, false).unwrap();
+        cmd.save_deployment_lock(dir.path(), &result, false)
+            .unwrap();
 
         let lock = DeploymentLock::load_for_target(dir.path(), "server")
             .unwrap()
@@ -5470,7 +5474,8 @@ deploy:\n  target: server\n  server:\n    host: 203.0.113.5\n    user: deploy\n 
         write_local_proxy_config(&config, dir.path()).unwrap();
         let caddyfile = std::fs::read_to_string(dir.path().join("Caddyfile")).unwrap();
         assert!(
-            caddyfile.contains("http://a.example.com {") && caddyfile.contains("reverse_proxy app:80"),
+            caddyfile.contains("http://a.example.com {")
+                && caddyfile.contains("reverse_proxy app:80"),
             "ssl:off site must use http:// scheme:\n{caddyfile}"
         );
         assert!(

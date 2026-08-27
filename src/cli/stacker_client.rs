@@ -3117,13 +3117,15 @@ impl StackerClient {
         }
         let status_code = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
-        Err(CliError::ConfigValidation(stacker_api_failure_with_message(
-            "Delete pipe template failed",
-            &format!("DELETE /api/v1/pipes/templates/{template_id}"),
-            status_code,
-            &body,
-            cli_debug_enabled(),
-        )))
+        Err(CliError::ConfigValidation(
+            stacker_api_failure_with_message(
+                "Delete pipe template failed",
+                &format!("DELETE /api/v1/pipes/templates/{template_id}"),
+                status_code,
+                &body,
+                cli_debug_enabled(),
+            ),
+        ))
     }
 
     /// Delete a pipe instance. `DELETE /api/v1/pipes/instances/{id}`.
@@ -3144,13 +3146,15 @@ impl StackerClient {
         }
         let status_code = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
-        Err(CliError::ConfigValidation(stacker_api_failure_with_message(
-            "Delete pipe instance failed",
-            &format!("DELETE /api/v1/pipes/instances/{instance_id}"),
-            status_code,
-            &body,
-            cli_debug_enabled(),
-        )))
+        Err(CliError::ConfigValidation(
+            stacker_api_failure_with_message(
+                "Delete pipe instance failed",
+                &format!("DELETE /api/v1/pipes/instances/{instance_id}"),
+                status_code,
+                &body,
+                cli_debug_enabled(),
+            ),
+        ))
     }
 
     /// List pipe templates visible to the current user.

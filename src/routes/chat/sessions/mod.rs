@@ -5,3 +5,4 @@ pub mod delete;
 pub mod list;
 pub mod messages;
 pub mod rename;
+pub mod replace;

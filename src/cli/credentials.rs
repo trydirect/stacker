@@ -394,7 +394,8 @@ pub trait OAuthClient: Send + Sync {
     /// email/password login endpoint with no OAuth refresh concept) — the
     /// caller treats that as "refresh not possible" and falls back to
     /// prompting `stacker login`, never surfacing it as a harder failure.
-    fn refresh_token(&self, auth_url: &str, refresh_token: &str) -> Result<TokenResponse, CliError>;
+    fn refresh_token(&self, auth_url: &str, refresh_token: &str)
+        -> Result<TokenResponse, CliError>;
 }
 
 /// Production OAuth client using `reqwest::blocking`.
@@ -465,7 +466,11 @@ impl OAuthClient for HttpOAuthClient {
         Ok(token_resp)
     }
 
-    fn refresh_token(&self, auth_url: &str, refresh_token: &str) -> Result<TokenResponse, CliError> {
+    fn refresh_token(
+        &self,
+        auth_url: &str,
+        refresh_token: &str,
+    ) -> Result<TokenResponse, CliError> {
         // The login endpoint (`.../auth/login`) mints tokens directly,
         // bypassing OAuth client authentication entirely — clients here
         // (CLI, web) never have a client_id/secret, so a generic
@@ -1159,10 +1164,12 @@ mod tests {
     #[test]
     fn test_require_valid_token_expired_without_refresh_token_skips_refresh_attempt() {
         let (manager, _) = make_manager();
-        manager.save(&StoredCredentials {
-            refresh_token: None,
-            ..expired_creds()
-        }).unwrap();
+        manager
+            .save(&StoredCredentials {
+                refresh_token: None,
+                ..expired_creds()
+            })
+            .unwrap();
         // A mock that would succeed if called — proves it's never called
         // when there's no refresh_token to use.
         let oauth = MockOAuthClient::success();

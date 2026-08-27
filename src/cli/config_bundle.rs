@@ -719,12 +719,7 @@ fn strip_platform_managed_services(compose: &mut serde_yaml::Value) -> Vec<Strin
         let still_referenced: std::collections::HashSet<String> = mapping_mut(compose)
             .and_then(|root| root.get_mut(serde_yaml::Value::String("services".to_string())))
             .and_then(mapping_mut)
-            .map(|services| {
-                services
-                    .values()
-                    .flat_map(named_volume_sources)
-                    .collect()
-            })
+            .map(|services| services.values().flat_map(named_volume_sources).collect())
             .unwrap_or_default();
 
         if let Some(volumes) = mapping_mut(compose)
@@ -1266,6 +1261,9 @@ volumes:
         assert!(!has("caddy_data"), "caddy_data should be pruned");
         assert!(!has("caddy_config"), "caddy_config should be pruned");
         // Still used by the surviving `app` service → kept.
-        assert!(has("app_data"), "app_data is still referenced and must stay");
+        assert!(
+            has("app_data"),
+            "app_data is still referenced and must stay"
+        );
     }
 }

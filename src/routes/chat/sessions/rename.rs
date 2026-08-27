@@ -35,5 +35,7 @@ pub async fn item(
                 .set_item(models::ChatSessionSummary::from(session))
                 .ok("OK")
         })
-        .ok_or_else(|| JsonResponse::<models::ChatSessionSummary>::build().not_found("Session not found"))
+        .ok_or_else(|| {
+            JsonResponse::<models::ChatSessionSummary>::build().not_found("Session not found")
+        })
 }

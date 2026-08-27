@@ -166,10 +166,16 @@ mod tests {
 
     #[test]
     fn evaluate_is_up_only_when_all_running() {
-        assert_eq!(evaluate(&[c("a", "running"), c("b", "running")]), Health::Up);
-        assert_eq!(evaluate(&[c("a", "running"), c("b", "restarting")]), Health::Down);
+        assert_eq!(
+            evaluate(&[c("a", "running"), c("b", "running")]),
+            Health::Up
+        );
+        assert_eq!(
+            evaluate(&[c("a", "running"), c("b", "restarting")]),
+            Health::Down
+        );
         assert_eq!(evaluate(&[]), Health::Up); // vacuously up
-        // status match is case-insensitive
+                                               // status match is case-insensitive
         assert_eq!(evaluate(&[c("a", "RUNNING")]), Health::Up);
     }
 
@@ -186,7 +192,10 @@ mod tests {
         let down = [c("a", "restarting")];
 
         // baseline: Unknown→Up is silent; Unknown→Down fires
-        assert_eq!(detect_transition(WatchState::Unknown, &up), Transition::None);
+        assert_eq!(
+            detect_transition(WatchState::Unknown, &up),
+            Transition::None
+        );
         assert!(matches!(
             detect_transition(WatchState::Unknown, &down),
             Transition::WentDown { .. }
@@ -196,7 +205,10 @@ mod tests {
             detect_transition(WatchState::Up, &down),
             Transition::WentDown { .. }
         ));
-        assert_eq!(detect_transition(WatchState::Down, &up), Transition::Recovered);
+        assert_eq!(
+            detect_transition(WatchState::Down, &up),
+            Transition::Recovered
+        );
         // steady states are silent
         assert_eq!(detect_transition(WatchState::Up, &up), Transition::None);
         assert_eq!(detect_transition(WatchState::Down, &down), Transition::None);
@@ -210,7 +222,10 @@ mod tests {
         let msg = alert_message(&down, true).unwrap();
         assert!(msg.contains("project-app-1") && msg.contains("container problem"));
 
-        assert_eq!(alert_message(&Transition::Recovered, true).as_deref(), Some("✅ all containers recovered"));
+        assert_eq!(
+            alert_message(&Transition::Recovered, true).as_deref(),
+            Some("✅ all containers recovered")
+        );
         assert_eq!(alert_message(&Transition::Recovered, false), None);
         assert_eq!(alert_message(&Transition::None, true), None);
     }

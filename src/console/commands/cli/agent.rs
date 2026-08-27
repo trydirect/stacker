@@ -3260,9 +3260,8 @@ mod tests {
             port: 22,
         };
 
-        let err =
-            select_server_for_agent_install(servers, 42, Some(&server_cfg), "demo", "server")
-                .expect_err("should not silently pick an unrelated server");
+        let err = select_server_for_agent_install(servers, 42, Some(&server_cfg), "demo", "server")
+            .expect_err("should not silently pick an unrelated server");
 
         let message = err.to_string();
         assert!(message.contains("203.0.113.10"));

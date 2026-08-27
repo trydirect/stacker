@@ -2139,9 +2139,11 @@ fn get_command(
             once,
             interval,
             deployment,
-        } => Box::new(stacker::console::commands::cli::monitor::MonitorCommand::new(
-            once, interval, deployment,
-        )),
+        } => Box::new(
+            stacker::console::commands::cli::monitor::MonitorCommand::new(
+                once, interval, deployment,
+            ),
+        ),
         StackerCommands::Deployment { command } => match command {
             DeploymentCommands::State {
                 json,
@@ -2673,7 +2675,9 @@ fn get_command(
                     dry_run,
                     json,
                     deployment,
-                } => Box::new(pipe::PipeApplyCommand::new(prune, dry_run, json, deployment)),
+                } => Box::new(pipe::PipeApplyCommand::new(
+                    prune, dry_run, json, deployment,
+                )),
                 PipeCommands::List { json, deployment } => {
                     Box::new(pipe::PipeListCommand::new(json, deployment))
                 }

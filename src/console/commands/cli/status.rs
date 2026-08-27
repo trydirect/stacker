@@ -837,7 +837,14 @@ mod tests {
         let args = build_status_args("/path/compose.yml", "myproject", false);
         assert_eq!(
             args,
-            vec!["compose", "-p", "myproject", "-f", "/path/compose.yml", "ps"]
+            vec![
+                "compose",
+                "-p",
+                "myproject",
+                "-f",
+                "/path/compose.yml",
+                "ps"
+            ]
         );
     }
 
@@ -967,7 +974,10 @@ mod tests {
             .iter()
             .position(|a| a == "-p")
             .expect("docker compose ps should pass -p <project-name>");
-        assert_eq!(calls[0].get(p_index + 1).map(String::as_str), Some("miniflux-prod"));
+        assert_eq!(
+            calls[0].get(p_index + 1).map(String::as_str),
+            Some("miniflux-prod")
+        );
     }
 
     #[test]

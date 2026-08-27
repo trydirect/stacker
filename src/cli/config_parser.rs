@@ -812,7 +812,6 @@ fn default_notify_method_alert() -> String {
     "POST".to_string()
 }
 
-
 fn default_alert_interval() -> u64 {
     60
 }
@@ -1275,7 +1274,10 @@ impl StackerConfig {
         for svc in &self.services {
             for port_str in &svc.ports {
                 if let Some(host_port) = host_port_binding(port_str) {
-                    port_map.entry(host_port).or_default().push(svc.name.clone());
+                    port_map
+                        .entry(host_port)
+                        .or_default()
+                        .push(svc.name.clone());
                 }
             }
         }
@@ -2528,7 +2530,9 @@ pipes:
         assert_eq!(retry.backoff_max_ms, 30_000); // default filled in
         assert_eq!(
             cfg.on_failure,
-            Some(crate::models::pipe_config::HandlerRef::Pipe("oncall-notify".into()))
+            Some(crate::models::pipe_config::HandlerRef::Pipe(
+                "oncall-notify".into()
+            ))
         );
     }
 
@@ -2802,7 +2806,11 @@ services:
             .into_iter()
             .filter(|issue| issue.code == "W001")
             .collect();
-        assert_eq!(w001.len(), 1, "expected one W001 for the port-80 clash: {w001:?}");
+        assert_eq!(
+            w001.len(),
+            1,
+            "expected one W001 for the port-80 clash: {w001:?}"
+        );
         assert!(w001[0].message.contains("80"));
         assert!(w001[0].message.contains("web") && w001[0].message.contains("legacy"));
     }

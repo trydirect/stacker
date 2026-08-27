@@ -100,8 +100,7 @@ pub fn diff_pipes(specs: &[PipeSpec], deployed: &[DeployedPipe]) -> Vec<PipeDiff
     }
 
     // Orphans: deployed but not declared.
-    let declared: std::collections::HashSet<&str> =
-        specs.iter().map(|s| s.name.as_str()).collect();
+    let declared: std::collections::HashSet<&str> = specs.iter().map(|s| s.name.as_str()).collect();
     let mut orphans: Vec<&DeployedPipe> = deployed
         .iter()
         .filter(|d| !declared.contains(d.name.as_str()))
@@ -209,7 +208,13 @@ mod tests {
         ];
 
         let plan = diff_pipes(&specs, &deployed);
-        assert_eq!(plan[0], PipeDiffEntry { name: "new".into(), action: PipeAction::Create });
+        assert_eq!(
+            plan[0],
+            PipeDiffEntry {
+                name: "new".into(),
+                action: PipeAction::Create
+            }
+        );
         assert_eq!(plan[1].action, PipeAction::Unchanged);
         match &plan[2].action {
             PipeAction::Update { changes } => {
@@ -218,7 +223,13 @@ mod tests {
             }
             other => panic!("expected update, got {other:?}"),
         }
-        assert_eq!(plan[3], PipeDiffEntry { name: "gone".into(), action: PipeAction::Orphan });
+        assert_eq!(
+            plan[3],
+            PipeDiffEntry {
+                name: "gone".into(),
+                action: PipeAction::Orphan
+            }
+        );
         assert!(!plan_is_clean(&plan));
     }
 
@@ -260,9 +271,6 @@ mod tests {
             field_mapping_for(&["body".into()], &["message".into()]),
             serde_json::json!({ "message": "$.body" })
         );
-        assert_eq!(
-            field_mapping_for(&["x".into()], &[]),
-            serde_json::json!({})
-        );
+        assert_eq!(field_mapping_for(&["x".into()], &[]), serde_json::json!({}));
     }
 }

@@ -61,7 +61,10 @@ async fn test_owner_can_create_list_read_delete() {
     // Create
     let (status, body) = create_session_via_api(&app.address, USER_A_TOKEN, "hello secret").await;
     assert!(status.is_success(), "owner create failed: {}", status);
-    let session_id = body["item"]["id"].as_str().expect("no session id").to_string();
+    let session_id = body["item"]["id"]
+        .as_str()
+        .expect("no session id")
+        .to_string();
 
     // List returns the session but NOT message content
     let resp = client
@@ -83,7 +86,10 @@ async fn test_owner_can_create_list_read_delete() {
 
     // Read messages
     let resp = client
-        .get(format!("{}/chat/sessions/{}/messages", &app.address, session_id))
+        .get(format!(
+            "{}/chat/sessions/{}/messages",
+            &app.address, session_id
+        ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
         .await
@@ -204,13 +210,15 @@ async fn test_delete_other_users_session_is_404_and_no_op() {
     );
 
     // Verify User A's session still exists
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM chat_sessions WHERE id = $1")
-            .bind(a_id)
-            .fetch_one(&app.db_pool)
-            .await
-            .unwrap();
-    assert_eq!(count, 1, "User A's session must survive User B's delete attempt");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_sessions WHERE id = $1")
+        .bind(a_id)
+        .fetch_one(&app.db_pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "User A's session must survive User B's delete attempt"
+    );
 }
 
 #[tokio::test]
@@ -227,16 +235,25 @@ async fn test_append_persists_and_stays_encrypted() {
     // Append a second message
     let secret_append = "APPENDED-SECRET-7c21";
     let resp = client
-        .post(format!("{}/chat/sessions/{}/messages", &app.address, session_id))
+        .post(format!(
+            "{}/chat/sessions/{}/messages",
+            &app.address, session_id
+        ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .header("Content-Type", "application/json")
         .body(serde_json::json!({"role": "user", "content": secret_append}).to_string())
         .send()
         .await
         .unwrap();
-    assert!(resp.status().is_success(), "owner append failed: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "owner append failed: {}",
+        resp.status()
+    );
     let appended: serde_json::Value = resp.json().await.unwrap();
-    let arr = appended["item"].as_array().expect("item should be the message array");
+    let arr = appended["item"]
+        .as_array()
+        .expect("item should be the message array");
     assert_eq!(arr.len(), 2, "append should yield two messages");
     assert_eq!(arr[1]["content"], secret_append);
 
@@ -314,12 +331,19 @@ async fn test_archive_moves_session_between_lists() {
 
     // Archive it
     let resp = client
-        .post(format!("{}/chat/sessions/{}/archive", &app.address, session_id))
+        .post(format!(
+            "{}/chat/sessions/{}/archive",
+            &app.address, session_id
+        ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
         .await
         .unwrap();
-    assert!(resp.status().is_success(), "owner archive failed: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "owner archive failed: {}",
+        resp.status()
+    );
 
     // Default (active) list must NOT contain it
     let active = client

@@ -43,8 +43,8 @@ pub async fn item(
             JsonResponse::<models::ChatSession>::build().not_found("Session not found")
         })?;
 
-    let mut messages = helpers::chat::decrypt_messages(&session.messages_encrypted)
-        .map_err(|err| {
+    let mut messages =
+        helpers::chat::decrypt_messages(&session.messages_encrypted).map_err(|err| {
             JsonResponse::<models::ChatSession>::build()
                 .internal_server_error(format!("Failed to decrypt messages: {err}"))
         })?;
