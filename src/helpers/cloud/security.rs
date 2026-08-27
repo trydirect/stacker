@@ -121,12 +121,26 @@ impl Secret {
     }
 }
 
+/// Shared lock for tests that mutate the process-global `SECURITY_KEY`
+/// env var. Module-local mutexes are not enough: env vars are process-wide,
+/// so every test module touching `SECURITY_KEY` must share this one.
+#[cfg(test)]
+pub(crate) mod security_key_test_lock {
+    use std::sync::{Mutex, MutexGuard};
+
+    static SECURITY_KEY_MUTEX: Mutex<()> = Mutex::new(());
+
+    pub(crate) fn lock() -> MutexGuard<'static, ()> {
+        // Recover from poisoning so one panicking test doesn't cascade
+        // failures into every other test holding this lock.
+        SECURITY_KEY_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+    use crate::helpers::cloud::security::security_key_test_lock as env_lock;
 
     const TEST_KEY: &str = "01234567890123456789012345678901";
 
@@ -182,7 +196,7 @@ mod tests {
 
     #[test]
     fn test_encrypt_requires_security_key() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = env_lock::lock();
         std::env::remove_var("SECURITY_KEY");
         let secret = Secret {
             user_id: "u1".to_string(),
@@ -196,7 +210,7 @@ mod tests {
 
     #[test]
     fn test_encrypt_invalid_key_length() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = env_lock::lock();
         std::env::set_var("SECURITY_KEY", "short-key");
         let secret = Secret {
             user_id: "u1".to_string(),
@@ -211,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = env_lock::lock();
         std::env::set_var("SECURITY_KEY", TEST_KEY);
 
         let mut secret = Secret {
@@ -233,7 +247,7 @@ mod tests {
 
     #[test]
     fn test_decrypt_too_short_data() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = env_lock::lock();
         std::env::set_var("SECURITY_KEY", TEST_KEY);
         let mut secret = Secret::new();
         let result = secret.decrypt(vec![1, 2, 3]); // less than 12 bytes
