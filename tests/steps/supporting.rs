@@ -291,6 +291,76 @@ async fn delete_chat(world: &mut StepWorld) {
     world.delete("/chat/history").await;
 }
 
+// ─── Chat session steps ───
+
+#[when(regex = r#"^I create a chat session titled "(.+)"$"#)]
+async fn create_chat_session(world: &mut StepWorld, title: String) {
+    let body = json!({
+        "title": title,
+        "messages": [{"role": "user", "content": "Hello session"}]
+    });
+    world.post_json("/chat/sessions", &body).await;
+    world.store_id_from_response("chat_session_id", "/item/id");
+}
+
+#[given(regex = r#"^I have created a chat session titled "(.+)"$"#)]
+async fn given_created_chat_session(world: &mut StepWorld, title: String) {
+    let body = json!({
+        "title": title,
+        "messages": [{"role": "user", "content": "Hello session"}]
+    });
+    world.post_json("/chat/sessions", &body).await;
+    let status = world.status_code.unwrap_or(0);
+    assert!(
+        status == 200 || status == 201,
+        "Chat session create failed ({}): {}",
+        status,
+        world.response_body.as_deref().unwrap_or("(no body)")
+    );
+    world.store_id_from_response("chat_session_id", "/item/id");
+}
+
+#[when("I list my chat sessions")]
+async fn list_chat_sessions(world: &mut StepWorld) {
+    world.get("/chat/sessions").await;
+}
+
+#[when("I get the messages of that session")]
+async fn get_messages_of_stored_session(world: &mut StepWorld) {
+    let id = world
+        .stored_ids
+        .get("chat_session_id")
+        .expect("No stored chat_session_id")
+        .clone();
+    world.get(&format!("/chat/sessions/{}/messages", id)).await;
+}
+
+#[when(regex = r#"^I get the messages of session "(.+)"$"#)]
+async fn get_messages_of_literal_session(world: &mut StepWorld, id: String) {
+    world.get(&format!("/chat/sessions/{}/messages", id)).await;
+}
+
+#[when("I delete that session")]
+async fn delete_stored_session(world: &mut StepWorld) {
+    let id = world
+        .stored_ids
+        .get("chat_session_id")
+        .expect("No stored chat_session_id")
+        .clone();
+    world.delete(&format!("/chat/sessions/{}", id)).await;
+}
+
+#[then(regex = r#"^the response body should not contain "(.+)"$"#)]
+async fn response_body_should_not_contain(world: &mut StepWorld, needle: String) {
+    let body = world.response_body.as_deref().unwrap_or("");
+    assert!(
+        !body.contains(&needle),
+        "Response body unexpectedly contained '{}': {}",
+        needle,
+        body
+    );
+}
+
 // ─── DockerHub steps ───
 
 #[when(regex = r#"^I search DockerHub namespaces with query "([^"]+)"$"#)]

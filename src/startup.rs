@@ -495,7 +495,14 @@ pub async fn run(
                 web::scope("/chat")
                     .service(crate::routes::chat::get::item)
                     .service(crate::routes::chat::upsert::item)
-                    .service(crate::routes::chat::delete::item),
+                    .service(crate::routes::chat::delete::item)
+                    // Multi-session (dialog) endpoints for the Stack Builder page.
+                    // Register the more specific /sessions/... routes before the
+                    // legacy /history routes; all are user-scoped.
+                    .service(crate::routes::chat::sessions::list::item)
+                    .service(crate::routes::chat::sessions::create::item)
+                    .service(crate::routes::chat::sessions::messages::item)
+                    .service(crate::routes::chat::sessions::delete::item),
             )
             .service(web::resource("/mcp").route(web::get().to(mcp::mcp_websocket)))
             .service(

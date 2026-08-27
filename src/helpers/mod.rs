@@ -1,5 +1,6 @@
 pub mod agent_capabilities;
 pub mod agent_client;
+pub mod chat;
 pub mod client;
 pub mod db_pools;
 pub(crate) mod json;
