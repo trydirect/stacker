@@ -43,7 +43,7 @@ async fn test_list_chats_only_returns_own() {
     // authenticated user, so User B gets a 200 with a null item (see routes/chat/get.rs)
     let resp = client
         .get(format!(
-            "{}/chat/history?project_id={}",
+            "{}/api/chat/history?project_id={}",
             &app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
@@ -74,7 +74,7 @@ async fn test_get_chat_rejects_other_user() {
     // User B GET on the same project_id → 200 with a null item (scoped to user)
     let resp = client
         .get(format!(
-            "{}/chat/history?project_id={}",
+            "{}/api/chat/history?project_id={}",
             &app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
@@ -105,7 +105,7 @@ async fn test_update_chat_rejects_other_user() {
     // User B upserts chat for the same project_id.
     // This should create a SEPARATE chat for User B, not overwrite User A's.
     let resp = client
-        .put(format!("{}/chat/history", &app.address))
+        .put(format!("{}/api/chat/history", &app.address))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .header("Content-Type", "application/json")
         .body(
@@ -127,7 +127,7 @@ async fn test_update_chat_rejects_other_user() {
     // Verify User A's chat is untouched
     let resp = client
         .get(format!(
-            "{}/chat/history?project_id={}",
+            "{}/api/chat/history?project_id={}",
             &app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
@@ -158,7 +158,7 @@ async fn test_delete_chat_rejects_other_user() {
     // User B deletes → only deletes B's own (nonexistent) chat
     let resp = client
         .delete(format!(
-            "{}/chat/history?project_id={}",
+            "{}/api/chat/history?project_id={}",
             &app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
@@ -172,7 +172,7 @@ async fn test_delete_chat_rejects_other_user() {
     // Verify User A's chat still exists
     let resp = client
         .get(format!(
-            "{}/chat/history?project_id={}",
+            "{}/api/chat/history?project_id={}",
             &app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
@@ -195,7 +195,7 @@ async fn test_owner_can_access_own_chat() {
 
     // User A creates chat via API
     let resp = client
-        .put(format!("{}/chat/history", &app.address))
+        .put(format!("{}/api/chat/history", &app.address))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .header("Content-Type", "application/json")
         .body(
@@ -217,7 +217,7 @@ async fn test_owner_can_access_own_chat() {
     // User A can GET own chat
     let resp = client
         .get(format!(
-            "{}/chat/history?project_id={}",
+            "{}/api/chat/history?project_id={}",
             &app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
@@ -236,7 +236,7 @@ async fn test_owner_can_access_own_chat() {
     // User A can DELETE own chat
     let resp = client
         .delete(format!(
-            "{}/chat/history?project_id={}",
+            "{}/api/chat/history?project_id={}",
             &app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
@@ -252,7 +252,7 @@ async fn test_owner_can_access_own_chat() {
     // Confirm it's gone
     let resp = client
         .get(format!(
-            "{}/chat/history?project_id={}",
+            "{}/api/chat/history?project_id={}",
             &app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))

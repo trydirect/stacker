@@ -251,7 +251,7 @@ async fn upsert_chat(world: &mut StepWorld) {
             {"role": "assistant", "content": "Hi there!"}
         ]
     });
-    world.put_json("/chat/history", &body).await;
+    world.put_json("/api/chat/history", &body).await;
 }
 
 #[given("I have upserted chat history")]
@@ -261,7 +261,7 @@ async fn given_upserted_chat(world: &mut StepWorld) {
             {"role": "user", "content": "Test message"}
         ]
     });
-    world.put_json("/chat/history", &body).await;
+    world.put_json("/api/chat/history", &body).await;
     assert_eq!(
         world.status_code.unwrap_or(0),
         200,
@@ -275,20 +275,20 @@ async fn upsert_then_get_chat(world: &mut StepWorld) {
     let body = json!({
         "messages": [{"role": "user", "content": "Test message"}]
     });
-    world.put_json("/chat/history", &body).await;
+    world.put_json("/api/chat/history", &body).await;
     assert_eq!(world.status_code.unwrap_or(0), 200, "Chat upsert failed");
     // GET immediately after
-    world.get("/chat/history").await;
+    world.get("/api/chat/history").await;
 }
 
 #[when("I get chat history")]
 async fn get_chat(world: &mut StepWorld) {
-    world.get("/chat/history").await;
+    world.get("/api/chat/history").await;
 }
 
 #[when("I delete chat history")]
 async fn delete_chat(world: &mut StepWorld) {
-    world.delete("/chat/history").await;
+    world.delete("/api/chat/history").await;
 }
 
 // ─── Chat session steps ───
@@ -299,7 +299,7 @@ async fn create_chat_session(world: &mut StepWorld, title: String) {
         "title": title,
         "messages": [{"role": "user", "content": "Hello session"}]
     });
-    world.post_json("/chat/sessions", &body).await;
+    world.post_json("/api/chat/sessions", &body).await;
     world.store_id_from_response("chat_session_id", "/item/id");
 }
 
@@ -309,7 +309,7 @@ async fn given_created_chat_session(world: &mut StepWorld, title: String) {
         "title": title,
         "messages": [{"role": "user", "content": "Hello session"}]
     });
-    world.post_json("/chat/sessions", &body).await;
+    world.post_json("/api/chat/sessions", &body).await;
     let status = world.status_code.unwrap_or(0);
     assert!(
         status == 200 || status == 201,
@@ -322,7 +322,7 @@ async fn given_created_chat_session(world: &mut StepWorld, title: String) {
 
 #[when("I list my chat sessions")]
 async fn list_chat_sessions(world: &mut StepWorld) {
-    world.get("/chat/sessions").await;
+    world.get("/api/chat/sessions").await;
 }
 
 #[when("I get the messages of that session")]
@@ -332,12 +332,12 @@ async fn get_messages_of_stored_session(world: &mut StepWorld) {
         .get("chat_session_id")
         .expect("No stored chat_session_id")
         .clone();
-    world.get(&format!("/chat/sessions/{}/messages", id)).await;
+    world.get(&format!("/api/chat/sessions/{}/messages", id)).await;
 }
 
 #[when(regex = r#"^I get the messages of session "(.+)"$"#)]
 async fn get_messages_of_literal_session(world: &mut StepWorld, id: String) {
-    world.get(&format!("/chat/sessions/{}/messages", id)).await;
+    world.get(&format!("/api/chat/sessions/{}/messages", id)).await;
 }
 
 #[when("I delete that session")]
@@ -347,7 +347,7 @@ async fn delete_stored_session(world: &mut StepWorld) {
         .get("chat_session_id")
         .expect("No stored chat_session_id")
         .clone();
-    world.delete(&format!("/chat/sessions/{}", id)).await;
+    world.delete(&format!("/api/chat/sessions/{}", id)).await;
 }
 
 #[when(regex = r#"^I append a message "(.+)" to that session$"#)]
@@ -359,7 +359,7 @@ async fn append_message_to_stored_session(world: &mut StepWorld, content: String
         .clone();
     let body = json!({ "role": "user", "content": content });
     world
-        .post_json(&format!("/chat/sessions/{}/messages", id), &body)
+        .post_json(&format!("/api/chat/sessions/{}/messages", id), &body)
         .await;
 }
 
@@ -371,13 +371,13 @@ async fn rename_stored_session(world: &mut StepWorld, title: String) {
         .expect("No stored chat_session_id")
         .clone();
     let body = json!({ "title": title });
-    world.patch(&format!("/chat/sessions/{}", id), &body).await;
+    world.patch(&format!("/api/chat/sessions/{}", id), &body).await;
 }
 
 #[when(regex = r#"^I rename session "(.+)" to "(.+)"$"#)]
 async fn rename_literal_session(world: &mut StepWorld, id: String, title: String) {
     let body = json!({ "title": title });
-    world.patch(&format!("/chat/sessions/{}", id), &body).await;
+    world.patch(&format!("/api/chat/sessions/{}", id), &body).await;
 }
 
 #[when("I archive that session")]
@@ -388,7 +388,7 @@ async fn archive_stored_session(world: &mut StepWorld) {
         .expect("No stored chat_session_id")
         .clone();
     world
-        .post_json(&format!("/chat/sessions/{}/archive", id), &json!({}))
+        .post_json(&format!("/api/chat/sessions/{}/archive", id), &json!({}))
         .await;
 }
 
@@ -400,13 +400,13 @@ async fn unarchive_stored_session(world: &mut StepWorld) {
         .expect("No stored chat_session_id")
         .clone();
     world
-        .post_json(&format!("/chat/sessions/{}/unarchive", id), &json!({}))
+        .post_json(&format!("/api/chat/sessions/{}/unarchive", id), &json!({}))
         .await;
 }
 
 #[when("I list my archived chat sessions")]
 async fn list_archived_chat_sessions(world: &mut StepWorld) {
-    world.get("/chat/sessions?archived=true").await;
+    world.get("/api/chat/sessions?archived=true").await;
 }
 
 #[then(regex = r#"^the response body should not contain "(.+)"$"#)]

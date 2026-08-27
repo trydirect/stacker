@@ -47,12 +47,14 @@ fn is_empty_messages(messages: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::helpers::cloud::security::security_key_test_lock as env_lock;
     use serde_json::json;
 
     const TEST_KEY: &str = "01234567890123456789012345678901";
 
     #[test]
     fn empty_messages_store_as_empty_string_without_key() {
+        let _lock = env_lock::lock();
         std::env::remove_var("SECURITY_KEY");
         assert_eq!(encrypt_messages(&json!([])).unwrap(), "");
         assert_eq!(encrypt_messages(&Value::Null).unwrap(), "");
@@ -65,6 +67,7 @@ mod tests {
 
     #[test]
     fn roundtrip_encrypts_and_hides_plaintext() {
+        let _lock = env_lock::lock();
         std::env::set_var("SECURITY_KEY", TEST_KEY);
         let messages = json!([
             {"role": "user", "content": "TOP-SECRET-PROMPT"},
