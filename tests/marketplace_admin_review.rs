@@ -801,3 +801,156 @@ async fn resubmit_same_version_updates_latest_version_in_place() {
         versions[0]["stack_definition"]
     );
 }
+
+#[tokio::test]
+async fn detect_secrets_flags_undeclared_field_without_blocking() {
+    let app = app().await;
+    let client = reqwest::Client::new();
+
+    let create_response = client
+        .post(format!("{}/api/templates", app.address))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .json(&json!({
+            "name": "Legacy Undeclared Secret Template",
+            "slug": "legacy-undeclared-secret-template",
+            "version": "1.0.0",
+            "stack_definition": {
+                "services": {
+                    "auth": { "environment": { "JWT_SECRET": "author-literal-value" } }
+                }
+            }
+        }))
+        .send()
+        .await
+        .expect("Failed to create marketplace template");
+    assert_eq!(StatusCode::CREATED, create_response.status());
+    let create_body: Value = create_response
+        .json()
+        .await
+        .expect("Create response should be valid JSON");
+    let template_id = create_body["item"]["id"]
+        .as_str()
+        .expect("Created template should include an id")
+        .to_string();
+
+    // Simulate a template approved before the field-policy feature existed.
+    sqlx::query(
+        r#"UPDATE stack_template SET status = 'approved', approved_at = NOW() WHERE id = $1"#,
+    )
+    .bind(uuid::Uuid::parse_str(&template_id).expect("Template id should be a UUID"))
+    .execute(&app.db_pool)
+    .await
+    .expect("Failed to approve legacy template");
+
+    let scan_response = client
+        .post(format!(
+            "{}/api/admin/templates/{}/detect-secrets",
+            app.address, template_id
+        ))
+        .header("Authorization", format!("Bearer {}", create_admin_jwt()))
+        .send()
+        .await
+        .expect("Failed to run detect-secrets scan");
+    assert_eq!(StatusCode::OK, scan_response.status());
+
+    let body: Value = scan_response
+        .json()
+        .await
+        .expect("Scan response should be valid JSON");
+    assert_eq!(json!(false), body["item"]["secrets_manifest_generated"]);
+    let missing = body["item"]["missing_generated_secret_fields"]
+        .as_array()
+        .expect("Should list missing fields");
+    assert!(missing.iter().any(|v| v == "JWT_SECRET"));
+
+    // The scan does not block/change status — it only flags for admin visibility.
+    let detail_response = client
+        .get(format!(
+            "{}/api/admin/templates/{}",
+            app.address, template_id
+        ))
+        .header("Authorization", format!("Bearer {}", create_admin_jwt()))
+        .send()
+        .await
+        .expect("Failed to fetch admin template detail");
+    assert_eq!(StatusCode::OK, detail_response.status());
+    let detail_body: Value = detail_response
+        .json()
+        .await
+        .expect("Admin detail response should be valid JSON");
+    assert_eq!(json!("approved"), detail_body["item"]["status"]);
+    assert_eq!(
+        json!(false),
+        detail_body["item"]["verifications"]["secrets_manifest_generated"]
+    );
+}
+
+#[tokio::test]
+async fn detect_secrets_marks_complete_when_all_secret_fields_declared() {
+    let app = app().await;
+    let client = reqwest::Client::new();
+
+    let create_response = client
+        .post(format!("{}/api/templates", app.address))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .json(&json!({
+            "name": "Legacy Declared Secret Template",
+            "slug": "legacy-declared-secret-template",
+            "version": "1.0.0",
+            "stack_definition": {
+                "services": {
+                    "auth": { "environment": { "JWT_SECRET": "author-literal-value" } }
+                }
+            },
+            "config_contract": {
+                "services": {
+                    "auth": {
+                        "fields": {
+                            "JWT_SECRET": { "mutability": "generated", "type": "hex", "length": 32 }
+                        }
+                    }
+                }
+            }
+        }))
+        .send()
+        .await
+        .expect("Failed to create marketplace template");
+    assert_eq!(StatusCode::CREATED, create_response.status());
+    let create_body: Value = create_response
+        .json()
+        .await
+        .expect("Create response should be valid JSON");
+    let template_id = create_body["item"]["id"]
+        .as_str()
+        .expect("Created template should include an id")
+        .to_string();
+
+    sqlx::query(
+        r#"UPDATE stack_template SET status = 'approved', approved_at = NOW() WHERE id = $1"#,
+    )
+    .bind(uuid::Uuid::parse_str(&template_id).expect("Template id should be a UUID"))
+    .execute(&app.db_pool)
+    .await
+    .expect("Failed to approve template");
+
+    let scan_response = client
+        .post(format!(
+            "{}/api/admin/templates/{}/detect-secrets",
+            app.address, template_id
+        ))
+        .header("Authorization", format!("Bearer {}", create_admin_jwt()))
+        .send()
+        .await
+        .expect("Failed to run detect-secrets scan");
+    assert_eq!(StatusCode::OK, scan_response.status());
+
+    let body: Value = scan_response
+        .json()
+        .await
+        .expect("Scan response should be valid JSON");
+    assert_eq!(json!(true), body["item"]["secrets_manifest_generated"]);
+    assert_eq!(
+        json!(Vec::<String>::new()),
+        body["item"]["missing_generated_secret_fields"]
+    );
+}

