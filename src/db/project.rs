@@ -126,9 +126,10 @@ pub async fn insert(
             source_template_id,
             template_version,
             is_protected,
-            deletion_scheduled_at
+            deletion_scheduled_at,
+            deletion_warning_sent_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING id;
         "#,
     )
@@ -143,6 +144,7 @@ pub async fn insert(
     .bind(project.template_version.clone())
     .bind(project.is_protected)
     .bind(project.deletion_scheduled_at)
+    .bind(project.deletion_warning_sent_at)
     .fetch_one(pool)
     .instrument(query_span)
     .await
@@ -174,7 +176,8 @@ pub async fn update(
             template_version=$8,
             is_protected=$9,
             updated_at=NOW() at time zone 'utc',
-            deletion_scheduled_at=NULL
+            deletion_scheduled_at=NULL,
+            deletion_warning_sent_at=NULL
         WHERE id = $1
         "#,
     )

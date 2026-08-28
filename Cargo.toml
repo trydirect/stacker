@@ -28,6 +28,10 @@ name = "stacker-cli"
 path = "src/bin/agent_executor.rs"
 name = "agent-executor"
 
+[[bin]]
+path = "src/bin/cleanup_notify.rs"
+name = "cleanup-notify"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]

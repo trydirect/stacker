@@ -162,6 +162,7 @@ pub struct Project {
     pub template_version: Option<String>, // marketplace template version
     pub is_protected: bool,               // prevent deletion when true
     pub deletion_scheduled_at: Option<DateTime<Utc>>, // auto-deletion date for stale projects
+    pub deletion_warning_sent_at: Option<DateTime<Utc>>, // when the last warning was sent
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow)]
@@ -187,6 +188,7 @@ impl Project {
             template_version: None,
             is_protected: false,
             deletion_scheduled_at: None,
+            deletion_warning_sent_at: None,
         }
     }
 
@@ -233,6 +235,7 @@ impl Default for Project {
             template_version: None,
             is_protected: false,
             deletion_scheduled_at: None,
+            deletion_warning_sent_at: None,
         }
     }
 }
