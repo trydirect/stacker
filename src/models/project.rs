@@ -161,6 +161,7 @@ pub struct Project {
     pub source_template_id: Option<Uuid>, // marketplace template UUID
     pub template_version: Option<String>, // marketplace template version
     pub is_protected: bool,               // prevent deletion when true
+    pub deletion_scheduled_at: Option<DateTime<Utc>>, // auto-deletion date for stale projects
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow)]
@@ -185,6 +186,7 @@ impl Project {
             source_template_id: None,
             template_version: None,
             is_protected: false,
+            deletion_scheduled_at: None,
         }
     }
 
@@ -230,6 +232,7 @@ impl Default for Project {
             source_template_id: None,
             template_version: None,
             is_protected: false,
+            deletion_scheduled_at: None,
         }
     }
 }

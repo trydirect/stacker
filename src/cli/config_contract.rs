@@ -50,11 +50,7 @@ pub fn suggest_contract(inventory: ConfigInventory) -> ConfigContract {
 
         services.insert(
             target.target_code,
-            TargetConfigContract {
-                required,
-                optional: Vec::new(),
-                secret,
-            },
+            TargetConfigContract::from_legacy_lists(required, Vec::new(), secret),
         );
     }
 

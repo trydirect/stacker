@@ -93,6 +93,13 @@ pub struct CreateTemplateRequest {
     pub public_ports: Option<serde_json::Value>,
     /// Vendor's page URL
     pub vendor_url: Option<String>,
+    /// Project this template was authored/tested against — required before
+    /// submission (see `ensure_has_successful_deployment`).
+    pub source_project_id: Option<i32>,
+    /// Author-declared per-field policy (`config_contract` from stacker.yml,
+    /// serialized as JSON) — which env vars are fixed/editable/generated.
+    /// See `docs/MARKETPLACE_FIELD_POLICY.md`.
+    pub config_contract: Option<serde_json::Value>,
 }
 
 #[tracing::instrument(name = "Create draft template", skip_all)]
@@ -225,6 +232,26 @@ pub async fn create_handler(
         )
         .await
         .map_err(|err| JsonResponse::<models::StackTemplate>::build().bad_request(err))?;
+
+        if let Some(source_project_id) = req.source_project_id {
+            db::marketplace::set_source_project_id(
+                pg_pool.get_ref(),
+                &template.id,
+                source_project_id,
+            )
+            .await
+            .map_err(|err| {
+                JsonResponse::<models::StackTemplate>::build().internal_server_error(err)
+            })?;
+        }
+
+        if let Some(config_contract) = req.config_contract.clone() {
+            db::marketplace::set_config_contract(pg_pool.get_ref(), &template.id, config_contract)
+                .await
+                .map_err(|err| {
+                    JsonResponse::<models::StackTemplate>::build().internal_server_error(err)
+                })?;
+        }
     }
 
     Ok(JsonResponse::build()
@@ -257,6 +284,11 @@ pub struct UpdateTemplateRequest {
     pub currency: Option<String>,
     pub public_ports: Option<serde_json::Value>,
     pub vendor_url: Option<String>,
+    pub source_project_id: Option<i32>,
+    /// Author-declared per-field policy (`config_contract` from stacker.yml,
+    /// serialized as JSON) — which env vars are fixed/editable/generated.
+    /// See `docs/MARKETPLACE_FIELD_POLICY.md`.
+    pub config_contract: Option<serde_json::Value>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -305,6 +337,208 @@ fn ensure_no_secrets_confirmation(confirmed: Option<bool>) -> Result<(), actix_w
         Err(JsonResponse::<serde_json::Value>::build().bad_request(
             "Confirm that the template contains no secrets or API keys before submitting",
         ))
+    }
+}
+
+/// Deployment statuses that count as "this project has actually run" for the
+/// publish gate below. Mirrors the vocabulary set elsewhere in the deploy
+/// pipeline (e.g. `force_complete.rs` sets `"completed"`; agents report
+/// `"running"` as their steady-state heartbeat status).
+const DEPLOYED_SUCCESS_STATUSES: &[&str] = &["completed", "running"];
+
+fn is_successful_deployment_status(status: &str) -> bool {
+    DEPLOYED_SUCCESS_STATUSES.contains(&status)
+}
+
+/// A template can only be published to the marketplace once its source
+/// project has been deployed and run successfully at least once — this is
+/// what lets us trust the declared `config_contract` field policy was
+/// actually exercised, not just hand-typed. See `docs/MARKETPLACE_FIELD_POLICY.md`.
+async fn ensure_has_successful_deployment(
+    pool: &PgPool,
+    source_project_id: Option<i32>,
+) -> Result<(), actix_web::Error> {
+    let project_id = source_project_id.ok_or_else(|| {
+        JsonResponse::<serde_json::Value>::build().bad_request(
+            "Template has no linked source project. Set source_project_id (via create/update) before submitting.",
+        )
+    })?;
+
+    let deployments = db::deployment::fetch_by_project(pool, project_id, 20)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    let has_successful_deployment = deployments
+        .iter()
+        .any(|deployment| is_successful_deployment_status(&deployment.status));
+
+    if has_successful_deployment {
+        Ok(())
+    } else {
+        Err(JsonResponse::<serde_json::Value>::build().bad_request(
+            "Template must be deployed and running at least once before it can be published",
+        ))
+    }
+}
+
+/// Collect env-var-looking key names out of a template's `stack_definition`,
+/// dispatching on `definition_format` the same way `helpers::redact` does
+/// (`"yaml"` -> raw compose text; anything else -> ProjectForm-style JSON
+/// with `{key, value}` pairs). Best-effort/heuristic: this feeds the publish
+/// gate below, not a security boundary on its own.
+fn collect_env_key_names(
+    stack_definition: &serde_json::Value,
+    definition_format: Option<&str>,
+) -> std::collections::BTreeSet<String> {
+    let mut keys = std::collections::BTreeSet::new();
+
+    if definition_format == Some("yaml") {
+        if let Some(yaml_text) = stack_definition.as_str() {
+            if let Ok(parsed) = serde_yaml::from_str::<serde_yaml::Value>(yaml_text) {
+                collect_yaml_env_keys(&parsed, &mut keys);
+            }
+        }
+    } else {
+        collect_json_env_keys(stack_definition, &mut keys);
+    }
+
+    keys
+}
+
+fn collect_yaml_env_keys(value: &serde_yaml::Value, keys: &mut std::collections::BTreeSet<String>) {
+    match value {
+        serde_yaml::Value::Mapping(map) => {
+            for (key, val) in map {
+                if let serde_yaml::Value::String(key_str) = key {
+                    if key_str == "environment" {
+                        collect_yaml_environment_block(val, keys);
+                        continue;
+                    }
+                }
+                collect_yaml_env_keys(val, keys);
+            }
+        }
+        serde_yaml::Value::Sequence(seq) => {
+            for item in seq {
+                collect_yaml_env_keys(item, keys);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_yaml_environment_block(
+    value: &serde_yaml::Value,
+    keys: &mut std::collections::BTreeSet<String>,
+) {
+    match value {
+        serde_yaml::Value::Mapping(map) => {
+            for (key, _) in map {
+                if let serde_yaml::Value::String(key_str) = key {
+                    keys.insert(key_str.clone());
+                }
+            }
+        }
+        serde_yaml::Value::Sequence(seq) => {
+            for item in seq {
+                if let serde_yaml::Value::String(entry) = item {
+                    if let Some(eq) = entry.find('=') {
+                        keys.insert(entry[..eq].to_string());
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_json_env_keys(value: &serde_json::Value, keys: &mut std::collections::BTreeSet<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            // ProjectForm's `deploy.stack.vars` entries: {"key": "NAME", "value": "..."}.
+            if let Some(serde_json::Value::String(key_name)) = map.get("key") {
+                if map.contains_key("value") {
+                    keys.insert(key_name.clone());
+                    return;
+                }
+            }
+            for (key, val) in map {
+                if key == "environment" || key == "env" {
+                    collect_json_environment_block(val, keys);
+                } else {
+                    collect_json_env_keys(val, keys);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                collect_json_env_keys(item, keys);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_json_environment_block(
+    value: &serde_json::Value,
+    keys: &mut std::collections::BTreeSet<String>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for key in map.keys() {
+                keys.insert(key.clone());
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                match item {
+                    serde_json::Value::String(entry) => {
+                        if let Some(eq) = entry.find('=') {
+                            keys.insert(entry[..eq].to_string());
+                        }
+                    }
+                    serde_json::Value::Object(_) => collect_json_env_keys(item, keys),
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A template can only be published once every secret-shaped field in its
+/// `stack_definition` (per the existing `is_secret_env_key` heuristic) has a
+/// `mutability: generated` policy declared in `config_contract` — otherwise
+/// the author's literal value would be copied verbatim to every installer.
+/// See `docs/MARKETPLACE_FIELD_POLICY.md`.
+fn ensure_contract_declares_generated_secrets(
+    stack_definition: &serde_json::Value,
+    definition_format: Option<&str>,
+    config_contract: &serde_json::Value,
+) -> Result<(), actix_web::Error> {
+    let contract: crate::cli::config_parser::ConfigContract =
+        serde_json::from_value(config_contract.clone()).unwrap_or_default();
+
+    let declared_generated: std::collections::BTreeSet<String> = contract
+        .services
+        .values()
+        .flat_map(|target| target.secret_keys())
+        .collect();
+
+    let missing: Vec<String> = collect_env_key_names(stack_definition, definition_format)
+        .into_iter()
+        .filter(|key| crate::console::commands::cli::init::is_secret_env_key(key))
+        .filter(|key| !declared_generated.contains(key))
+        .collect();
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(JsonResponse::<serde_json::Value>::build().bad_request(format!(
+            "config_contract is missing a `mutability: generated` policy for secret-shaped field(s): {}. \
+             Declare a generator for each in config_contract before publishing.",
+            missing.join(", ")
+        )))
     }
 }
 
@@ -515,6 +749,18 @@ pub async fn update_handler(
         .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err))?;
     }
 
+    if let Some(source_project_id) = req.source_project_id {
+        db::marketplace::set_source_project_id(pg_pool.get_ref(), &id, source_project_id)
+            .await
+            .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+    }
+
+    if let Some(config_contract) = req.config_contract.clone() {
+        db::marketplace::set_config_contract(pg_pool.get_ref(), &id, config_contract)
+            .await
+            .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+    }
+
     if updated {
         Ok(JsonResponse::<serde_json::Value>::build().ok("Updated"))
     } else {
@@ -709,6 +955,12 @@ pub async fn submit_handler(
     }
 
     ensure_no_secrets_confirmation(body.into_inner().confirm_no_secrets)?;
+
+    let source_project_id = db::marketplace::get_source_project_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+    ensure_has_successful_deployment(pg_pool.get_ref(), source_project_id).await?;
+
     let latest_version = db::marketplace::get_latest_version_by_template(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
@@ -726,6 +978,17 @@ pub async fn submit_handler(
     if has_empty_stack_definition {
         return Err(JsonResponse::<serde_json::Value>::build()
             .bad_request("Template must include a deployable stack definition before submission"));
+    }
+
+    if let Some(version) = latest_version.as_ref() {
+        let config_contract = db::marketplace::get_config_contract(pg_pool.get_ref(), id)
+            .await
+            .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+        ensure_contract_declares_generated_secrets(
+            &version.stack_definition,
+            version.definition_format.as_deref(),
+            &config_contract,
+        )?;
     }
 
     let submitted = db::marketplace::submit_for_review(pg_pool.get_ref(), &id)
@@ -799,6 +1062,11 @@ pub struct ResubmitRequest {
     pub post_deploy_hooks: Option<serde_json::Value>,
     pub update_mode_capabilities: Option<serde_json::Value>,
     pub confirm_no_secrets: Option<bool>,
+    pub source_project_id: Option<i32>,
+    /// Author-declared per-field policy (`config_contract` from stacker.yml,
+    /// serialized as JSON) — which env vars are fixed/editable/generated.
+    /// See `docs/MARKETPLACE_FIELD_POLICY.md`.
+    pub config_contract: Option<serde_json::Value>,
 }
 
 #[tracing::instrument(name = "Resubmit template with new version", skip_all)]
@@ -827,6 +1095,13 @@ pub async fn resubmit_handler(
 
     let req = body.into_inner();
     ensure_no_secrets_confirmation(req.confirm_no_secrets)?;
+
+    let existing_source_project_id = db::marketplace::get_source_project_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+    let source_project_id = req.source_project_id.or(existing_source_project_id);
+    ensure_has_successful_deployment(pg_pool.get_ref(), source_project_id).await?;
+
     let current_version = db::marketplace::get_latest_version_by_template(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
@@ -862,6 +1137,23 @@ pub async fn resubmit_handler(
         .clone()
         .or(current_version.update_mode_capabilities.clone());
 
+    let definition_format = req
+        .definition_format
+        .clone()
+        .or(current_version.definition_format.clone());
+    let existing_config_contract = db::marketplace::get_config_contract(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+    let resolved_config_contract = req
+        .config_contract
+        .clone()
+        .unwrap_or(existing_config_contract);
+    ensure_contract_declares_generated_secrets(
+        &stack_definition,
+        definition_format.as_deref(),
+        &resolved_config_contract,
+    )?;
+
     let version = db::marketplace::resubmit_with_new_version(
         pg_pool.get_ref(),
         &id,
@@ -890,6 +1182,21 @@ pub async fn resubmit_handler(
     )
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err))?;
+
+    if let Some(source_project_id) = source_project_id {
+        db::marketplace::set_source_project_id(pg_pool.get_ref(), &id, source_project_id)
+            .await
+            .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+    }
+
+    // `resubmit_with_new_version` created a fresh version row (config_contract
+    // starts NULL there), so carry the resolved value forward even when the
+    // request itself didn't include a new one.
+    if !resolved_config_contract.is_null() {
+        db::marketplace::set_config_contract(pg_pool.get_ref(), &id, resolved_config_contract)
+            .await
+            .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+    }
 
     let result = serde_json::json!({
         "template_id": id,
@@ -1296,4 +1603,117 @@ pub async fn complete_onboarding_handler(
     Ok(JsonResponse::<serde_json::Value>::build()
         .set_item(result)
         .ok("OK"))
+}
+
+#[cfg(test)]
+mod field_policy_gate_tests {
+    use super::*;
+
+    #[test]
+    fn deployment_status_completed_and_running_count_as_successful() {
+        assert!(is_successful_deployment_status("completed"));
+        assert!(is_successful_deployment_status("running"));
+    }
+
+    #[test]
+    fn deployment_status_other_values_do_not_count_as_successful() {
+        assert!(!is_successful_deployment_status("pending"));
+        assert!(!is_successful_deployment_status("failed"));
+        assert!(!is_successful_deployment_status("offline"));
+        assert!(!is_successful_deployment_status(""));
+    }
+
+    #[test]
+    fn collect_env_key_names_finds_json_key_value_pairs() {
+        let stack_definition = serde_json::json!({
+            "deploy": {
+                "stack": {
+                    "vars": [
+                        { "key": "JWT_SECRET", "value": "abc" },
+                        { "key": "POSTGRES_HOST", "value": "db" }
+                    ]
+                }
+            }
+        });
+        let keys = collect_env_key_names(&stack_definition, Some("json"));
+        assert!(keys.contains("JWT_SECRET"));
+        assert!(keys.contains("POSTGRES_HOST"));
+    }
+
+    #[test]
+    fn collect_env_key_names_finds_json_environment_object() {
+        let stack_definition = serde_json::json!({
+            "services": {
+                "auth": {
+                    "environment": {
+                        "JWT_SECRET": "abc",
+                        "LOG_LEVEL": "warn"
+                    }
+                }
+            }
+        });
+        let keys = collect_env_key_names(&stack_definition, None);
+        assert!(keys.contains("JWT_SECRET"));
+        assert!(keys.contains("LOG_LEVEL"));
+    }
+
+    #[test]
+    fn collect_env_key_names_finds_yaml_environment_mapping_and_list() {
+        let yaml = r#"
+services:
+  auth:
+    environment:
+      JWT_SECRET: abc
+  db:
+    environment:
+      - POSTGRES_PASSWORD=hunter2
+      - POSTGRES_USER=postgres
+"#;
+        let stack_definition = serde_json::Value::String(yaml.to_string());
+        let keys = collect_env_key_names(&stack_definition, Some("yaml"));
+        assert!(keys.contains("JWT_SECRET"));
+        assert!(keys.contains("POSTGRES_PASSWORD"));
+        assert!(keys.contains("POSTGRES_USER"));
+    }
+
+    #[test]
+    fn contract_gate_rejects_undeclared_secret_shaped_field() {
+        let stack_definition = serde_json::json!({
+            "services": { "auth": { "environment": { "JWT_SECRET": "abc" } } }
+        });
+        let config_contract = serde_json::json!({ "services": {} });
+        let err =
+            ensure_contract_declares_generated_secrets(&stack_definition, None, &config_contract);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn contract_gate_accepts_when_field_declared_generated() {
+        let stack_definition = serde_json::json!({
+            "services": { "auth": { "environment": { "JWT_SECRET": "abc" } } }
+        });
+        let config_contract = serde_json::json!({
+            "services": {
+                "auth": {
+                    "fields": {
+                        "JWT_SECRET": { "mutability": "generated", "type": "hex", "length": 32 }
+                    }
+                }
+            }
+        });
+        let result =
+            ensure_contract_declares_generated_secrets(&stack_definition, None, &config_contract);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn contract_gate_ignores_non_secret_shaped_fields() {
+        let stack_definition = serde_json::json!({
+            "services": { "auth": { "environment": { "LOG_LEVEL": "warn" } } }
+        });
+        let config_contract = serde_json::json!({ "services": {} });
+        let result =
+            ensure_contract_declares_generated_secrets(&stack_definition, None, &config_contract);
+        assert!(result.is_ok());
+    }
 }

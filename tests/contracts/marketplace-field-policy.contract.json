@@ -1,0 +1,149 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "marketplace-field-policy",
+  "description": "Canonical per-field policy shape for config_contract.services.*.fields, shared across Stacker (author/publish), Install Service, and User Service (installer-facing resolution).",
+  "_owner": "stacker",
+  "_consumers": [
+    "stacker",
+    "user",
+    "install",
+    "tools"
+  ],
+  "_notes": [
+    "This schema governs one field entry under config_contract.services.<service>.fields.<FIELD_NAME> in stacker.yml.",
+    "mutability decides who controls the field's final value at install time: fixed (author's value only), editable (author's value is a default the installer can override), generated (system produces a fresh value per install).",
+    "type/length/min_length/values/signing_key/claims/alg only apply when mutability requires them (generated always needs a type; editable may optionally constrain via type+values).",
+    "A legacy stacker.yml using the old required/optional/secret plain string-list shorthand must still parse: required -> {mutability: fixed, required: true}, optional -> {mutability: fixed, required: false}, secret -> {mutability: generated, required: true, type: alphanumeric, min_length: 32}.",
+    "derived_jwt's signing_key is a \"service.FIELD_NAME\" reference to another field in the same config_contract that must itself resolve before this one (independent generated/editable fields resolve first)."
+  ],
+  "version": "v1",
+  "definitions": {
+    "fieldPolicy": {
+      "type": "object",
+      "required": ["mutability"],
+      "additionalProperties": false,
+      "properties": {
+        "mutability": {
+          "type": "string",
+          "enum": ["fixed", "editable", "generated"]
+        },
+        "required": {
+          "type": "boolean",
+          "default": true
+        },
+        "type": {
+          "type": "string",
+          "enum": ["hex", "base64", "alphanumeric", "uuid", "enum", "derived_jwt"]
+        },
+        "length": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Exact byte/char length. Used by hex/base64/uuid-adjacent fixed-length generators."
+        },
+        "min_length": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Minimum length. Used by alphanumeric generators and editable string constraints."
+        },
+        "values": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "Allowed value set. Required when type=enum."
+        },
+        "signing_key": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_]+$",
+          "description": "\"service.FIELD_NAME\" reference to the field whose generated/resolved value signs this derived_jwt. Required when type=derived_jwt."
+        },
+        "claims": {
+          "type": "object",
+          "description": "JWT claims template for type=derived_jwt. Required when type=derived_jwt."
+        },
+        "alg": {
+          "type": "string",
+          "enum": ["HS256", "HS384", "HS512"],
+          "description": "JWT signing algorithm for type=derived_jwt. Required when type=derived_jwt."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mutability": { "const": "generated" } } },
+          "then": { "required": ["mutability", "type"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "derived_jwt" } } },
+          "then": { "required": ["type", "signing_key", "claims", "alg"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "enum" } } },
+          "then": { "required": ["type", "values"] }
+        }
+      ]
+    }
+  },
+  "type": "object",
+  "additionalProperties": {
+    "$ref": "#/definitions/fieldPolicy"
+  },
+  "examples": [
+    {
+      "POSTGRES_HOST": { "mutability": "fixed", "required": true },
+      "LOG_LEVEL": {
+        "mutability": "editable",
+        "required": false,
+        "type": "enum",
+        "values": ["debug", "info", "warn", "error"]
+      },
+      "JWT_SECRET": {
+        "mutability": "generated",
+        "required": true,
+        "type": "hex",
+        "length": 32
+      },
+      "DASHBOARD_PASSWORD": {
+        "mutability": "generated",
+        "required": true,
+        "type": "alphanumeric",
+        "min_length": 20
+      },
+      "ANON_KEY": {
+        "mutability": "generated",
+        "required": true,
+        "type": "derived_jwt",
+        "signing_key": "auth.JWT_SECRET",
+        "claims": { "role": "anon", "iss": "supabase" },
+        "alg": "HS256"
+      }
+    }
+  ],
+  "invalidExamples": [
+    {
+      "reason": "derived_jwt missing signing_key",
+      "fields": {
+        "ANON_KEY": {
+          "mutability": "generated",
+          "type": "derived_jwt",
+          "claims": { "role": "anon" },
+          "alg": "HS256"
+        }
+      }
+    },
+    {
+      "reason": "unknown mutability value",
+      "fields": {
+        "SOME_FIELD": {
+          "mutability": "readonly"
+        }
+      }
+    },
+    {
+      "reason": "generated without a type",
+      "fields": {
+        "SOME_SECRET": {
+          "mutability": "generated"
+        }
+      }
+    }
+  ]
+}

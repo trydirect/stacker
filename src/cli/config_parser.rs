@@ -884,16 +884,350 @@ pub struct ConfigContract {
     pub services: BTreeMap<String, TargetConfigContract>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// Who controls a declared field's final value at install time.
+///
+/// Mirrors `shared-fixtures/api-contracts/marketplace-field-policy.json`
+/// (`stacker/tests/contracts/marketplace-field-policy.contract.json`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mutability {
+    /// Author's value is baked in; never exposed to an installer.
+    Fixed,
+    /// Author's value is only a default; an installer's override can replace it.
+    Editable,
+    /// The system produces a fresh value per install; the installer never enters it.
+    Generated,
+}
+
+/// Generator/validation shape for a field's value, selected via `type:`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldType {
+    Hex,
+    Base64,
+    Alphanumeric,
+    Uuid,
+    Enum,
+    DerivedJwt,
+}
+
+/// Declared policy for one `config_contract.services.<service>.fields.<NAME>` entry.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FieldPolicy {
+    pub mutability: Mutability,
+    pub required: bool,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub type_spec: Option<FieldType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub length: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signing_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claims: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alg: Option<String>,
+}
+
+fn default_field_required() -> bool {
+    true
+}
+
+/// Wire shape used to deserialize a `FieldPolicy`, before the conditional
+/// validation below (generated needs a type; derived_jwt needs its signing
+/// trio; enum needs a value set) — matches the shared contract's `allOf`/`if`
+/// rules, since plain serde derives can't express those.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+struct RawFieldPolicy {
+    mutability: Mutability,
+    #[serde(default = "default_field_required")]
+    required: bool,
+    #[serde(rename = "type", default)]
+    type_spec: Option<FieldType>,
+    #[serde(default)]
+    length: Option<usize>,
+    #[serde(default)]
+    min_length: Option<usize>,
+    #[serde(default)]
+    values: Vec<String>,
+    #[serde(default)]
+    signing_key: Option<String>,
+    #[serde(default)]
+    claims: Option<serde_json::Value>,
+    #[serde(default)]
+    alg: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for FieldPolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawFieldPolicy::deserialize(deserializer)?;
+
+        if raw.mutability == Mutability::Generated && raw.type_spec.is_none() {
+            return Err(serde::de::Error::custom(
+                "field policy with mutability: generated must declare a type",
+            ));
+        }
+
+        if raw.type_spec == Some(FieldType::DerivedJwt)
+            && (raw.signing_key.is_none() || raw.claims.is_none() || raw.alg.is_none())
+        {
+            return Err(serde::de::Error::custom(
+                "field policy with type: derived_jwt must declare signing_key, claims, and alg",
+            ));
+        }
+
+        if raw.type_spec == Some(FieldType::Enum) && raw.values.is_empty() {
+            return Err(serde::de::Error::custom(
+                "field policy with type: enum must declare a non-empty values list",
+            ));
+        }
+
+        Ok(FieldPolicy {
+            mutability: raw.mutability,
+            required: raw.required,
+            type_spec: raw.type_spec,
+            length: raw.length,
+            min_length: raw.min_length,
+            values: raw.values,
+            signing_key: raw.signing_key,
+            claims: raw.claims,
+            alg: raw.alg,
+        })
+    }
+}
+
+impl FieldPolicy {
+    /// A `mutability: fixed` policy with no generator/validation constraints —
+    /// the shape a legacy `required:`/`optional:` list entry maps to.
+    pub fn fixed(required: bool) -> Self {
+        FieldPolicy {
+            mutability: Mutability::Fixed,
+            required,
+            type_spec: None,
+            length: None,
+            min_length: None,
+            values: Vec::new(),
+            signing_key: None,
+            claims: None,
+            alg: None,
+        }
+    }
+
+    /// The default generator a legacy `secret:` list entry maps to: a
+    /// 32-char alphanumeric value, matching `generate_secret()`'s convention
+    /// (`console/commands/cli/service.rs`).
+    pub fn default_generated_secret() -> Self {
+        FieldPolicy {
+            mutability: Mutability::Generated,
+            required: true,
+            type_spec: Some(FieldType::Alphanumeric),
+            length: None,
+            min_length: Some(32),
+            values: Vec::new(),
+            signing_key: None,
+            claims: None,
+            alg: None,
+        }
+    }
+
+    fn is_plain_fixed(&self) -> bool {
+        self.mutability == Mutability::Fixed
+            && self.type_spec.is_none()
+            && self.length.is_none()
+            && self.min_length.is_none()
+            && self.values.is_empty()
+            && self.signing_key.is_none()
+            && self.claims.is_none()
+            && self.alg.is_none()
+    }
+
+    fn is_default_generated_secret(&self) -> bool {
+        self.mutability == Mutability::Generated
+            && self.required
+            && self.type_spec == Some(FieldType::Alphanumeric)
+            && self.length.is_none()
+            && self.min_length == Some(32)
+            && self.values.is_empty()
+            && self.signing_key.is_none()
+            && self.claims.is_none()
+            && self.alg.is_none()
+    }
+}
+
+/// Per-service field policy declarations.
+///
+/// Backed by a single `fields: HashMap<String, FieldPolicy>`. Accepts and
+/// still emits the legacy `required`/`optional`/`secret` plain-string-list
+/// shape (mapped to `fixed`/`fixed`/`generated` policies respectively) so
+/// existing `stacker.yml` files keep parsing unchanged; new contracts can use
+/// the richer `fields:` map directly.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct TargetConfigContract {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub required: Vec<String>,
+    pub fields: HashMap<String, FieldPolicy>,
+}
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub optional: Vec<String>,
+impl TargetConfigContract {
+    /// Build a contract from the legacy three-list shape, used by
+    /// `stacker config suggest-contract` and any other code still producing
+    /// the plain required/optional/secret form.
+    pub fn from_legacy_lists(
+        required: Vec<String>,
+        optional: Vec<String>,
+        secret: Vec<String>,
+    ) -> Self {
+        let mut fields = HashMap::new();
+        // `secret` wins when a key appears in both lists (a key can be both
+        // required and secret in the legacy shape) — process it first with
+        // an overwriting insert so a later required/optional entry for the
+        // same key can't demote it back to `fixed`.
+        for key in secret {
+            fields.insert(key, FieldPolicy::default_generated_secret());
+        }
+        for key in required {
+            fields
+                .entry(key)
+                .or_insert_with(|| FieldPolicy::fixed(true));
+        }
+        for key in optional {
+            fields
+                .entry(key)
+                .or_insert_with(|| FieldPolicy::fixed(false));
+        }
+        TargetConfigContract { fields }
+    }
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub secret: Vec<String>,
+    fn keys_where(&self, predicate: impl Fn(&FieldPolicy) -> bool) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .fields
+            .iter()
+            .filter(|(_, policy)| predicate(policy))
+            .map(|(name, _)| name.clone())
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    /// Fields declared `required: true`, regardless of mutability — a
+    /// `generated` field can also be `required` (it must resolve to a value
+    /// even though the installer never types it in). Used by `stacker config
+    /// check`'s "must be present locally" semantics, which is orthogonal to
+    /// who controls the value.
+    pub fn required_keys(&self) -> Vec<String> {
+        self.keys_where(|p| p.required)
+    }
+
+    /// Fields declared `required: false`, regardless of mutability.
+    pub fn optional_keys(&self) -> Vec<String> {
+        self.keys_where(|p| !p.required)
+    }
+
+    /// Fields declared `mutability: generated` — the ones a marketplace
+    /// install must produce a fresh value for.
+    pub fn secret_keys(&self) -> Vec<String> {
+        self.keys_where(|p| p.mutability == Mutability::Generated)
+    }
+
+    /// Fields declared `mutability: editable` — the ones an installer's
+    /// form/env can override, with the author's value as the default.
+    pub fn editable_keys(&self) -> Vec<String> {
+        self.keys_where(|p| p.mutability == Mutability::Editable)
+    }
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RawTargetConfigContract {
+    required: Vec<String>,
+    optional: Vec<String>,
+    secret: Vec<String>,
+    fields: HashMap<String, FieldPolicy>,
+}
+
+impl<'de> Deserialize<'de> for TargetConfigContract {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawTargetConfigContract::deserialize(deserializer)?;
+        // Explicit `fields:` entries take precedence; among the legacy lists,
+        // `secret` wins when a key appears in both `secret` and
+        // `required`/`optional` (a key can be both required and secret).
+        let mut fields = raw.fields;
+
+        for key in raw.secret {
+            fields
+                .entry(key)
+                .or_insert_with(FieldPolicy::default_generated_secret);
+        }
+        for key in raw.required {
+            fields
+                .entry(key)
+                .or_insert_with(|| FieldPolicy::fixed(true));
+        }
+        for key in raw.optional {
+            fields
+                .entry(key)
+                .or_insert_with(|| FieldPolicy::fixed(false));
+        }
+
+        Ok(TargetConfigContract { fields })
+    }
+}
+
+#[derive(Serialize)]
+struct SerializedTargetConfigContract {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    required: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    optional: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    secret: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    fields: BTreeMap<String, FieldPolicy>,
+}
+
+impl Serialize for TargetConfigContract {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut required = Vec::new();
+        let mut optional = Vec::new();
+        let mut secret = Vec::new();
+        let mut fields = BTreeMap::new();
+
+        let mut sorted: Vec<_> = self.fields.iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(b.0));
+
+        for (name, policy) in sorted {
+            if policy.is_plain_fixed() {
+                if policy.required {
+                    required.push(name.clone());
+                } else {
+                    optional.push(name.clone());
+                }
+            } else if policy.is_default_generated_secret() {
+                secret.push(name.clone());
+            } else {
+                fields.insert(name.clone(), policy.clone());
+            }
+        }
+
+        SerializedTargetConfigContract {
+            required,
+            optional,
+            secret,
+            fields,
+        }
+        .serialize(serializer)
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1951,6 +2285,188 @@ mod tests {
     use std::env;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn field_policy_legacy_required_list_maps_to_fixed_required() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      required:
+        - POSTGRES_HOST
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let auth = &config.config_contract.services["auth"];
+        assert_eq!(auth.required_keys(), vec!["POSTGRES_HOST".to_string()]);
+        let policy = &auth.fields["POSTGRES_HOST"];
+        assert_eq!(policy.mutability, Mutability::Fixed);
+        assert!(policy.required);
+    }
+
+    #[test]
+    fn field_policy_legacy_optional_list_maps_to_fixed_not_required() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      optional:
+        - LOG_LEVEL
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let auth = &config.config_contract.services["auth"];
+        assert_eq!(auth.optional_keys(), vec!["LOG_LEVEL".to_string()]);
+        let policy = &auth.fields["LOG_LEVEL"];
+        assert_eq!(policy.mutability, Mutability::Fixed);
+        assert!(!policy.required);
+    }
+
+    #[test]
+    fn field_policy_legacy_secret_list_maps_to_generated_default() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      secret:
+        - JWT_SECRET
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let auth = &config.config_contract.services["auth"];
+        assert_eq!(auth.secret_keys(), vec!["JWT_SECRET".to_string()]);
+        let policy = &auth.fields["JWT_SECRET"];
+        assert_eq!(policy.mutability, Mutability::Generated);
+        assert!(policy.required);
+        assert_eq!(policy.type_spec, Some(FieldType::Alphanumeric));
+        assert_eq!(policy.min_length, Some(32));
+    }
+
+    #[test]
+    fn field_policy_full_form_parses_hex_editable_and_derived_jwt() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      fields:
+        JWT_SECRET:
+          mutability: generated
+          type: hex
+          length: 32
+        LOG_LEVEL:
+          mutability: editable
+          required: false
+          type: enum
+          values: [debug, info, warn, error]
+    storage:
+      fields:
+        ANON_KEY:
+          mutability: generated
+          type: derived_jwt
+          signing_key: auth.JWT_SECRET
+          claims:
+            role: anon
+            iss: supabase
+          alg: HS256
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+
+        let auth = &config.config_contract.services["auth"];
+        let jwt_secret = &auth.fields["JWT_SECRET"];
+        assert_eq!(jwt_secret.mutability, Mutability::Generated);
+        assert_eq!(jwt_secret.type_spec, Some(FieldType::Hex));
+        assert_eq!(jwt_secret.length, Some(32));
+
+        let log_level = &auth.fields["LOG_LEVEL"];
+        assert_eq!(log_level.mutability, Mutability::Editable);
+        assert!(!log_level.required);
+        assert_eq!(
+            log_level.values,
+            vec!["debug", "info", "warn", "error"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(auth.editable_keys(), vec!["LOG_LEVEL".to_string()]);
+
+        let storage = &config.config_contract.services["storage"];
+        let anon_key = &storage.fields["ANON_KEY"];
+        assert_eq!(anon_key.mutability, Mutability::Generated);
+        assert_eq!(anon_key.type_spec, Some(FieldType::DerivedJwt));
+        assert_eq!(anon_key.signing_key.as_deref(), Some("auth.JWT_SECRET"));
+        assert_eq!(anon_key.alg.as_deref(), Some("HS256"));
+    }
+
+    #[test]
+    fn field_policy_generated_without_type_is_rejected() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      fields:
+        JWT_SECRET:
+          mutability: generated
+"#;
+        let err = StackerConfig::from_str(yaml).unwrap_err();
+        assert!(format!("{err}").contains("must declare a type"));
+    }
+
+    #[test]
+    fn field_policy_derived_jwt_missing_signing_key_is_rejected() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    storage:
+      fields:
+        ANON_KEY:
+          mutability: generated
+          type: derived_jwt
+          claims:
+            role: anon
+          alg: HS256
+"#;
+        let err = StackerConfig::from_str(yaml).unwrap_err();
+        assert!(format!("{err}").contains("derived_jwt"));
+    }
+
+    #[test]
+    fn field_policy_unknown_mutability_is_rejected() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      fields:
+        SOME_FIELD:
+          mutability: readonly
+"#;
+        assert!(StackerConfig::from_str(yaml).is_err());
+    }
+
+    #[test]
+    fn field_policy_round_trips_through_legacy_yaml_shape() {
+        let contract = TargetConfigContract::from_legacy_lists(
+            vec!["POSTGRES_HOST".to_string()],
+            vec!["LOG_LEVEL".to_string()],
+            vec!["JWT_SECRET".to_string()],
+        );
+        let yaml = serde_yaml::to_string(&contract).unwrap();
+        assert!(yaml.contains("required:"));
+        assert!(yaml.contains("- POSTGRES_HOST"));
+        assert!(yaml.contains("optional:"));
+        assert!(yaml.contains("- LOG_LEVEL"));
+        assert!(yaml.contains("secret:"));
+        assert!(yaml.contains("- JWT_SECRET"));
+        assert!(!yaml.contains("fields:"));
+
+        let reparsed: TargetConfigContract = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(reparsed.required_keys(), contract.required_keys());
+        assert_eq!(reparsed.optional_keys(), contract.optional_keys());
+        assert_eq!(reparsed.secret_keys(), contract.secret_keys());
+    }
 
     #[test]
     fn test_parse_minimal_config() {
