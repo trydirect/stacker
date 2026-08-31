@@ -112,6 +112,57 @@ pub async fn fetch_by_project_and_code(
     })
 }
 
+/// Persist the author-declared field policy (`config_contract` from
+/// stacker.yml, as JSON) for an app. Kept as a dedicated accessor — not part
+/// of `models::ProjectApp`/its `SELECT *` `query_as!` fetches above — so
+/// adding this column doesn't require regenerating the offline sqlx cache
+/// for every existing app query.
+pub async fn set_config_contract(
+    pool: &PgPool,
+    project_id: i32,
+    code: &str,
+    config_contract: serde_json::Value,
+) -> Result<(), String> {
+    let query_span = tracing::info_span!("Set app config_contract");
+    sqlx::query(
+        r#"UPDATE project_app SET config_contract = $3 WHERE project_id = $1 AND code = $2"#,
+    )
+    .bind(project_id)
+    .bind(code)
+    .bind(config_contract)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to set app config_contract: {:?}", e);
+        format!("Failed to set app config_contract: {}", e)
+    })?;
+    Ok(())
+}
+
+/// Read back the field policy set via [`set_config_contract`]. Returns
+/// `Value::Null` when nothing has been declared.
+pub async fn get_config_contract(
+    pool: &PgPool,
+    project_id: i32,
+    code: &str,
+) -> Result<serde_json::Value, String> {
+    let query_span = tracing::info_span!("Get app config_contract");
+    sqlx::query_scalar::<_, Option<serde_json::Value>>(
+        r#"SELECT config_contract FROM project_app WHERE project_id = $1 AND code = $2 LIMIT 1"#,
+    )
+    .bind(project_id)
+    .bind(code)
+    .fetch_optional(pool)
+    .instrument(query_span)
+    .await
+    .map(|row| row.flatten().unwrap_or(serde_json::Value::Null))
+    .map_err(|e| {
+        tracing::error!("Failed to get app config_contract: {:?}", e);
+        format!("Failed to get app config_contract: {}", e)
+    })
+}
+
 /// Insert a new app
 pub async fn insert(pool: &PgPool, app: &models::ProjectApp) -> Result<models::ProjectApp, String> {
     let query_span = tracing::info_span!("Inserting new app");

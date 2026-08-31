@@ -511,11 +511,17 @@ fn collect_json_environment_block(
 /// `mutability: generated` policy declared in `config_contract` — otherwise
 /// the author's literal value would be copied verbatim to every installer.
 /// See `docs/MARKETPLACE_FIELD_POLICY.md`.
-fn ensure_contract_declares_generated_secrets(
+/// Secret-shaped fields (per `is_secret_env_key`) in `stack_definition` that
+/// have no `mutability: generated` policy in `config_contract`. Empty means
+/// the contract is complete. Shared by the publish-time gate below and the
+/// admin re-scan endpoint (`admin.rs`'s `detect_secrets_handler`), which
+/// reports the same list for already-approved legacy templates instead of
+/// blocking on it.
+pub(crate) fn missing_generated_secret_fields(
     stack_definition: &serde_json::Value,
     definition_format: Option<&str>,
     config_contract: &serde_json::Value,
-) -> Result<(), actix_web::Error> {
+) -> Vec<String> {
     let contract: crate::cli::config_parser::ConfigContract =
         serde_json::from_value(config_contract.clone()).unwrap_or_default();
 
@@ -525,11 +531,20 @@ fn ensure_contract_declares_generated_secrets(
         .flat_map(|target| target.secret_keys())
         .collect();
 
-    let missing: Vec<String> = collect_env_key_names(stack_definition, definition_format)
+    collect_env_key_names(stack_definition, definition_format)
         .into_iter()
         .filter(|key| crate::console::commands::cli::init::is_secret_env_key(key))
         .filter(|key| !declared_generated.contains(key))
-        .collect();
+        .collect()
+}
+
+fn ensure_contract_declares_generated_secrets(
+    stack_definition: &serde_json::Value,
+    definition_format: Option<&str>,
+    config_contract: &serde_json::Value,
+) -> Result<(), actix_web::Error> {
+    let missing =
+        missing_generated_secret_fields(stack_definition, definition_format, config_contract);
 
     if missing.is_empty() {
         Ok(())
@@ -1704,6 +1719,34 @@ services:
         let result =
             ensure_contract_declares_generated_secrets(&stack_definition, None, &config_contract);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn missing_generated_secret_fields_reports_undeclared_field_name() {
+        let stack_definition = serde_json::json!({
+            "services": { "auth": { "environment": { "JWT_SECRET": "abc" } } }
+        });
+        let config_contract = serde_json::json!({ "services": {} });
+        let missing = missing_generated_secret_fields(&stack_definition, None, &config_contract);
+        assert_eq!(missing, vec!["JWT_SECRET".to_string()]);
+    }
+
+    #[test]
+    fn missing_generated_secret_fields_empty_when_fully_declared() {
+        let stack_definition = serde_json::json!({
+            "services": { "auth": { "environment": { "JWT_SECRET": "abc" } } }
+        });
+        let config_contract = serde_json::json!({
+            "services": {
+                "auth": {
+                    "fields": {
+                        "JWT_SECRET": { "mutability": "generated", "type": "hex", "length": 32 }
+                    }
+                }
+            }
+        });
+        let missing = missing_generated_secret_fields(&stack_definition, None, &config_contract);
+        assert!(missing.is_empty());
     }
 
     #[test]
