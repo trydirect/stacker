@@ -39,7 +39,8 @@ ENV SQLX_OFFLINE=true
 
 RUN apt-get update && apt-get install --no-install-recommends -y libssl-dev; \
     cargo build --release --bin server; \
-    cargo build --release --bin console --features explain
+    cargo build --release --bin console --features explain; \
+    cargo build --release --bin cleanup-notify
 
 #RUN ls -la /app/target/release/ >&2
 
@@ -54,6 +55,7 @@ RUN mkdir ./files && chmod 0777 ./files
 # copy binary and configuration files
 COPY --from=builder /app/target/release/server .
 COPY --from=builder /app/target/release/console .
+COPY --from=builder /app/target/release/cleanup-notify .
 COPY --from=builder /app/.env .
 COPY --from=builder /app/configuration.yaml .
 COPY --from=builder /usr/local/cargo/bin/sqlx /usr/local/bin/sqlx
