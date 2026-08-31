@@ -154,6 +154,12 @@ jobs:
           command: build
           args: --release --bin server
 
+      - name: Build cleanup-notify (release)
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --bin cleanup-notify
+
       - name: Set up Node.js
         if: ${{ hashFiles('web/package.json') != '' }}
         uses: actions/setup-node@v4
@@ -187,6 +193,7 @@ jobs:
         run: |
           mkdir -p app/stacker/dist
           cp target/release/server app/stacker/server
+          cp target/release/cleanup-notify app/stacker/cleanup-notify
           if [ -d web/dist ]; then cp -a web/dist/. app/stacker; fi
           cp Dockerfile app/Dockerfile
           cp access_control.conf.dist app/access_control.conf.dist

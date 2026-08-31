@@ -57,6 +57,16 @@
         "ordinal": 10,
         "name": "is_protected",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
+        "name": "deletion_scheduled_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "deletion_warning_sent_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
@@ -76,7 +86,9 @@
       false,
       true,
       true,
-      false
+      false,
+      true,
+      true
     ]
   },
   "hash": "3fd71974a7948b85a0fa72d2c583e29118c63af715e14d9b0a50ef672b8b4d97"

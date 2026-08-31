@@ -131,6 +131,8 @@ pub(crate) mod security_key_test_lock {
     static SECURITY_KEY_MUTEX: Mutex<()> = Mutex::new(());
 
     pub(crate) fn lock() -> MutexGuard<'static, ()> {
+        // Recover from poisoning so one panicking test doesn't cascade
+        // failures into every other test holding this lock.
         SECURITY_KEY_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
