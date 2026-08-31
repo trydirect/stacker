@@ -38,8 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|c| c.base_url.clone())
         .unwrap_or_else(|| "http://localhost:4100/server/user".to_string());
 
-    let internal_key =
-        std::env::var("INTERNAL_SERVICES_ACCESS_KEY").unwrap_or_default();
+    let internal_key = std::env::var("INTERNAL_SERVICES_ACCESS_KEY").unwrap_or_default();
 
     // Find projects that are marked for deletion but haven't been notified yet
     let rows = sqlx::query(

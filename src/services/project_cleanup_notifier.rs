@@ -175,30 +175,35 @@ pub async fn notify_project_deletion_warning(
     };
 
     // Resolve user email from User Service
-    let user_email = match resolve_user_email(http_client, user_service_url, internal_key, user_id)
-        .await
-    {
-        Ok(email) => email,
-        Err(e) => {
-            tracing::warn!("Failed to resolve email for user {}: {}", user_id, e);
-            result.error = Some(format!("email_resolve: {}", e));
-            // Still try bell notification even if email fails
-            match create_bell_notification(
-                http_client,
-                user_service_url,
-                internal_key,
-                user_id,
-                project_name,
-                deletion_date,
-            )
-            .await
-            {
-                Ok(()) => result.bell_sent = true,
-                Err(e) => result.error = Some(format!("email_resolve: {}, bell: {}", result.error.unwrap_or_default(), e)),
+    let user_email =
+        match resolve_user_email(http_client, user_service_url, internal_key, user_id).await {
+            Ok(email) => email,
+            Err(e) => {
+                tracing::warn!("Failed to resolve email for user {}: {}", user_id, e);
+                result.error = Some(format!("email_resolve: {}", e));
+                // Still try bell notification even if email fails
+                match create_bell_notification(
+                    http_client,
+                    user_service_url,
+                    internal_key,
+                    user_id,
+                    project_name,
+                    deletion_date,
+                )
+                .await
+                {
+                    Ok(()) => result.bell_sent = true,
+                    Err(e) => {
+                        result.error = Some(format!(
+                            "email_resolve: {}, bell: {}",
+                            result.error.unwrap_or_default(),
+                            e
+                        ))
+                    }
+                }
+                return result;
             }
-            return result;
-        }
-    };
+        };
 
     match send_deletion_warning_email(
         mq_manager,
