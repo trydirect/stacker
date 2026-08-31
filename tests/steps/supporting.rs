@@ -332,12 +332,16 @@ async fn get_messages_of_stored_session(world: &mut StepWorld) {
         .get("chat_session_id")
         .expect("No stored chat_session_id")
         .clone();
-    world.get(&format!("/api/chat/sessions/{}/messages", id)).await;
+    world
+        .get(&format!("/api/chat/sessions/{}/messages", id))
+        .await;
 }
 
 #[when(regex = r#"^I get the messages of session "(.+)"$"#)]
 async fn get_messages_of_literal_session(world: &mut StepWorld, id: String) {
-    world.get(&format!("/api/chat/sessions/{}/messages", id)).await;
+    world
+        .get(&format!("/api/chat/sessions/{}/messages", id))
+        .await;
 }
 
 #[when("I delete that session")]
@@ -371,13 +375,17 @@ async fn rename_stored_session(world: &mut StepWorld, title: String) {
         .expect("No stored chat_session_id")
         .clone();
     let body = json!({ "title": title });
-    world.patch(&format!("/api/chat/sessions/{}", id), &body).await;
+    world
+        .patch(&format!("/api/chat/sessions/{}", id), &body)
+        .await;
 }
 
 #[when(regex = r#"^I rename session "(.+)" to "(.+)"$"#)]
 async fn rename_literal_session(world: &mut StepWorld, id: String, title: String) {
     let body = json!({ "title": title });
-    world.patch(&format!("/api/chat/sessions/{}", id), &body).await;
+    world
+        .patch(&format!("/api/chat/sessions/{}", id), &body)
+        .await;
 }
 
 #[when("I archive that session")]

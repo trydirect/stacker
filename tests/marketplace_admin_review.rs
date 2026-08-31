@@ -385,6 +385,15 @@ async fn admin_detail_lists_extended_version_contract_for_resubmitted_templates(
     let app = app().await;
     let client = reqwest::Client::new();
 
+    let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
+    common::create_test_deployment(
+        &app.db_pool,
+        common::USER_A_ID,
+        project_id,
+        &format!("dpl-{}", uuid::Uuid::new_v4()),
+    )
+    .await;
+
     let create_response = client
         .post(format!("{}/api/templates", app.address))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
@@ -392,6 +401,7 @@ async fn admin_detail_lists_extended_version_contract_for_resubmitted_templates(
             "name": "Admin Contract Mirror Template",
             "slug": "admin-contract-mirror-template",
             "version": "1.0.0",
+            "source_project_id": project_id,
             "stack_definition": {
                 "services": {
                     "web": { "image": "nginx:1.27" }
@@ -679,6 +689,15 @@ async fn resubmit_same_version_updates_latest_version_in_place() {
     let app = app().await;
     let client = reqwest::Client::new();
 
+    let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
+    common::create_test_deployment(
+        &app.db_pool,
+        common::USER_A_ID,
+        project_id,
+        &format!("dpl-{}", uuid::Uuid::new_v4()),
+    )
+    .await;
+
     let create_response = client
         .post(format!("{}/api/templates", app.address))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
@@ -686,6 +705,7 @@ async fn resubmit_same_version_updates_latest_version_in_place() {
             "name": "Same Version Resubmit Template",
             "slug": "same-version-resubmit-template",
             "version": "1.0.0",
+            "source_project_id": project_id,
             "stack_definition": {
                 "services": {
                     "web": { "image": "nginx:1.27" }

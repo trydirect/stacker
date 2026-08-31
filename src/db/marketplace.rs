@@ -651,6 +651,121 @@ pub async fn set_latest_version(
     Ok(rec)
 }
 
+/// Link the latest `stack_template_version` row to the project it was
+/// authored/tested against. Not part of the `StackTemplateVersion` struct
+/// (which is fetched by many read paths via column-name-based `FromRow`) —
+/// kept as a narrow, dedicated accessor so only the publish-gate call sites
+/// that actually need it touch this column.
+pub async fn set_source_project_id(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    source_project_id: i32,
+) -> Result<(), String> {
+    let query_span =
+        tracing::info_span!("marketplace_set_source_project_id", template_id = %template_id);
+
+    sqlx::query(
+        r#"UPDATE stack_template_version
+           SET source_project_id = $2
+           WHERE template_id = $1 AND is_latest = true"#,
+    )
+    .bind(template_id)
+    .bind(source_project_id)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("set_source_project_id error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(())
+}
+
+/// Read back the source project linked via [`set_source_project_id`].
+pub async fn get_source_project_id(
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+) -> Result<Option<i32>, String> {
+    let query_span =
+        tracing::info_span!("marketplace_get_source_project_id", template_id = %template_id);
+
+    sqlx::query_scalar::<_, Option<i32>>(
+        r#"SELECT source_project_id
+           FROM stack_template_version
+           WHERE template_id = $1 AND is_latest = true
+           LIMIT 1"#,
+    )
+    .bind(template_id)
+    .fetch_optional(pool)
+    .instrument(query_span)
+    .await
+    .map(|row| row.flatten())
+    .map_err(|e| {
+        tracing::error!("get_source_project_id error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
+/// Persist the author-declared `config_contract` (field policy: which env
+/// vars are fixed/editable/generated) alongside the latest version. Kept as
+/// a dedicated accessor for the same reason as [`set_source_project_id`] —
+/// it isn't part of the shared `StackTemplateVersion` struct fetched by
+/// every version-listing query.
+pub async fn set_config_contract(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    config_contract: serde_json::Value,
+) -> Result<(), String> {
+    let query_span =
+        tracing::info_span!("marketplace_set_config_contract", template_id = %template_id);
+
+    sqlx::query(
+        r#"UPDATE stack_template_version
+           SET config_contract = $2
+           WHERE template_id = $1 AND is_latest = true"#,
+    )
+    .bind(template_id)
+    .bind(config_contract)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("set_config_contract error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(())
+}
+
+/// Read back the field policy set via [`set_config_contract`]. Returns
+/// `Value::Null` when nothing has been declared (legacy templates, or a
+/// version that never set one) — callers should treat that as "no fields
+/// declared", not an error.
+pub async fn get_config_contract(
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+) -> Result<serde_json::Value, String> {
+    let query_span =
+        tracing::info_span!("marketplace_get_config_contract", template_id = %template_id);
+
+    sqlx::query_scalar::<_, Option<serde_json::Value>>(
+        r#"SELECT config_contract
+           FROM stack_template_version
+           WHERE template_id = $1 AND is_latest = true
+           LIMIT 1"#,
+    )
+    .bind(template_id)
+    .fetch_optional(pool)
+    .instrument(query_span)
+    .await
+    .map(|row| row.flatten().unwrap_or(serde_json::Value::Null))
+    .map_err(|e| {
+        tracing::error!("get_config_contract error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
 pub async fn upsert_latest_version(
     pool: &PgPool,
     template_id: &uuid::Uuid,

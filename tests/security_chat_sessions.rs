@@ -175,7 +175,10 @@ async fn test_read_other_users_session_is_404() {
     let a_id = insert_session(&app.db_pool, USER_A_ID, "A session").await;
 
     let resp = client
-        .get(format!("{}/api/chat/sessions/{}/messages", &app.address, a_id))
+        .get(format!(
+            "{}/api/chat/sessions/{}/messages",
+            &app.address, a_id
+        ))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .send()
         .await
@@ -280,7 +283,10 @@ async fn test_append_to_other_users_session_is_404() {
     let a_id = insert_session(&app.db_pool, USER_A_ID, "A session").await;
 
     let resp = client
-        .post(format!("{}/api/chat/sessions/{}/messages", &app.address, a_id))
+        .post(format!(
+            "{}/api/chat/sessions/{}/messages",
+            &app.address, a_id
+        ))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .header("Content-Type", "application/json")
         .body(serde_json::json!({"role": "user", "content": "intrusion"}).to_string())
@@ -386,7 +392,10 @@ async fn test_archive_other_users_session_is_404() {
     let a_id = insert_session(&app.db_pool, USER_A_ID, "A session").await;
 
     let resp = client
-        .post(format!("{}/api/chat/sessions/{}/archive", &app.address, a_id))
+        .post(format!(
+            "{}/api/chat/sessions/{}/archive",
+            &app.address, a_id
+        ))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .send()
         .await
