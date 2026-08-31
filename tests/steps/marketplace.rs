@@ -319,9 +319,9 @@ async fn given_template_has_usage_metrics(world: &mut StepWorld) {
     let _ = sqlx::query(
         r#"INSERT INTO marketplace_template_event 
            (template_id, event_type, user_id, created_at)
-           VALUES ($1, 'view', 'viewer-1', NOW() - INTERVAL '5 days'),
-                  ($1, 'view', 'viewer-2', NOW() - INTERVAL '3 days'),
-                  ($1, 'view', 'viewer-3', NOW() - INTERVAL '1 day')"#,
+           VALUES ($1::uuid, 'view', 'viewer-1', NOW() - INTERVAL '5 days'),
+                  ($1::uuid, 'view', 'viewer-2', NOW() - INTERVAL '3 days'),
+                  ($1::uuid, 'view', 'viewer-3', NOW() - INTERVAL '1 day')"#,
     )
     .bind(&template_id)
     .execute(pool)
@@ -331,8 +331,8 @@ async fn given_template_has_usage_metrics(world: &mut StepWorld) {
     let _ = sqlx::query(
         r#"INSERT INTO marketplace_template_event 
            (template_id, event_type, user_id, cloud_provider, created_at)
-           VALUES ($1, 'deploy', 'deployer-1', 'hetzner', NOW() - INTERVAL '4 days'),
-                  ($1, 'deploy', 'deployer-2', 'digitalocean', NOW() - INTERVAL '2 days')"#,
+           VALUES ($1::uuid, 'deploy', 'deployer-1', 'hetzner', NOW() - INTERVAL '4 days'),
+                  ($1::uuid, 'deploy', 'deployer-2', 'digitalocean', NOW() - INTERVAL '2 days')"#,
     )
     .bind(&template_id)
     .execute(pool)
@@ -353,8 +353,8 @@ async fn given_template_has_usage_events_across_periods(world: &mut StepWorld) {
     let _ = sqlx::query(
         r#"INSERT INTO marketplace_template_event 
            (template_id, event_type, user_id, created_at)
-           VALUES ($1, 'view', 'viewer-recent-1', NOW() - INTERVAL '2 days'),
-                  ($1, 'view', 'viewer-recent-2', NOW() - INTERVAL '5 days')"#,
+           VALUES ($1::uuid, 'view', 'viewer-recent-1', NOW() - INTERVAL '2 days'),
+                  ($1::uuid, 'view', 'viewer-recent-2', NOW() - INTERVAL '5 days')"#,
     )
     .bind(&template_id)
     .execute(pool)
@@ -364,8 +364,8 @@ async fn given_template_has_usage_events_across_periods(world: &mut StepWorld) {
     let _ = sqlx::query(
         r#"INSERT INTO marketplace_template_event 
            (template_id, event_type, user_id, created_at)
-           VALUES ($1, 'view', 'viewer-old-1', NOW() - INTERVAL '15 days'),
-                  ($1, 'view', 'viewer-old-2', NOW() - INTERVAL '25 days')"#,
+           VALUES ($1::uuid, 'view', 'viewer-old-1', NOW() - INTERVAL '15 days'),
+                  ($1::uuid, 'view', 'viewer-old-2', NOW() - INTERVAL '25 days')"#,
     )
     .bind(&template_id)
     .execute(pool)
