@@ -261,6 +261,51 @@ fn upsert_compose_service(
     Ok(())
 }
 
+/// Render a healthcheck `test` into the shape docker compose actually expects.
+///
+/// Compose treats a *string* test as `CMD-SHELL <string>`. The `CMD` /
+/// `CMD-SHELL` prefixes are only meaningful as the first element of a *list*.
+/// So the documented stacker.yml convention — `test: "CMD curl -f ..."` — was
+/// emitted verbatim and run as `sh -c "CMD curl -f ..."`, which fails with
+/// `CMD: command not found` on every probe. Containers using it were marked
+/// unhealthy forever while the app underneath was fine.
+///
+/// Prefixed strings therefore become the list form. A `CMD` test containing
+/// shell syntax cannot run in exec form, so it degrades to `CMD-SHELL` rather
+/// than being split into nonsense argv. Unprefixed strings are already valid
+/// and are left alone.
+fn healthcheck_test_value(test: &str) -> serde_yaml::Value {
+    fn list(parts: impl IntoIterator<Item = String>) -> serde_yaml::Value {
+        serde_yaml::Value::Sequence(parts.into_iter().map(serde_yaml::Value::String).collect())
+    }
+
+    let trimmed = test.trim();
+
+    if let Some(rest) = trimmed.strip_prefix("CMD-SHELL ") {
+        return list(["CMD-SHELL".to_string(), rest.trim().to_string()]);
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("CMD ") {
+        let rest = rest.trim();
+        let needs_shell = rest.contains("&&")
+            || rest.contains("||")
+            || rest.contains('|')
+            || rest.contains(';')
+            || rest.contains('>')
+            || rest.contains('<')
+            || rest.contains('$')
+            || rest.contains('`');
+        if needs_shell {
+            return list(["CMD-SHELL".to_string(), rest.to_string()]);
+        }
+        let mut parts = vec!["CMD".to_string()];
+        parts.extend(rest.split_whitespace().map(str::to_string));
+        return list(parts);
+    }
+
+    serde_yaml::Value::String(trimmed.to_string())
+}
+
 fn service_to_compose_value(
     service: &ServiceDefinition,
     project_networks: &[String],
@@ -282,7 +327,7 @@ fn service_to_compose_value(
         let mut hc_map = serde_yaml::Mapping::new();
         hc_map.insert(
             serde_yaml::Value::String("test".to_string()),
-            serde_yaml::Value::String(hc.test.clone()),
+            healthcheck_test_value(&hc.test),
         );
         hc_map.insert(
             serde_yaml::Value::String("interval".to_string()),
@@ -450,6 +495,57 @@ mod tests {
     };
     use std::collections::HashMap;
     use tempfile::TempDir;
+
+    #[test]
+    fn healthcheck_cmd_prefix_becomes_a_list_not_a_shell_string() {
+        // The floci regression: emitted as a string, docker ran
+        // `sh -c "CMD curl ..."` -> "CMD: command not found" on every probe.
+        let v = healthcheck_test_value("CMD curl -f http://localhost:4566/_floci/health || exit 1");
+        let seq = v.as_sequence().expect("must be a list, not a string");
+        assert_eq!(seq[0].as_str(), Some("CMD-SHELL"));
+        assert_eq!(
+            seq[1].as_str(),
+            Some("curl -f http://localhost:4566/_floci/health || exit 1")
+        );
+    }
+
+    #[test]
+    fn healthcheck_plain_cmd_keeps_exec_form() {
+        let v = healthcheck_test_value("CMD pg_isready -U postgres");
+        let seq = v.as_sequence().unwrap();
+        let parts: Vec<_> = seq.iter().map(|p| p.as_str().unwrap()).collect();
+        assert_eq!(parts, vec!["CMD", "pg_isready", "-U", "postgres"]);
+    }
+
+    #[test]
+    fn healthcheck_cmd_shell_prefix_is_preserved() {
+        let v = healthcheck_test_value("CMD-SHELL curl -f http://localhost || exit 1");
+        let seq = v.as_sequence().unwrap();
+        assert_eq!(seq[0].as_str(), Some("CMD-SHELL"));
+        assert_eq!(seq[1].as_str(), Some("curl -f http://localhost || exit 1"));
+    }
+
+    #[test]
+    fn healthcheck_unprefixed_string_is_left_alone() {
+        // Already valid: compose treats a bare string as CMD-SHELL.
+        let v = healthcheck_test_value("curl -f http://localhost/health");
+        assert_eq!(v.as_str(), Some("curl -f http://localhost/health"));
+    }
+
+    #[test]
+    fn healthcheck_never_emits_a_string_starting_with_cmd() {
+        for t in [
+            "CMD curl -f http://x || exit 1",
+            "CMD-SHELL test -f /tmp/x",
+            "CMD pg_isready",
+            "CMD sh -c 'echo $HOME'",
+        ] {
+            let v = healthcheck_test_value(t);
+            if let Some(s) = v.as_str() {
+                assert!(!s.starts_with("CMD"), "still a broken shell string: {s}");
+            }
+        }
+    }
 
     #[test]
     fn inject_shared_network_all_services_is_idempotent_and_covers_all() {
