@@ -123,6 +123,36 @@ fn resolve_ai_from_env_or_config(
     Ok(ai)
 }
 
+/// Populate `deploy.server` from the existing-server CLI flags
+/// (`--server-host`, `--server-user`, `--server-ssh-key`) so a server can be
+/// targeted without editing stacker.yml. CLI values take precedence over what
+/// is already in the config, and this runs before the lockfile hydration so a
+/// flag always wins over a stale lock. A no-op when no server flag was passed.
+/// See GH #213.
+fn hydrate_server_deploy_config_from_cli_overrides(
+    config: &mut StackerConfig,
+    overrides: &RemoteDeployOverrides,
+) {
+    if overrides.server_host.is_none()
+        && overrides.server_user.is_none()
+        && overrides.server_ssh_key.is_none()
+    {
+        return;
+    }
+
+    let mut server = config.deploy.server.clone().unwrap_or_default();
+    if let Some(host) = &overrides.server_host {
+        server.host = host.clone();
+    }
+    if let Some(user) = &overrides.server_user {
+        server.user = user.clone();
+    }
+    if let Some(ssh_key) = &overrides.server_ssh_key {
+        server.ssh_key = Some(PathBuf::from(ssh_key));
+    }
+    config.deploy.server = Some(server);
+}
+
 fn hydrate_server_deploy_config_from_lock(
     project_dir: &Path,
     config: &mut StackerConfig,
@@ -2233,6 +2263,12 @@ pub struct DeployCommand {
     pub key_id: Option<i32>,
     /// Override server name (--server flag)
     pub server_name: Option<String>,
+    /// Existing-server onboarding flags (--server-host / --server-user /
+    /// --server-ssh-key), so a server can be targeted without editing
+    /// deploy.server in stacker.yml. See GH #213.
+    pub server_host: Option<String>,
+    pub server_user: Option<String>,
+    pub server_ssh_key: Option<String>,
     /// Watch deployment progress until complete (--watch / --no-watch).
     /// `None` means "auto" (watch for cloud, health-check for local).
     pub watch: Option<bool>,
@@ -2273,6 +2309,9 @@ impl DeployCommand {
             key_name: None,
             key_id: None,
             server_name: None,
+            server_host: None,
+            server_user: None,
+            server_ssh_key: None,
             watch: None,
             lock: false,
             force_new: false,
@@ -2326,6 +2365,22 @@ impl DeployCommand {
         self.project_name = project;
         self.key_name = key;
         self.server_name = server;
+        self
+    }
+
+    /// Builder method for the existing-server onboarding flags
+    /// (`--server-host`, `--server-user`, `--server-ssh-key`). Lets an existing
+    /// server be targeted without editing `deploy.server` in stacker.yml.
+    /// See GH #213.
+    pub fn with_server_overrides(
+        mut self,
+        host: Option<String>,
+        user: Option<String>,
+        ssh_key: Option<String>,
+    ) -> Self {
+        self.server_host = host;
+        self.server_user = user;
+        self.server_ssh_key = ssh_key;
         self
     }
 
@@ -2555,6 +2610,12 @@ pub struct RemoteDeployOverrides {
     pub key_name: Option<String>,
     pub key_id: Option<i32>,
     pub server_name: Option<String>,
+    /// Existing-server onboarding from the command line (`--server-host`,
+    /// `--server-user`, `--server-ssh-key`) so an existing server can be
+    /// targeted without editing `deploy.server` in stacker.yml. See GH #213.
+    pub server_host: Option<String>,
+    pub server_user: Option<String>,
+    pub server_ssh_key: Option<String>,
 }
 
 const HOOK_TIMEOUT: Duration = Duration::from_secs(300);
@@ -2986,6 +3047,8 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
 
     // 2. Resolve deploy target/profile (flag > config default)
     let mut deploy_target = config.deploy.target;
+    // CLI --server-* flags take precedence, then fall back to the lockfile.
+    hydrate_server_deploy_config_from_cli_overrides(&mut config, remote_overrides);
     hydrate_server_deploy_config_from_lock(project_dir, &mut config, deploy_target)?;
 
     // 2b. Server pre-check: when target is Cloud but deploy.server section
@@ -3603,6 +3666,9 @@ impl CallableTrait for DeployCommand {
             key_name: self.key_name.clone(),
             key_id: self.key_id,
             server_name: self.server_name.clone(),
+            server_host: self.server_host.clone(),
+            server_user: self.server_user.clone(),
+            server_ssh_key: self.server_ssh_key.clone(),
         };
 
         // ── Spinner while deploying ──────────────────
@@ -5181,6 +5247,9 @@ deploy:\n  target: server\n  server:\n    host: 203.0.113.5\n    user: deploy\n 
             key_name: None,
             key_id: None,
             server_name: None,
+            server_host: None,
+            server_user: None,
+            server_ssh_key: None,
             watch: None,
             lock: false,
             force_new: false,
@@ -6173,6 +6242,94 @@ services:
         assert_eq!(server_cfg.user, "root");
         assert_eq!(server_cfg.port, 22);
         assert!(server_cfg.ssh_key.is_none());
+    }
+
+    // ── GH #213: existing-server onboarding via CLI flags ──
+
+    fn overrides_with_server(
+        host: Option<&str>,
+        user: Option<&str>,
+        ssh_key: Option<&str>,
+    ) -> RemoteDeployOverrides {
+        RemoteDeployOverrides {
+            project_name: None,
+            key_name: None,
+            key_id: None,
+            server_name: None,
+            server_host: host.map(String::from),
+            server_user: user.map(String::from),
+            server_ssh_key: ssh_key.map(String::from),
+        }
+    }
+
+    #[test]
+    fn test_cli_server_overrides_create_server_config_from_flags() {
+        // No deploy.server in the file — the flags alone must produce one.
+        let mut config = StackerConfig::from_str(
+            "name: demo\napp:\n  type: custom\n  image: ghcr.io/example/demo:latest\ndeploy:\n  target: server\n",
+        )
+        .unwrap();
+        assert!(config.deploy.server.is_none());
+
+        let overrides =
+            overrides_with_server(Some("1.2.3.4"), Some("deploy"), Some("~/.ssh/id_ed25519"));
+        hydrate_server_deploy_config_from_cli_overrides(&mut config, &overrides);
+
+        let server = config.deploy.server.expect("flags should create server config");
+        assert_eq!(server.host, "1.2.3.4");
+        assert_eq!(server.user, "deploy");
+        assert_eq!(server.ssh_key, Some(PathBuf::from("~/.ssh/id_ed25519")));
+        assert_eq!(server.port, 22, "port should fall back to the default");
+    }
+
+    #[test]
+    fn test_cli_server_host_only_uses_default_user() {
+        let mut config = StackerConfig::from_str(
+            "name: demo\napp:\n  type: custom\n  image: ghcr.io/example/demo:latest\ndeploy:\n  target: server\n",
+        )
+        .unwrap();
+
+        let overrides = overrides_with_server(Some("203.0.113.7"), None, None);
+        hydrate_server_deploy_config_from_cli_overrides(&mut config, &overrides);
+
+        let server = config.deploy.server.expect("server config");
+        assert_eq!(server.host, "203.0.113.7");
+        assert_eq!(server.user, "root", "default SSH user");
+        assert!(server.ssh_key.is_none());
+    }
+
+    #[test]
+    fn test_cli_server_overrides_merge_over_existing_config() {
+        // Only --server-user given: host from stacker.yml is preserved.
+        let mut config = StackerConfig::from_str(
+            "name: demo\napp:\n  type: custom\n  image: ghcr.io/example/demo:latest\ndeploy:\n  target: server\n  server:\n    host: 198.51.100.10\n    user: root\n    port: 2222\n",
+        )
+        .unwrap();
+
+        let overrides = overrides_with_server(None, Some("ubuntu"), None);
+        hydrate_server_deploy_config_from_cli_overrides(&mut config, &overrides);
+
+        let server = config.deploy.server.expect("server config");
+        assert_eq!(server.host, "198.51.100.10", "existing host preserved");
+        assert_eq!(server.user, "ubuntu", "user overridden by flag");
+        assert_eq!(server.port, 2222, "existing non-default port preserved");
+    }
+
+    #[test]
+    fn test_cli_server_overrides_noop_without_flags() {
+        let mut config = StackerConfig::from_str(
+            "name: demo\napp:\n  type: custom\n  image: ghcr.io/example/demo:latest\ndeploy:\n  target: server\n",
+        )
+        .unwrap();
+
+        hydrate_server_deploy_config_from_cli_overrides(
+            &mut config,
+            &overrides_with_server(None, None, None),
+        );
+        assert!(
+            config.deploy.server.is_none(),
+            "no server flags ⇒ config untouched"
+        );
     }
 
     #[test]

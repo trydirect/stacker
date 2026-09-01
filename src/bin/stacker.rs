@@ -150,6 +150,16 @@ enum StackerCommands {
         /// Name of saved server to reuse (overrides deploy.cloud.server in stacker.yml)
         #[arg(long, value_name = "SERVER_NAME")]
         server: Option<String>,
+        /// Existing server host/IP to deploy to (sets deploy.server.host without
+        /// editing stacker.yml). Use with --target server.
+        #[arg(long = "server-host", value_name = "HOST")]
+        server_host: Option<String>,
+        /// SSH user for --server-host (default: root)
+        #[arg(long = "server-user", value_name = "USER")]
+        server_user: Option<String>,
+        /// SSH private key path for --server-host (default: deploy.server.ssh_key)
+        #[arg(long = "server-ssh-key", value_name = "PATH")]
+        server_ssh_key: Option<String>,
         /// Watch deployment progress until complete (default for cloud deploys)
         #[arg(long)]
         watch: bool,
@@ -2087,6 +2097,9 @@ fn get_command(
             key,
             key_id,
             server,
+            server_host,
+            server_user,
+            server_ssh_key,
             watch,
             no_watch,
             lock,
@@ -2107,6 +2120,7 @@ fn get_command(
             .with_service(service)
             .with_environment(environment)
             .with_remote_overrides(project, key, server)
+            .with_server_overrides(server_host, server_user, server_ssh_key)
             .with_key_id(key_id)
             .with_watch(watch, no_watch)
             .with_lock(lock)
@@ -3044,6 +3058,39 @@ mod tests {
             } => {
                 assert_eq!(target.as_deref(), Some("cloud"));
                 assert_eq!(environment.as_deref(), Some("production"));
+            }
+            _ => panic!("expected deploy command"),
+        }
+    }
+
+    #[test]
+    fn test_deploy_parses_existing_server_flags() {
+        let cli = Cli::try_parse_from([
+            "stacker",
+            "deploy",
+            "--target",
+            "server",
+            "--server-host",
+            "1.2.3.4",
+            "--server-user",
+            "root",
+            "--server-ssh-key",
+            "~/.ssh/id_ed25519",
+        ])
+        .unwrap();
+
+        match cli.command.unwrap() {
+            StackerCommands::Deploy {
+                target,
+                server_host,
+                server_user,
+                server_ssh_key,
+                ..
+            } => {
+                assert_eq!(target.as_deref(), Some("server"));
+                assert_eq!(server_host.as_deref(), Some("1.2.3.4"));
+                assert_eq!(server_user.as_deref(), Some("root"));
+                assert_eq!(server_ssh_key.as_deref(), Some("~/.ssh/id_ed25519"));
             }
             _ => panic!("expected deploy command"),
         }

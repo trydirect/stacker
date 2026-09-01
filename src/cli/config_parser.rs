@@ -717,6 +717,20 @@ fn default_ssh_port() -> u16 {
     22
 }
 
+impl Default for ServerConfig {
+    /// An empty-host skeleton with the same field defaults serde applies
+    /// (`user = root`, `port = 22`). Used when building a server config from
+    /// CLI flags (`--server-host/--server-user/--server-ssh-key`).
+    fn default() -> Self {
+        Self {
+            host: String::new(),
+            user: default_ssh_user(),
+            ssh_key: None,
+            port: default_ssh_port(),
+        }
+    }
+}
+
 /// Default AI request timeout in seconds.
 fn default_ai_timeout() -> u64 {
     300
