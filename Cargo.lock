@@ -7045,7 +7045,7 @@ dependencies = [
  "futures-util",
  "glob",
  "health-monitor",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "indexmap 2.14.0",
  "indicatif",
  "lapin",
