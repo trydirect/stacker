@@ -2565,34 +2565,22 @@ impl DeployStrategy for ServerDeploy {
         &self,
         config: &StackerConfig,
         context: &DeployContext,
-        executor: &dyn CommandExecutor,
+        _executor: &dyn CommandExecutor,
     ) -> Result<DeployResult, CliError> {
+        // Dry-run must not have side effects: the real (non-dry-run) path
+        // below never touches Docker at all — it deploys either via a direct
+        // SSH/rsync flow (`deploy_to_intranet_server`) or via HTTP calls to
+        // the Stacker API (`StackerClient`). Previously this branch ran a
+        // real `docker` invocation of the `trydirect/install-service`
+        // container in "Plan" mode, which is a genuinely different (and
+        // unavailable — the image doesn't resolve on Docker Hub) code path
+        // from what actually deploys. See GH issue #238.
         if context.dry_run {
-            let action = InstallAction::Plan;
-            let cmd = InstallContainerCommand::from_config(config, context, action);
-            let args = cmd.build_args();
-            let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-
-            let output = executor.execute("docker", &args_refs)?;
-
-            if !output.success() {
-                let mut reason = format!("Server deployment failed: {}", output.stderr.trim());
-                let port_hints = detect_port_conflicts_in_output(&output.stderr, &output.stdout);
-                if !port_hints.is_empty() {
-                    reason.push_str("\n\nPort conflict details:\n  • ");
-                    reason.push_str(&port_hints.join("\n  • "));
-                }
-                return Err(CliError::DeployFailed {
-                    target: DeployTarget::Server,
-                    reason,
-                });
-            }
-
             let server_host = config.deploy.server.as_ref().map(|s| s.host.clone());
 
             return Ok(DeployResult {
                 target: DeployTarget::Server,
-                message: "Server deployment plan completed".to_string(),
+                message: "Server deployment previewed successfully (dry-run)".to_string(),
                 server_ip: server_host,
                 deployment_id: None,
                 project_id: None,
@@ -3639,11 +3627,52 @@ mod tests {
         let info_idx = calls
             .iter()
             .position(|(p, a)| p == "docker" && a.first().map(String::as_str) == Some("info"));
-        assert!(info_idx.is_some(), "expected a `docker info` pre-flight probe");
+        assert!(
+            info_idx.is_some(),
+            "expected a `docker info` pre-flight probe"
+        );
         let up_idx = calls.iter().position(|(_, a)| a.iter().any(|x| x == "up"));
         if let (Some(i), Some(u)) = (info_idx, up_idx) {
             assert!(i < u, "daemon probe must precede `compose up`");
         }
+    }
+
+    // ── GH issue #238: server --dry-run must not touch Docker ──
+
+    #[test]
+    fn test_server_deploy_dry_run_does_not_invoke_docker() {
+        let config = sample_server_config();
+        let context = sample_context(true);
+        // If dry-run touches Docker at all, this failing executor will
+        // surface as a DeployFailed error instead of a clean plan result.
+        let executor = MockExecutor::failure(
+            "Unable to find image 'trydirect/install-service:latest' locally",
+        );
+        let strategy = ServerDeploy;
+
+        let result = strategy.deploy(&config, &context, &executor);
+        assert!(
+            result.is_ok(),
+            "server dry-run must not depend on Docker/install-service being available: {result:?}"
+        );
+
+        let calls = executor.recorded_calls.lock().unwrap();
+        assert!(
+            calls.is_empty(),
+            "server dry-run must not execute any external command, ran: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn test_server_deploy_dry_run_reports_server_host() {
+        let config = sample_server_config();
+        let context = sample_context(true);
+        let executor = MockExecutor::success();
+        let strategy = ServerDeploy;
+
+        let result = strategy.deploy(&config, &context, &executor).unwrap();
+        assert_eq!(result.target, DeployTarget::Server);
+        assert_eq!(result.server_ip.as_deref(), Some("192.168.1.100"));
     }
 
     #[test]
@@ -3657,7 +3686,9 @@ mod tests {
         assert!(stderr_indicates_daemon_down(
             "error during connect: Get \"http://...\": EOF"
         ));
-        assert!(!stderr_indicates_daemon_down("service 'db' failed to build"));
+        assert!(!stderr_indicates_daemon_down(
+            "service 'db' failed to build"
+        ));
         assert!(!stderr_indicates_daemon_down("port is already allocated"));
     }
 
