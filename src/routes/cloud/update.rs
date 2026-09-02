@@ -12,7 +12,7 @@ use std::sync::Arc;
 #[put("/{id}")]
 pub async fn item(
     path: web::Path<(i32,)>,
-    form: web::Json<forms::cloud::CloudForm>,
+    mut form: web::Json<forms::cloud::CloudForm>,
     user: web::ReqData<Arc<models::User>>,
     pg_pool: Data<PgPool>,
 ) -> Result<impl Responder> {
@@ -32,9 +32,12 @@ pub async fn item(
         return Err(JsonResponse::<models::Cloud>::build().form_error(errors.to_string()));
     }
 
+    // Set the owner BEFORE converting, as routes::cloud::add does: the Into impl
+    // unwraps user_id, and a PUT body carries none, so converting first panicked
+    // and returned a 500.
+    form.user_id = Some(user.id.clone());
     let mut cloud: models::Cloud = form.deref().into();
     cloud.id = cloud_row.id;
-    cloud.user_id = user.id.clone();
 
     // Validate that encryption succeeded when save_token is enabled.
     if cloud.save_token == Some(true) {
