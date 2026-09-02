@@ -6275,7 +6275,10 @@ services:
             overrides_with_server(Some("1.2.3.4"), Some("deploy"), Some("~/.ssh/id_ed25519"));
         hydrate_server_deploy_config_from_cli_overrides(&mut config, &overrides);
 
-        let server = config.deploy.server.expect("flags should create server config");
+        let server = config
+            .deploy
+            .server
+            .expect("flags should create server config");
         assert_eq!(server.host, "1.2.3.4");
         assert_eq!(server.user, "deploy");
         assert_eq!(server.ssh_key, Some(PathBuf::from("~/.ssh/id_ed25519")));

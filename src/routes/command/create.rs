@@ -631,22 +631,23 @@ pub(crate) async fn enrich_deploy_app_with_compose(
                 merged_file_count = merged_into_bundle,
                 "Merged rendered runtime env into deploy_app config bundle env files"
             );
+        } else {
+            // No existing .env entry to merge into — add as a new config file
+            let env_file = json!({
+                "content": env_config.content,
+                "content_type": env_config.content_type,
+                "destination_path": env_config.destination_path,
+                "file_mode": env_config.file_mode,
+                "owner": env_config.owner,
+                "group": env_config.group,
+                "force_overwrite": force_config_overwrite,
+                "drift_check": {
+                    "enabled": true,
+                    "hash_source": "stacker-render-header"
+                },
+            });
+            config_files.push(env_file);
         }
-
-        let env_file = json!({
-            "content": env_config.content,
-            "content_type": env_config.content_type,
-            "destination_path": env_config.destination_path,
-            "file_mode": env_config.file_mode,
-            "owner": env_config.owner,
-            "group": env_config.group,
-            "force_overwrite": force_config_overwrite,
-            "drift_check": {
-                "enabled": true,
-                "hash_source": "stacker-render-header"
-            },
-        });
-        config_files.push(env_file);
     } else {
         match vault.fetch_app_config(deployment_hash, &env_key).await {
             Ok(env_config) => {

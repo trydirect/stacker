@@ -192,6 +192,23 @@ impl InstallServiceConnector for InstallServiceClient {
         let routing_key = format!("install.start.{}.all.all", provider);
         tracing::debug!("Route: {:?}", routing_key);
 
+        // Reject oversized config_files payloads before publishing to MQ.
+        // The Install Service passes this inline as Ansible --extra-vars,
+        // which hits shell ARG_MAX limits when too large.
+        if let Some(ref config_files) = payload.config_files {
+            let size = serde_json::to_string(config_files)
+                .map(|s| s.len())
+                .unwrap_or(0);
+            const MAX_CONFIG_FILES_BYTES: usize = 128 * 1024; // 128 KB
+            if size > MAX_CONFIG_FILES_BYTES {
+                return Err(format!(
+                    "Config files payload too large ({:.1} KB). \
+                     Simplify environment variables or reduce bind-mount file count.",
+                    size as f64 / 1024.0
+                ));
+            }
+        }
+
         mq_manager
             .publish("install".to_string(), routing_key, &payload)
             .await

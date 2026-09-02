@@ -189,6 +189,10 @@ pub fn build_config_bundle(
         "group": "root"
     }));
 
+    // Track the canonical path of the explicitly-added env file so we can
+    // skip it in the collected-files loop below (avoids duplicating .env).
+    let mut skip_env_canonical: Option<std::path::PathBuf> = None;
+
     if let Some(selected_env_file) = selected_env_file.as_ref() {
         let canonical = selected_env_file.canonicalize()?;
         let collected_env_file = collected
@@ -210,9 +214,16 @@ pub fn build_config_bundle(
             "owner": "root",
             "group": "root"
         }));
+        skip_env_canonical = Some(canonical);
     }
 
     for file in collected.values() {
+        // Skip the selected env file — already added above with destination_path ".env"
+        if let Some(ref skip) = skip_env_canonical {
+            if std::path::Path::new(&file.source_path).canonicalize().ok().as_ref() == Some(skip) {
+                continue;
+            }
+        }
         let content = String::from_utf8(file.bytes.clone()).map_err(|_| {
             validation_error(format!(
                 "config file '{}' must be UTF-8 text to upload in the deploy payload",
