@@ -1,5 +1,4 @@
 use docker_compose_types as dctypes;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_valid::Validate;
 
@@ -7,10 +6,54 @@ use serde_valid::Validate;
 pub struct Port {
     #[validate(custom(|v| validate_non_empty(v)))]
     pub host_port: Option<String>,
-    #[validate(pattern = r"^\d{2,6}+$")]
+    #[validate(custom(|v| validate_container_port(v)))]
     pub container_port: String,
     #[validate(enumerate("tcp", "udp"))]
     pub protocol: Option<String>,
+}
+
+/// Parse a port and check it is actually in range.
+///
+/// The previous rules only counted digits, so 133342 validated and reached the
+/// target host, where docker compose rejected it with "invalid containerPort".
+/// The two-character minimum is pre-existing behaviour and is kept deliberately.
+fn parse_port_in_range(value: &str) -> Result<u16, String> {
+    if value.len() < 2 {
+        return Err(format!("Port is not valid: {value}"));
+    }
+
+    // Parse wide, then range-check, so an out-of-range value reports the range
+    // rather than a u16 overflow.
+    let parsed: u64 = value
+        .parse()
+        .map_err(|_| format!("Port is not valid: {value}"))?;
+
+    if parsed == 0 || parsed > u16::MAX as u64 {
+        return Err(format!(
+            "Port {value} is out of range, must be between 1 and {}",
+            u16::MAX
+        ));
+    }
+
+    Ok(parsed as u16)
+}
+
+/// container_port may carry a whole mapping ("1025:25", "127.0.0.1:8080:80",
+/// "80/tcp"), so range-check every numeric segment rather than the raw string.
+fn validate_container_port(v: &String) -> Result<(), serde_valid::validation::Error> {
+    let without_proto = v.split('/').next().unwrap_or(v.as_str());
+
+    for segment in without_proto.split(':') {
+        // Skip a host IP; only the numeric segments are ports.
+        if segment.contains('.') {
+            continue;
+        }
+        if let Err(err) = parse_port_in_range(segment) {
+            return Err(serde_valid::validation::Error::Custom(err));
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_non_empty(v: &Option<String>) -> Result<(), serde_valid::validation::Error> {
@@ -23,11 +66,9 @@ fn validate_non_empty(v: &Option<String>) -> Result<(), serde_valid::validation:
             return Ok(());
         }
 
-        let re = Regex::new(r"^\d{2,6}$").unwrap();
-
-        if !re.is_match(value.as_str()) {
+        if let Err(err) = parse_port_in_range(value.as_str()) {
             return Err(serde_valid::validation::Error::Custom(
-                "Port is not valid.".to_owned(),
+                err,
             ));
         }
     }
@@ -52,22 +93,19 @@ impl TryInto<dctypes::Port> for &Port {
     fn try_into(self) -> Result<dctypes::Port, Self::Error> {
         let normalized = normalize_port_mapping(self);
 
-        let cp = normalized
-            .container_port
-            .parse::<u16>()
-            .map_err(|_err| "Could not parse container port".to_string())?;
+        let cp = parse_port_in_range(normalized.container_port.as_str())
+            .map_err(|err| format!("Could not parse container port: {err}"))?;
 
         let hp = match normalized.host_port {
             Some(hp) => {
                 if hp.is_empty() {
                     None
                 } else {
-                    match hp.parse::<u16>() {
+                    // Previously a bad host port was logged at debug and
+                    // dropped to None, publishing the mapping without it.
+                    match parse_port_in_range(hp.as_str()) {
                         Ok(port) => Some(dctypes::PublishedPort::Single(port)),
-                        Err(_) => {
-                            tracing::debug!("Could not parse host port: {}", hp);
-                            None
-                        }
+                        Err(err) => return Err(err),
                     }
                 }
             }
@@ -127,6 +165,75 @@ fn normalize_port_mapping(port: &Port) -> NormalizedPortMapping {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Regression: ports must be a real port number, not just N digits ---
+    //
+    // A GitLab deploy failed on the target host with
+    //   docker compose ... stderr: "invalid containerPort: 133342"
+    // after the value passed validation here: the rules checked digit COUNT
+    // (2-6 digits), not the 1..=65535 range, so any 6-digit number was accepted.
+
+    #[test]
+    fn host_port_rejects_out_of_range() {
+        assert!(validate_non_empty(&Some("133342".to_string())).is_err());
+        assert!(validate_non_empty(&Some("65536".to_string())).is_err());
+        assert!(validate_non_empty(&Some("99999".to_string())).is_err());
+    }
+
+    #[test]
+    fn host_port_accepts_the_upper_boundary() {
+        assert!(validate_non_empty(&Some("65535".to_string())).is_ok());
+    }
+
+    #[test]
+    fn container_port_rejects_out_of_range() {
+        for bad in ["133342", "65536", "99999"] {
+            let port = Port {
+                host_port: None,
+                container_port: bad.to_string(),
+                protocol: Some("tcp".to_string()),
+            };
+            assert!(
+                port.validate().is_err(),
+                "container_port {bad} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn container_port_rejects_more_than_five_digits() {
+        // Guards the `{2,6}+` quantifier: whatever it means to the regex
+        // engine, a 7-digit value must not validate.
+        let port = Port {
+            host_port: None,
+            container_port: "1234567".to_string(),
+            protocol: Some("tcp".to_string()),
+        };
+        assert!(port.validate().is_err());
+    }
+
+    #[test]
+    fn container_port_accepts_the_upper_boundary() {
+        let port = Port {
+            host_port: None,
+            container_port: "65535".to_string(),
+            protocol: Some("tcp".to_string()),
+        };
+        assert!(port.validate().is_ok());
+    }
+
+    #[test]
+    fn out_of_range_host_port_is_an_error_not_a_silent_drop() {
+        // Previously an unparseable host port was logged at debug and turned
+        // into None, so the mapping was published without it and nobody knew.
+        let port = Port {
+            host_port: None,
+            container_port: "133342:80".to_string(),
+            protocol: Some("tcp".to_string()),
+        };
+        let result: Result<dctypes::Port, String> = (&port).try_into();
+        assert!(result.is_err(), "expected an error, got {result:?}");
+    }
 
     #[test]
     fn test_validate_non_empty_none() {
