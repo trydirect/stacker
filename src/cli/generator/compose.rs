@@ -565,8 +565,73 @@ fn extract_named_volume(vol_str: &str) -> Option<String> {
 ///
 /// This handles strings that contain spaces, colons, or special characters
 /// that would otherwise break YAML parsing (e.g. `command:`, `healthcheck.test:`).
+///
+/// Control characters are escaped rather than emitted literally. A raw newline
+/// inside a double-quoted scalar is *folded* into a space by every YAML parser,
+/// which silently corrupts multiline values (GH #251): a multiline
+/// `GITLAB_OMNIBUS_CONFIG` arrived at the container as a single line of Ruby.
 fn yaml_quote(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped.push('"');
+    escaped
+}
+
+/// Whether `value` can be emitted as a literal block scalar (`|`) without
+/// changing what a parser reads back.
+///
+/// Block scalars keep multiline values readable, but they cannot represent
+/// every string: leading indentation on the first line needs an explicit
+/// indentation indicator, trailing spaces are stripped by parsers, and
+/// trailing blank lines depend on chomping this helper does not emit. Those
+/// cases fall back to an escaped double-quoted scalar, which is always exact.
+fn yaml_block_scalar_safe(value: &str) -> bool {
+    if !value.contains('\n') {
+        return false;
+    }
+    if value.chars().any(|ch| ch.is_control() && ch != '\n') {
+        return false;
+    }
+    if value.starts_with(' ') || value.ends_with("\n\n") {
+        return false;
+    }
+    !value.split('\n').any(|line| line.ends_with(' '))
+}
+
+/// Emit a `key: value` mapping entry at `indent`, picking a scalar style that
+/// survives a parse round-trip. Multiline values become literal block scalars;
+/// everything else is double-quoted with escapes.
+fn push_yaml_entry(out: &mut String, indent: &str, key: &str, value: &str) {
+    if !yaml_block_scalar_safe(value) {
+        out.push_str(&format!("{indent}{key}: {}\n", yaml_quote(value)));
+        return;
+    }
+
+    // A single trailing newline is exactly what clip chomping (`|`) restores;
+    // no trailing newline needs strip chomping (`|-`).
+    let (body, chomp) = match value.strip_suffix('\n') {
+        Some(rest) => (rest, "|"),
+        None => (value, "|-"),
+    };
+
+    out.push_str(&format!("{indent}{key}: {chomp}\n"));
+    for line in body.split('\n') {
+        if line.is_empty() {
+            out.push('\n');
+        } else {
+            out.push_str(&format!("{indent}  {line}\n"));
+        }
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -613,7 +678,7 @@ impl ComposeDefinition {
                 let mut keys: Vec<&String> = svc.environment.keys().collect();
                 keys.sort();
                 for k in keys {
-                    out.push_str(&format!("      {}: \"{}\"\n", k, svc.environment[k]));
+                    push_yaml_entry(&mut out, "      ", k, &svc.environment[k]);
                 }
             }
 
@@ -657,7 +722,7 @@ impl ComposeDefinition {
                 let mut keys: Vec<&String> = svc.labels.keys().collect();
                 keys.sort();
                 for k in keys {
-                    out.push_str(&format!("      {}: \"{}\"\n", k, svc.labels[k]));
+                    push_yaml_entry(&mut out, "      ", k, &svc.labels[k]);
                 }
             }
 
@@ -1434,6 +1499,84 @@ services:
     fn test_extract_named_volume_ignores_bind_mount() {
         assert_eq!(extract_named_volume("./data:/app/data"), None);
         assert_eq!(extract_named_volume("/host/path:/container"), None);
+    }
+
+    /// Read one service's rendered `environment` value back through a real
+    /// YAML parser. Asserting on the raw text would pass for output that a
+    /// parser silently folds, which is the whole failure mode here.
+    fn parse_env_value(yaml: &str, service: &str, key: &str) -> String {
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(yaml).expect("rendered compose must be valid YAML");
+        doc["services"][service]["environment"][key]
+            .as_str()
+            .unwrap_or_else(|| panic!("{key} must render as a string scalar"))
+            .to_string()
+    }
+
+    /// GH #251: a multiline env value was emitted as a double-quoted scalar
+    /// with raw newlines, which YAML folds into spaces. GitLab's omnibus
+    /// config reached the container as one line of Ruby and `gitlab-ctl
+    /// reconfigure` failed on the syntax error.
+    #[test]
+    fn multiline_env_value_survives_a_yaml_round_trip() {
+        let omnibus = "external_url 'http://git.example.com'\n                       nginx['listen_port'] = 80\n                       gitlab_rails['gitlab_shell_ssh_port'] = 2222\n";
+
+        let config = ConfigBuilder::new()
+            .name("gitlab")
+            .app_type(AppType::Custom)
+            .app_image("gitlab/gitlab-ce:18.10.1-ce.0")
+            .env("GITLAB_OMNIBUS_CONFIG", omnibus)
+            .build()
+            .unwrap();
+
+        let yaml = ComposeDefinition::try_from(&config).unwrap().render();
+
+        assert!(
+            yaml.contains("GITLAB_OMNIBUS_CONFIG: |"),
+            "multiline value should use a literal block scalar:\n{yaml}"
+        );
+        assert_eq!(
+            parse_env_value(&yaml, "app", "GITLAB_OMNIBUS_CONFIG"),
+            omnibus,
+            "newlines must survive; folding them corrupts the omnibus config"
+        );
+    }
+
+    /// Values that a block scalar cannot represent exactly (trailing spaces on
+    /// a line) fall back to a quoted scalar with escapes — still exact.
+    #[test]
+    fn env_values_needing_escapes_round_trip() {
+        let tricky = "line one has a trailing space \nsays \"hi\" and a \\ backslash";
+
+        let config = ConfigBuilder::new()
+            .name("tricky")
+            .app_type(AppType::Custom)
+            .app_image("busybox")
+            .env("TRICKY", tricky)
+            .build()
+            .unwrap();
+
+        let yaml = ComposeDefinition::try_from(&config).unwrap().render();
+
+        assert_eq!(parse_env_value(&yaml, "app", "TRICKY"), tricky);
+    }
+
+    #[test]
+    fn yaml_quote_escapes_control_characters() {
+        assert_eq!(yaml_quote("a\nb"), "\"a\\nb\"");
+        assert_eq!(yaml_quote("a\tb"), "\"a\\tb\"");
+        assert_eq!(yaml_quote("say \"hi\""), "\"say \\\"hi\\\"\"");
+    }
+
+    #[test]
+    fn block_scalar_is_rejected_when_it_would_not_round_trip() {
+        assert!(yaml_block_scalar_safe("a\nb"));
+        assert!(yaml_block_scalar_safe("a\nb\n"));
+        assert!(!yaml_block_scalar_safe("single line"));
+        assert!(!yaml_block_scalar_safe(" leading space\nb"));
+        assert!(!yaml_block_scalar_safe("trailing space \nb"));
+        assert!(!yaml_block_scalar_safe("a\nb\n\n"));
+        assert!(!yaml_block_scalar_safe("a\r\nb"));
     }
 
     #[test]
