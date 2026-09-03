@@ -1,4 +1,5 @@
 use crate::configuration::VaultSettings;
+use reqwest::Certificate;
 use reqwest::Client;
 use reqwest::Identity;
 use serde_json::json;
@@ -34,6 +35,16 @@ impl VaultClient {
                 }
                 Err(e) => {
                     tracing::warn!("Failed to load mTLS identity for Vault client: {}", e);
+                }
+            }
+        }
+        if let Some(ca_pem) = &settings.ca_cert {
+            match Certificate::from_pem(ca_pem.as_bytes()) {
+                Ok(ca) => {
+                    client_builder = client_builder.add_root_certificate(ca);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load CA certificate for Vault client: {}", e);
                 }
             }
         }
@@ -726,6 +737,7 @@ mod tests {
             ssh_key_path_prefix: None,
             client_cert: None,
             client_key: None,
+            ca_cert: None,
         };
         let client = VaultClient::new(&settings);
         let dh = "dep_test_abc";
@@ -779,6 +791,7 @@ mod tests {
             ssh_key_path_prefix: None,
             client_cert: None,
             client_key: None,
+            ca_cert: None,
         };
         let client = VaultClient::new(&settings);
         let dh = "dep_runtime_test";
@@ -829,6 +842,7 @@ mod tests {
             ssh_key_path_prefix: None,
             client_cert: None,
             client_key: None,
+            ca_cert: None,
         };
         let client = VaultClient::new(&settings);
 
@@ -865,6 +879,7 @@ mod tests {
             ssh_key_path_prefix: None,
             client_cert: None,
             client_key: None,
+            ca_cert: None,
         };
         let client = VaultClient::new(&settings);
 
