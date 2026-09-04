@@ -200,6 +200,8 @@ pub fn sync_configured_compose_services(
 
     let updated = serde_yaml::to_string(&compose_doc)
         .map_err(|err| CliError::ConfigValidation(format!("failed to serialize compose: {err}")))?;
+    // See helpers::compose_yaml — unquoted `2222:22` is base-60 to Docker.
+    let updated = crate::helpers::compose_yaml::quote_port_entries(&updated);
     if updated == original {
         return Ok(ComposeServiceSyncResult {
             compose_path: Some(compose_path),

@@ -34,4 +34,5 @@ pub mod audit_cache;
 pub mod bake;
 pub mod bake_registry;
 pub mod cloud_init;
+pub mod compose_yaml;
 pub mod rate_limit;

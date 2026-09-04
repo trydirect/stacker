@@ -153,6 +153,9 @@ pub fn build_config_bundle(
 
     let rewritten_compose = serde_yaml::to_string(&compose_yaml)
         .map_err(|err| validation_error(format!("failed to write remote compose: {err}")))?;
+    // serde_yaml drops the quotes around port mappings; Docker reads YAML 1.1
+    // and turns the bare `2222:22` back into 133342. See helpers::compose_yaml.
+    let rewritten_compose = crate::helpers::compose_yaml::quote_port_entries(&rewritten_compose);
     std::fs::write(&remote_compose_path, &rewritten_compose)?;
 
     let mut files: Vec<ConfigBundleFile> = collected
@@ -789,6 +792,77 @@ fn validation_error(message: impl Into<String>) -> CliError {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// End-to-end regression for the GitLab deploy that died on the target host
+    /// with:
+    ///
+    /// ```text
+    /// docker compose -f /home/trydirect/project/docker-compose.yml up -d
+    /// stderr: "invalid containerPort: 133342"
+    /// ```
+    ///
+    /// The compose that shipped had lost a port. Its `ports:` list read:
+    ///
+    /// ```yaml
+    /// ports:
+    /// - 8082:80
+    /// - 133342      # <- authored as "2222:22"
+    /// ```
+    ///
+    /// `2222 * 60 + 22 == 133342`. The CLI generator quotes port mappings, but
+    /// `build_config_bundle` parses that compose and re-serializes it with
+    /// `serde_yaml`, which emits YAML 1.2 and sees no reason to quote a plain
+    /// string. Docker Compose's reader is YAML 1.1, where an unquoted
+    /// `2222:22` is a *sexagesimal* (base-60) integer. The quotes were the only
+    /// thing holding it together, and the round-trip removed them.
+    ///
+    /// `8082:80` came through unharmed because `80` is not a valid base-60
+    /// digit (0-59) — which is why exactly one of two ports broke and the
+    /// failure looked arbitrary.
+    ///
+    /// The assertion is deliberately on the emitted *text*, not on a re-parse.
+    /// `serde_yaml` is a YAML 1.2 reader and hands `2222:22` back as a string
+    /// either way, so a round-trip assertion passes with the bug still present.
+    /// Only the quotes in the file distinguish the two, and only a 1.1 reader
+    /// (Docker's) can tell the difference.
+    #[test]
+    fn remote_compose_keeps_port_mappings_quoted_for_yaml_1_1_readers() {
+        let dir = TempDir::new().unwrap();
+        let project_root = dir.path();
+        std::fs::create_dir_all(project_root.join(".stacker")).unwrap();
+        let compose_path = project_root.join(".stacker/docker-compose.yml");
+
+        // Exactly what the CLI generator writes for the GitLab stack.
+        std::fs::write(
+            &compose_path,
+            "services:\n  app:\n    image: gitlab/gitlab-ce:18.10.1-ce.0\n    ports:\n      - \"8082:80\"\n      - \"2222:22\"\n",
+        )
+        .unwrap();
+
+        let artifacts = build_config_bundle(
+            project_root,
+            "production",
+            &compose_path,
+            None,
+            project_root,
+            false,
+        )
+        .unwrap();
+
+        let remote = std::fs::read_to_string(&artifacts.remote_compose_path).unwrap();
+
+        assert!(
+            remote.contains(r#"- "2222:22""#),
+            "2222:22 must stay quoted or Docker reads it as 133342:\n{remote}"
+        );
+        assert!(
+            remote.contains(r#"- "8082:80""#),
+            "8082:80 must stay quoted too:\n{remote}"
+        );
+
+        // Belt and braces: 2222 * 60 + 22 is the number from the deploy log.
+        assert_eq!(2222 * 60 + 22, 133342);
+    }
 
     #[test]
     fn build_config_bundle_collects_env_file_and_file_mounts_for_environment() {

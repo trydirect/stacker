@@ -2510,7 +2510,9 @@ impl DeployCommand {
                 service,
                 &cfg.proxy,
             ) {
-                serde_yaml::to_string(&compose_doc)?
+                crate::helpers::compose_yaml::quote_port_entries(&serde_yaml::to_string(
+                    &compose_doc,
+                )?)
             } else {
                 compose_content
             }
