@@ -16,7 +16,7 @@ use crate::cli::config_parser::{
 };
 use crate::cli::credentials::{CredentialStore, CredentialsManager, StoredCredentials};
 use crate::cli::deployment_lock::DeploymentLock;
-use crate::cli::error::CliError;
+use crate::cli::error::{CliError, Severity};
 use crate::cli::generator::compose::ComposeDefinition;
 use crate::cli::generator::dockerfile::DockerfileBuilder;
 use crate::cli::install_runner::{
@@ -3027,8 +3027,35 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         None => project_dir.join(DEFAULT_CONFIG_FILE),
     };
 
-    let mut config = StackerConfig::from_file_for_target(&config_path, target_override)?
-        .with_resolved_deploy_target(target_override)?;
+    let parsed_config = StackerConfig::from_file_for_target(&config_path, target_override)?;
+
+    // Refuse to deploy a config with blocking errors.
+    //
+    // `stacker config validate` reported these, but deploy never consulted
+    // them, so an invalid value still provisioned a server and only failed on
+    // the target host — e.g. an out-of-range `app.ports` entry surfacing as
+    // docker compose's "invalid containerPort: 133342" after the whole
+    // Ansible run. Failing here costs nothing; failing there costs a server.
+    //
+    // Validated before `with_resolved_deploy_target` so this agrees exactly
+    // with what `stacker config validate` reports. Resolving the target first
+    // can collapse a dual server+cloud `deploy:` block in a way that trips
+    // E001 on a config validate calls clean.
+    let blocking: Vec<String> = parsed_config
+        .validate_semantics()
+        .into_iter()
+        .filter(|issue| issue.severity == Severity::Error)
+        .map(|issue| issue.to_string())
+        .collect();
+    if !blocking.is_empty() {
+        return Err(CliError::ConfigValidation(format!(
+            "stacker.yml has {} blocking issue(s):\n  - {}\n\nFix these, or run `stacker config validate` for the full report.",
+            blocking.len(),
+            blocking.join("\n  - ")
+        )));
+    }
+
+    let mut config = parsed_config.with_resolved_deploy_target(target_override)?;
     let selected_environment = if let Some((environment, environment_config)) =
         config.resolve_environment_config(environment_override)?
     {

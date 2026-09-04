@@ -1611,6 +1611,30 @@ impl StackerConfig {
             });
         }
 
+        // E007 — every port mapping must be a real port. Checked here so a bad
+        // value fails at `stacker config validate` rather than on the target
+        // host after the server is already provisioned.
+        for (field_name, port_str) in self
+            .app
+            .ports
+            .iter()
+            .map(|p| ("app.ports".to_string(), p))
+            .chain(self.services.iter().flat_map(|svc| {
+                svc.ports
+                    .iter()
+                    .map(move |p| (format!("services.{}.ports", svc.name), p))
+            }))
+        {
+            if let Err(err) = validate_port_mapping(port_str) {
+                issues.push(ValidationIssue {
+                    severity: Severity::Error,
+                    code: "E007".to_string(),
+                    message: format!("Invalid port mapping '{port_str}': {err}."),
+                    field: Some(field_name),
+                });
+            }
+        }
+
         // Port conflict detection across services, keyed by the *published
         // host port*. Only services that publish a fixed host port can collide;
         // the container-only form (no host port) is skipped. `host_port_binding`
@@ -1909,6 +1933,84 @@ fn load_env_file_vars_from_yaml(path: &Path, raw_content: &str) -> HashMap<Strin
 /// suffix and all three binding forms:
 ///   `"80"` -> None (ephemeral), `"80:80"` -> `"80"`,
 ///   `"127.0.0.1:80:80"` -> `"80"`, `"80:80/tcp"` -> `"80"`.
+/// Validate one numeric port, rejecting anything outside Docker's 1-65535.
+fn validate_port_number(value: &str) -> Result<(), String> {
+    let parsed: u64 = value
+        .parse()
+        .map_err(|_| format!("'{value}' is not a port number"))?;
+    if parsed == 0 || parsed > u16::MAX as u64 {
+        return Err(format!("port {value} is out of range, must be 1-{}", u16::MAX));
+    }
+    Ok(())
+}
+
+/// Validate one side of a mapping, which may be a range (`8000-8010`).
+fn validate_port_segment(segment: &str) -> Result<(), String> {
+    match segment.split_once('-') {
+        Some((low, high)) => {
+            validate_port_number(low)?;
+            validate_port_number(high)
+        }
+        None => validate_port_number(segment),
+    }
+}
+
+/// Validate a docker-compose short-form port mapping.
+///
+/// Accepts every shape Compose does — `container`, `host:container`,
+/// `ip:host:container` (including bracketed IPv6), ranges on either side, and
+/// an optional `/tcp`, `/udp` or `/sctp` suffix.
+///
+/// Without this, `app.ports` and `services[].ports` reached the generated
+/// compose verbatim and were only rejected on the target host, *after*
+/// provisioning: a bare out-of-range entry like `"133342"` is read by Docker
+/// as a container port and fails the deploy with "invalid containerPort".
+/// `deploy.cloud.public_ports` was already checked (E005); these were not.
+fn validate_port_mapping(spec: &str) -> Result<(), String> {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return Err("port mapping is empty".to_string());
+    }
+
+    let (mapping, protocol) = match spec.rsplit_once('/') {
+        Some((mapping, proto)) => (mapping, Some(proto)),
+        None => (spec, None),
+    };
+
+    if let Some(proto) = protocol {
+        if !matches!(proto, "tcp" | "udp" | "sctp") {
+            return Err(format!(
+                "unknown protocol '{proto}', expected tcp, udp or sctp"
+            ));
+        }
+    }
+
+    // A bracketed IPv6 host IP (`[::1]:8080:80`) is full of colons, so strip it
+    // before splitting on `:` — otherwise every hextet looks like a port.
+    let mapping = match mapping.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((_ip, remainder)) => remainder.strip_prefix(':').unwrap_or(remainder),
+            None => return Err(format!("'{spec}' has an unterminated IPv6 address")),
+        },
+        None => mapping,
+    };
+
+    let parts: Vec<&str> = mapping.split(':').collect();
+    let port_parts: &[&str] = match parts.len() {
+        // "container", "host:container"
+        1 | 2 => &parts,
+        // "ip:host:container" — the leading segment is a host IP, not a port.
+        3 => &parts[1..],
+        _ => return Err(format!("'{spec}' is not a valid port mapping")),
+    };
+
+    for segment in port_parts {
+        validate_port_segment(segment)?;
+    }
+
+    Ok(())
+}
+
 fn host_port_binding(port_str: &str) -> Option<String> {
     let spec = port_str.split('/').next().unwrap_or(port_str);
     let parts: Vec<&str> = spec.split(':').collect();
@@ -2089,6 +2191,7 @@ pub struct ConfigBuilder {
     app_image: Option<String>,
     app_dockerfile: Option<PathBuf>,
     app_volumes: Vec<String>,
+    app_ports: Vec<String>,
     build_args: HashMap<String, String>,
     services: Vec<ServiceDefinition>,
     proxy: Option<ProxyConfig>,
@@ -2146,6 +2249,11 @@ impl ConfigBuilder {
 
     pub fn app_dockerfile<P: Into<PathBuf>>(mut self, path: P) -> Self {
         self.app_dockerfile = Some(path.into());
+        self
+    }
+
+    pub fn app_ports(mut self, ports: Vec<String>) -> Self {
+        self.app_ports = ports;
         self
     }
 
@@ -2231,6 +2339,7 @@ impl ConfigBuilder {
             || self.app_image.is_some()
             || self.app_dockerfile.is_some()
             || !self.app_volumes.is_empty()
+            || !self.app_ports.is_empty()
             || !self.build_args.is_empty();
 
         let build_config = if self.build_args.is_empty() {
@@ -2255,7 +2364,7 @@ impl ConfigBuilder {
                 dockerfile: self.app_dockerfile,
                 image: self.app_image,
                 build: build_config,
-                ports: Vec::new(),
+                ports: self.app_ports,
                 volumes: self.app_volumes,
                 environment: HashMap::new(),
                 command: None,
@@ -3210,6 +3319,122 @@ app:
         assert!(
             errors.iter().any(|e| e.message.contains("host")),
             "Expected 'host' mentioned in error"
+        );
+    }
+
+    // --- E007: port mappings must be real ports -----------------------
+    //
+    // A GitLab deploy provisioned a server, shipped the compose, and only then
+    // died on the host with `invalid containerPort: 133342`. `app.ports` went
+    // into the generated compose verbatim with no range check; a bare
+    // out-of-range entry is read by Docker as a container port.
+
+    #[test]
+    fn validate_port_mapping_accepts_every_compose_shape() {
+        for good in [
+            "80",
+            "8080:80",
+            "127.0.0.1:5432:5432",
+            "[::1]:8080:80",
+            "8000-8010:8000-8010",
+            "2222:22/tcp",
+            "53:53/udp",
+            "65535:65535",
+        ] {
+            assert!(
+                validate_port_mapping(good).is_ok(),
+                "{good} should be valid: {:?}",
+                validate_port_mapping(good)
+            );
+        }
+    }
+
+    #[test]
+    fn validate_port_mapping_rejects_out_of_range_and_malformed() {
+        for bad in [
+            "133342",
+            "8082:133342",
+            "0",
+            "65536",
+            "127.0.0.1:0:80",
+            "abc:80",
+            "",
+            "80/http",
+            "1:2:3:4",
+        ] {
+            assert!(
+                validate_port_mapping(bad).is_err(),
+                "{bad} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn e007_flags_out_of_range_app_port() {
+        let config = ConfigBuilder::new()
+            .name("gitlab")
+            .app_type(AppType::Custom)
+            .app_image("gitlab/gitlab-ce:18.10.1-ce.0")
+            .app_ports(vec!["133342".to_string()])
+            .build()
+            .unwrap();
+
+        let issues = config.validate_semantics();
+        let e007: Vec<_> = issues
+            .iter()
+            .filter(|i| i.code == "E007" && i.severity == Severity::Error)
+            .collect();
+
+        assert_eq!(e007.len(), 1, "expected one E007, got: {issues:?}");
+        assert_eq!(e007[0].field.as_deref(), Some("app.ports"));
+        assert!(e007[0].message.contains("133342"));
+    }
+
+    #[test]
+    fn e007_names_the_offending_service() {
+        let svc = ServiceDefinition {
+            name: "db".to_string(),
+            image: "postgres:16".to_string(),
+            ports: vec!["5432:5432".to_string(), "99999:5432".to_string()],
+            environment: HashMap::new(),
+            volumes: vec![],
+            depends_on: vec![],
+            command: None,
+            healthcheck: None,
+        };
+
+        let config = ConfigBuilder::new()
+            .name("stack")
+            .add_service(svc)
+            .build()
+            .unwrap();
+
+        let e007: Vec<_> = config
+            .validate_semantics()
+            .into_iter()
+            .filter(|i| i.code == "E007")
+            .collect();
+
+        assert_eq!(e007.len(), 1, "only the bad mapping should be flagged");
+        assert_eq!(e007[0].field.as_deref(), Some("services.db.ports"));
+    }
+
+    #[test]
+    fn e007_stays_quiet_on_valid_ports() {
+        let config = ConfigBuilder::new()
+            .name("gitlab")
+            .app_type(AppType::Custom)
+            .app_image("gitlab/gitlab-ce:18.10.1-ce.0")
+            .app_ports(vec!["8082:80".to_string(), "2222:22".to_string()])
+            .build()
+            .unwrap();
+
+        assert!(
+            !config
+                .validate_semantics()
+                .iter()
+                .any(|i| i.code == "E007"),
+            "valid ports must not raise E007"
         );
     }
 

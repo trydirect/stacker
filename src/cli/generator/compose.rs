@@ -570,7 +570,7 @@ fn extract_named_volume(vol_str: &str) -> Option<String> {
 /// inside a double-quoted scalar is *folded* into a space by every YAML parser,
 /// which silently corrupts multiline values (GH #251): a multiline
 /// `GITLAB_OMNIBUS_CONFIG` arrived at the container as a single line of Ruby.
-fn yaml_quote(value: &str) -> String {
+pub(crate) fn yaml_quote(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len() + 2);
     escaped.push('"');
     for ch in value.chars() {
