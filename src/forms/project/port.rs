@@ -67,9 +67,7 @@ fn validate_non_empty(v: &Option<String>) -> Result<(), serde_valid::validation:
         }
 
         if let Err(err) = parse_port_in_range(value.as_str()) {
-            return Err(serde_valid::validation::Error::Custom(
-                err,
-            ));
+            return Err(serde_valid::validation::Error::Custom(err));
         }
     }
 

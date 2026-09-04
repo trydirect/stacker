@@ -220,7 +220,12 @@ pub fn build_config_bundle(
     for file in collected.values() {
         // Skip the selected env file — already added above with destination_path ".env"
         if let Some(ref skip) = skip_env_canonical {
-            if std::path::Path::new(&file.source_path).canonicalize().ok().as_ref() == Some(skip) {
+            if std::path::Path::new(&file.source_path)
+                .canonicalize()
+                .ok()
+                .as_ref()
+                == Some(skip)
+            {
                 continue;
             }
         }

@@ -1939,7 +1939,10 @@ fn validate_port_number(value: &str) -> Result<(), String> {
         .parse()
         .map_err(|_| format!("'{value}' is not a port number"))?;
     if parsed == 0 || parsed > u16::MAX as u64 {
-        return Err(format!("port {value} is out of range, must be 1-{}", u16::MAX));
+        return Err(format!(
+            "port {value} is out of range, must be 1-{}",
+            u16::MAX
+        ));
     }
     Ok(())
 }
@@ -3430,10 +3433,7 @@ app:
             .unwrap();
 
         assert!(
-            !config
-                .validate_semantics()
-                .iter()
-                .any(|i| i.code == "E007"),
+            !config.validate_semantics().iter().any(|i| i.code == "E007"),
             "valid ports must not raise E007"
         );
     }

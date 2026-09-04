@@ -2101,7 +2101,10 @@ mod tests {
             // " #" starts a comment and silently truncates the value.
             ("MOTD", "hello #not-a-comment"),
             ("QUOTED", "say \"hi\" and 'bye'"),
-            ("MULTILINE", "external_url 'http://git.example.com'\nnginx['listen_port'] = 80"),
+            (
+                "MULTILINE",
+                "external_url 'http://git.example.com'\nnginx['listen_port'] = 80",
+            ),
             ("TRAILING", "value with trailing space "),
             ("BRACES", "{not: a, mapping: here}"),
         ];
