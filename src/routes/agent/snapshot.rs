@@ -59,6 +59,9 @@ pub async fn snapshot_handler(
     path: web::Path<String>,
     query: web::Query<SnapshotQuery>,
     agent_pool: web::Data<AgentPgPool>,
+    settings: web::Data<crate::configuration::Settings>,
+    caller_agent: Option<web::ReqData<std::sync::Arc<crate::models::Agent>>>,
+    caller_user: Option<web::ReqData<std::sync::Arc<crate::models::User>>>,
 ) -> Result<impl Responder> {
     tracing::info!(
         "[SNAPSHOT HANDLER] Called for deployment_hash: {}, limit: {}, include_results: {}",
@@ -67,6 +70,17 @@ pub async fn snapshot_handler(
         query.include_command_results
     );
     let deployment_hash = path.into_inner();
+
+    // Casbin only matches `/api/v1/agent/deployments/*`, so the caller must be
+    // checked against *this* deployment before anything is read.
+    crate::routes::agent::guard::authorize_deployment_access(
+        agent_pool.get_ref(),
+        settings.get_ref(),
+        &deployment_hash,
+        caller_agent.as_deref(),
+        caller_user.as_deref(),
+    )
+    .await?;
 
     // Fetch agent
     let agent = db::agent::fetch_by_deployment_hash(agent_pool.get_ref(), &deployment_hash)
@@ -206,8 +220,18 @@ pub async fn snapshot_handler(
 pub async fn project_snapshot_handler(
     path: web::Path<i32>,
     agent_pool: web::Data<AgentPgPool>,
+    caller_agent: Option<web::ReqData<std::sync::Arc<crate::models::Agent>>>,
+    caller_user: Option<web::ReqData<std::sync::Arc<crate::models::User>>>,
 ) -> Result<impl Responder> {
     let project_id = path.into_inner();
+
+    crate::routes::agent::guard::authorize_project_access(
+        agent_pool.get_ref(),
+        project_id,
+        caller_agent.as_deref(),
+        caller_user.as_deref(),
+    )
+    .await?;
 
     let agent = db::agent::fetch_active_by_project(agent_pool.get_ref(), project_id)
         .await

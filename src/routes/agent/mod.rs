@@ -5,6 +5,7 @@ mod login;
 mod notifications;
 mod register;
 mod report;
+pub mod guard;
 mod snapshot;
 mod wait;
 

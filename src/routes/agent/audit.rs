@@ -68,8 +68,38 @@ pub struct AuditQueryParams {
 pub async fn agent_audit_query_handler(
     params: web::Query<AuditQueryParams>,
     pool: web::Data<PgPool>,
+    settings: web::Data<crate::configuration::Settings>,
+    caller_user: Option<web::ReqData<std::sync::Arc<crate::models::User>>>,
 ) -> Result<HttpResponse> {
     let limit = params.limit.unwrap_or(50).min(100).max(1);
+
+    // `installation_hash` is optional, and omitting it made `fetch_recent`
+    // return the most recent events across *every* installation — a
+    // cross-tenant read available to any authenticated user, since Casbin
+    // grants this route to `group_user`. Non-admins must now name an
+    // installation and prove they own it.
+    let user = caller_user
+        .as_deref()
+        .ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
+
+    let is_admin = matches!(
+        user.role.as_str(),
+        "admin_service" | "group_admin" | "root"
+    );
+
+    if !is_admin {
+        let installation_hash = params.installation_hash.as_deref().ok_or_else(|| {
+            JsonResponse::<String>::bad_request("installation_hash is required")
+        })?;
+
+        crate::routes::legacy_installations::resolve_owned_deployment_by_hash(
+            &pool,
+            settings.get_ref(),
+            user,
+            installation_hash,
+        )
+        .await?;
+    }
 
     let logs: Vec<AgentAuditLog> = audit_db::fetch_recent(
         &pool,
