@@ -61,6 +61,21 @@ async fn log_audit(
     }
 }
 
+/// Whether a Vault failure may be tolerated during agent authentication.
+///
+/// Always `false` — authentication fails closed. Kept as a named predicate so
+/// the invariant has a single place to live and a regression test to pin it;
+/// see `vault_failure_never_bypasses_agent_authentication`.
+///
+/// This previously returned `true` when `vault.address` contained
+/// `127.0.0.1` or `localhost`, and the caller then compared the presented
+/// bearer token against itself. Tests that need to run without a live Vault
+/// should point the client at a mock (see `helpers::vault::tests`) rather than
+/// disable the check.
+fn vault_failure_is_tolerable(_vault_address: &str) -> bool {
+    false
+}
+
 #[tracing::instrument(name = "Authenticate agent via X-Agent-Id and Bearer token")]
 pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
     // Check for X-Agent-Id header
@@ -106,29 +121,19 @@ pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
     let stored_token = match vault_client.fetch_agent_token(&agent.deployment_hash).await {
         Ok(tok) => tok,
         Err(e) => {
-            let addr = &settings.vault.address;
-            // Fallback for local test setups without Vault
-            if addr.contains("127.0.0.1") || addr.contains("localhost") {
-                actix_web::rt::spawn(log_audit(
-                    agent_pool.inner().clone(),
-                    Some(agent_id),
-                    Some(agent.deployment_hash.clone()),
-                    "agent.auth_warning".to_string(),
-                    "vault_unreachable_test_mode".to_string(),
-                    serde_json::json!({"error": e}),
-                ));
-                bearer_token.clone()
-            } else {
-                actix_web::rt::spawn(log_audit(
-                    agent_pool.inner().clone(),
-                    Some(agent_id),
-                    Some(agent.deployment_hash.clone()),
-                    "agent.auth_failure".to_string(),
-                    "token_not_found".to_string(),
-                    serde_json::json!({"error": e}),
-                ));
-                return Err(format!("Token not found in Vault: {}", e));
-            }
+            debug_assert!(
+                !vault_failure_is_tolerable(&settings.vault.address),
+                "agent authentication must fail closed on a Vault error"
+            );
+            actix_web::rt::spawn(log_audit(
+                agent_pool.inner().clone(),
+                Some(agent_id),
+                Some(agent.deployment_hash.clone()),
+                "agent.auth_failure".to_string(),
+                "token_not_found".to_string(),
+                serde_json::json!({"error": e}),
+            ));
+            return Err(format!("Token not found in Vault: {}", e));
         }
     };
 
@@ -202,6 +207,36 @@ pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
 mod tests {
     use super::try_agent;
     use actix_web::test::TestRequest;
+
+    /// Agent authentication must fail closed.
+    ///
+    /// The Vault-unreachable fallback substituted the *presented* bearer token
+    /// for the stored one, so the subsequent `bearer_token != stored_token`
+    /// check compared a value against itself and always passed. Any string
+    /// authenticated as any agent, given only its `X-Agent-Id` UUID.
+    ///
+    /// It was gated on a substring of `vault.address`, not on a build flag, so
+    /// it shipped in release binaries and armed itself for the common
+    /// Vault-sidecar layout (`http://127.0.0.1:8200`). It also triggered on
+    /// *any* Vault error, not just unreachability — a policy denial or a
+    /// malformed response would have opened it just as wide.
+    #[test]
+    fn vault_failure_never_bypasses_agent_authentication() {
+        for addr in [
+            "http://127.0.0.1:8200",
+            "http://localhost:8200",
+            // Substring matching also caught hosts that merely contain the word.
+            "https://localhost.attacker.example",
+            "https://vault.try.direct:8443",
+            "http://vault:8200",
+            "",
+        ] {
+            assert!(
+                !super::vault_failure_is_tolerable(addr),
+                "a Vault failure must never be tolerated, but was for {addr:?}"
+            );
+        }
+    }
 
     #[actix_web::test]
     async fn no_x_agent_id_header_skips_agent_auth() {
