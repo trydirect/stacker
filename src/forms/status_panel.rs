@@ -273,6 +273,55 @@ pub enum ContainerState {
     Unknown,
 }
 
+/// Result `type` an agent uses when a `health` command asked for every
+/// container (`app_code: "all"`), instead of one named app.
+pub const ALL_HEALTH_RESULT_TYPE: &str = "all_health";
+
+/// One container inside an [`AllHealthCommandReport`].
+///
+/// `app_code` and `container_state` live here rather than at the top level,
+/// which is the whole difference from [`HealthCommandReport`].
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct HealthContainerReport {
+    pub app_code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_name: Option<String>,
+    pub container_state: ContainerState,
+    pub status: HealthStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<Value>,
+}
+
+/// Aggregate health report covering every container on a deployment.
+///
+/// `validate_command_parameters` has always accepted `app_code: "all"` for a
+/// `health` command, and agents answer it with this shape. Result validation
+/// only knew the single-app [`HealthCommandReport`], so every aggregate report
+/// was rejected with "Invalid health result: missing field `app_code`" — the
+/// request side allowed a mode the response side could not express.
+///
+/// Rejected reports are never stored, which also starved
+/// `routes::project::discover`: it reconstructs the container list from
+/// completed `list_containers` and `health` results, so container discovery
+/// and import saw nothing to import.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AllHealthCommandReport {
+    #[serde(rename = "type")]
+    pub command_type: String,
+    pub deployment_hash: String,
+    pub status: HealthStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub containers: Vec<HealthContainerReport>,
+    /// Platform-managed containers, reported separately by some agent
+    /// versions. `discover.rs` reads this key, so it must survive validation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub system_containers: Vec<HealthContainerReport>,
+    #[serde(default)]
+    pub errors: Vec<StatusPanelCommandError>,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct HealthCommandReport {
     #[serde(rename = "type")]
@@ -691,6 +740,37 @@ pub fn validate_command_result(
             let value = result
                 .clone()
                 .ok_or_else(|| "health result payload is required".to_string())?;
+
+            // A `health` command with `app_code: "all"` comes back as an
+            // aggregate whose per-container fields sit inside `containers[]`.
+            // Dispatch on the reported type, since the command type is
+            // `health` either way.
+            if value.get("type").and_then(|v| v.as_str()) == Some(ALL_HEALTH_RESULT_TYPE) {
+                let report: AllHealthCommandReport = serde_json::from_value(value)
+                    .map_err(|err| format!("Invalid health result: {}", err))?;
+
+                if report.deployment_hash != deployment_hash {
+                    return Err("health result deployment_hash mismatch".to_string());
+                }
+
+                for container in report
+                    .containers
+                    .iter()
+                    .chain(report.system_containers.iter())
+                {
+                    ensure_app_code("health", &container.app_code)?;
+                    if let Some(metrics) = container.metrics.as_ref() {
+                        if !metrics.is_object() {
+                            return Err("health.metrics must be an object".to_string());
+                        }
+                    }
+                }
+
+                return serde_json::to_value(report)
+                    .map(Some)
+                    .map_err(|err| format!("Failed to encode health result: {}", err));
+            }
+
             let report: HealthCommandReport = serde_json::from_value(value)
                 .map_err(|err| format!("Invalid health result: {}", err))?;
 
@@ -1284,6 +1364,92 @@ mod tests {
         };
 
         serde_json::from_str(body).expect("fixture should be valid json")
+    }
+
+    /// The exact aggregate an agent sends for `app_code: "all"`, taken from a
+    /// production report. It was rejected with
+    /// "Invalid health result: missing field `app_code`" because `app_code`
+    /// and `container_state` sit inside `containers[]`, not at the top level.
+    fn all_health_report(deployment_hash: &str) -> Value {
+        json!({
+            "type": "all_health",
+            "deployment_hash": deployment_hash,
+            "status": "ok",
+            "last_heartbeat_at": "2026-09-06T09:33:27Z",
+            "containers": [
+                {
+                    "app_code": "statuspanel",
+                    "container_name": "statuspanel",
+                    "container_state": "running",
+                    "status": "ok",
+                    "metrics": {"cpu_pct": 0.08, "mem_usage_mb": 4.58}
+                },
+                {
+                    "app_code": "project-floci-ui-1",
+                    "container_name": "project-floci-ui-1",
+                    "container_state": "running",
+                    "status": "ok",
+                    "metrics": {"cpu_pct": 0.06, "mem_usage_mb": 76.28}
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn health_result_accepts_the_all_health_aggregate() {
+        let hash = "deployment_5fbda840-8d25-4c19-9e16-b7e2ba33bc4d";
+        let stored = validate_command_result("health", hash, &Some(all_health_report(hash)))
+            .expect("aggregate health report must validate")
+            .expect("a payload must be stored");
+
+        assert_eq!(stored["type"], "all_health");
+        let containers = stored["containers"]
+            .as_array()
+            .expect("containers must be an array");
+        assert_eq!(containers.len(), 2, "both containers must survive: {stored}");
+        assert_eq!(stored["containers"][0]["app_code"], "statuspanel");
+        assert_eq!(stored["containers"][1]["container_state"], "running");
+    }
+
+    /// The single-app shape must keep working — a `health` command naming one
+    /// app is still answered with `type: "health"`.
+    #[test]
+    fn health_result_still_accepts_the_single_app_shape() {
+        let hash = "deployment_abc";
+        let single = json!({
+            "type": "health",
+            "deployment_hash": hash,
+            "app_code": "app",
+            "status": "ok",
+            "container_state": "running"
+        });
+
+        let stored = validate_command_result("health", hash, &Some(single))
+            .expect("single-app health report must validate")
+            .expect("a payload must be stored");
+        assert_eq!(stored["app_code"], "app");
+    }
+
+    #[test]
+    fn all_health_rejects_a_mismatched_deployment_hash() {
+        let err = validate_command_result(
+            "health",
+            "deployment_expected",
+            &Some(all_health_report("deployment_other")),
+        )
+        .expect_err("a report for another deployment must be rejected");
+        assert!(err.contains("deployment_hash mismatch"), "got: {err}");
+    }
+
+    #[test]
+    fn all_health_rejects_a_container_without_an_app_code() {
+        let hash = "deployment_abc";
+        let mut report = all_health_report(hash);
+        report["containers"][0]["app_code"] = json!("");
+
+        let err = validate_command_result("health", hash, &Some(report))
+            .expect_err("an empty app_code must be rejected");
+        assert!(err.contains("app_code"), "got: {err}");
     }
 
     #[test]
