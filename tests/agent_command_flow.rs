@@ -2,7 +2,6 @@ mod common;
 
 use chrono::Utc;
 use serde_json::json;
-use sqlx::postgres::PgPoolOptions;
 use stacker::db;
 use stacker::models::{Command, CommandPriority};
 use std::time::Duration;
@@ -11,29 +10,29 @@ use tokio::sync::OnceCell;
 /// Cache only the server address and connection string. Each test creates its
 /// own PgPool on its own #[tokio::test] runtime to avoid cross-runtime pool
 /// issues (connections bound to a different runtime's I/O reactor).
-static APP_CONFIG: OnceCell<(String, String)> = OnceCell::const_new();
+static APP: OnceCell<common::TestAppWithVaultShared> = OnceCell::const_new();
+static VAULT_MOCK_READY: OnceCell<()> = OnceCell::const_new();
 
-async fn app() -> common::TestApp {
-    let (address, conn_str) = APP_CONFIG
-        .get_or_try_init(|| async {
-            let app = common::spawn_app().await.ok_or(())?;
-            Ok::<_, ()>((app.address, app.connection_string))
-        })
+async fn app() -> common::TestAppWithVaultFresh {
+    // Agent authentication reads the token back from Vault, so these tests
+    // need a Vault that answers. `get_or_init_vault_app_fresh` keeps the
+    // wiremock server alive for the whole process — holding it in a local
+    // would drop it, and every later Vault request would fail — while handing
+    // out a fresh PgPool per test runtime.
+    let shared = common::get_or_init_vault_app_fresh(&APP)
         .await
         .expect("Failed to start test app");
 
-    let db_pool = PgPoolOptions::new()
-        .max_connections(4)
-        .acquire_timeout(Duration::from_secs(120))
-        .connect(conn_str)
-        .await
-        .expect("Failed to create test pool");
+    // `mount_vault_kv_mock` makes that server behave like a KV v1 mount, so
+    // the token written during registration is the one returned at
+    // authentication time. Mount once, not per test.
+    VAULT_MOCK_READY
+        .get_or_init(|| async {
+            common::mount_vault_kv_mock(shared.vault_server).await;
+        })
+        .await;
 
-    common::TestApp {
-        address: address.clone(),
-        db_pool,
-        connection_string: conn_str.clone(),
-    }
+    shared
 }
 
 fn fixture(path: &str) -> serde_json::Value {
@@ -50,7 +49,7 @@ fn fixture(path: &str) -> serde_json::Value {
     serde_json::from_str(body).expect("fixture should be valid json")
 }
 
-async fn create_test_deployment(app: &common::TestApp, project_name: &str, deployment_hash: &str) {
+async fn create_test_deployment(app: &common::TestAppWithVaultFresh, project_name: &str, deployment_hash: &str) {
     sqlx::query(
         "INSERT INTO project (stack_id, name, user_id, metadata, created_at, updated_at)
          VALUES ($1, $2, $3, $4, NOW(), NOW())",
@@ -85,7 +84,7 @@ async fn create_test_deployment(app: &common::TestApp, project_name: &str, deplo
 
 async fn register_test_agent(
     client: &reqwest::Client,
-    app: &common::TestApp,
+    app: &common::TestAppWithVaultFresh,
     deployment_hash: &str,
 ) -> (String, String) {
     let register_payload = json!({
@@ -124,7 +123,7 @@ async fn register_test_agent(
 }
 
 async fn create_pipe_instance(
-    app: &common::TestApp,
+    app: &common::TestAppWithVaultFresh,
     deployment_hash: &str,
     created_by: &str,
 ) -> uuid::Uuid {
@@ -151,7 +150,7 @@ async fn create_pipe_instance(
 }
 
 async fn queue_trigger_pipe_command(
-    app: &common::TestApp,
+    app: &common::TestAppWithVaultFresh,
     deployment_hash: &str,
     pipe_instance_id: uuid::Uuid,
     input_data: serde_json::Value,
@@ -186,7 +185,7 @@ async fn queue_trigger_pipe_command(
 }
 
 async fn queue_pipe_command(
-    app: &common::TestApp,
+    app: &common::TestAppWithVaultFresh,
     deployment_hash: &str,
     command_type: &str,
     parameters: serde_json::Value,
@@ -219,7 +218,7 @@ async fn queue_pipe_command(
 
 async fn wait_for_command(
     client: &reqwest::Client,
-    app: &common::TestApp,
+    app: &common::TestAppWithVaultFresh,
     deployment_hash: &str,
     agent_id: &str,
     agent_token: &str,
@@ -816,10 +815,15 @@ async fn test_agent_heartbeat() {
         .as_str()
         .unwrap();
 
-    // Poll for commands (this updates heartbeat)
+    // Poll for commands (this updates heartbeat).
+    //
+    // `?timeout=5` keeps the long-poll well inside the client's 35s budget.
+    // Without it the server holds the request for the configured 30s, leaving
+    // a five-second margin that this test lost whenever the file ran in
+    // parallel and contended for the four-connection pool.
     let wait_response = client
         .get(format!(
-            "{}/api/v1/agent/commands/wait/{}",
+            "{}/api/v1/agent/commands/wait/{}?timeout=5",
             &app.address, deployment_hash
         ))
         .header("X-Agent-Id", agent_id)
