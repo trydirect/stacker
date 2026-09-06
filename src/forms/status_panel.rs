@@ -1360,6 +1360,15 @@ mod tests {
             "npm_credentials.v1_email_password.json" => {
                 include_str!("../../tests/fixtures/npm_credentials/v1_email_password.json")
             }
+            // Mirrored from config/shared-fixtures/agent-contract/ — the
+            // canonical shapes the Status Panel agent produces. Keep both
+            // copies identical; see that directory's README.
+            "agent-contract/health.all_health.report.json" => {
+                include_str!("../../tests/fixtures/agent-contract/health.all_health.report.json")
+            }
+            "agent-contract/health.single.report.json" => {
+                include_str!("../../tests/fixtures/agent-contract/health.single.report.json")
+            }
             other => panic!("unknown fixture: {}", other),
         };
 
@@ -1393,6 +1402,67 @@ mod tests {
                 }
             ]
         })
+    }
+
+    /// The canonical aggregate from
+    /// `config/shared-fixtures/agent-contract/health.all_health.report.json`
+    /// must validate as-is.
+    ///
+    /// These shapes previously lived only in each side's code, and three
+    /// mismatches reached production before anyone noticed. Binding the
+    /// fixture here means a change to the contract fails the build rather
+    /// than a deployment.
+    #[test]
+    fn shared_fixture_all_health_report_validates() {
+        let report = fixture("agent-contract/health.all_health.report.json");
+        let hash = report["deployment_hash"]
+            .as_str()
+            .expect("fixture hash")
+            .to_string();
+
+        let stored = validate_command_result("health", &hash, &Some(report))
+            .expect("canonical all_health fixture must validate")
+            .expect("a payload must be stored");
+
+        assert_eq!(stored["type"], "all_health");
+
+        // app_code comes from the `my.stacker.service` label, never the
+        // container name — see agent-contract/app-code-resolution.md.
+        let codes: Vec<&str> = stored["containers"]
+            .as_array()
+            .expect("containers")
+            .iter()
+            .map(|c| c["app_code"].as_str().expect("app_code"))
+            .collect();
+        assert_eq!(codes, vec!["floci", "floci-ui"]);
+
+        let names: Vec<&str> = stored["containers"]
+            .as_array()
+            .expect("containers")
+            .iter()
+            .map(|c| c["container_name"].as_str().expect("container_name"))
+            .collect();
+        assert_eq!(
+            names,
+            vec!["project-app-1", "project-floci-ui-1"],
+            "container_name and app_code are distinct fields and must not be conflated"
+        );
+    }
+
+    #[test]
+    fn shared_fixture_single_health_report_validates() {
+        let report = fixture("agent-contract/health.single.report.json");
+        let hash = report["deployment_hash"]
+            .as_str()
+            .expect("fixture hash")
+            .to_string();
+
+        let stored = validate_command_result("health", &hash, &Some(report))
+            .expect("canonical single-app fixture must validate")
+            .expect("a payload must be stored");
+
+        assert_eq!(stored["type"], "health");
+        assert_eq!(stored["app_code"], "floci");
     }
 
     #[test]
