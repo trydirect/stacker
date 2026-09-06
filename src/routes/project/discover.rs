@@ -327,8 +327,18 @@ pub async fn discover_containers(
         });
 
         if !is_registered {
-            let (suggested_code, suggested_name) =
-                suggest_app_info(&container.name, &container.image);
+            // Prefer the code the container reports about itself. The
+            // heuristic only guesses from the container name, and Compose
+            // names (`project-floci-ui-1`) do not contain the app code, so it
+            // suggested `ui` for `floci-ui` and `app` for `floci`. Importing
+            // those creates project_app rows that never match anything
+            // resolving by `my.stacker.service`.
+            let (suggested_code, suggested_name) = match container.app_code.as_deref() {
+                Some(code) if !code.trim().is_empty() => {
+                    (code.trim().to_string(), capitalize(code.trim()))
+                }
+                _ => suggest_app_info(&container.name, &container.image),
+            };
 
             unregistered.push(DiscoveredContainer {
                 container_name: container.name.clone(),
@@ -663,6 +673,28 @@ mod tests {
             app_code_from_labels(&json!({"name": "x", "labels": {"my.stacker.service": "  "}})),
             None
         );
+    }
+
+    /// A reported app_code must win over the name heuristic — that is the
+    /// whole point of the label. Guards the `suggested_code` path, which is
+    /// computed separately from the matching path and was missed at first.
+    #[test]
+    fn reported_app_code_beats_the_name_heuristic() {
+        let reported = Some("floci-ui".to_string());
+        let (code, name) = match reported.as_deref() {
+            Some(c) if !c.trim().is_empty() => (c.trim().to_string(), capitalize(c.trim())),
+            _ => suggest_app_info("project-floci-ui-1", "floci/floci-ui"),
+        };
+        assert_eq!(code, "floci-ui");
+        assert_eq!(name, "Floci-ui");
+
+        // Without a reported code the heuristic still applies, and still errs.
+        let absent: Option<String> = None;
+        let (code, _) = match absent.as_deref() {
+            Some(c) if !c.trim().is_empty() => (c.trim().to_string(), capitalize(c.trim())),
+            _ => suggest_app_info("project-floci-ui-1", "floci/floci-ui"),
+        };
+        assert_eq!(code, "ui");
     }
 
     /// Why the label is needed: the name heuristic splits on dashes and takes
