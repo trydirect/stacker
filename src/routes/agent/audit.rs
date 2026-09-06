@@ -92,11 +92,12 @@ pub async fn agent_audit_query_handler(
             JsonResponse::<String>::bad_request("installation_hash is required")
         })?;
 
-        crate::routes::legacy_installations::resolve_owned_deployment_by_hash(
+        crate::routes::agent::guard::authorize_deployment_access(
             &pool,
             settings.get_ref(),
-            user,
             installation_hash,
+            None,
+            Some(user),
         )
         .await?;
     }
