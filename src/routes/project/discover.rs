@@ -179,11 +179,24 @@ pub async fn discover_containers(
                             .to_string();
 
                         if !running_containers.iter().any(|rc| rc.name == name) {
+                            // The agent reports the logical app code from the
+                            // `my.stacker.service` label; fall back to reading
+                            // the label ourselves for agents predating that.
+                            // Leaving this None made matching name-based, and
+                            // `suggest_app_info` then split `project-floci-ui-1`
+                            // into `ui`.
+                            let app_code = c
+                                .get("app_code")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string)
+                                .or_else(|| app_code_from_labels(c))
+                                .filter(|code| !code.trim().is_empty());
+
                             running_containers.push(ContainerInfo {
                                 name: name.clone(),
                                 image,
                                 status,
-                                app_code: None, // Will be matched later
+                                app_code,
                             });
                         }
                     }
@@ -519,6 +532,26 @@ fn container_matches_app(container_name: &str, app_code: &str) -> bool {
 }
 
 /// Suggest app_code and name from container name and image
+/// The app code carried by a container's Docker labels, if the agent shipped
+/// them. Mirrors the agent's resolution order: Stacker's own label first,
+/// Compose's service name second.
+///
+/// See `config/shared-fixtures/agent-contract/app-code-resolution.md`.
+fn app_code_from_labels(container: &serde_json::Value) -> Option<String> {
+    let labels = container.get("labels")?.as_object()?;
+    for key in [
+        crate::helpers::stacker_labels::SERVICE,
+        "com.docker.compose.service",
+    ] {
+        if let Some(code) = labels.get(key).and_then(|v| v.as_str()) {
+            if !code.trim().is_empty() {
+                return Some(code.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
 fn suggest_app_info(container_name: &str, image: &str) -> (String, String) {
     // Try to extract service name from Docker Compose pattern: {project}_{service}_{replica}
     if let Some(parts) = extract_compose_service(container_name) {
@@ -598,6 +631,51 @@ fn is_blocked_system_container(container_name: &str, image: &str, app_code: Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    /// The agent reports `app_code` from `my.stacker.service`; discovery must
+    /// use it rather than fall back to the container-name heuristic.
+    #[test]
+    fn app_code_from_labels_prefers_the_stacker_label() {
+        let container = json!({
+            "name": "project-app-1",
+            "labels": {
+                "my.stacker.service": "floci",
+                "com.docker.compose.service": "app"
+            }
+        });
+        assert_eq!(app_code_from_labels(&container).as_deref(), Some("floci"));
+    }
+
+    #[test]
+    fn app_code_from_labels_falls_back_to_compose() {
+        let container = json!({
+            "name": "someproject-web-1",
+            "labels": {"com.docker.compose.service": "web"}
+        });
+        assert_eq!(app_code_from_labels(&container).as_deref(), Some("web"));
+    }
+
+    #[test]
+    fn app_code_from_labels_is_none_without_usable_labels() {
+        assert_eq!(app_code_from_labels(&json!({"name": "x"})), None);
+        assert_eq!(
+            app_code_from_labels(&json!({"name": "x", "labels": {"my.stacker.service": "  "}})),
+            None
+        );
+    }
+
+    /// Why the label is needed: the name heuristic splits on dashes and takes
+    /// the second-to-last segment, so both floci services get the wrong code.
+    #[test]
+    fn name_heuristic_is_wrong_for_compose_named_containers() {
+        assert_eq!(suggest_app_info("project-app-1", "floci/floci").0, "app");
+        assert_eq!(
+            suggest_app_info("project-floci-ui-1", "floci/floci-ui").0,
+            "ui"
+        );
+    }
+
 
     #[test]
     fn blocks_platform_managed_nginx_proxy_manager_container() {
