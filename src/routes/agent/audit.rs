@@ -82,15 +82,13 @@ pub async fn agent_audit_query_handler(
         .as_deref()
         .ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
 
-    let is_admin = matches!(
-        user.role.as_str(),
-        "admin_service" | "group_admin" | "root"
-    );
+    let is_admin = matches!(user.role.as_str(), "admin_service" | "group_admin" | "root");
 
     if !is_admin {
-        let installation_hash = params.installation_hash.as_deref().ok_or_else(|| {
-            JsonResponse::<String>::bad_request("installation_hash is required")
-        })?;
+        let installation_hash = params
+            .installation_hash
+            .as_deref()
+            .ok_or_else(|| JsonResponse::<String>::bad_request("installation_hash is required"))?;
 
         crate::routes::agent::guard::authorize_deployment_access(
             &pool,

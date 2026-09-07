@@ -215,7 +215,10 @@ pub async fn discover_containers(
             if cmd.r#type == "health" && cmd.status == "completed" {
                 if let Some(result) = &cmd.result {
                     for container in container_infos_from_health(result) {
-                        if !running_containers.iter().any(|rc| rc.name == container.name) {
+                        if !running_containers
+                            .iter()
+                            .any(|rc| rc.name == container.name)
+                        {
                             running_containers.push(container);
                         }
                     }

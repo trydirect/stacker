@@ -1476,7 +1476,11 @@ mod tests {
         let containers = stored["containers"]
             .as_array()
             .expect("containers must be an array");
-        assert_eq!(containers.len(), 2, "both containers must survive: {stored}");
+        assert_eq!(
+            containers.len(),
+            2,
+            "both containers must survive: {stored}"
+        );
         assert_eq!(stored["containers"][0]["app_code"], "statuspanel");
         assert_eq!(stored["containers"][1]["container_state"], "running");
     }

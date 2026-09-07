@@ -1,11 +1,11 @@
 mod audit;
 mod enqueue;
+pub mod guard;
 mod link;
 mod login;
 mod notifications;
 mod register;
 mod report;
-pub mod guard;
 mod snapshot;
 mod wait;
 
