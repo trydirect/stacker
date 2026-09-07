@@ -905,61 +905,16 @@ pub async fn get_or_init_vault_app_fresh(
     })
 }
 
+#[path = "../vault_kv_mock.rs"]
+mod vault_kv_mock;
+// Not every test binary that includes this module uses the Vault mock; each
+// one that does not would otherwise warn on the re-export.
+#[allow(unused_imports)]
+pub use vault_kv_mock::{mount_vault_kv_mock, VaultKvMock};
+
 /// Spawn the full app with a mock Vault server.
 /// The returned `vault_server` is a wiremock MockServer — mount expectations on it
 /// before calling API endpoints that touch Vault.
-/// A stateful in-memory stand-in for a Vault KV v1 mount.
-///
-/// `POST` stores the request body under the request path, `GET` returns it
-/// wrapped as `{"data": <body>}` — exactly what a real KV v1 mount does. That
-/// statefulness matters: agent registration writes the freshly minted token
-/// via `store_agent_token`, and authentication reads it straight back, so a
-/// fixed canned response cannot serve both halves of the flow.
-///
-/// Integration tests used to run with `vault.address` pointing at a dead
-/// `127.0.0.1:8200` and relied on an authentication fallback that substituted
-/// the presented bearer token for the stored one. That fallback was an
-/// auth bypass and has been removed, so tests exercising agent auth need a
-/// Vault that actually answers.
-#[derive(Clone, Default)]
-pub struct VaultKvMock {
-    store: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, serde_json::Value>>>,
-}
-
-impl wiremock::Respond for VaultKvMock {
-    fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
-        let key = request.url.path().to_string();
-
-        match request.method {
-            wiremock::http::Method::Post | wiremock::http::Method::Put => {
-                let body: serde_json::Value =
-                    serde_json::from_slice(&request.body).unwrap_or(serde_json::Value::Null);
-                self.store.lock().unwrap().insert(key, body);
-                wiremock::ResponseTemplate::new(204)
-            }
-            wiremock::http::Method::Delete => {
-                self.store.lock().unwrap().remove(&key);
-                wiremock::ResponseTemplate::new(204)
-            }
-            _ => match self.store.lock().unwrap().get(&key) {
-                Some(value) => wiremock::ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({ "data": value })),
-                None => wiremock::ResponseTemplate::new(404),
-            },
-        }
-    }
-}
-
-/// Mount [`VaultKvMock`] on `server` so it behaves like a KV v1 mount for any
-/// path. Call before the app issues its first Vault request.
-pub async fn mount_vault_kv_mock(server: &MockServer) {
-    let backing = VaultKvMock::default();
-    wiremock::Mock::given(wiremock::matchers::any())
-        .respond_with(backing)
-        .mount(server)
-        .await;
-}
-
 pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
     let mut configuration = get_configuration().expect("Failed to get configuration");
 

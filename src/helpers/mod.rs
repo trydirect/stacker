@@ -1,5 +1,6 @@
 pub mod agent_capabilities;
 pub mod agent_client;
+pub mod agent_token;
 pub mod chat;
 pub mod client;
 pub mod db_pools;

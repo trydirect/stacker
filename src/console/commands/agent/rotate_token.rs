@@ -5,22 +5,21 @@ use sqlx::PgPool;
 
 pub struct RotateTokenCommand {
     pub deployment_hash: String,
-    pub new_token: String,
 }
 
 impl RotateTokenCommand {
-    pub fn new(deployment_hash: String, new_token: String) -> Self {
-        Self {
-            deployment_hash,
-            new_token,
-        }
+    /// No token parameter: the value is minted server-side. An
+    /// operator-supplied secret would make the stored digest a rainbow-table
+    /// target, and the old `--new-token` wrote to Vault without touching the
+    /// database, which now means locking the agent out.
+    pub fn new(deployment_hash: String) -> Self {
+        Self { deployment_hash }
     }
 }
 
 impl crate::console::commands::CallableTrait for RotateTokenCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let deployment_hash = self.deployment_hash.clone();
-        let new_token = self.new_token.clone();
 
         rt::System::new().block_on(async move {
             let settings = get_configuration().expect("Failed to read configuration.");
@@ -30,7 +29,7 @@ impl crate::console::commands::CallableTrait for RotateTokenCommand {
                 .await
                 .expect("Failed to connect to database.");
 
-            agent_dispatcher::rotate_token(&db_pool, &vault, &deployment_hash, &new_token)
+            let token = agent_dispatcher::rotate_token(&db_pool, &vault, &deployment_hash)
                 .await
                 .map_err(|e| {
                     eprintln!("Rotate token failed: {}", e);
@@ -38,8 +37,10 @@ impl crate::console::commands::CallableTrait for RotateTokenCommand {
                 })?;
 
             println!(
-                "Rotated agent token for deployment_hash {} (stored in Vault)",
-                deployment_hash
+                "Rotated agent token for deployment_hash {}.\n\
+                 The agent adopts it from Vault on its next refresh.\n\
+                 Token: {}",
+                deployment_hash, token
             );
 
             Ok(())

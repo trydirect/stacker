@@ -65,26 +65,27 @@ impl<'a> AgentDispatcher<'a> {
     }
 }
 
-/// Rotate token by writing the new value into Vault.
-/// Agent is expected to pull the latest token from Vault.
-#[tracing::instrument(name = "AgentDispatcher rotate_token", skip(pg, vault, new_token), fields(deployment_hash = %deployment_hash))]
+/// Rotate an agent's bearer token.
+///
+/// Mints server-side and returns the new value; it used to take an
+/// operator-supplied token and write it to Vault only, leaving the database
+/// untouched. That was already a way to lock an agent out — the agent adopts
+/// whatever Vault holds — and once verification moved to a stored digest it
+/// would have done so silently. Minting here also keeps the token high-entropy,
+/// which is what justifies hashing it with a plain SHA-256 rather than a KDF.
+///
+/// The agent picks the new value up from Vault on its next refresh, so no
+/// reinstall is needed.
+#[tracing::instrument(name = "AgentDispatcher rotate_token", skip(pg, vault), fields(deployment_hash = %deployment_hash))]
 pub async fn rotate_token(
     pg: &PgPool,
     vault: &VaultClient,
     deployment_hash: &str,
-    new_token: &str,
-) -> Result<(), String> {
-    // Ensure agent exists for the deployment
-    let _ = db::agent::fetch_by_deployment_hash(pg, deployment_hash)
+) -> Result<String, String> {
+    let agent = db::agent::fetch_by_deployment_hash(pg, deployment_hash)
         .await
         .map_err(|e| format!("DB error: {}", e))?
         .ok_or_else(|| "Agent not found for deployment_hash".to_string())?;
 
-    tracing::info!(deployment_hash = %deployment_hash, "Storing rotated token in Vault");
-    vault
-        .store_agent_token(deployment_hash, new_token)
-        .await
-        .map_err(|e| format!("Vault store error: {}", e))?;
-
-    Ok(())
+    crate::services::agent_token::issue(pg, vault, agent.id, deployment_hash).await
 }

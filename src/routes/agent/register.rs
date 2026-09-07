@@ -31,17 +31,6 @@ pub struct RegisterAgentResponseData {
 }
 
 /// Generate a secure random agent token (86 characters)
-fn generate_agent_token() -> String {
-    use rand::Rng;
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut rng = rand::thread_rng();
-    (0..86)
-        .map(|_| {
-            let idx = rng.gen_range(0..CHARSET.len());
-            CHARSET[idx] as char
-        })
-        .collect()
-}
 
 #[tracing::instrument(name = "Register agent", skip_all)]
 #[post("/register")]
@@ -76,28 +65,22 @@ pub async fn register_handler(
                 helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err)
             })?;
 
-        // Try to fetch existing token from Vault
-        let agent_token = vault_client
-            .fetch_agent_token(&payload.deployment_hash)
-            .await
-            .unwrap_or_else(|_| {
-                tracing::warn!("Existing agent found but token missing in Vault, regenerating");
-                let new_token = generate_agent_token();
-                let vault = vault_client.clone();
-                let hash = payload.deployment_hash.clone();
-                let token = new_token.clone();
-                actix_web::rt::spawn(async move {
-                    for retry in 0..3 {
-                        if vault.store_agent_token(&hash, &token).await.is_ok() {
-                            tracing::info!("Token restored to Vault for {}", hash);
-                            break;
-                        }
-                        tokio::time::sleep(tokio::time::Duration::from_secs(2_u64.pow(retry)))
-                            .await;
-                    }
-                });
-                new_token
-            });
+        // Re-issue rather than reading the old token back. Verification now
+        // compares against the digest in Postgres, so the previous
+        // `fetch_agent_token(..).unwrap_or_else(regenerate)` has no value to
+        // recover — and it regenerated on *any* Vault error, rotating a
+        // healthy agent's credential over a network blip.
+        let agent_token = crate::services::agent_token::issue(
+            agent_pool.as_ref(),
+            vault_client.as_ref(),
+            existing.id,
+            &payload.deployment_hash,
+        )
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to issue agent token on re-registration: {}", err);
+            helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err)
+        })?;
 
         let response = RegisterAgentResponseWrapper {
             data: RegisterAgentResponseData {
@@ -119,8 +102,6 @@ pub async fn register_handler(
     agent.version = Some(payload.agent_version.clone());
     agent.system_info = Some(payload.system_info.clone());
 
-    let agent_token = generate_agent_token();
-
     // 4. Insert to DB first (source of truth)
     let saved_agent = db::agent::insert(agent_pool.as_ref(), agent)
         .await
@@ -129,31 +110,23 @@ pub async fn register_handler(
             helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err)
         })?;
 
-    // 5. Store token in Vault asynchronously with retry (best-effort)
-    let vault = vault_client.clone();
-    let hash = payload.deployment_hash.clone();
-    let token = agent_token.clone();
-    actix_web::rt::spawn(async move {
-        for retry in 0..3 {
-            match vault.store_agent_token(&hash, &token).await {
-                Ok(_) => {
-                    tracing::info!("Token stored in Vault for {} (attempt {})", hash, retry + 1);
-                    break;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to store token in Vault (attempt {}): {:?}",
-                        retry + 1,
-                        e
-                    );
-                    if retry < 2 {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(2_u64.pow(retry)))
-                            .await;
-                    }
-                }
-            }
-        }
-    });
+    // 5. Issue the token: digest to Postgres, value to Vault, both awaited.
+    //
+    // Previously this was a detached spawn and the response went out
+    // immediately, so a failed store handed the agent a credential nothing
+    // could verify — and a poll arriving first was rejected with "Token not
+    // found in Vault", which is what made tests/agent_command_flow.rs flaky.
+    let agent_token = crate::services::agent_token::issue(
+        agent_pool.as_ref(),
+        vault_client.as_ref(),
+        saved_agent.id,
+        &payload.deployment_hash,
+    )
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to issue agent token on registration: {}", err);
+        helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err)
+    })?;
 
     let audit_log = models::AuditLog::new(
         Some(saved_agent.id),

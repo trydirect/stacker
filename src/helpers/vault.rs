@@ -112,70 +112,6 @@ impl VaultClient {
         Ok(())
     }
 
-    /// Fetch agent token from Vault
-    #[tracing::instrument(name = "Fetch agent token from Vault", skip_all)]
-    pub async fn fetch_agent_token(&self, deployment_hash: &str) -> Result<String, String> {
-        let base = self.address.trim_end_matches('/');
-        let prefix = self.agent_path_prefix.trim_matches('/');
-        let api_prefix = self.api_prefix.trim_matches('/');
-        let path = if api_prefix.is_empty() {
-            format!("{}/{}/{}/token", base, prefix, deployment_hash)
-        } else {
-            format!(
-                "{}/{}/{}/{}/token",
-                base, api_prefix, prefix, deployment_hash
-            )
-        };
-
-        let response = self
-            .client
-            .get(&path)
-            .header("X-Vault-Token", &self.token)
-            .send()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to fetch token from Vault: {:?}", e);
-                format!("Vault fetch error: {}", e)
-            })?;
-
-        if response.status() == 404 {
-            return Err("Token not found in Vault".to_string());
-        }
-
-        let vault_response: serde_json::Value = response
-            .error_for_status()
-            .map_err(|e| {
-                tracing::error!("Vault returned error status: {:?}", e);
-                format!("Vault error: {}", e)
-            })?
-            .json()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to parse Vault response: {:?}", e);
-                format!("Vault parse error: {}", e)
-            })?;
-
-        // Two response shapes are possible, depending on who wrote the secret.
-        //
-        // `store_agent_token` wraps the value in a `{"data": {...}}` envelope,
-        // which on a KV v1 mount becomes the secret body itself — so a read
-        // comes back as `/data/data/token`. The install-service Ansible role
-        // writes the fields flat instead, giving `/data/token`. Only the
-        // nested form was accepted here, so agents registered by Ansible
-        // failed authentication with "Token not in Vault response" even though
-        // the token was present. `fetch_runtime` already handled both; this
-        // did not.
-        vault_response
-            .pointer("/data/data/token")
-            .or_else(|| vault_response.pointer("/data/token"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .ok_or_else(|| {
-                tracing::error!("Token not found in Vault response");
-                "Token not in Vault response".to_string()
-            })
-    }
-
     /// Delete agent token from Vault
     #[tracing::instrument(name = "Delete agent token from Vault", skip_all)]
     pub async fn delete_agent_token(&self, deployment_hash: &str) -> Result<(), String> {
@@ -655,19 +591,6 @@ mod tests {
         }
     }
 
-    async fn mock_fetch(path: web::Path<(String, String)>) -> HttpResponse {
-        let (_prefix, deployment_hash) = path.into_inner();
-        let resp = json!({
-            "data": {
-                "data": {
-                    "token": "test-token-123",
-                    "deployment_hash": deployment_hash
-                }
-            }
-        });
-        HttpResponse::Ok().json(resp)
-    }
-
     async fn mock_delete() -> HttpResponse {
         HttpResponse::NoContent().finish()
     }
@@ -710,127 +633,16 @@ mod tests {
 
     /// Vault KV v1 read where the install-service Ansible role wrote the
     /// fields flat: `{"data": {"token": ..., "agent_id": ...}}`.
-    async fn mock_fetch_token_flat(path: web::Path<(String, String)>) -> HttpResponse {
-        let (_prefix, deployment_hash) = path.into_inner();
-        HttpResponse::Ok().json(json!({
-            "data": {
-                "agent_id": "06aa6121-e6b6-4ea3-95c5-9e2c0496be0c",
-                "deployment_hash": deployment_hash,
-                "registered_at": "2026-09-05T17:46:00Z",
-                "token": "flat-token"
-            }
-        }))
-    }
 
     /// Vault KV v1 read where `store_agent_token` wrote the value, wrapping it
     /// in a `{"data": {...}}` envelope that becomes the secret body itself.
-    async fn mock_fetch_token_nested(path: web::Path<(String, String)>) -> HttpResponse {
-        let (_prefix, deployment_hash) = path.into_inner();
-        HttpResponse::Ok().json(json!({
-            "data": {
-                "data": {
-                    "deployment_hash": deployment_hash,
-                    "token": "nested-token"
-                }
-            }
-        }))
-    }
-
-    async fn mock_fetch_token_missing() -> HttpResponse {
-        HttpResponse::Ok().json(json!({ "data": { "deployment_hash": "x" } }))
-    }
-
-    /// Regression: an agent registered by the Ansible role failed auth with
-    /// "Token not in Vault response" although the token was stored — the
-    /// parser only accepted the nested shape written by `store_agent_token`.
-    /// Both writers are in production, so both shapes must be read.
-    #[tokio::test]
-    async fn fetch_agent_token_accepts_flat_and_nested_shapes() {
-        for (name, route, expected) in [
-            ("flat", "flat", "flat-token"),
-            ("nested", "nested", "nested-token"),
-        ] {
-            let server = actix_web::HttpServer::new(move || {
-                let app = actix_web::App::new();
-                if route == "flat" {
-                    app.route(
-                        "/v1/{prefix}/{deployment_hash}/token",
-                        web::get().to(mock_fetch_token_flat),
-                    )
-                } else {
-                    app.route(
-                        "/v1/{prefix}/{deployment_hash}/token",
-                        web::get().to(mock_fetch_token_nested),
-                    )
-                }
-            })
-            .bind("127.0.0.1:0")
-            .expect("bind mock vault");
-
-            let addr = server.addrs()[0];
-            let handle = server.run();
-            let server_task = tokio::spawn(handle);
-
-            let settings = VaultSettings {
-                ca_cert: None,
-                address: format!("http://{}", addr),
-                token: "test-token".to_string(),
-                agent_path_prefix: "agent".to_string(),
-                api_prefix: "v1".to_string(),
-                ssh_key_path_prefix: None,
-                client_cert: None,
-                client_key: None,
-            };
-            let client = VaultClient::new(&settings);
-
-            let got = client
-                .fetch_agent_token("deployment_abc")
-                .await
-                .unwrap_or_else(|e| panic!("{name} shape must parse, got error: {e}"));
-            assert_eq!(got, expected, "{name} shape returned the wrong token");
-
-            server_task.abort();
-        }
-    }
-
-    /// A response with neither shape must still be an error, not a panic or an
-    /// empty token that would then be compared against the presented bearer.
-    #[tokio::test]
-    async fn fetch_agent_token_errors_when_token_absent() {
-        let server = actix_web::HttpServer::new(|| {
-            actix_web::App::new().route(
-                "/v1/{prefix}/{deployment_hash}/token",
-                web::get().to(mock_fetch_token_missing),
-            )
-        })
-        .bind("127.0.0.1:0")
-        .expect("bind mock vault");
-
-        let addr = server.addrs()[0];
-        let server_task = tokio::spawn(server.run());
-
-        let settings = VaultSettings {
-            ca_cert: None,
-            address: format!("http://{}", addr),
-            token: "test-token".to_string(),
-            agent_path_prefix: "agent".to_string(),
-            api_prefix: "v1".to_string(),
-            ssh_key_path_prefix: None,
-            client_cert: None,
-            client_key: None,
-        };
-
-        let err = VaultClient::new(&settings)
-            .fetch_agent_token("deployment_abc")
-            .await
-            .expect_err("a response without a token must be an error");
-        assert!(err.contains("Token not in Vault response"), "got: {err}");
-
-        server_task.abort();
-    }
 
     #[tokio::test]
-    async fn test_vault_client_store_fetch_delete() {
+    /// Store and delete only: Stacker no longer reads agent tokens back, and
+    /// `mock_store` rejects anything but `{data:{token, deployment_hash}}` —
+    /// which is the shape the agent's own reader expects, so this still pins
+    /// the write contract that matters.
+    async fn test_vault_client_store_and_delete_agent_token() {
         // Start mock Vault server
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind port");
         let port = listener.local_addr().unwrap().port();
@@ -843,11 +655,6 @@ mod tests {
                 .route(
                     "/v1/{prefix}/{deployment_hash}/token",
                     web::post().to(mock_store),
-                )
-                // GET /v1/{prefix}/{deployment_hash}/token
-                .route(
-                    "/v1/{prefix}/{deployment_hash}/token",
-                    web::get().to(mock_fetch),
                 )
                 // DELETE /v1/{prefix}/{deployment_hash}/token
                 .route(
@@ -880,10 +687,6 @@ mod tests {
             .store_agent_token(dh, "test-token-123")
             .await
             .expect("store token");
-
-        // Fetch
-        let fetched = client.fetch_agent_token(dh).await.expect("fetch token");
-        assert_eq!(fetched, "test-token-123");
 
         // Delete
         client.delete_agent_token(dh).await.expect("delete token");

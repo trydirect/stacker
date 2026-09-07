@@ -43,8 +43,6 @@ enum AgentCommands {
     RotateToken {
         #[arg(long)]
         deployment_hash: String,
-        #[arg(long)]
-        new_token: String,
     },
 }
 
@@ -420,14 +418,8 @@ fn get_command(
             )),
         },
         Commands::Agent { command } => match command {
-            AgentCommands::RotateToken {
-                deployment_hash,
-                new_token,
-            } => Ok(Box::new(
-                stacker::console::commands::agent::RotateTokenCommand::new(
-                    deployment_hash,
-                    new_token,
-                ),
+            AgentCommands::RotateToken { deployment_hash } => Ok(Box::new(
+                stacker::console::commands::agent::RotateTokenCommand::new(deployment_hash),
             )),
         },
         Commands::Stacker { command } => match command {

@@ -7073,6 +7073,7 @@ dependencies = [
  "sqlx",
  "sqlx-adapter",
  "ssh-key 0.6.7",
+ "subtle",
  "tar",
  "td-audit",
  "tempfile",

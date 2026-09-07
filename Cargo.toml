@@ -72,6 +72,8 @@ tokio-stream = "0.1.14"
 actix-http = "3.4.0"
 hmac = "0.12.1"
 sha2 = "0.10.8"
+# Constant-time comparison for credential digests (helpers::agent_token).
+subtle = "2.6"
 sqlx-adapter = { version = "1.8.0", default-features = false, features = ["postgres", "runtime-tokio-native-tls"]}
 dotenvy = "0.15"
 

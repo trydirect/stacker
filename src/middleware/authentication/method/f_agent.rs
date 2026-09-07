@@ -1,4 +1,4 @@
-use crate::helpers::{AgentPgPool, VaultClient};
+use crate::helpers::AgentPgPool;
 use crate::middleware::authentication::get_header;
 use crate::models;
 use actix_web::{dev::ServiceRequest, web, HttpMessage};
@@ -6,30 +6,6 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::Instrument;
 use uuid::Uuid;
-
-async fn fetch_agent_by_id(db_pool: &PgPool, agent_id: Uuid) -> Result<models::Agent, String> {
-    let query_span = tracing::info_span!("Fetching agent by ID");
-
-    sqlx::query_as::<_, models::Agent>(
-        r#"
-        SELECT id, deployment_hash, capabilities, version, system_info,
-               last_heartbeat, status, created_at, updated_at
-        FROM agents
-        WHERE id = $1
-        "#,
-    )
-    .bind(agent_id)
-    .fetch_one(db_pool)
-    .instrument(query_span)
-    .await
-    .map_err(|err| match err {
-        sqlx::Error::RowNotFound => "Agent not found".to_string(),
-        e => {
-            tracing::error!("Failed to fetch agent: {:?}", e);
-            "Database error".to_string()
-        }
-    })
-}
 
 async fn log_audit(
     db_pool: PgPool,
@@ -59,21 +35,6 @@ async fn log_audit(
     if let Err(e) = result {
         tracing::error!("Failed to log audit event: {:?}", e);
     }
-}
-
-/// Whether a Vault failure may be tolerated during agent authentication.
-///
-/// Always `false` — authentication fails closed. Kept as a named predicate so
-/// the invariant has a single place to live and a regression test to pin it;
-/// see `vault_failure_never_bypasses_agent_authentication`.
-///
-/// This previously returned `true` when `vault.address` contained
-/// `127.0.0.1` or `localhost`, and the caller then compared the presented
-/// bearer token against itself. Tests that need to run without a live Vault
-/// should point the client at a mock (see `helpers::vault::tests`) rather than
-/// disable the check.
-fn vault_failure_is_tolerable(_vault_address: &str) -> bool {
-    false
 }
 
 #[tracing::instrument(name = "Authenticate agent via X-Agent-Id and Bearer token")]
@@ -107,38 +68,36 @@ pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
     let db_pool: &PgPool = agent_pool.get_ref().as_ref();
 
     // Fetch agent from database
-    let agent = fetch_agent_by_id(db_pool, agent_id).await?;
+    // `db::agent::fetch_by_id` rather than a local copy: this module used to
+    // carry a fourth hand-rolled SELECT of the agent columns, which is the
+    // easiest place to miss when the table gains one.
+    let agent = crate::db::agent::fetch_by_id(db_pool, agent_id)
+        .await?
+        .ok_or_else(|| "Agent not found".to_string())?;
 
-    // Get Vault client and settings from app data
-    let vault_client = req
-        .app_data::<web::Data<VaultClient>>()
-        .ok_or("Vault client not found")?;
-    let settings = req
-        .app_data::<web::Data<crate::configuration::Settings>>()
-        .ok_or("Settings not found")?;
-
-    // Fetch token from Vault; in test environments, allow fallback when Vault is unreachable
-    let stored_token = match vault_client.fetch_agent_token(&agent.deployment_hash).await {
-        Ok(tok) => tok,
-        Err(e) => {
-            debug_assert!(
-                !vault_failure_is_tolerable(&settings.vault.address),
-                "agent authentication must fail closed on a Vault error"
-            );
-            actix_web::rt::spawn(log_audit(
-                agent_pool.inner().clone(),
-                Some(agent_id),
-                Some(agent.deployment_hash.clone()),
-                "agent.auth_failure".to_string(),
-                "token_not_found".to_string(),
-                serde_json::json!({"error": e}),
-            ));
-            return Err(format!("Token not found in Vault: {}", e));
-        }
+    // Verify against the stored digest, not against a secret read back from
+    // Vault. Authentication no longer needs `read` on any agent's token, so
+    // compromising Stacker's Vault token no longer leaks every agent's
+    // credential at once. Vault remains the *distribution* channel — the agent
+    // polls it and adopts rotations — which is why every mint goes through
+    // `services::agent_token::issue`, writing digest and Vault together.
+    let Some(stored_hash) = agent.token_hash.as_deref() else {
+        // Fails closed. A row without a digest predates this scheme or was
+        // written by a path that bypassed `issue`; either way there is nothing
+        // to verify against. Recovery is one command:
+        // `stacker agent rotate-token --deployment-hash <hash>`.
+        actix_web::rt::spawn(log_audit(
+            agent_pool.inner().clone(),
+            Some(agent_id),
+            Some(agent.deployment_hash.clone()),
+            "agent.auth_failure".to_string(),
+            "token_hash_missing".to_string(),
+            serde_json::json!({}),
+        ));
+        return Err("Agent credential not provisioned".to_string());
     };
 
-    // Compare tokens
-    if bearer_token != stored_token {
+    if !crate::helpers::agent_token::verify(&bearer_token, stored_hash) {
         actix_web::rt::spawn(log_audit(
             agent_pool.inner().clone(),
             Some(agent_id),
@@ -208,34 +167,66 @@ mod tests {
     use super::try_agent;
     use actix_web::test::TestRequest;
 
-    /// Agent authentication must fail closed.
+    /// Agent authentication must fail closed when there is nothing to verify
+    /// against.
     ///
-    /// The Vault-unreachable fallback substituted the *presented* bearer token
-    /// for the stored one, so the subsequent `bearer_token != stored_token`
-    /// check compared a value against itself and always passed. Any string
-    /// authenticated as any agent, given only its `X-Agent-Id` UUID.
+    /// This test outlives the code it was written for, deliberately: the
+    /// invariant is "no usable credential on record means no access", and only
+    /// the mechanism has changed. It previously pinned
+    /// `vault_failure_is_tolerable`, a predicate that gated a Vault-unreachable
+    /// fallback. That fallback substituted the *presented* bearer token for the
+    /// stored one, so `bearer_token != stored_token` compared a value against
+    /// itself and always passed: any string authenticated as any agent, given
+    /// only its `X-Agent-Id` UUID. It was gated on a substring of
+    /// `vault.address` rather than a build flag, so it shipped in release
+    /// binaries and armed itself for the common Vault-sidecar layout
+    /// (`http://127.0.0.1:8200`); and it triggered on *any* Vault error, so a
+    /// policy denial or a malformed response opened it just as wide.
     ///
-    /// It was gated on a substring of `vault.address`, not on a build flag, so
-    /// it shipped in release binaries and armed itself for the common
-    /// Vault-sidecar layout (`http://127.0.0.1:8200`). It also triggered on
-    /// *any* Vault error, not just unreachability — a policy denial or a
-    /// malformed response would have opened it just as wide.
+    /// The same shape of mistake is now available one level down: `token_hash`
+    /// is nullable, and treating a missing or unparseable digest as a pass
+    /// would reopen exactly that hole. `try_agent` returns
+    /// "Agent credential not provisioned" before reaching `verify`; this pins
+    /// the layer underneath, that no bearer token authenticates against a
+    /// stored value that cannot be interpreted.
     #[test]
-    fn vault_failure_never_bypasses_agent_authentication() {
-        for addr in [
-            "http://127.0.0.1:8200",
-            "http://localhost:8200",
-            // Substring matching also caught hosts that merely contain the word.
-            "https://localhost.attacker.example",
-            "https://vault.try.direct:8443",
-            "http://vault:8200",
+    fn null_token_hash_never_authenticates() {
+        use crate::helpers::agent_token;
+
+        let plausible = agent_token::generate();
+        for stored in [
+            // What a NULL column becomes if it is ever unwrapped to a default
+            // instead of rejected outright.
             "",
+            "   ",
+            "null",
+            "NULL",
+            // Right length, no algorithm tag.
+            &agent_token::hash(&plausible)[7..],
+            // The tag alone.
+            "sha256:",
         ] {
-            assert!(
-                !super::vault_failure_is_tolerable(addr),
-                "a Vault failure must never be tolerated, but was for {addr:?}"
-            );
+            for presented in ["", &plausible, "anything"] {
+                assert!(
+                    !agent_token::verify(presented, stored),
+                    "{presented:?} must not authenticate against stored value {stored:?}"
+                );
+            }
         }
+
+        // Note what is deliberately *not* asserted: `verify("", &hash(""))` is
+        // true, and correctly so — it is a valid round-trip. The danger is a
+        // NULL column being coerced into `hash("")` somewhere upstream, which
+        // `verify` cannot see. That is guarded above `verify`, by `try_agent`
+        // rejecting `None` before it gets here and by `issue` only ever hashing
+        // output of `generate`.
+
+        // The one case that must pass, so the test cannot go green by having
+        // `verify` reject everything.
+        assert!(agent_token::verify(
+            &plausible,
+            &agent_token::hash(&plausible)
+        ));
     }
 
     #[actix_web::test]

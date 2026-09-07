@@ -54,6 +54,21 @@ pub async fn spawn_bdd_app() -> Option<BddTestApp> {
         configuration.database.password = password;
     }
 
+    // A Vault that actually answers. Agent registration awaits its write to
+    // Vault before returning the token, so pointing at the default dead
+    // 127.0.0.1:8200 makes every registration scenario fail with a 500. It used
+    // to pass only because the write was a detached `spawn` whose failure
+    // nothing observed.
+    // Leaked deliberately: dropping a `MockServer` stops it, and the app holds
+    // its URI for the whole run. `spawn_bdd_app` is called once per process
+    // (`APP_INIT_ASYNC`), so this is a singleton, not a growing leak.
+    let vault_server: &'static wiremock::MockServer =
+        Box::leak(Box::new(wiremock::MockServer::start().await));
+    crate::vault_kv_mock::mount_vault_kv_mock(vault_server).await;
+    configuration.vault.address = vault_server.uri();
+    configuration.vault.token = "bdd-vault-token".to_string();
+    configuration.vault.api_prefix = "v1".to_string();
+
     // Unique database per BDD run
     configuration.database.database_name = format!("bdd_{}", uuid::Uuid::new_v4());
 

@@ -49,7 +49,11 @@ fn fixture(path: &str) -> serde_json::Value {
     serde_json::from_str(body).expect("fixture should be valid json")
 }
 
-async fn create_test_deployment(app: &common::TestAppWithVaultFresh, project_name: &str, deployment_hash: &str) {
+async fn create_test_deployment(
+    app: &common::TestAppWithVaultFresh,
+    project_name: &str,
+    deployment_hash: &str,
+) {
     sqlx::query(
         "INSERT INTO project (stack_id, name, user_id, metadata, created_at, updated_at)
          VALUES ($1, $2, $3, $4, NOW(), NOW())",
