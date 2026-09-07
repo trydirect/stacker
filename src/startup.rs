@@ -359,6 +359,7 @@ pub async fn run(
                             .service(crate::routes::marketplace::public::download_stack_handler)
                             .service(crate::routes::marketplace::public::deploy_complete_handler)
                             .service(crate::routes::marketplace::payout_webhook::webhook_handler)
+                            // Answers 501; see routes::marketplace::agent.
                             .service(web::scope("/agents").service(
                                 crate::routes::marketplace::agent::register_marketplace_agent_handler,
                             )),
