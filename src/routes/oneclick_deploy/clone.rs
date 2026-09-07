@@ -68,6 +68,15 @@ pub struct CloneResponse {
     pub stack: String,
     pub provider: String,
     pub deployment_hash: String,
+    /// Stacker's numeric project id for the project created here.
+    ///
+    /// The User Service stores this as `installations.stack_id`, which is what
+    /// `_sync_apps_from_stacker` keys on to pull the deployment's apps across.
+    /// Without it that sync returns on its first line and the Applications
+    /// panel stays empty, however many containers are running. The regular
+    /// install flow gets the same value from the stack mapper; one-click had
+    /// no way to learn it because this response did not carry it.
+    pub project_id: i32,
     /// SSH private key (PEM) for the deploy key injected into the cloned server.
     /// The user service must pass this to the install service for Ansible access.
     pub ssh_private_key: String,
@@ -433,6 +442,7 @@ pub async fn clone_server(
         public_ipv4: provisioned.public_ipv4,
         stack: form.stack.clone(),
         provider: form.provider.clone(),
+        project_id: project.id,
         deployment_hash,
         ssh_private_key: private_key,
         authorization_id,
@@ -445,6 +455,27 @@ mod tests {
     use actix_web::test;
     use actix_web::web;
     use actix_web::HttpMessage;
+
+    /// The User Service stores this as `installations.stack_id`; without it
+    /// `_sync_apps_from_stacker` returns on its first line and the
+    /// Applications panel is empty for every one-click deployment.
+    // `use actix_web::test` shadows the built-in attribute in this module.
+    #[actix_web::test]
+    async fn clone_response_carries_the_project_id() {
+        let resp = CloneResponse {
+            server_id: 42,
+            public_ipv4: Some("203.0.113.10".to_string()),
+            stack: "floci".to_string(),
+            provider: "hetzner".to_string(),
+            project_id: 194,
+            deployment_hash: "deployment_abc".to_string(),
+            ssh_private_key: "<key>".to_string(),
+            authorization_id: None,
+        };
+
+        let json = serde_json::to_value(&resp).expect("serialize");
+        assert_eq!(json["project_id"], 194);
+    }
 
     fn test_user(token: Option<String>) -> Arc<User> {
         Arc::new(User {
