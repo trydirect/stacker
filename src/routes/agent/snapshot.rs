@@ -1,5 +1,5 @@
 use crate::db;
-use crate::forms::status_panel::HealthCommandReport;
+use crate::forms::status_panel::{AllHealthCommandReport, HealthCommandReport};
 use crate::helpers::{AgentPgPool, JsonResponse};
 use crate::models::{Command, ProjectApp};
 use crate::project_app::is_platform_managed_app_code;
@@ -43,6 +43,66 @@ pub struct ContainerSnapshot {
     pub state: Option<String>,
     pub image: Option<String>,
     pub name: Option<String>,
+}
+
+/// Container states from one completed `health` command result.
+///
+/// Both report shapes must be read here. A `health` command carrying
+/// `app_code: "all"` — which is what the dashboard and the CLI send — is
+/// answered with the aggregate `all_health`, whose per-container `app_code`
+/// and `container_state` live inside `containers[]`. A command naming one app
+/// is answered with the flat single-app shape.
+///
+/// Parsing only the single shape left `containers` empty for every deployment
+/// polled with `all`, so the UI reported "Status Panel has not reported
+/// containers yet" while four containers were running and reporting. The old
+/// code also swallowed the parse failure with a bare `if let Ok(..)`, which is
+/// why nothing in the logs pointed at it.
+fn container_snapshots_from_health(result: &serde_json::Value) -> Vec<ContainerSnapshot> {
+    fn state_of<T: serde::Serialize>(container_state: &T) -> Option<String> {
+        serde_json::to_value(container_state)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_lowercase))
+    }
+
+    // Dispatch on the reported type, never on "which struct happens to
+    // deserialize": the aggregate's `containers` is `#[serde(default)]`, so
+    // `AllHealthCommandReport` also parses a single-app report and silently
+    // yields an empty list. `validate_command_result` dispatches the same way.
+    let is_aggregate = result.get("type").and_then(|v| v.as_str())
+        == Some(crate::forms::status_panel::ALL_HEALTH_RESULT_TYPE);
+
+    if is_aggregate {
+        if let Ok(all) = serde_json::from_value::<AllHealthCommandReport>(result.clone()) {
+            return all
+                .containers
+                .iter()
+                .chain(all.system_containers.iter())
+                .map(|c| ContainerSnapshot {
+                    id: None,
+                    app: Some(c.app_code.clone()),
+                    state: state_of(&c.container_state),
+                    image: None,
+                    name: c.container_name.clone(),
+                })
+                .collect();
+        }
+    }
+
+    if let Ok(single) = serde_json::from_value::<HealthCommandReport>(result.clone()) {
+        return vec![ContainerSnapshot {
+            id: None,
+            app: Some(single.app_code.clone()),
+            state: state_of(&single.container_state),
+            image: None,
+            name: None,
+        }];
+    }
+
+    tracing::debug!(
+        "health result matched neither the aggregate nor the single-app shape; ignoring"
+    );
+    Vec::new()
 }
 
 #[derive(Debug, Deserialize)]
@@ -153,25 +213,12 @@ pub async fn snapshot_handler(
     for cmd in health_commands.iter() {
         if cmd.r#type == "health" && cmd.status == "completed" {
             if let Some(result) = &cmd.result {
-                if let Ok(health) = serde_json::from_value::<HealthCommandReport>(result.clone()) {
-                    // Serialize ContainerState enum to string using serde
-                    let state = serde_json::to_value(&health.container_state)
-                        .ok()
-                        .and_then(|v| v.as_str().map(String::from))
-                        .map(|s| s.to_lowercase());
-
-                    let container = ContainerSnapshot {
-                        id: None,
-                        app: Some(health.app_code.clone()),
-                        state,
-                        image: None,
-                        name: None,
+                for container in container_snapshots_from_health(result) {
+                    let Some(app_code) = container.app.clone() else {
+                        continue;
                     };
-
-                    // Only insert if we don't have this app yet (keeps most recent due to DESC order)
-                    container_map
-                        .entry(health.app_code.clone())
-                        .or_insert(container);
+                    // Keep the most recent report per app (commands arrive DESC).
+                    container_map.entry(app_code).or_insert(container);
                 }
             }
         }
@@ -320,23 +367,12 @@ pub async fn project_snapshot_handler(
     for cmd in health_commands.iter() {
         if cmd.r#type == "health" && cmd.status == "completed" {
             if let Some(result) = &cmd.result {
-                if let Ok(health) = serde_json::from_value::<HealthCommandReport>(result.clone()) {
-                    let state = serde_json::to_value(&health.container_state)
-                        .ok()
-                        .and_then(|v| v.as_str().map(String::from))
-                        .map(|s| s.to_lowercase());
-
-                    let container = ContainerSnapshot {
-                        id: None,
-                        app: Some(health.app_code.clone()),
-                        state,
-                        image: None,
-                        name: None,
+                for container in container_snapshots_from_health(result) {
+                    let Some(app_code) = container.app.clone() else {
+                        continue;
                     };
-
-                    container_map
-                        .entry(health.app_code.clone())
-                        .or_insert(container);
+                    // Keep the most recent report per app (commands arrive DESC).
+                    container_map.entry(app_code).or_insert(container);
                 }
             }
         }
@@ -360,6 +396,80 @@ pub async fn project_snapshot_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    /// The aggregate the agent actually sends for `app_code: "all"`. Parsing
+    /// only the single-app shape left this empty, and the dashboard showed
+    /// "Status Panel has not reported containers yet" for a deployment with
+    /// four running containers.
+    #[test]
+    fn health_snapshots_read_the_aggregate_shape() {
+        let result = json!({
+            "type": "all_health",
+            "deployment_hash": "deployment_abc",
+            "status": "ok",
+            "containers": [
+                {"app_code": "floci", "container_name": "project-app-1",
+                 "container_state": "running", "status": "ok"},
+                {"app_code": "floci-ui", "container_name": "project-floci-ui-1",
+                 "container_state": "running", "status": "ok"}
+            ]
+        });
+
+        let snaps = container_snapshots_from_health(&result);
+        assert_eq!(
+            snaps.len(),
+            2,
+            "both containers must be reported: {snaps:?}"
+        );
+
+        let codes: Vec<&str> = snaps.iter().filter_map(|c| c.app.as_deref()).collect();
+        assert_eq!(codes, vec!["floci", "floci-ui"]);
+        assert_eq!(snaps[0].state.as_deref(), Some("running"));
+        assert_eq!(snaps[0].name.as_deref(), Some("project-app-1"));
+    }
+
+    /// A command naming one app still answers with the flat shape.
+    #[test]
+    fn health_snapshots_read_the_single_app_shape() {
+        let result = json!({
+            "type": "health",
+            "deployment_hash": "deployment_abc",
+            "app_code": "floci",
+            "status": "ok",
+            "container_state": "running"
+        });
+
+        let snaps = container_snapshots_from_health(&result);
+        assert_eq!(snaps.len(), 1);
+        assert_eq!(snaps[0].app.as_deref(), Some("floci"));
+        assert_eq!(snaps[0].state.as_deref(), Some("running"));
+    }
+
+    /// Platform containers reported separately must still surface.
+    #[test]
+    fn health_snapshots_include_system_containers() {
+        let result = json!({
+            "type": "all_health",
+            "deployment_hash": "deployment_abc",
+            "status": "ok",
+            "containers": [],
+            "system_containers": [
+                {"app_code": "statuspanel", "container_name": "statuspanel",
+                 "container_state": "running", "status": "ok"}
+            ]
+        });
+
+        let snaps = container_snapshots_from_health(&result);
+        assert_eq!(snaps.len(), 1);
+        assert_eq!(snaps[0].app.as_deref(), Some("statuspanel"));
+    }
+
+    /// Neither shape: yield nothing rather than panicking or inventing a row.
+    #[test]
+    fn health_snapshots_ignore_an_unrecognised_result() {
+        assert!(container_snapshots_from_health(&json!({"nonsense": true})).is_empty());
+    }
 
     /// The dashboard reaches this endpoint by `deployment_hash` and needs the
     /// numeric project id to ask anything project-scoped — agent status,
@@ -387,7 +497,6 @@ mod tests {
             "project_id must be omitted when unknown, got: {json}"
         );
     }
-
 
     fn app(code: &str) -> ProjectApp {
         ProjectApp {
