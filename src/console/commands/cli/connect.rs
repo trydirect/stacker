@@ -87,17 +87,90 @@ impl CallableTrait for ConnectCommand {
     }
 }
 
+/// Where to resolve the handoff against.
+///
+/// A full URL carries its own answer, **including any path prefix**: Stacker is
+/// commonly mounted under one (`https://dev.try.direct/stacker`, and see the
+/// example on `UserConfig::server_url`). This used to rebuild the base as
+/// `scheme://host[:port]` and drop the prefix, which sent the resolve to
+/// whatever else is served at the domain root — on dev, the dashboard, which
+/// answers with an HTML 404.
+///
+/// A bare token carries nothing, so fall back the way every other command
+/// does: `STACKER_URL`, then the URL saved by `stacker login --server-url`,
+/// and only then the public default. Previously a bare token went straight to
+/// the public default, so a token minted on any other deployment was reported
+/// as "Handoff token not found" — the token was fine, the CLI was asking the
+/// wrong server.
 fn extract_handoff_base_url(input: &str) -> String {
-    if let Ok(url) = reqwest::Url::parse(input) {
-        let scheme = url.scheme();
-        if let Some(host) = url.host_str() {
-            if let Some(port) = url.port() {
-                return format!("{}://{}:{}", scheme, host, port);
-            }
-            return format!("{}://{}", scheme, host);
-        }
+    let env_url = std::env::var("STACKER_URL").ok();
+    resolve_base_url(input, env_url, configured_server_url())
+}
+
+/// The decision itself, with both fallbacks passed in.
+///
+/// Split out so tests do not have to mutate `STACKER_URL`: several other
+/// modules read that variable, and a test that sets it makes unrelated tests
+/// in the same binary fail depending on scheduling.
+fn resolve_base_url(input: &str, env_url: Option<String>, configured: Option<String>) -> String {
+    if let Some(base) = base_url_from_handoff_url(input) {
+        return base;
     }
-    DEFAULT_STACKER_URL.to_string()
+
+    env_url
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .or(configured)
+        .unwrap_or_else(|| DEFAULT_STACKER_URL.to_string())
+}
+
+/// Rebuild the API base from a handoff URL, keeping the path prefix but
+/// dropping the trailing `/handoff` segment the dashboard link ends with.
+fn base_url_from_handoff_url(input: &str) -> Option<String> {
+    let url = reqwest::Url::parse(input.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = url.host_str()?;
+
+    let mut base = match url.port() {
+        Some(port) => format!("{}://{}:{}", url.scheme(), host, port),
+        None => format!("{}://{}", url.scheme(), host),
+    };
+
+    let mut segments: Vec<&str> = url
+        .path_segments()
+        .map(|parts| parts.filter(|part| !part.is_empty()).collect())
+        .unwrap_or_default();
+
+    // `<base>/handoff#<token>` is the dashboard's link shape; anything after
+    // `handoff` is a token carried in the path rather than the fragment.
+    if let Some(position) = segments.iter().position(|segment| *segment == "handoff") {
+        segments.truncate(position);
+    }
+
+    for segment in segments {
+        base.push('/');
+        base.push_str(segment);
+    }
+
+    Some(base)
+}
+
+/// The Stacker URL saved by `stacker login --server-url`, from the credential
+/// file first and the user config second — the same two places
+/// `cli::runtime` consults.
+fn configured_server_url() -> Option<String> {
+    let stored = CredentialsManager::<FileCredentialStore>::with_default_store()
+        .load()
+        .ok()
+        .flatten()
+        .and_then(|creds| creds.server_url);
+
+    stored
+        .or_else(|| crate::cli::user_config::UserConfig::load().server_url)
+        .map(|value: String| value.trim().trim_end_matches('/').to_string())
+        .filter(|value: &String| !value.is_empty())
 }
 
 fn extract_handoff_token(input: &str) -> Result<String, CliError> {
@@ -261,6 +334,87 @@ mod tests {
     };
     use chrono::Duration;
     use tempfile::TempDir;
+
+    /// The defect that made `stacker connect --handoff <token>` fail against
+    /// every deployment but production: a URL's path prefix was discarded, so
+    /// `https://dev.try.direct/stacker/handoff#tok` resolved against
+    /// `https://dev.try.direct`, where the dashboard answers, not Stacker.
+    #[test]
+    fn base_url_keeps_the_path_prefix_and_drops_the_handoff_segment() {
+        for (input, expected) in [
+            (
+                "https://dev.try.direct/stacker/handoff#tok",
+                "https://dev.try.direct/stacker",
+            ),
+            (
+                "https://try.direct/stacker/handoff#tok",
+                "https://try.direct/stacker",
+            ),
+            // No prefix: the host alone is the base.
+            (
+                "https://stacker.try.direct/handoff#tok",
+                "https://stacker.try.direct",
+            ),
+            // A port must survive alongside the prefix.
+            (
+                "http://127.0.0.1:8000/stacker/handoff#tok",
+                "http://127.0.0.1:8000/stacker",
+            ),
+            // Deeper mount points.
+            (
+                "https://example.test/a/b/handoff#tok",
+                "https://example.test/a/b",
+            ),
+            // A token in the path rather than the fragment.
+            (
+                "https://dev.try.direct/stacker/handoff/tok",
+                "https://dev.try.direct/stacker",
+            ),
+        ] {
+            assert_eq!(
+                super::extract_handoff_base_url(input),
+                expected,
+                "wrong base for {input}"
+            );
+        }
+    }
+
+    /// A bare token carries no host, so it must follow the same precedence as
+    /// every other command rather than assuming production. Reported as
+    /// "Handoff token not found": the token was valid, on another deployment.
+    #[test]
+    fn bare_token_prefers_configured_urls_over_the_public_default() {
+        let env = || Some("https://dev.try.direct/stacker".to_string());
+        let cfg = || Some("https://cfg.example/stacker".to_string());
+
+        assert_eq!(
+            super::resolve_base_url("ga3z7dxeNyv8vJNt1KDDG5fh", env(), cfg()),
+            "https://dev.try.direct/stacker",
+            "STACKER_URL must win over the saved config"
+        );
+        assert_eq!(
+            super::resolve_base_url("ga3z7dxeNyv8vJNt1KDDG5fh", None, cfg()),
+            "https://cfg.example/stacker",
+            "the URL saved by `stacker login --server-url` must be used"
+        );
+        assert_eq!(
+            super::resolve_base_url("ga3z7dxeNyv8vJNt1KDDG5fh", None, None),
+            super::DEFAULT_STACKER_URL,
+            "only with nothing configured does the public default apply"
+        );
+        assert_eq!(
+            super::resolve_base_url("ga3z7dxeNyv8vJNt1KDDG5fh", Some("  ".to_string()), None),
+            super::DEFAULT_STACKER_URL,
+            "a blank STACKER_URL must not be treated as configured"
+        );
+
+        // An explicit URL carries its own answer and outranks both.
+        assert_eq!(
+            super::resolve_base_url("https://other.example/s/handoff#tok", env(), cfg()),
+            "https://other.example/s",
+            "an explicit URL must win over anything configured"
+        );
+    }
 
     #[test]
     fn extracts_token_from_handoff_url_fragment() {
