@@ -9,6 +9,16 @@ use uuid::Uuid;
 
 #[derive(Debug, Serialize, Default)]
 pub struct SnapshotResponse {
+    /// Stacker's numeric project id for this deployment.
+    ///
+    /// The dashboard reaches this endpoint by `deployment_hash` and has no
+    /// other way to learn it: the deployment record it renders from carries
+    /// `stack_id`, a UUID, while every project-scoped endpoint
+    /// (`/agent/project/{id}`, `/project/{id}/containers/discover`) keys on
+    /// this integer. Without it the UI cannot ask whether an agent is
+    /// connected, and falls back to guessing from the install request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<i32>,
     pub agent: Option<AgentSnapshot>,
     pub commands: Vec<Command>,
     pub containers: Vec<ContainerSnapshot>,
@@ -201,6 +211,7 @@ pub async fn snapshot_handler(
     tracing::debug!("[SNAPSHOT HANDLER] Agent Snapshot : {:?}", agent_snapshot);
 
     let resp = SnapshotResponse {
+        project_id: deployment.as_ref().map(|d| d.project_id),
         agent: agent_snapshot,
         commands,
         containers,
@@ -240,8 +251,13 @@ pub async fn project_snapshot_handler(
 
     let agent_snapshot = match agent {
         None => {
+            // Still echo the project id: the caller asked by project and the
+            // field must not appear only on the happy path.
             return Ok(JsonResponse::build()
-                .set_item(SnapshotResponse::default())
+                .set_item(SnapshotResponse {
+                    project_id: Some(project_id),
+                    ..Default::default()
+                })
                 .ok("No active agent found for project"));
         }
         Some(a) => {
@@ -329,6 +345,7 @@ pub async fn project_snapshot_handler(
     let containers: Vec<ContainerSnapshot> = container_map.into_values().collect();
 
     let resp = SnapshotResponse {
+        project_id: Some(project_id),
         agent: Some(agent_snap),
         commands,
         containers,
@@ -343,6 +360,34 @@ pub async fn project_snapshot_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dashboard reaches this endpoint by `deployment_hash` and needs the
+    /// numeric project id to ask anything project-scoped — agent status,
+    /// container discovery. It cannot derive it: the deployment record it
+    /// renders from carries `stack_id`, a UUID, and every project endpoint
+    /// keys on this integer. Without the field the UI guessed from the install
+    /// request and told users to deploy an agent that was already running.
+    #[test]
+    fn snapshot_response_serializes_project_id() {
+        let resp = SnapshotResponse {
+            project_id: Some(194),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&resp).expect("serialize");
+        assert_eq!(json["project_id"], 194);
+    }
+
+    /// Absent rather than null, so a client cannot mistake "unknown" for a
+    /// project id of zero.
+    #[test]
+    fn snapshot_response_omits_absent_project_id() {
+        let json = serde_json::to_value(SnapshotResponse::default()).expect("serialize");
+        assert!(
+            json.get("project_id").is_none(),
+            "project_id must be omitted when unknown, got: {json}"
+        );
+    }
+
 
     fn app(code: &str) -> ProjectApp {
         ProjectApp {
