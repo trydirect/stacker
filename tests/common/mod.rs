@@ -44,8 +44,25 @@ fn infra_handle() -> tokio::runtime::Handle {
         .clone()
 }
 
+/// Shared key for the service-to-service endpoints in tests.
+///
+/// `require_internal_key` fails closed when `INTERNAL_SERVICES_ACCESS_KEY` is
+/// unset, so a harness that does not configure it cannot register an agent —
+/// which is the intended production behaviour, not a test inconvenience.
+pub const TEST_INTERNAL_KEY: &str = "test-internal-key";
+
+/// Configure the shared key for the app under test. Idempotent; the server runs
+/// in this process, so the variable it reads is the one set here.
+pub fn set_test_internal_key() {
+    std::env::set_var(
+        stacker::helpers::internal_key::INTERNAL_KEY_ENV,
+        TEST_INTERNAL_KEY,
+    );
+}
+
 pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option<TestApp> {
     ensure_test_access_control_conf();
+    set_test_internal_key();
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind random port");
 
@@ -916,6 +933,7 @@ pub use vault_kv_mock::{mount_vault_kv_mock, VaultKvMock};
 /// The returned `vault_server` is a wiremock MockServer — mount expectations on it
 /// before calling API endpoints that touch Vault.
 pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
+    set_test_internal_key();
     let mut configuration = get_configuration().expect("Failed to get configuration");
 
     // Disable DockerHub connector in tests to skip Redis connection timeout

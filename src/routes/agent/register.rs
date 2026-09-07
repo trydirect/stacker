@@ -40,6 +40,17 @@ pub async fn register_handler(
     vault_client: web::Data<helpers::VaultClient>,
     req: HttpRequest,
 ) -> Result<HttpResponse> {
+    // Service-to-service only. A registering agent has no credential yet — that
+    // is what it is here to obtain — so the endpoint is granted to
+    // `group_anonymous` in Casbin and authorised by the shared key instead, the
+    // same arrangement `agent_audit_ingest_handler` uses. Its caller is the
+    // Ansible statuspanel role, which runs on the controller and holds the key.
+    //
+    // `deployment_hash` alone is not sufficient authorisation: it is an
+    // identifier, not a secret, and appears in the dashboard, in URLs and in
+    // logs.
+    crate::helpers::internal_key::require_internal_key(&req)?;
+
     // 1. Check if agent already registered (idempotent operation)
     let existing_agent =
         db::agent::fetch_by_deployment_hash(agent_pool.as_ref(), &payload.deployment_hash)

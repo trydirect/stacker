@@ -4,6 +4,7 @@ pub mod agent_token;
 pub mod chat;
 pub mod client;
 pub mod db_pools;
+pub mod internal_key;
 pub(crate) mod json;
 pub mod mq_manager;
 pub mod project;

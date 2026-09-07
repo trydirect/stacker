@@ -24,17 +24,9 @@ pub async fn agent_audit_ingest_handler(
     body: web::Json<AuditBatchRequest>,
     pool: web::Data<PgPool>,
 ) -> Result<HttpResponse> {
-    // Validate internal service key
-    let expected = std::env::var("INTERNAL_SERVICES_ACCESS_KEY").unwrap_or_default();
-    let provided = req
-        .headers()
-        .get("x-internal-key")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
-
-    if expected.is_empty() || provided != expected {
-        return Err(ErrorUnauthorized("invalid internal key"));
-    }
+    // Shared with the other service-to-service endpoints; the comparison is
+    // now constant-time.
+    crate::helpers::internal_key::require_internal_key(&req)?;
 
     // Short-circuit on empty batch
     if body.events.is_empty() {

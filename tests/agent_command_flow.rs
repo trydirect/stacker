@@ -104,6 +104,7 @@ async fn register_test_agent(
 
     let register_response = client
         .post(format!("{}/api/v1/agent/register", &app.address))
+        .header("X-Internal-Key", common::TEST_INTERNAL_KEY)
         .json(&register_payload)
         .send()
         .await
@@ -311,6 +312,7 @@ async fn test_agent_command_flow() {
 
     let register_response = client
         .post(format!("{}/api/v1/agent/register", &app.address))
+        .header("X-Internal-Key", common::TEST_INTERNAL_KEY)
         .json(&register_payload)
         .send()
         .await
@@ -573,6 +575,7 @@ async fn test_trigger_pipe_report_persists_execution_history() {
 
     let register_response = client
         .post(format!("{}/api/v1/agent/register", &app.address))
+        .header("X-Internal-Key", common::TEST_INTERNAL_KEY)
         .json(&register_payload)
         .send()
         .await
@@ -796,6 +799,7 @@ async fn test_agent_heartbeat() {
 
     let register_response = client
         .post(format!("{}/api/v1/agent/register", &app.address))
+        .header("X-Internal-Key", common::TEST_INTERNAL_KEY)
         .json(&register_payload)
         .send()
         .await
@@ -868,6 +872,7 @@ async fn test_command_priority_ordering() {
 
     let register_response = client
         .post(format!("{}/api/v1/agent/register", &app.address))
+        .header("X-Internal-Key", common::TEST_INTERNAL_KEY)
         .json(&register_payload)
         .send()
         .await
@@ -1135,6 +1140,7 @@ async fn test_command_priorities_and_permissions() {
 
     let register_response = client
         .post(format!("{}/api/v1/agent/register", &app.address))
+        .header("X-Internal-Key", common::TEST_INTERNAL_KEY)
         .json(&register_payload)
         .send()
         .await

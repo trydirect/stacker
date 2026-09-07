@@ -9,6 +9,10 @@ use std::net::TcpListener;
 use std::time::Duration;
 use tokio::time::sleep;
 
+/// Shared service key the BDD app is configured with; steps calling a
+/// service-to-service endpoint must send it as `X-Internal-Key`.
+pub const BDD_INTERNAL_KEY: &str = "bdd-internal-key";
+
 pub struct BddTestApp {
     pub address: String,
     pub db_pool: PgPool,
@@ -75,8 +79,9 @@ pub async fn spawn_bdd_app() -> Option<BddTestApp> {
     // Increase client limit for BDD tests (multiple scenarios create clients)
     configuration.max_clients_number = 100;
 
-    // Set internal services access key for audit ingest tests
-    std::env::set_var("INTERNAL_SERVICES_ACCESS_KEY", "bdd-internal-key");
+    // Shared key for the service-to-service endpoints (audit ingest, agent
+    // registration). `require_internal_key` fails closed without it.
+    std::env::set_var("INTERNAL_SERVICES_ACCESS_KEY", BDD_INTERNAL_KEY);
 
     let connection_pool = match configure_database_with_retry(&configuration.database).await {
         Ok(pool) => pool,
