@@ -1,4 +1,3 @@
-pub mod agent;
 pub mod appclient;
 mod callable;
 pub mod cli;

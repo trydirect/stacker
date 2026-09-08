@@ -2742,6 +2742,48 @@ impl StackerClient {
     /// Fetch the snapshot for the most recently active agent in a project.
     /// Returns `(snapshot_json, deployment_hash)` so the caller can use the hash
     /// for subsequent agent commands.
+    /// Reissue the agent's bearer token for a deployment.
+    ///
+    /// The token itself is not returned: the agent's only source is Vault, and
+    /// it adopts the new value on its next refresh, about a minute later.
+    pub async fn rotate_agent_token(
+        &self,
+        deployment_hash: &str,
+    ) -> Result<serde_json::Value, CliError> {
+        let url = format!(
+            "{}/api/v1/agent/rotate-token/{}",
+            self.base_url, deployment_hash
+        );
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: stacker_api_failure(
+                    &format!("POST /api/v1/agent/rotate-token/{deployment_hash}"),
+                    status,
+                    &body,
+                ),
+            });
+        }
+
+        resp.json().await.map_err(|e| CliError::AgentCommandFailed {
+            command_id: String::new(),
+            error: format!("Invalid rotate-token response: {}", e),
+        })
+    }
+
     pub async fn agent_snapshot_by_project(
         &self,
         project_id: i32,

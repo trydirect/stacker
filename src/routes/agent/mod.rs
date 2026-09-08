@@ -6,6 +6,7 @@ mod login;
 mod notifications;
 mod register;
 mod report;
+mod rotate_token;
 mod snapshot;
 mod wait;
 
@@ -16,5 +17,6 @@ pub use login::*;
 pub use notifications::*;
 pub use register::*;
 pub use report::*;
+pub use rotate_token::rotate_token_handler;
 pub use snapshot::*;
 pub use wait::*;

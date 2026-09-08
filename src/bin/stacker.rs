@@ -1486,6 +1486,16 @@ enum AgentCommands {
         #[arg(long)]
         deployment: Option<String>,
     },
+    /// Reissue the agent's bearer token (recovery for an agent that cannot authenticate)
+    #[command(name = "rotate-token")]
+    RotateToken {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash (auto-detected from lock/config)
+        #[arg(long)]
+        deployment: Option<String>,
+    },
     /// Restart a container on the remote deployment
     Restart {
         /// App code to restart
@@ -2766,6 +2776,9 @@ fn get_command(
                     json,
                     deployment,
                 )),
+                AgentCommands::RotateToken { json, deployment } => {
+                    Box::new(agent::AgentRotateTokenCommand::new(json, deployment))
+                }
                 AgentCommands::Restart {
                     app,
                     force,
