@@ -36,13 +36,23 @@ pub struct AgentSnapshot {
     pub deployment_hash: Option<String>,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Default, Clone)]
 pub struct ContainerSnapshot {
     pub id: Option<String>,
     pub app: Option<String>,
     pub state: Option<String>,
     pub image: Option<String>,
     pub name: Option<String>,
+    /// `project` or `platform` — who owns this container.
+    ///
+    /// The dashboard splits its Containers and System Containers sections on
+    /// this instead of matching names, which it did with three different and
+    /// disagreeing pattern lists.
+    pub scope: String,
+    /// Where this row came from: `registry` for one seeded from `project_app`
+    /// and not yet reported on, `health` or `list_containers` for one an agent
+    /// has reported. Lets the UI show "not reported yet" apart from "stopped".
+    pub source: String,
 }
 
 /// Container states from one completed `health` command result.
@@ -58,6 +68,31 @@ pub struct ContainerSnapshot {
 /// containers yet" while four containers were running and reporting. The old
 /// code also swallowed the parse failure with a bare `if let Ok(..)`, which is
 /// why nothing in the logs pointed at it.
+/// The scope for a reported container: what the agent said, or what Stacker
+/// works out from the labels it forwarded.
+///
+/// Agents that predate scope reporting send neither, and are classified from
+/// the app code alone — which is why the label matters and why unrecognised
+/// falls back to `project`.
+fn reported_scope(c: &crate::forms::status_panel::HealthContainerReport) -> String {
+    if let Some(scope) = c.scope.as_deref() {
+        if scope == crate::helpers::stacker_labels::SCOPE_PLATFORM
+            || scope == crate::helpers::stacker_labels::SCOPE_PROJECT
+        {
+            return scope.to_string();
+        }
+    }
+
+    crate::project_app::classify_scope(
+        c.labels.as_ref(),
+        Some(&c.app_code),
+        c.container_name.as_deref(),
+        c.image.as_deref(),
+    )
+    .as_str()
+    .to_string()
+}
+
 fn container_snapshots_from_health(result: &serde_json::Value) -> Vec<ContainerSnapshot> {
     fn state_of<T: serde::Serialize>(container_state: &T) -> Option<String> {
         serde_json::to_value(container_state)
@@ -82,20 +117,31 @@ fn container_snapshots_from_health(result: &serde_json::Value) -> Vec<ContainerS
                     id: None,
                     app: Some(c.app_code.clone()),
                     state: state_of(&c.container_state),
-                    image: None,
+                    image: c.image.clone(),
                     name: c.container_name.clone(),
+                    scope: reported_scope(c),
+                    source: "health".to_string(),
                 })
                 .collect();
         }
     }
 
     if let Ok(single) = serde_json::from_value::<HealthCommandReport>(result.clone()) {
+        // `name: None` here is why the dashboard grew a `container-3` row: it
+        // invented a name for the nameless entry, so the same container
+        // appeared twice under two different labels. Rows without a name are
+        // merged onto the app's existing row by the caller and never stand
+        // alone.
         return vec![ContainerSnapshot {
             id: None,
             app: Some(single.app_code.clone()),
             state: state_of(&single.container_state),
             image: None,
             name: None,
+            scope: crate::project_app::classify_scope(None, Some(&single.app_code), None, None)
+                .as_str()
+                .to_string(),
+            source: "health".to_string(),
         }];
     }
 
@@ -115,6 +161,82 @@ pub struct SnapshotQuery {
 
 fn default_command_limit() -> i64 {
     50
+}
+
+/// The container list a deployment shows, assembled so its *membership* is
+/// stable and only the states move.
+///
+/// Rows are seeded from `project_app` — what the deployment is configured to
+/// run — and the newest report is laid over them. A report that is missing,
+/// stale or partial changes states to `unknown`; it never removes a row. Before
+/// this, the list *was* the last report, so any gap emptied the dashboard and
+/// the containers appeared to come and go by themselves.
+///
+/// Keyed by container name where one is known, falling back to the app code.
+/// A report carrying no name at all (the single-app health shape) merges onto
+/// the app's row rather than becoming a second, nameless row — which is how the
+/// same agent container came to be listed twice, once as `container-3`.
+fn assemble_containers(
+    apps: &[ProjectApp],
+    latest_health: Option<&Command>,
+) -> Vec<ContainerSnapshot> {
+    use std::collections::BTreeMap;
+
+    // BTreeMap, not HashMap: a stable order is part of "the list does not jump
+    // about" — HashMap iteration order varies between requests.
+    let mut rows: BTreeMap<String, ContainerSnapshot> = BTreeMap::new();
+
+    for app in apps {
+        let scope = crate::project_app::classify_scope(
+            app.labels.as_ref(),
+            Some(&app.code),
+            None,
+            Some(&app.image),
+        );
+        rows.insert(
+            app.code.clone(),
+            ContainerSnapshot {
+                id: None,
+                app: Some(app.code.clone()),
+                state: Some("unknown".to_string()),
+                image: Some(app.image.clone()),
+                name: None,
+                scope: scope.as_str().to_string(),
+                source: "registry".to_string(),
+            },
+        );
+    }
+
+    let Some(result) = latest_health.and_then(|cmd| cmd.result.as_ref()) else {
+        return rows.into_values().collect();
+    };
+
+    for reported in container_snapshots_from_health(result) {
+        let by_app = reported.app.clone();
+        // Merge onto the seeded row when the report names an app we know,
+        // otherwise the container's own name keys a new row.
+        let key = match (&by_app, &reported.name) {
+            (Some(app), _) if rows.contains_key(app) => app.clone(),
+            (_, Some(name)) => name.clone(),
+            (Some(app), None) => app.clone(),
+            (None, None) => continue, // nothing to identify it by
+        };
+
+        match rows.get_mut(&key) {
+            Some(existing) => {
+                existing.state = reported.state.or(existing.state.take());
+                existing.name = reported.name.or(existing.name.take());
+                existing.image = reported.image.or(existing.image.take());
+                existing.scope = reported.scope;
+                existing.source = reported.source;
+            }
+            None => {
+                rows.insert(key, reported);
+            }
+        }
+    }
+
+    rows.into_values().collect()
 }
 
 fn visible_project_apps(apps: Vec<ProjectApp>) -> Vec<ProjectApp> {
@@ -190,45 +312,35 @@ pub async fn snapshot_handler(
     } else {
         vec![]
     };
+    // Seeding uses every app, including platform ones: the container list shows
+    // both, split by scope, while the Applications list shows only the user's.
+    // Filtering here and not there is what let system containers appear among
+    // the user's while being absent from their app list.
+    let apps_for_seeding = apps.clone();
     let apps = visible_project_apps(apps);
 
     tracing::debug!("[SNAPSHOT HANDLER] Apps : {:?}", apps);
 
-    // Fetch recent health commands WITH results to populate container states
-    // (we always need health results for container status, even if include_command_results=false)
-    let health_commands = db::command::fetch_recent_by_deployment(
+    // The newest health report, asked for directly.
+    //
+    // This used to scan the last 10 commands for health results, so a burst of
+    // `logs` or `exec` pushed the report out of the window and the list came
+    // back empty — the dashboard's containers vanished and reappeared on their
+    // own. The set a user sees must not depend on what else they did recently.
+    let latest_health = db::command::fetch_latest_completed_by_type(
         agent_pool.get_ref(),
         &deployment_hash,
-        10,    // Fetch last 10 health checks
-        false, // Always include results for health commands
+        "health",
     )
     .await
-    .unwrap_or_default();
+    .ok()
+    .flatten();
 
-    // Extract container states from recent health check commands
-    // Use a HashMap to keep only the most recent health check per app_code
-    let mut container_map: std::collections::HashMap<String, ContainerSnapshot> =
-        std::collections::HashMap::new();
-
-    for cmd in health_commands.iter() {
-        if cmd.r#type == "health" && cmd.status == "completed" {
-            if let Some(result) = &cmd.result {
-                for container in container_snapshots_from_health(result) {
-                    let Some(app_code) = container.app.clone() else {
-                        continue;
-                    };
-                    // Keep the most recent report per app (commands arrive DESC).
-                    container_map.entry(app_code).or_insert(container);
-                }
-            }
-        }
-    }
-
-    let containers: Vec<ContainerSnapshot> = container_map.into_values().collect();
+    let containers = assemble_containers(&apps_for_seeding, latest_health.as_ref());
 
     tracing::debug!(
-        "[SNAPSHOT HANDLER] Containers extracted from {} health checks: {:?}",
-        health_commands.len(),
+        "[SNAPSHOT HANDLER] Containers assembled ({} rows): {:?}",
+        containers.len(),
         containers
     );
 
@@ -515,5 +627,157 @@ mod tests {
 
         let codes = apps.iter().map(|app| app.code.as_str()).collect::<Vec<_>>();
         assert_eq!(codes, vec!["coolify"]);
+    }
+}
+
+#[cfg(test)]
+mod assembly_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn app(code: &str, image: &str) -> ProjectApp {
+        let mut a = ProjectApp::new(1, code.to_string(), code.to_string(), image.to_string());
+        a.id = 0;
+        a
+    }
+
+    fn health_command(result: serde_json::Value) -> Command {
+        let mut cmd = Command::default();
+        cmd.r#type = "health".to_string();
+        cmd.status = "completed".to_string();
+        cmd.result = Some(result);
+        cmd
+    }
+
+    fn all_health(containers: serde_json::Value) -> serde_json::Value {
+        json!({ "type": "all_health", "deployment_hash": "d", "status": "ok",
+                "containers": containers })
+    }
+
+    fn names(rows: &[ContainerSnapshot]) -> Vec<(Option<String>, String)> {
+        rows.iter()
+            .map(|r| (r.app.clone(), r.scope.clone()))
+            .collect()
+    }
+
+    /// The requirement itself: the set of rows must not depend on whether a
+    /// report happened to arrive. Only the states may differ.
+    #[test]
+    fn membership_is_the_same_with_and_without_a_report() {
+        let apps = vec![
+            app("floci", "floci/floci:latest"),
+            app("floci-ui", "floci/floci-ui:latest"),
+        ];
+
+        let without = assemble_containers(&apps, None);
+        let cmd = health_command(all_health(json!([
+            { "app_code": "floci", "container_name": "project-app-1",
+              "container_state": "running", "status": "ok" }
+        ])));
+        let with = assemble_containers(&apps, Some(&cmd));
+
+        assert_eq!(names(&without), names(&with), "the row set must not move");
+        assert_eq!(without.len(), 2);
+
+        let reported = with
+            .iter()
+            .find(|r| r.app.as_deref() == Some("floci"))
+            .unwrap();
+        assert_eq!(reported.state.as_deref(), Some("running"));
+        let silent = with
+            .iter()
+            .find(|r| r.app.as_deref() == Some("floci-ui"))
+            .unwrap();
+        assert_eq!(
+            silent.state.as_deref(),
+            Some("unknown"),
+            "unreported means unknown, not gone"
+        );
+    }
+
+    /// A report that mentions nothing must not empty the list.
+    #[test]
+    fn an_empty_report_does_not_remove_rows() {
+        let apps = vec![app("floci", "floci/floci:latest")];
+        let cmd = health_command(all_health(json!([])));
+
+        let rows = assemble_containers(&apps, Some(&cmd));
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].state.as_deref(), Some("unknown"));
+    }
+
+    /// The single-app health shape carries no container name. It used to become
+    /// its own nameless row, which the dashboard rendered as `container-3` —
+    /// the same agent listed twice.
+    #[test]
+    fn a_nameless_report_merges_instead_of_adding_a_row() {
+        let apps = vec![app("floci", "floci/floci:latest")];
+        let cmd = health_command(json!({
+            "type": "health", "app_code": "floci", "deployment_hash": "d",
+            "container_state": "running", "status": "ok"
+        }));
+
+        let rows = assemble_containers(&apps, Some(&cmd));
+
+        assert_eq!(rows.len(), 1, "no second, nameless row");
+        assert_eq!(rows[0].state.as_deref(), Some("running"));
+    }
+
+    /// A container the agent reports that is not in the registry still shows —
+    /// it is really running, and hiding it would be its own kind of surprise.
+    #[test]
+    fn unregistered_containers_are_added_not_dropped() {
+        let apps = vec![app("floci", "floci/floci:latest")];
+        let cmd = health_command(all_health(json!([
+            { "app_code": "floci", "container_name": "project-app-1",
+              "container_state": "running", "status": "ok" },
+            { "app_code": "statuspanel", "container_name": "statuspanel",
+              "container_state": "running", "status": "ok" }
+        ])));
+
+        let rows = assemble_containers(&apps, Some(&cmd));
+
+        assert_eq!(rows.len(), 2);
+        let panel = rows
+            .iter()
+            .find(|r| r.app.as_deref() == Some("statuspanel"))
+            .unwrap();
+        assert_eq!(
+            panel.scope, "platform",
+            "the panel is the platform's, not the user's"
+        );
+    }
+
+    /// The agent's own classification wins when it sends one.
+    #[test]
+    fn the_reported_scope_is_respected() {
+        let cmd = health_command(all_health(json!([
+            { "app_code": "anything", "container_name": "anything",
+              "container_state": "running", "status": "ok", "scope": "platform" }
+        ])));
+
+        let rows = assemble_containers(&[], Some(&cmd));
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].scope, "platform");
+    }
+
+    /// Order is part of stability: rows must not shuffle between requests.
+    #[test]
+    fn rows_come_back_in_a_stable_order() {
+        let apps = vec![app("zeta", "z:1"), app("alpha", "a:1"), app("mu", "m:1")];
+
+        let first = assemble_containers(&apps, None);
+        let second = assemble_containers(&apps, None);
+
+        assert_eq!(names(&first), names(&second));
+        assert_eq!(
+            first
+                .iter()
+                .filter_map(|r| r.app.clone())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "mu", "zeta"]
+        );
     }
 }

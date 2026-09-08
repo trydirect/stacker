@@ -290,6 +290,20 @@ pub struct HealthContainerReport {
     pub status: HealthStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics: Option<Value>,
+    /// `project` or `platform`, as the agent classified it.
+    ///
+    /// Optional because older agents do not send it; Stacker classifies those
+    /// itself from labels and names. See
+    /// `config/shared-fixtures/agent-contract/app-code-resolution.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Every label Docker reports for the container, when the agent includes
+    /// them. Lets Stacker read `my.stacker.scope` and the Compose working
+    /// directory for agents that do not classify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 /// Aggregate health report covering every container on a deployment.
