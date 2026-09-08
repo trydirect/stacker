@@ -1024,3 +1024,162 @@ fn test_custom_config_files_saved_to_labels() {
         "telegraf.conf content should be preserved"
     );
 }
+
+// ── scope classification ────────────────────────────────────────────────────
+
+fn labels(pairs: &[(&str, &str)]) -> serde_json::Value {
+    serde_json::Value::Object(
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), serde_json::json!(v)))
+            .collect(),
+    )
+}
+
+/// The label decides, in both directions, whatever else suggests.
+#[test]
+fn scope_label_overrides_every_other_signal() {
+    let platform_label = labels(&[("my.stacker.scope", "platform")]);
+    assert_eq!(
+        super::classify_scope(
+            Some(&platform_label),
+            Some("floci"),
+            Some("project-app-1"),
+            Some("floci/floci:latest")
+        ),
+        super::Scope::Platform
+    );
+
+    // A user who names their own app `caddy` and labels it as theirs keeps it.
+    let project_label = labels(&[("my.stacker.scope", "project")]);
+    assert_eq!(
+        super::classify_scope(
+            Some(&project_label),
+            Some("caddy"),
+            Some("caddy"),
+            Some("caddy:2")
+        ),
+        super::Scope::Project
+    );
+}
+
+/// The deployment-scope convention: platform services get their own directory.
+#[test]
+fn scope_falls_back_to_the_compose_working_directory() {
+    let statuspanel = labels(&[(
+        "com.docker.compose.project.working_dir",
+        "/home/trydirect/statuspanel",
+    )]);
+    assert_eq!(
+        super::classify_scope(
+            Some(&statuspanel),
+            Some("agent"),
+            Some("statuspanel_agent"),
+            None
+        ),
+        super::Scope::Platform
+    );
+
+    let project = labels(&[(
+        "com.docker.compose.project.working_dir",
+        "/home/trydirect/project",
+    )]);
+    assert_eq!(
+        super::classify_scope(Some(&project), Some("floci"), Some("project-app-1"), None),
+        super::Scope::Project
+    );
+}
+
+#[test]
+fn scope_falls_back_to_image_then_code() {
+    assert_eq!(
+        super::classify_scope(
+            None,
+            Some("web"),
+            Some("statuspanel"),
+            Some("trydirect/status:latest")
+        ),
+        super::Scope::Platform
+    );
+    assert_eq!(
+        super::classify_scope(None, Some("nginx_proxy_manager"), None, None),
+        super::Scope::Platform
+    );
+}
+
+/// Proxies are not classified by name. Stacker labels the ones it creates, and
+/// one the user brought is theirs — the same code list also drives what gets
+/// deployed, so a name match there would delete their service.
+#[test]
+fn a_users_own_proxy_stays_theirs() {
+    for code in ["caddy", "traefik", "nginx"] {
+        assert_eq!(
+            super::classify_scope(
+                None,
+                Some(code),
+                Some(code),
+                Some(&format!("{code}:latest"))
+            ),
+            super::Scope::Project,
+            "{code} without a platform label belongs to the user"
+        );
+    }
+}
+
+/// Codes are matched exactly, never as substrings: the agent used to classify
+/// by `name.contains("status")`, which also caught a user's `status-page`.
+#[test]
+fn scope_does_not_match_substrings() {
+    for code in ["status-page", "statuspage", "orderstatus", "my-caddy-site"] {
+        assert_eq!(
+            super::classify_scope(None, Some(code), Some(code), None),
+            super::Scope::Project,
+            "{code} is a user's app"
+        );
+    }
+}
+
+/// Telegraf is monitoring infrastructure by nature, but the user installs it by
+/// choice — so it is theirs, and belongs in the Applications list.
+#[test]
+fn telegraf_is_a_project_app() {
+    assert_eq!(
+        super::classify_scope(
+            None,
+            Some("telegraf"),
+            Some("telegraf"),
+            Some("telegraf:1.29")
+        ),
+        super::Scope::Project
+    );
+}
+
+/// Unrecognised means project: a misplaced platform container is untidy, a
+/// missing user app looks like data loss.
+#[test]
+fn scope_defaults_to_project() {
+    assert_eq!(
+        super::classify_scope(None, None, None, None),
+        super::Scope::Project
+    );
+    assert_eq!(
+        super::classify_scope(
+            Some(&labels(&[])),
+            Some("anything"),
+            Some("anything"),
+            Some("x/y:1")
+        ),
+        super::Scope::Project
+    );
+}
+
+#[test]
+fn normalize_app_code_splits_on_spaces_and_dots() {
+    assert_eq!(super::normalize_app_code("Status Panel"), "status_panel");
+    assert_eq!(
+        super::normalize_app_code("nginx-proxy-manager"),
+        "nginx_proxy_manager"
+    );
+    assert_eq!(super::normalize_app_code("/statuspanel"), "statuspanel");
+    assert_eq!(super::normalize_app_code("my.app.name"), "my_app_name");
+}
