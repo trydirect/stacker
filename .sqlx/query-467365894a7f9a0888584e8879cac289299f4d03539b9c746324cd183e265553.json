@@ -152,6 +152,11 @@
         "ordinal": 29,
         "name": "deployment_id",
         "type_info": "Int4"
+      },
+      {
+        "ordinal": 30,
+        "name": "config_contract",
+        "type_info": "Jsonb"
       }
     ],
     "parameters": {
@@ -183,6 +188,7 @@
       false,
       false,
       false,
+      true,
       true,
       true,
       true,

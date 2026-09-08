@@ -366,5 +366,9 @@ pub(crate) fn merge_project_app(existing: ProjectApp, incoming: ProjectApp) -> P
         config_hash: existing.config_hash,
         parent_app_code: incoming.parent_app_code.or(existing.parent_app_code),
         deployment_id: incoming.deployment_id.or(existing.deployment_id),
+        config_contract: incoming
+            .config_contract
+            .clone()
+            .or_else(|| existing.config_contract.clone()),
     }
 }

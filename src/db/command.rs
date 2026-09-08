@@ -347,6 +347,44 @@ pub async fn fetch_updates_by_deployment(
 
 /// Fetch recent commands for a deployment with optional result exclusion
 #[tracing::instrument(name = "Fetch recent commands for deployment", skip(pool))]
+/// The newest completed command of one type for a deployment.
+///
+/// The snapshot used to scan the last N commands and pick the health results
+/// out of them, so a burst of `logs` or `exec` pushed the health report out of
+/// the window and the container list went empty — the dashboard's containers
+/// vanished and came back on their own. Asking for the one command that matters
+/// removes the window entirely.
+#[tracing::instrument(name = "Fetch latest completed command by type", skip(pool))]
+pub async fn fetch_latest_completed_by_type(
+    pool: &PgPool,
+    deployment_hash: &str,
+    command_type: &str,
+) -> Result<Option<Command>, String> {
+    sqlx::query_as!(
+        Command,
+        r#"
+        SELECT id, command_id, deployment_hash, type, status, priority,
+               parameters, result, error, created_by, created_at, updated_at,
+               timeout_seconds, metadata
+        FROM commands
+        WHERE deployment_hash = $1
+          AND type = $2
+          AND status = 'completed'
+          AND result IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#,
+        deployment_hash,
+        command_type,
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to fetch latest {} command: {:?}", command_type, err);
+        format!("Database error: {}", err)
+    })
+}
+
 pub async fn fetch_recent_by_deployment(
     pool: &PgPool,
     deployment_hash: &str,
