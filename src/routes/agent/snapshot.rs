@@ -176,8 +176,18 @@ fn default_command_limit() -> i64 {
 /// A report carrying no name at all (the single-app health shape) merges onto
 /// the app's row rather than becoming a second, nameless row — which is how the
 /// same agent container came to be listed twice, once as `container-3`.
+///
+/// **Membership comes from `latest_all_health` alone.** Only the aggregate
+/// report describes the whole machine; a single-app one describes a single
+/// container and says nothing about the rest. Reading whichever health command
+/// finished last collapsed the list to the seeded apps whenever a per-app check
+/// was newest — on dev, opening one app's health took the list from four
+/// containers to two, then back, without anything on the server changing.
+/// `latest_health` may therefore refresh a row that already exists, and may
+/// never add or remove one.
 fn assemble_containers(
     apps: &[ProjectApp],
+    latest_all_health: Option<&Command>,
     latest_health: Option<&Command>,
 ) -> Vec<ContainerSnapshot> {
     use std::collections::BTreeMap;
@@ -207,36 +217,92 @@ fn assemble_containers(
         );
     }
 
-    let Some(result) = latest_health.and_then(|cmd| cmd.result.as_ref()) else {
-        return rows.into_values().collect();
-    };
+    // The aggregate defines the set: it may add rows for containers the
+    // registry does not know about, such as the platform's own.
+    if let Some(result) = latest_all_health.and_then(|cmd| cmd.result.as_ref()) {
+        for reported in container_snapshots_from_health(result) {
+            overlay(&mut rows, reported, true);
+        }
+    }
 
-    for reported in container_snapshots_from_health(result) {
-        let by_app = reported.app.clone();
-        // Merge onto the seeded row when the report names an app we know,
-        // otherwise the container's own name keys a new row.
-        let key = match (&by_app, &reported.name) {
-            (Some(app), _) if rows.contains_key(app) => app.clone(),
-            (_, Some(name)) => name.clone(),
-            (Some(app), None) => app.clone(),
-            (None, None) => continue, // nothing to identify it by
-        };
-
-        match rows.get_mut(&key) {
-            Some(existing) => {
-                existing.state = reported.state.or(existing.state.take());
-                existing.name = reported.name.or(existing.name.take());
-                existing.image = reported.image.or(existing.image.take());
-                existing.scope = reported.scope;
-                existing.source = reported.source;
-            }
-            None => {
-                rows.insert(key, reported);
-            }
+    // A newer single-app report refreshes one row. Running it when it *is* the
+    // aggregate we just applied is harmless — the same values land twice.
+    if let Some(result) = latest_health.and_then(|cmd| cmd.result.as_ref()) {
+        for reported in container_snapshots_from_health(result) {
+            overlay(&mut rows, reported, false);
         }
     }
 
     rows.into_values().collect()
+}
+
+/// Lay one reported container over the assembled rows.
+///
+/// `authoritative` separates the two callers. The aggregate report describes
+/// the whole machine: it may introduce rows and it decides scope. A single-app
+/// report describes one container and carries neither labels, nor an image, nor
+/// a container name — it may only refresh state.
+///
+/// Both restrictions are load-bearing. Letting a single-app report add rows
+/// makes them appear and vanish as the next aggregate arrives; letting it set
+/// scope moved the Status Panel into the user's own container list, because
+/// its bare app code `web` matches nothing and falls back to `project`.
+fn overlay(
+    rows: &mut std::collections::BTreeMap<String, ContainerSnapshot>,
+    reported: ContainerSnapshot,
+    authoritative: bool,
+) {
+    // Merge onto the seeded row when the report names an app we know,
+    // otherwise the container's own name keys a new row.
+    let key = match (&reported.app, &reported.name) {
+        (Some(app), _) if rows.contains_key(app) => app.clone(),
+        (_, Some(name)) => name.clone(),
+        (Some(app), None) => app.clone(),
+        (None, None) => return, // nothing to identify it by
+    };
+
+    // A row added by the aggregate is keyed by its container name, so a later
+    // single-app report about the same container — which carries the app code
+    // and no name — would miss it. Fall back to the app code before giving up,
+    // otherwise the per-app Health button refreshes nothing.
+    let key = if rows.contains_key(&key) {
+        key
+    } else {
+        match reported
+            .app
+            .as_deref()
+            .and_then(|code| find_by_app(rows, code))
+        {
+            Some(existing_key) => existing_key,
+            None => key,
+        }
+    };
+
+    match rows.get_mut(&key) {
+        Some(existing) => {
+            existing.state = reported.state.or(existing.state.take());
+            existing.name = reported.name.or(existing.name.take());
+            existing.image = reported.image.or(existing.image.take());
+            if authoritative {
+                existing.scope = reported.scope;
+            }
+            existing.source = reported.source;
+        }
+        None if authoritative => {
+            rows.insert(key, reported);
+        }
+        None => {}
+    }
+}
+
+/// The key of the row describing this app code, if one is already present.
+fn find_by_app(
+    rows: &std::collections::BTreeMap<String, ContainerSnapshot>,
+    app_code: &str,
+) -> Option<String> {
+    rows.iter()
+        .find(|(_, row)| row.app.as_deref() == Some(app_code))
+        .map(|(key, _)| key.clone())
 }
 
 fn visible_project_apps(apps: Vec<ProjectApp>) -> Vec<ProjectApp> {
@@ -327,16 +393,35 @@ pub async fn snapshot_handler(
     // `logs` or `exec` pushed the report out of the window and the list came
     // back empty — the dashboard's containers vanished and reappeared on their
     // own. The set a user sees must not depend on what else they did recently.
-    let latest_health = db::command::fetch_latest_completed_by_type(
+    //
+    // Two reports, because the two shapes answer different questions. Only the
+    // aggregate says which containers exist; a single-app report says how one
+    // container is doing. See [`assemble_containers`].
+    let latest_all_health = db::command::fetch_latest_completed_by_type(
         agent_pool.get_ref(),
         &deployment_hash,
         "health",
+        Some(crate::forms::status_panel::ALL_HEALTH_RESULT_TYPE),
     )
     .await
     .ok()
     .flatten();
 
-    let containers = assemble_containers(&apps_for_seeding, latest_health.as_ref());
+    let latest_health = db::command::fetch_latest_completed_by_type(
+        agent_pool.get_ref(),
+        &deployment_hash,
+        "health",
+        None,
+    )
+    .await
+    .ok()
+    .flatten();
+
+    let containers = assemble_containers(
+        &apps_for_seeding,
+        latest_all_health.as_ref(),
+        latest_health.as_ref(),
+    );
 
     tracing::debug!(
         "[SNAPSHOT HANDLER] Containers assembled ({} rows): {:?}",
@@ -669,12 +754,12 @@ mod assembly_tests {
             app("floci-ui", "floci/floci-ui:latest"),
         ];
 
-        let without = assemble_containers(&apps, None);
+        let without = assemble_containers(&apps, None, None);
         let cmd = health_command(all_health(json!([
             { "app_code": "floci", "container_name": "project-app-1",
               "container_state": "running", "status": "ok" }
         ])));
-        let with = assemble_containers(&apps, Some(&cmd));
+        let with = assemble_containers(&apps, Some(&cmd), Some(&cmd));
 
         assert_eq!(names(&without), names(&with), "the row set must not move");
         assert_eq!(without.len(), 2);
@@ -701,7 +786,7 @@ mod assembly_tests {
         let apps = vec![app("floci", "floci/floci:latest")];
         let cmd = health_command(all_health(json!([])));
 
-        let rows = assemble_containers(&apps, Some(&cmd));
+        let rows = assemble_containers(&apps, Some(&cmd), Some(&cmd));
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].state.as_deref(), Some("unknown"));
@@ -718,7 +803,7 @@ mod assembly_tests {
             "container_state": "running", "status": "ok"
         }));
 
-        let rows = assemble_containers(&apps, Some(&cmd));
+        let rows = assemble_containers(&apps, None, Some(&cmd));
 
         assert_eq!(rows.len(), 1, "no second, nameless row");
         assert_eq!(rows[0].state.as_deref(), Some("running"));
@@ -736,7 +821,7 @@ mod assembly_tests {
               "container_state": "running", "status": "ok" }
         ])));
 
-        let rows = assemble_containers(&apps, Some(&cmd));
+        let rows = assemble_containers(&apps, Some(&cmd), Some(&cmd));
 
         assert_eq!(rows.len(), 2);
         let panel = rows
@@ -749,6 +834,80 @@ mod assembly_tests {
         );
     }
 
+    /// Caught on dev: opening one app's health took the container list from
+    /// four rows to two and back. A single-app report describes one container
+    /// and knows nothing about the rest, so it must never define the set.
+    #[test]
+    fn a_single_app_report_does_not_shrink_the_list() {
+        let apps = vec![app("floci", "floci/floci:latest")];
+        let aggregate = health_command(all_health(json!([
+            { "app_code": "floci", "container_name": "project-app-1",
+              "container_state": "running", "status": "ok" },
+            { "app_code": "agent", "container_name": "statuspanel_agent",
+              "container_state": "running", "status": "ok" }
+        ])));
+        let single = health_command(json!({
+            "type": "health", "app_code": "floci", "deployment_hash": "d",
+            "container_state": "exited", "status": "ok"
+        }));
+
+        let rows = assemble_containers(&apps, Some(&aggregate), Some(&single));
+
+        assert_eq!(rows.len(), 2, "the platform row must survive");
+        let panel = rows
+            .iter()
+            .find(|r| r.name.as_deref() == Some("statuspanel_agent"))
+            .expect("the container the single-app report says nothing about");
+        assert_eq!(panel.scope, "platform");
+        assert_eq!(panel.state.as_deref(), Some("running"));
+
+        let floci = rows
+            .iter()
+            .find(|r| r.app.as_deref() == Some("floci"))
+            .unwrap();
+        assert_eq!(
+            floci.state.as_deref(),
+            Some("exited"),
+            "the newer report still refreshes the row it does describe"
+        );
+    }
+
+    /// The Health button on a system container asks about one app. Its row was
+    /// keyed by container name when the aggregate added it, so matching by key
+    /// alone missed it and the click appeared to do nothing.
+    #[test]
+    fn a_single_app_report_refreshes_a_row_keyed_by_container_name() {
+        let aggregate = health_command(all_health(json!([
+            { "app_code": "web", "container_name": "statuspanel",
+              "container_state": "running", "status": "ok" }
+        ])));
+        let single = health_command(json!({
+            "type": "health", "app_code": "web", "deployment_hash": "d",
+            "container_state": "exited", "status": "unhealthy"
+        }));
+
+        let rows = assemble_containers(&[], Some(&aggregate), Some(&single));
+
+        assert_eq!(rows.len(), 1, "still one container, not two");
+        assert_eq!(rows[0].name.as_deref(), Some("statuspanel"));
+        assert_eq!(rows[0].state.as_deref(), Some("exited"));
+        assert_eq!(rows[0].scope, "platform", "and still the platform's");
+    }
+
+    /// A per-app report about something no aggregate has mentioned must not
+    /// conjure a row that the next aggregate takes away again.
+    #[test]
+    fn a_single_app_report_does_not_add_a_row() {
+        let cmd = health_command(json!({
+            "type": "health", "app_code": "stranger", "deployment_hash": "d",
+            "container_state": "running", "status": "ok"
+        }));
+
+        let rows = assemble_containers(&[], None, Some(&cmd));
+
+        assert!(rows.is_empty(), "membership comes from the aggregate alone");
+    }
+
     /// The agent's own classification wins when it sends one.
     #[test]
     fn the_reported_scope_is_respected() {
@@ -757,7 +916,7 @@ mod assembly_tests {
               "container_state": "running", "status": "ok", "scope": "platform" }
         ])));
 
-        let rows = assemble_containers(&[], Some(&cmd));
+        let rows = assemble_containers(&[], Some(&cmd), Some(&cmd));
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].scope, "platform");
@@ -768,8 +927,8 @@ mod assembly_tests {
     fn rows_come_back_in_a_stable_order() {
         let apps = vec![app("zeta", "z:1"), app("alpha", "a:1"), app("mu", "m:1")];
 
-        let first = assemble_containers(&apps, None);
-        let second = assemble_containers(&apps, None);
+        let first = assemble_containers(&apps, None, None);
+        let second = assemble_containers(&apps, None, None);
 
         assert_eq!(names(&first), names(&second));
         assert_eq!(

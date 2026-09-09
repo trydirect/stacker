@@ -345,20 +345,27 @@ pub async fn fetch_updates_by_deployment(
     })
 }
 
-/// Fetch recent commands for a deployment with optional result exclusion
-#[tracing::instrument(name = "Fetch recent commands for deployment", skip(pool))]
-/// The newest completed command of one type for a deployment.
+/// The newest completed command of one type for a deployment, optionally
+/// narrowed to one shape of result.
 ///
 /// The snapshot used to scan the last N commands and pick the health results
 /// out of them, so a burst of `logs` or `exec` pushed the health report out of
 /// the window and the container list went empty — the dashboard's containers
 /// vanished and came back on their own. Asking for the one command that matters
 /// removes the window entirely.
+///
+/// `result_type` matches `result->>'type'`. The snapshot needs it because the
+/// two health shapes are not interchangeable: only the aggregate `all_health`
+/// describes the whole machine, while a single-app report describes one
+/// container. Taking whichever landed last as the picture of the deployment
+/// made the list collapse to the seeded rows for as long as a per-app health
+/// check was the newest — observed on dev, four containers down to two.
 #[tracing::instrument(name = "Fetch latest completed command by type", skip(pool))]
 pub async fn fetch_latest_completed_by_type(
     pool: &PgPool,
     deployment_hash: &str,
     command_type: &str,
+    result_type: Option<&str>,
 ) -> Result<Option<Command>, String> {
     sqlx::query_as!(
         Command,
@@ -371,11 +378,13 @@ pub async fn fetch_latest_completed_by_type(
           AND type = $2
           AND status = 'completed'
           AND result IS NOT NULL
+          AND ($3::text IS NULL OR result->>'type' = $3)
         ORDER BY created_at DESC
         LIMIT 1
         "#,
         deployment_hash,
         command_type,
+        result_type,
     )
     .fetch_optional(pool)
     .await
