@@ -340,11 +340,16 @@ pub async fn snapshot_handler(
     )
     .await?;
 
-    // Fetch agent
+    // Every read below propagates its failure instead of degrading into
+    // "nothing found". A snapshot that cannot read the database cannot say what
+    // is running, and answering 200 with an empty list told users their
+    // containers were gone when the truth was that Postgres had hiccuped. An
+    // error the dashboard can show beats a confident wrong answer.
+    //
+    // `Ok(None)` still means what it says: no agent, no deployment, no apps.
     let agent = db::agent::fetch_by_deployment_hash(agent_pool.get_ref(), &deployment_hash)
         .await
-        .ok()
-        .flatten();
+        .map_err(JsonResponse::<String>::internal_server_error)?;
 
     tracing::debug!("[SNAPSHOT HANDLER] Agent : {:?}", agent);
     // Fetch recent commands with optional result exclusion to reduce payload size
@@ -355,26 +360,28 @@ pub async fn snapshot_handler(
         !query.include_command_results,
     )
     .await
-    .unwrap_or_default();
+    .map_err(JsonResponse::<String>::internal_server_error)?;
 
     tracing::debug!("[SNAPSHOT HANDLER] Commands : {:?}", commands);
     // Fetch deployment to get project_id
     let deployment =
         db::deployment::fetch_by_deployment_hash(agent_pool.get_ref(), &deployment_hash)
             .await
-            .ok()
-            .flatten();
+            .map_err(JsonResponse::<String>::internal_server_error)?;
 
     tracing::debug!("[SNAPSHOT HANDLER] Deployment : {:?}", deployment);
     // Fetch apps scoped to this specific deployment (falls back to project-level if no deployment-scoped apps)
     let apps = if let Some(deployment) = &deployment {
+        // The seed. Losing this is what emptied the list: without the apps a
+        // deployment is configured to run, membership falls back to whatever
+        // the newest report happened to mention.
         db::project_app::fetch_by_deployment(
             agent_pool.get_ref(),
             deployment.project_id,
             deployment.id,
         )
         .await
-        .unwrap_or_default()
+        .map_err(JsonResponse::<String>::internal_server_error)?
     } else {
         vec![]
     };
@@ -404,8 +411,7 @@ pub async fn snapshot_handler(
         Some(crate::forms::status_panel::ALL_HEALTH_RESULT_TYPE),
     )
     .await
-    .ok()
-    .flatten();
+    .map_err(JsonResponse::<String>::internal_server_error)?;
 
     let latest_health = db::command::fetch_latest_completed_by_type(
         agent_pool.get_ref(),
@@ -414,8 +420,7 @@ pub async fn snapshot_handler(
         None,
     )
     .await
-    .ok()
-    .flatten();
+    .map_err(JsonResponse::<String>::internal_server_error)?;
 
     let containers = assemble_containers(
         &apps_for_seeding,
@@ -490,8 +495,7 @@ pub async fn project_snapshot_handler(
 
     let agent = db::agent::fetch_active_by_project(agent_pool.get_ref(), project_id)
         .await
-        .ok()
-        .flatten();
+        .map_err(JsonResponse::<String>::internal_server_error)?;
 
     let agent_snapshot = match agent {
         None => {
@@ -536,46 +540,53 @@ pub async fn project_snapshot_handler(
     let commands =
         db::command::fetch_recent_by_deployment(agent_pool.get_ref(), &deployment_hash, 50, true)
             .await
-            .unwrap_or_default();
+            .map_err(JsonResponse::<String>::internal_server_error)?;
 
     let deployment =
         db::deployment::fetch_by_deployment_hash(agent_pool.get_ref(), &deployment_hash)
             .await
-            .ok()
-            .flatten();
+            .map_err(JsonResponse::<String>::internal_server_error)?;
 
     let apps = if let Some(dep) = &deployment {
         db::project_app::fetch_by_deployment(agent_pool.get_ref(), dep.project_id, dep.id)
             .await
-            .unwrap_or_default()
+            .map_err(JsonResponse::<String>::internal_server_error)?
     } else {
         vec![]
     };
+    let apps_for_seeding = apps.clone();
     let apps = visible_project_apps(apps);
 
-    let health_commands =
-        db::command::fetch_recent_by_deployment(agent_pool.get_ref(), &deployment_hash, 10, false)
-            .await
-            .unwrap_or_default();
+    // The same assembly the deployment endpoint uses. This handler had kept the
+    // original one — a ten-command window, keyed by app code into a HashMap,
+    // with no seeding and no scope — so the dashboard silently swapped to an
+    // unstable, scopeless list whenever it fell back here, which it does as soon
+    // as a heartbeat looks stale. Two code paths answering the same question
+    // differently is how "the containers changed by themselves" survived being
+    // fixed once already.
+    let latest_all_health = db::command::fetch_latest_completed_by_type(
+        agent_pool.get_ref(),
+        &deployment_hash,
+        "health",
+        Some(crate::forms::status_panel::ALL_HEALTH_RESULT_TYPE),
+    )
+    .await
+    .map_err(JsonResponse::<String>::internal_server_error)?;
 
-    let mut container_map: std::collections::HashMap<String, ContainerSnapshot> =
-        std::collections::HashMap::new();
+    let latest_health = db::command::fetch_latest_completed_by_type(
+        agent_pool.get_ref(),
+        &deployment_hash,
+        "health",
+        None,
+    )
+    .await
+    .map_err(JsonResponse::<String>::internal_server_error)?;
 
-    for cmd in health_commands.iter() {
-        if cmd.r#type == "health" && cmd.status == "completed" {
-            if let Some(result) = &cmd.result {
-                for container in container_snapshots_from_health(result) {
-                    let Some(app_code) = container.app.clone() else {
-                        continue;
-                    };
-                    // Keep the most recent report per app (commands arrive DESC).
-                    container_map.entry(app_code).or_insert(container);
-                }
-            }
-        }
-    }
-
-    let containers: Vec<ContainerSnapshot> = container_map.into_values().collect();
+    let containers = assemble_containers(
+        &apps_for_seeding,
+        latest_all_health.as_ref(),
+        latest_health.as_ref(),
+    );
 
     let resp = SnapshotResponse {
         project_id: Some(project_id),
