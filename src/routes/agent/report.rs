@@ -174,10 +174,67 @@ pub async fn report_handler(
             // Remove from queue if still there (shouldn't be, but cleanup)
             let _ = db::command::remove_from_queue(agent_pool.as_ref(), &payload.command_id).await;
 
+            // Record what the deployment is running. Membership of the
+            // dashboard's container list comes from this table rather than from
+            // whichever report happened to be newest, which is what stopped the
+            // list changing by itself; see the migration for the history.
+            //
+            // Only aggregate health reports qualify — a per-app one describes a
+            // single container and cannot speak for the deployment.
+            if command.r#type == "health" && status == models::CommandStatus::Completed {
+                if let Some(result) = result_payload.as_ref() {
+                    let observed = crate::routes::agent::observed_containers_from_report(result);
+                    if !observed.is_empty() {
+                        // Best-effort: the report itself is already stored, and
+                        // failing the agent's request because bookkeeping fell
+                        // over would turn a display problem into a lost report.
+                        if let Err(err) = db::deployment_container::record_observed(
+                            agent_pool.as_ref(),
+                            &payload.deployment_hash,
+                            &observed,
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                deployment_hash = %payload.deployment_hash,
+                                error = %err,
+                                "Failed to record observed containers"
+                            );
+                        }
+                    }
+                }
+            }
+
             // Cleanup project_app record when remove_app command completes successfully
             if command.r#type == "remove_app" && status == models::CommandStatus::Completed {
                 if let Some(ref params) = command.parameters {
                     if let Some(app_code) = params.get("app_code").and_then(|v| v.as_str()) {
+                        // The only thing that takes a container off the list.
+                        // Independent of the project_app cleanup below: a
+                        // container can run without ever having been imported
+                        // as an app, and it still has to disappear when the
+                        // user removes it.
+                        match db::deployment_container::mark_removed_by_app_code(
+                            agent_pool.as_ref(),
+                            &payload.deployment_hash,
+                            app_code,
+                        )
+                        .await
+                        {
+                            Ok(count) => tracing::info!(
+                                deployment_hash = %payload.deployment_hash,
+                                app_code = %app_code,
+                                count,
+                                "Retired container rows after successful remove_app"
+                            ),
+                            Err(err) => tracing::warn!(
+                                deployment_hash = %payload.deployment_hash,
+                                app_code = %app_code,
+                                error = %err,
+                                "Failed to retire container rows after remove_app"
+                            ),
+                        }
+
                         match db::deployment::fetch_by_deployment_hash(
                             agent_pool.as_ref(),
                             &payload.deployment_hash,

@@ -50,9 +50,17 @@ pub struct ContainerSnapshot {
     /// disagreeing pattern lists.
     pub scope: String,
     /// Where this row came from: `registry` for one seeded from `project_app`
-    /// and not yet reported on, `health` or `list_containers` for one an agent
-    /// has reported. Lets the UI show "not reported yet" apart from "stopped".
+    /// and not yet reported on, `observed` for one the deployment has been seen
+    /// running, `health` or `list_containers` for one an agent has reported.
+    /// Lets the UI show "not reported yet" apart from "stopped".
     pub source: String,
+    /// When an aggregate report last mentioned this container.
+    ///
+    /// `None` for a row that only exists because the deployment is configured
+    /// to run it. Lets the dashboard say how old the news is instead of
+    /// implying that silence means stopped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Container states from one completed `health` command result.
@@ -121,6 +129,7 @@ fn container_snapshots_from_health(result: &serde_json::Value) -> Vec<ContainerS
                     name: c.container_name.clone(),
                     scope: reported_scope(c),
                     source: "health".to_string(),
+                    last_seen: None,
                 })
                 .collect();
         }
@@ -142,6 +151,7 @@ fn container_snapshots_from_health(result: &serde_json::Value) -> Vec<ContainerS
                 .as_str()
                 .to_string(),
             source: "health".to_string(),
+            last_seen: None,
         }];
     }
 
@@ -149,6 +159,45 @@ fn container_snapshots_from_health(result: &serde_json::Value) -> Vec<ContainerS
         "health result matched neither the aggregate nor the single-app shape; ignoring"
     );
     Vec::new()
+}
+
+/// The containers an aggregate report saw, for the observed-container table.
+///
+/// Returns nothing for any other shape, and that restriction is the point: a
+/// single-app report describes one container and says nothing about the rest,
+/// so recording it as an observation of the deployment would let one per-app
+/// health check rewrite what the deployment is believed to run.
+pub(crate) fn observed_containers_from_report(
+    result: &serde_json::Value,
+) -> Vec<crate::models::ObservedContainer> {
+    if result.get("type").and_then(|v| v.as_str())
+        != Some(crate::forms::status_panel::ALL_HEALTH_RESULT_TYPE)
+    {
+        return Vec::new();
+    }
+
+    let Ok(all) = serde_json::from_value::<AllHealthCommandReport>(result.clone()) else {
+        return Vec::new();
+    };
+
+    all.containers
+        .iter()
+        .chain(all.system_containers.iter())
+        .filter_map(|c| {
+            // No name, no identity: the table is keyed by container name, and a
+            // row that cannot be matched again would accumulate duplicates.
+            let container_name = c.container_name.clone()?;
+            Some(crate::models::ObservedContainer {
+                container_name,
+                app_code: Some(c.app_code.clone()).filter(|code| !code.is_empty()),
+                scope: reported_scope(c),
+                image: c.image.clone(),
+                state: serde_json::to_value(&c.container_state)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_lowercase)),
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,11 +215,19 @@ fn default_command_limit() -> i64 {
 /// The container list a deployment shows, assembled so its *membership* is
 /// stable and only the states move.
 ///
-/// Rows are seeded from `project_app` — what the deployment is configured to
-/// run — and the newest report is laid over them. A report that is missing,
-/// stale or partial changes states to `unknown`; it never removes a row. Before
-/// this, the list *was* the last report, so any gap emptied the dashboard and
-/// the containers appeared to come and go by themselves.
+/// Membership has two sources, and neither is a report:
+///
+/// 1. `project_app` — what the deployment is *configured* to run;
+/// 2. `deployment_container` — what has actually been *seen* running, which is
+///    where the platform's own containers come from, since nothing configures
+///    them.
+///
+/// Reports are laid over that and may only change state. This is the point of
+/// the table: before it, membership was recomputed from the newest report on
+/// every request, so a report that was missing, partial or of the wrong shape
+/// changed what the user saw. Three separate causes of that were found and
+/// fixed one at a time; taking membership out of the report removes the
+/// category rather than the next instance.
 ///
 /// Keyed by container name where one is known, falling back to the app code.
 /// A report carrying no name at all (the single-app health shape) merges onto
@@ -187,6 +244,7 @@ fn default_command_limit() -> i64 {
 /// never add or remove one.
 fn assemble_containers(
     apps: &[ProjectApp],
+    observed: &[crate::models::DeploymentContainer],
     latest_all_health: Option<&Command>,
     latest_health: Option<&Command>,
 ) -> Vec<ContainerSnapshot> {
@@ -213,12 +271,35 @@ fn assemble_containers(
                 name: None,
                 scope: scope.as_str().to_string(),
                 source: "registry".to_string(),
+                last_seen: None,
             },
         );
     }
 
-    // The aggregate defines the set: it may add rows for containers the
-    // registry does not know about, such as the platform's own.
+    // Containers seen running. Unlike a report, this does not come and go: a
+    // row stays until the app is deliberately removed, so a container the
+    // registry never knew about — the Status Panel, its agent, a proxy — keeps
+    // its place in the list even while the deployment is silent.
+    for row in observed {
+        overlay(
+            &mut rows,
+            ContainerSnapshot {
+                id: None,
+                app: row.app_code.clone(),
+                state: row.state.clone(),
+                image: row.image.clone(),
+                name: Some(row.container_name.clone()),
+                scope: row.scope.clone(),
+                source: "observed".to_string(),
+                last_seen: Some(row.last_seen_at),
+            },
+            true,
+        );
+    }
+
+    // The newest aggregate refreshes states. It may still add a row: a
+    // container reported before the observation table existed, or written
+    // moments ago by a report this request raced, should not be missing.
     if let Some(result) = latest_all_health.and_then(|cmd| cmd.result.as_ref()) {
         for reported in container_snapshots_from_health(result) {
             overlay(&mut rows, reported, true);
@@ -287,6 +368,9 @@ fn overlay(
                 existing.scope = reported.scope;
             }
             existing.source = reported.source;
+            // A report carries no timestamp of its own, so keep the one the
+            // persisted row brought rather than clearing it.
+            existing.last_seen = reported.last_seen.or(existing.last_seen.take());
         }
         None if authoritative => {
             rows.insert(key, reported);
@@ -422,8 +506,16 @@ pub async fn snapshot_handler(
     .await
     .map_err(JsonResponse::<String>::internal_server_error)?;
 
+    // What has been seen running here. This is the deployment's membership;
+    // the reports below only refresh it.
+    let observed =
+        db::deployment_container::fetch_by_deployment(agent_pool.get_ref(), &deployment_hash)
+            .await
+            .map_err(JsonResponse::<String>::internal_server_error)?;
+
     let containers = assemble_containers(
         &apps_for_seeding,
+        &observed,
         latest_all_health.as_ref(),
         latest_health.as_ref(),
     );
@@ -582,8 +674,14 @@ pub async fn project_snapshot_handler(
     .await
     .map_err(JsonResponse::<String>::internal_server_error)?;
 
+    let observed =
+        db::deployment_container::fetch_by_deployment(agent_pool.get_ref(), &deployment_hash)
+            .await
+            .map_err(JsonResponse::<String>::internal_server_error)?;
+
     let containers = assemble_containers(
         &apps_for_seeding,
+        &observed,
         latest_all_health.as_ref(),
         latest_health.as_ref(),
     );
@@ -604,6 +702,7 @@ pub async fn project_snapshot_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::DeploymentContainer;
     use serde_json::json;
 
     /// The aggregate the agent actually sends for `app_code: "all"`. Parsing
@@ -729,6 +828,7 @@ mod tests {
 #[cfg(test)]
 mod assembly_tests {
     use super::*;
+    use crate::models::DeploymentContainer;
     use serde_json::json;
 
     fn app(code: &str, image: &str) -> ProjectApp {
@@ -765,12 +865,12 @@ mod assembly_tests {
             app("floci-ui", "floci/floci-ui:latest"),
         ];
 
-        let without = assemble_containers(&apps, None, None);
+        let without = assemble_containers(&apps, &[], None, None);
         let cmd = health_command(all_health(json!([
             { "app_code": "floci", "container_name": "project-app-1",
               "container_state": "running", "status": "ok" }
         ])));
-        let with = assemble_containers(&apps, Some(&cmd), Some(&cmd));
+        let with = assemble_containers(&apps, &[], Some(&cmd), Some(&cmd));
 
         assert_eq!(names(&without), names(&with), "the row set must not move");
         assert_eq!(without.len(), 2);
@@ -797,7 +897,7 @@ mod assembly_tests {
         let apps = vec![app("floci", "floci/floci:latest")];
         let cmd = health_command(all_health(json!([])));
 
-        let rows = assemble_containers(&apps, Some(&cmd), Some(&cmd));
+        let rows = assemble_containers(&apps, &[], Some(&cmd), Some(&cmd));
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].state.as_deref(), Some("unknown"));
@@ -814,7 +914,7 @@ mod assembly_tests {
             "container_state": "running", "status": "ok"
         }));
 
-        let rows = assemble_containers(&apps, None, Some(&cmd));
+        let rows = assemble_containers(&apps, &[], None, Some(&cmd));
 
         assert_eq!(rows.len(), 1, "no second, nameless row");
         assert_eq!(rows[0].state.as_deref(), Some("running"));
@@ -832,7 +932,7 @@ mod assembly_tests {
               "container_state": "running", "status": "ok" }
         ])));
 
-        let rows = assemble_containers(&apps, Some(&cmd), Some(&cmd));
+        let rows = assemble_containers(&apps, &[], Some(&cmd), Some(&cmd));
 
         assert_eq!(rows.len(), 2);
         let panel = rows
@@ -843,6 +943,85 @@ mod assembly_tests {
             panel.scope, "platform",
             "the panel is the platform's, not the user's"
         );
+    }
+
+    /// Only the aggregate speaks for the deployment. A per-app report describes
+    /// one container, so recording it as an observation would let a single
+    /// Health click rewrite what the deployment is believed to run.
+    #[test]
+    fn only_an_aggregate_report_counts_as_an_observation() {
+        let single = json!({
+            "type": "health", "app_code": "web", "deployment_hash": "d",
+            "container_state": "running", "status": "ok"
+        });
+
+        assert!(observed_containers_from_report(&single).is_empty());
+        assert!(observed_containers_from_report(&json!({"nonsense": true})).is_empty());
+    }
+
+    #[test]
+    fn an_aggregate_report_yields_both_lists_with_their_scope() {
+        let result = json!({
+            "type": "all_health", "deployment_hash": "d", "status": "ok",
+            "containers": [
+                { "app_code": "floci", "container_name": "project-app-1",
+                  "container_state": "running", "status": "ok",
+                  "image": "floci/floci:latest" }
+            ],
+            "system_containers": [
+                { "app_code": "web", "container_name": "statuspanel",
+                  "container_state": "running", "status": "ok",
+                  "scope": "platform" }
+            ]
+        });
+
+        let observed = observed_containers_from_report(&result);
+
+        assert_eq!(observed.len(), 2);
+        assert_eq!(observed[0].container_name, "project-app-1");
+        assert_eq!(observed[0].scope, "project");
+        assert_eq!(observed[0].image.as_deref(), Some("floci/floci:latest"));
+        assert_eq!(observed[0].state.as_deref(), Some("running"));
+        assert_eq!(observed[1].container_name, "statuspanel");
+        assert_eq!(observed[1].scope, "platform");
+    }
+
+    /// The table is keyed by container name, so a nameless entry cannot be
+    /// matched again and would accumulate a fresh row on every report.
+    #[test]
+    fn a_container_without_a_name_is_not_recorded() {
+        let result = json!({
+            "type": "all_health", "deployment_hash": "d", "status": "ok",
+            "containers": [
+                { "app_code": "floci", "container_state": "running", "status": "ok" },
+                { "app_code": "floci-ui", "container_name": "project-floci-ui-1",
+                  "container_state": "running", "status": "ok" }
+            ]
+        });
+
+        let observed = observed_containers_from_report(&result);
+
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].container_name, "project-floci-ui-1");
+    }
+
+    /// An unlabelled platform container is still the platform's: the classifier
+    /// recognises it by name, which is what keeps old agents working.
+    #[test]
+    fn an_unlabelled_platform_container_is_still_classified() {
+        let result = json!({
+            "type": "all_health", "deployment_hash": "d", "status": "ok",
+            "containers": [
+                { "app_code": "agent", "container_name": "statuspanel_agent",
+                  "container_state": "running", "status": "ok" }
+            ]
+        });
+
+        let observed = observed_containers_from_report(&result);
+
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].scope, "platform");
+        assert_eq!(observed[0].app_code.as_deref(), Some("agent"));
     }
 
     /// Caught on dev: opening one app's health took the container list from
@@ -862,7 +1041,7 @@ mod assembly_tests {
             "container_state": "exited", "status": "ok"
         }));
 
-        let rows = assemble_containers(&apps, Some(&aggregate), Some(&single));
+        let rows = assemble_containers(&apps, &[], Some(&aggregate), Some(&single));
 
         assert_eq!(rows.len(), 2, "the platform row must survive");
         let panel = rows
@@ -897,7 +1076,7 @@ mod assembly_tests {
             "container_state": "exited", "status": "unhealthy"
         }));
 
-        let rows = assemble_containers(&[], Some(&aggregate), Some(&single));
+        let rows = assemble_containers(&[], &[], Some(&aggregate), Some(&single));
 
         assert_eq!(rows.len(), 1, "still one container, not two");
         assert_eq!(rows[0].name.as_deref(), Some("statuspanel"));
@@ -914,7 +1093,7 @@ mod assembly_tests {
             "container_state": "running", "status": "ok"
         }));
 
-        let rows = assemble_containers(&[], None, Some(&cmd));
+        let rows = assemble_containers(&[], &[], None, Some(&cmd));
 
         assert!(rows.is_empty(), "membership comes from the aggregate alone");
     }
@@ -927,10 +1106,112 @@ mod assembly_tests {
               "container_state": "running", "status": "ok", "scope": "platform" }
         ])));
 
-        let rows = assemble_containers(&[], Some(&cmd), Some(&cmd));
+        let rows = assemble_containers(&[], &[], Some(&cmd), Some(&cmd));
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].scope, "platform");
+    }
+
+    fn seen(name: &str, app_code: &str, scope: &str, state: &str) -> DeploymentContainer {
+        let now = chrono::Utc::now();
+        DeploymentContainer {
+            id: 0,
+            deployment_hash: "d".to_string(),
+            container_name: name.to_string(),
+            app_code: Some(app_code.to_string()),
+            scope: scope.to_string(),
+            image: None,
+            state: Some(state.to_string()),
+            first_seen_at: now,
+            last_seen_at: now,
+            removed_at: None,
+        }
+    }
+
+    /// The requirement, now met without any report at all. A container the
+    /// registry knows nothing about — the platform's own — used to exist only
+    /// for as long as a report mentioned it.
+    #[test]
+    fn a_seen_container_is_listed_with_no_report_at_all() {
+        let apps = vec![app("floci", "floci/floci:latest")];
+        let observed = vec![
+            seen("project-app-1", "floci", "project", "running"),
+            seen("statuspanel", "web", "platform", "running"),
+        ];
+
+        let rows = assemble_containers(&apps, &observed, None, None);
+
+        assert_eq!(rows.len(), 2, "one app, one platform container");
+        let panel = rows
+            .iter()
+            .find(|r| r.name.as_deref() == Some("statuspanel"))
+            .expect("the platform container nothing configures");
+        assert_eq!(panel.scope, "platform");
+        assert_eq!(panel.source, "observed");
+        assert!(panel.last_seen.is_some(), "the row dates itself");
+    }
+
+    /// A container that was seen and is not in the newest report keeps its
+    /// place. This is the failure the table exists to end: the agent goes
+    /// quiet, or lists incompletely, and the dashboard used to lose rows.
+    #[test]
+    fn a_seen_container_survives_a_report_that_omits_it() {
+        let observed = vec![
+            seen("project-app-1", "floci", "project", "running"),
+            seen("statuspanel", "web", "platform", "running"),
+        ];
+        let cmd = health_command(all_health(json!([
+            { "app_code": "floci", "container_name": "project-app-1",
+              "container_state": "running", "status": "ok" }
+        ])));
+
+        let rows = assemble_containers(&[], &observed, Some(&cmd), Some(&cmd));
+
+        assert_eq!(rows.len(), 2, "the omitted container is still listed");
+        let panel = rows
+            .iter()
+            .find(|r| r.name.as_deref() == Some("statuspanel"))
+            .expect("the container the report said nothing about");
+        assert_eq!(
+            panel.state.as_deref(),
+            Some("running"),
+            "its last known state, not a guess"
+        );
+    }
+
+    /// A row seeded from the registry and one seen running are the same
+    /// container, not two.
+    #[test]
+    fn a_configured_app_and_its_container_are_one_row() {
+        let apps = vec![app("floci", "floci/floci:latest")];
+        let observed = vec![seen("project-app-1", "floci", "project", "running")];
+
+        let rows = assemble_containers(&apps, &observed, None, None);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name.as_deref(), Some("project-app-1"));
+        assert_eq!(rows[0].app.as_deref(), Some("floci"));
+        assert_eq!(rows[0].state.as_deref(), Some("running"));
+    }
+
+    /// The freshest report still wins on state — the table says what exists,
+    /// not how it is doing right now.
+    #[test]
+    fn a_report_refreshes_the_state_of_a_seen_container() {
+        let observed = vec![seen("project-app-1", "floci", "project", "running")];
+        let cmd = health_command(all_health(json!([
+            { "app_code": "floci", "container_name": "project-app-1",
+              "container_state": "exited", "status": "unhealthy" }
+        ])));
+
+        let rows = assemble_containers(&[], &observed, Some(&cmd), Some(&cmd));
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].state.as_deref(), Some("exited"));
+        assert!(
+            rows[0].last_seen.is_some(),
+            "a report must not erase when the container was last seen"
+        );
     }
 
     /// Order is part of stability: rows must not shuffle between requests.
@@ -938,8 +1219,8 @@ mod assembly_tests {
     fn rows_come_back_in_a_stable_order() {
         let apps = vec![app("zeta", "z:1"), app("alpha", "a:1"), app("mu", "m:1")];
 
-        let first = assemble_containers(&apps, None, None);
-        let second = assemble_containers(&apps, None, None);
+        let first = assemble_containers(&apps, &[], None, None);
+        let second = assemble_containers(&apps, &[], None, None);
 
         assert_eq!(names(&first), names(&second));
         assert_eq!(

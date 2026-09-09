@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE deployment_container\n        SET removed_at = NOW()\n        WHERE deployment_hash = $1\n          AND app_code = $2\n          AND removed_at IS NULL\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "68c69a29f111af1c7b6bcbdd7b17f970180d98688655919d8a802756279b3bcb"
+}

@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT id, deployment_hash, container_name, app_code, scope, image,\n               state, first_seen_at, last_seen_at, removed_at\n        FROM deployment_container\n        WHERE deployment_hash = $1\n          AND removed_at IS NULL\n        ORDER BY container_name ASC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "deployment_hash",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "container_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "app_code",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "scope",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "image",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "state",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "first_seen_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "removed_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "ccd4f1ff7a55d9fea3fbe3e2385f472340d518761bbb139c52fb02194e74c985"
+}

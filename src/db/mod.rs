@@ -9,6 +9,7 @@ pub(crate) mod cloud;
 pub mod command;
 pub mod dag;
 pub(crate) mod deployment;
+pub mod deployment_container;
 pub mod marketplace;
 pub mod marketplace_billing;
 pub mod pipe;

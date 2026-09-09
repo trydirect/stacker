@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO deployment_container (\n                deployment_hash, container_name, app_code, scope, image, state,\n                first_seen_at, last_seen_at\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())\n            ON CONFLICT (deployment_hash, container_name) DO UPDATE SET\n                app_code = COALESCE(EXCLUDED.app_code, deployment_container.app_code),\n                scope = EXCLUDED.scope,\n                image = COALESCE(EXCLUDED.image, deployment_container.image),\n                state = EXCLUDED.state,\n                last_seen_at = NOW(),\n                removed_at = NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "91f55cb1b6560099f2197fe2972b42a99391117140ab82cca15296974e486c27"
+}
