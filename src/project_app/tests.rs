@@ -1139,10 +1139,11 @@ fn scope_does_not_match_substrings() {
     }
 }
 
-/// Telegraf is monitoring infrastructure by nature, but the user installs it by
-/// choice — so it is theirs, and belongs in the Applications list.
+/// Telegraf is the platform's monitoring agent: the user asks for it, but it
+/// feeds the health panel rather than serving their traffic, so it sits with
+/// the Status Panel rather than among their applications.
 #[test]
-fn telegraf_is_a_project_app() {
+fn telegraf_is_a_platform_app() {
     assert_eq!(
         super::classify_scope(
             None,
@@ -1150,8 +1151,21 @@ fn telegraf_is_a_project_app() {
             Some("telegraf"),
             Some("telegraf:1.29")
         ),
-        super::Scope::Project
+        super::Scope::Platform
     );
+}
+
+/// And only telegraf itself. Codes are compared exactly, so a container the
+/// user named after it stays theirs.
+#[test]
+fn a_users_telegraf_lookalike_stays_theirs() {
+    for code in ["telegraf-proxy", "my-telegraf", "telegrafo"] {
+        assert_eq!(
+            super::classify_scope(None, Some(code), Some(code), Some("acme/thing:1")),
+            super::Scope::Project,
+            "{code} is a user's app"
+        );
+    }
 }
 
 /// Unrecognised means project: a misplaced platform container is untidy, a

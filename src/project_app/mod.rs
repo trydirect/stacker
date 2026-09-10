@@ -28,16 +28,24 @@ const PLATFORM_MANAGED_APP_CODES: &[&str] = &["nginx_proxy_manager", "statuspane
 /// `my.stacker.scope` label. **Display-time only** — never used to decide what
 /// gets deployed.
 ///
-/// Only components the platform installs itself. Proxies are absent on purpose:
-/// the ones Stacker creates are labelled (`cli/generator/compose.rs`), and one a
-/// user brought is theirs. Telegraf is absent too — it is monitoring
-/// infrastructure by nature, but the user installs it by choice, so it is their
-/// app and belongs in the Applications list.
+/// Components the platform owns, whoever asked for them. Telegraf is here
+/// because it is our monitoring agent: the user chooses to install it, but it
+/// feeds the health panel rather than serving their traffic, so it belongs
+/// beside the Status Panel rather than among their applications. (An earlier
+/// reading put it in the user's list on the grounds that they install it by
+/// choice; ownership of the function decided it instead.)
+///
+/// Proxies are absent on purpose: the ones Stacker creates are labelled
+/// (`cli/generator/compose.rs`), and one a user brought is theirs.
 ///
 /// See `config/docs/CONTAINER_APP_ARCHITECTURE.md` (Resolution, 2026-09-06) and
 /// `config/shared-fixtures/agent-contract/app-code-resolution.md`.
-const PLATFORM_DISPLAY_CODES: &[&str] =
-    &["nginx_proxy_manager", "statuspanel", "statuspanel_agent"];
+const PLATFORM_DISPLAY_CODES: &[&str] = &[
+    "nginx_proxy_manager",
+    "statuspanel",
+    "statuspanel_agent",
+    "telegraf",
+];
 
 /// Directories platform-managed services are deployed into, by the convention
 /// in `stacker/docs/APP_DEPLOYMENT.md`: project services live under the
