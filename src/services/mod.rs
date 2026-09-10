@@ -3,6 +3,7 @@ pub mod agent_token;
 pub mod config_renderer;
 pub mod dag_executor;
 pub mod deploy_plan;
+pub mod deployment_container_sweeper;
 pub mod deployment_events;
 pub mod deployment_identifier;
 pub mod deployment_state;

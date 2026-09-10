@@ -117,6 +117,11 @@ pub async fn run(
         user_service_connector.get_ref().clone(),
         settings.per_install_billing_enabled,
     );
+    // Deletes container rows retired more than a month ago. Housekeeping only:
+    // it touches nothing the dashboard shows, and skipping it costs a slowly
+    // growing table rather than correctness.
+    crate::services::deployment_container_sweeper::spawn(api_pool.get_ref().clone());
+
     let payout_provider = crate::services::init_payout_provider(&settings.payouts)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;
     let payout_provider = web::Data::new(payout_provider);
