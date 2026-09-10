@@ -23,7 +23,19 @@ pub struct NotificationResult {
     pub error: Option<String>,
 }
 
-/// Resolve user email from the User Service by user_id.
+/// The address to write to for a user, from the User Service.
+///
+/// `user_id` here is the User Service's `queue_key` — the opaque string it
+/// issues and the only user identifier Stacker stores on a project.
+///
+/// This used to ask `GET /users/{id}`, which answered 404 every time: the
+/// users table is deliberately unpublished (`app/resources.py` keeps it out of
+/// Eve along with the token and client tables), so that route never existed.
+/// Every project-deletion warning failed on it, unnoticed, because nothing
+/// looks at whether this job succeeds.
+///
+/// `/api/internal/users/{queue_key}` exists for this, behind the internal
+/// service key, and returns the address and nothing else worth having.
 async fn resolve_user_email(
     http_client: &reqwest::Client,
     user_service_url: &str,
@@ -31,9 +43,9 @@ async fn resolve_user_email(
     user_id: &str,
 ) -> Result<String, String> {
     let url = format!(
-        "{}/users/{}",
+        "{}/api/internal/users/{}",
         user_service_url.trim_end_matches('/'),
-        user_id
+        urlencoding::encode(user_id)
     );
 
     let response = http_client
@@ -54,8 +66,16 @@ async fn resolve_user_email(
         .await
         .map_err(|e| format!("Failed to parse user response: {}", e))?;
 
+    // An unconfirmed address is one nobody has ever answered from. Warning a
+    // user there is not a warning, and the caller marks the project notified
+    // on the strength of it — better to say the address is unusable.
+    if user.get("email_confirmed") == Some(&serde_json::Value::Bool(false)) {
+        return Err(format!("Email for user {} is unconfirmed", user_id));
+    }
+
     user.get("email")
         .and_then(|v| v.as_str())
+        .filter(|email| !email.trim().is_empty())
         .map(|s| s.to_string())
         .ok_or_else(|| format!("No email found for user {}", user_id))
 }
