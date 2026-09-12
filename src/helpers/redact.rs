@@ -110,6 +110,112 @@ pub fn redact_yaml_string(yaml: &str) -> String {
     }
 }
 
+// ─── generated-field stripping (publish-time, key-set driven) ───────────────────
+//
+// Unlike the name-heuristic redaction above, these replace the values of an
+// EXPLICIT set of keys (the author-declared `mutability: generated` fields from
+// config_contract) with `replacement`. Used at publish time so the stored
+// `stack_definition` never carries the author's secret values for fields the
+// installer will regenerate — fail-closed if regeneration ever doesn't run.
+
+use std::collections::BTreeSet;
+
+/// Replace, in place, the values of env entries whose key is in `keys`.
+/// Handles the same shapes as [`redact_sensitive_json_values`] plus `KEY=value`
+/// strings in environment arrays.
+pub fn strip_json_values_for_keys(
+    value: &mut serde_json::Value,
+    keys: &BTreeSet<String>,
+    replacement: &str,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            // ProjectForm var entry: {"key": "NAME", "value": "..."}.
+            if let Some(name) = map.get("key").and_then(|v| v.as_str()) {
+                if keys.contains(name) {
+                    if let Some(val) = map.get_mut("value") {
+                        if !val.is_null() {
+                            *val = serde_json::Value::String(replacement.to_string());
+                        }
+                    }
+                    return;
+                }
+            }
+            for (key, val) in map.iter_mut() {
+                if keys.contains(key) && !val.is_null() {
+                    *val = serde_json::Value::String(replacement.to_string());
+                } else {
+                    strip_json_values_for_keys(val, keys, replacement);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                if let serde_json::Value::String(s) = item {
+                    if let Some(eq) = s.find('=') {
+                        if keys.contains(&s[..eq]) {
+                            *s = format!("{}={}", &s[..eq], replacement);
+                            continue;
+                        }
+                    }
+                }
+                strip_json_values_for_keys(item, keys, replacement);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn strip_yaml_values_for_keys(
+    value: &mut serde_yaml::Value,
+    keys: &BTreeSet<String>,
+    replacement: &str,
+) {
+    match value {
+        serde_yaml::Value::Mapping(map) => {
+            for (key, val) in map.iter_mut() {
+                if let serde_yaml::Value::String(k) = key {
+                    if keys.contains(k) && !val.is_null() {
+                        *val = serde_yaml::Value::String(replacement.to_string());
+                        continue;
+                    }
+                }
+                strip_yaml_values_for_keys(val, keys, replacement);
+            }
+        }
+        serde_yaml::Value::Sequence(seq) => {
+            for item in seq.iter_mut() {
+                if let serde_yaml::Value::String(s) = item {
+                    if let Some(eq) = s.find('=') {
+                        if keys.contains(&s[..eq]) {
+                            *s = format!("{}={}", &s[..eq], replacement);
+                        }
+                    }
+                } else {
+                    strip_yaml_values_for_keys(item, keys, replacement);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Parse a compose YAML string, blank the values of `keys`, re-serialize.
+/// Returns the original string on parse failure.
+pub fn strip_yaml_string_for_keys(
+    yaml: &str,
+    keys: &BTreeSet<String>,
+    replacement: &str,
+) -> String {
+    match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
+        Ok(mut value) => {
+            strip_yaml_values_for_keys(&mut value, keys, replacement);
+            serde_yaml::to_string(&value).unwrap_or_else(|_| yaml.to_string())
+        }
+        Err(_) => yaml.to_string(),
+    }
+}
+
 // ─── tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
