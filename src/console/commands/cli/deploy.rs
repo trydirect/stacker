@@ -686,6 +686,170 @@ fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError
     Ok(())
 }
 
+/// A compose service that declares a `build:` section.
+struct ComposeBuildService {
+    name: String,
+    /// The `image:` it also declares, if any — shown in the error so the user
+    /// sees that the reference is already there and only `build:` is in the way.
+    image: Option<String>,
+}
+
+/// Services carrying a `build:` section, in compose order.
+fn collect_compose_build_services(
+    compose_path: &Path,
+) -> Result<Vec<ComposeBuildService>, CliError> {
+    let raw = std::fs::read_to_string(compose_path)?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(&raw)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to parse compose file: {e}")))?;
+
+    let serde_yaml::Value::Mapping(root) = doc else {
+        return Ok(Vec::new());
+    };
+
+    let services_key = serde_yaml::Value::String("services".to_string());
+    let build_key = serde_yaml::Value::String("build".to_string());
+    let image_key = serde_yaml::Value::String("image".to_string());
+
+    let Some(serde_yaml::Value::Mapping(services)) = root.get(&services_key) else {
+        return Ok(Vec::new());
+    };
+
+    Ok(services
+        .iter()
+        .filter_map(|(name, value)| {
+            let serde_yaml::Value::Mapping(service) = value else {
+                return None;
+            };
+            service.get(&build_key)?;
+            Some(ComposeBuildService {
+                name: name.as_str().unwrap_or("<unknown>").to_string(),
+                image: service
+                    .get(&image_key)
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            })
+        })
+        .collect())
+}
+
+/// Stop a cloud deploy that would ship a `build:` section.
+///
+/// A cloud deploy uploads only the compose file, the env file and bind-mounted
+/// config files — [`crate::cli::config_bundle::build_config_bundle`] never
+/// collects a Dockerfile or a build context. `docker compose up` on the remote
+/// host therefore dies with `resolve : lstat <path>: no such file or directory`,
+/// and only after the whole Ansible play has run. Failing here happens before a
+/// server is provisioned.
+///
+/// `local` and `server` are untouched: a local deploy builds on this machine,
+/// and a server deploy rsyncs the whole project directory before running
+/// `docker compose up -d --build` (see `cli::install_runner`), so the build
+/// context is present there.
+fn reject_build_sections_for_cloud(
+    compose_path: &Path,
+    deploy_target: DeployTarget,
+    compose_is_user_supplied: bool,
+    project_name: &str,
+) -> Result<(), CliError> {
+    if deploy_target != DeployTarget::Cloud {
+        return Ok(());
+    }
+
+    let building = collect_compose_build_services(compose_path)?;
+    if building.is_empty() {
+        return Ok(());
+    }
+
+    let names = building
+        .iter()
+        .map(|svc| format!("'{}'", svc.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let placeholder = format!(
+        "your-org/{}:1.0.0",
+        crate::helpers::stacker_labels::sanitize_service_code(project_name)
+    );
+    // The snippets below quote a real service from this compose, not a generic
+    // `app:` — a user staring at a service named `api` should not have to
+    // translate the example before applying it.
+    let sample = &building[0];
+
+    let mut message = format!(
+        "cloud deploy cannot build images\n\n\
+         {} declares 'build:' for service(s) {}.\n\
+         A cloud deploy uploads only the compose file, the env file and bind-mounted\n\
+         configs — the build context and Dockerfile never reach the server, so\n\
+         'docker compose up' fails there with:\n\n\
+         \x20   resolve : lstat <project>/.stacker: no such file or directory\n\n",
+        compose_path.display(),
+        names,
+    );
+
+    if let Some(image) = building.iter().find_map(|svc| svc.image.as_ref()) {
+        let with_image = building
+            .iter()
+            .find(|svc| svc.image.is_some())
+            .expect("image was just found");
+        message.push_str(&format!(
+            "Service '{}' already references image '{}', so drop its 'build:' section\n\
+             and the image is pulled instead of built:\n\n\
+             \x20   {}:\n\
+             \x20     image: {}\n\
+             \x20-    build:\n\
+             \x20-      context: ...\n\n",
+            with_image.name, image, with_image.name, image,
+        ));
+    } else if compose_is_user_supplied {
+        message.push_str(&format!(
+            "Replace the build with a published image:\n\n\
+             \x20   {}:\n\
+             \x20-    build:\n\
+             \x20-      context: ...\n\
+             \x20+    image: {placeholder}\n\n\
+             Then:  docker push {placeholder}\n\
+             \x20      stacker deploy --target cloud\n\n",
+            sample.name,
+        ));
+    } else {
+        // The compose was generated from stacker.yml, so `build:` is a symptom of
+        // a missing `app.image` there. Pointing at the generated file would send
+        // the user looking for a `build:` they never wrote.
+        message.push_str(&format!(
+            "This compose was generated from stacker.yml because app.image is not set.\n\
+             Publish an image and reference it there:\n\n\
+             \x20   app:\n\
+             \x20+    image: {placeholder}\n\n\
+             Then:  docker push {placeholder}\n\
+             \x20      stacker deploy --target cloud --force-rebuild\n\n",
+        ));
+    }
+
+    message.push_str(
+        "Or keep building from source and deploy to your own server instead:\n\
+         \x20      stacker deploy --target server",
+    );
+
+    Err(CliError::ConfigValidation(message))
+}
+
+/// Whether the generated compose predates the config it was generated from.
+///
+/// `.stacker/docker-compose.yml` is derived data, but it is reused whenever it
+/// exists and `--force-rebuild` was not passed. If `stacker.yml` changed since
+/// (an `app.image` added, a service renamed), the deploy ships an artifact that
+/// contradicts the config — and on a cloud deploy that means shipping a `build:`
+/// the user has already replaced with an image.
+///
+/// Conservative by design: any unreadable timestamp answers "not stale", so a
+/// platform without mtimes keeps the previous reuse behaviour.
+fn generated_compose_is_stale(config_path: &Path, compose_path: &Path) -> bool {
+    let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    match (modified(config_path), modified(compose_path)) {
+        (Some(config_mtime), Some(compose_mtime)) => config_mtime > compose_mtime,
+        _ => false,
+    }
+}
+
 fn validate_compose_for_deploy(compose_path: &Path) -> Result<(), CliError> {
     let raw = std::fs::read_to_string(compose_path)?;
     let doc: serde_yaml::Value = serde_yaml::from_str(&raw)
@@ -3380,9 +3544,19 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
             }
         } else {
             let compose_out = output_dir.join("docker-compose.yml");
-            if force_rebuild || !compose_out.exists() {
+            let compose_is_stale = generated_compose_is_stale(&config_path, &compose_out);
+            if compose_is_stale && !force_rebuild {
+                eprintln!(
+                    "  {} changed since {}/docker-compose.yml was generated — regenerating",
+                    config_path.display(),
+                    OUTPUT_DIR
+                );
+            }
+            if force_rebuild || !compose_out.exists() || compose_is_stale {
                 let compose = ComposeDefinition::try_from(&config)?;
-                compose.write_to(&compose_out, force_rebuild)?;
+                // `write_to` refuses to clobber an existing file unless told to,
+                // so a staleness-driven regeneration must opt in explicitly.
+                compose.write_to(&compose_out, force_rebuild || compose_is_stale)?;
                 // The synthesized caddy/nginx proxy service mounts a config file
                 // (./Caddyfile, ./nginx/conf.d) from the compose directory. For
                 // local/server deploys the tfa proxy role does NOT run, so the
@@ -3403,6 +3577,12 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
 
     normalize_generated_compose_paths(&compose_path)?;
     validate_compose_for_deploy(&compose_path)?;
+    reject_build_sections_for_cloud(
+        &compose_path,
+        deploy_target,
+        compose_is_user_supplied,
+        config.project.identity.as_deref().unwrap_or(&config.name),
+    )?;
     if compose_is_user_supplied {
         validate_cross_source_port_collisions(&config, &compose_path)?;
     }
@@ -5794,6 +5974,160 @@ services:
         assert!(msg.contains("port 80"));
         assert!(msg.contains("nginx-proxy-manager"));
         assert!(msg.contains("nginx_proxy_manager"));
+    }
+
+    /// The reported failure: the generated compose kept `build:` pointing at
+    /// `.stacker/Dockerfile`, which the remote host never receives, so the
+    /// Ansible play ran all 151 tasks and only then died on
+    /// `resolve : lstat /home/trydirect/.stacker: no such file or directory`.
+    #[test]
+    fn test_reject_build_sections_for_cloud_rejects_generated_compose() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.yml");
+        std::fs::write(
+            &compose_path,
+            "services:\n  app:\n    build:\n      context: ..\n      dockerfile: .stacker/Dockerfile\n",
+        )
+        .unwrap();
+
+        let err =
+            reject_build_sections_for_cloud(&compose_path, DeployTarget::Cloud, false, "hermes-agent")
+                .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("'app'"), "names the service: {msg}");
+        // A generated compose must blame stacker.yml, not the file the user
+        // never wrote a `build:` into.
+        assert!(msg.contains("stacker.yml"), "points at stacker.yml: {msg}");
+        assert!(msg.contains("app.image"), "names the missing field: {msg}");
+        assert!(
+            msg.contains("your-org/hermes-agent:1.0.0"),
+            "placeholder uses the project name: {msg}"
+        );
+        assert!(
+            msg.contains("--target server"),
+            "offers the build-capable target: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_reject_build_sections_for_cloud_points_at_user_supplied_compose() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.yml");
+        std::fs::write(
+            &compose_path,
+            "services:\n  api:\n    build:\n      context: .\n",
+        )
+        .unwrap();
+
+        let err =
+            reject_build_sections_for_cloud(&compose_path, DeployTarget::Cloud, true, "my-proj")
+                .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("'api'"), "names the service: {msg}");
+        assert!(
+            msg.contains("docker-compose.yml"),
+            "points at the compose file: {msg}"
+        );
+        assert!(
+            !msg.contains("app.image is not set"),
+            "must not blame stacker.yml for a hand-written compose: {msg}"
+        );
+        assert!(msg.contains("image: your-org/my-proj:1.0.0"), "shows the fix: {msg}");
+    }
+
+    /// `image:` next to `build:` is still rejected: on a fresh host the image is
+    /// absent locally, so compose tries to build it and hits the missing context.
+    #[test]
+    fn test_reject_build_sections_for_cloud_rejects_build_even_with_image() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.yml");
+        std::fs::write(
+            &compose_path,
+            "services:\n  app:\n    image: example/app:latest\n    build:\n      context: .\n",
+        )
+        .unwrap();
+
+        let err =
+            reject_build_sections_for_cloud(&compose_path, DeployTarget::Cloud, true, "my-proj")
+                .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("example/app:latest"),
+            "surfaces the image already declared: {msg}"
+        );
+    }
+
+    /// A local deploy builds on this machine; a server deploy rsyncs the whole
+    /// project and runs `--build` on the host. Both keep `build:` legal.
+    #[test]
+    fn test_reject_build_sections_for_cloud_allows_local_and_server() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.yml");
+        std::fs::write(
+            &compose_path,
+            "services:\n  app:\n    build:\n      context: ..\n      dockerfile: .stacker/Dockerfile\n",
+        )
+        .unwrap();
+
+        reject_build_sections_for_cloud(&compose_path, DeployTarget::Local, false, "p").unwrap();
+        reject_build_sections_for_cloud(&compose_path, DeployTarget::Server, false, "p").unwrap();
+    }
+
+    #[test]
+    fn test_reject_build_sections_for_cloud_allows_image_only_compose() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.yml");
+        std::fs::write(
+            &compose_path,
+            "services:\n  app:\n    image: nousresearch/hermes-agent:latest\n",
+        )
+        .unwrap();
+
+        reject_build_sections_for_cloud(&compose_path, DeployTarget::Cloud, false, "hermes-agent")
+            .unwrap();
+    }
+
+    #[test]
+    fn test_generated_compose_is_stale_when_config_is_newer() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        let compose_path = dir.path().join("docker-compose.yml");
+
+        std::fs::write(&compose_path, "services: {}\n").unwrap();
+        // Touch the config after the compose so its mtime is strictly newer.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&config_path, "name: demo\n").unwrap();
+
+        assert!(generated_compose_is_stale(&config_path, &compose_path));
+    }
+
+    #[test]
+    fn test_generated_compose_is_not_stale_when_compose_is_newer() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        let compose_path = dir.path().join("docker-compose.yml");
+
+        std::fs::write(&config_path, "name: demo\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&compose_path, "services: {}\n").unwrap();
+
+        assert!(!generated_compose_is_stale(&config_path, &compose_path));
+    }
+
+    /// A missing file must not be read as "stale" — that would regenerate on
+    /// every deploy, and on platforms without usable mtimes it would never stop.
+    #[test]
+    fn test_generated_compose_is_not_stale_when_a_file_is_missing() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        let compose_path = dir.path().join("docker-compose.yml");
+        std::fs::write(&config_path, "name: demo\n").unwrap();
+
+        assert!(!generated_compose_is_stale(&config_path, &compose_path));
+        assert!(!generated_compose_is_stale(
+            &dir.path().join("absent.yml"),
+            &config_path
+        ));
     }
 
     #[test]
