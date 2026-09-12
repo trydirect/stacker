@@ -67,6 +67,65 @@ This is the *current* deploy path, repurposed as a build step:
 
 ---
 
+## Per-buyer field regeneration (field policy)
+
+A baked snapshot freezes whatever value every field held when the source box was
+baked. For `mutability: generated` fields that is exactly wrong — the policy means
+"a fresh value per install", but every clone of one image would otherwise inherit
+the single baked secret (shared JWT/DB creds across all buyers). The clone path
+closes that on the box, at first boot, reusing the *same* generators a normal
+install's `generate-secrets.sh` runs (one source of truth).
+
+**How it flows:**
+
+1. **Bake pins the policy to the image.** `bin/bake.rs` resolves the template's
+   `config_contract` by slug (`get_approved_by_slug` → `get_config_contract`) and
+   stores it on `baked_snapshots.config_contract`. The snapshot now carries the
+   field policy it was baked with, immutably.
+2. **Clone resolves what to regenerate.** `routes/oneclick_deploy/clone.rs` reads
+   `snapshot.config_contract` and builds two lists (skipping any field the buyer
+   already supplied in `form.env`):
+   - `regen_commands` → `(env_key, shell_generator_expr)` for plain `generated`
+     fields, via `console::…::init::generator_shell_expression` (the shared
+     generator: `openssl rand -hex/-base64`, `tr -dc`, `uuidgen`).
+   - `derived_jwt_commands` → `DerivedJwtSpec` for `type: derived_jwt` fields.
+3. **The box mints the values.** `helpers/cloud_init.rs::regen_runcmds` emits, into
+   the cloud-init `runcmd` list, one command per field that rewrites (or appends)
+   `KEY=` in `/etc/stacker/env`, **before** the `stacker-compose.service` restart.
+
+**Per-mutability behavior on clone:**
+
+| Policy | On the cloned box |
+|---|---|
+| `fixed` | untouched — the baked value is a constant by design |
+| `editable` | the buyer's `form.env` override, else the baked default |
+| `generated` | a fresh value minted on the box; the baked secret is discarded |
+| `generated` + `derived_jwt` | signed on the box (see below) |
+
+**`derived_jwt` signing (HMAC).** The header (`{"alg":..,"typ":"JWT"}`) and claims
+are known at build time, so `clone.rs` precomputes their base64url in Rust — no
+author data touches the shell. The box does only the part that depends on runtime:
+it HMACs `header.payload` with the freshly-written value of the signing field
+(`signing_key: "service.FIELD"` → the `FIELD` env var) via
+`openssl dgst -sha256|-sha384|-sha512`. These commands are ordered **after** the
+plain `generated` fields, so the signing key already exists in `/etc/stacker/env`.
+Only HMAC algorithms are supported (the shared secret is on the box); asymmetric
+algs are skipped.
+
+**Security properties:** two buyers of the same snapshot never share a `generated`
+value; the author's baked secret is discarded, not shipped.
+
+**Limits:** this only fixes values the app reads from env each boot. Anything the
+app persisted on the source box's first run (into its DB/volume) is frozen in the
+snapshot — that needs a post-clone rotation or a "clean" bake taken before
+first-run materialization. Regenerated values are minted on the box only and are
+not (yet) written back into the `stacker secrets` engine.
+
+This is the immutable-path counterpart to the normal marketplace install path,
+where the Python Install Service applies the same policy — see
+`docs/MARKETPLACE_FIELD_POLICY.md` (§9 for this path, §8 for the federation that
+feeds the normal path).
+
 ## Failure semantics (the whole point)
 
 - **Bake** can fail on: missing image, unhealthy service, bad compose → caught
@@ -91,6 +150,8 @@ This is the *current* deploy path, repurposed as a build step:
 | Bake health gate | `td-audit` readiness/exposure engines + probes |
 | Secrets at boot | Vault (`helpers/vault.rs`) |
 | Baked compose | the synthesized artifact, frozen at bake |
+| Field policy pinned to image | `baked_snapshots.config_contract`, set by `bin/bake.rs` |
+| Per-buyer field regeneration | `routes/oneclick_deploy/clone.rs` (`regen_commands`, `derived_jwt_commands`) → `helpers/cloud_init.rs::regen_runcmds` |
 | "Does it deploy" harness | *is* the bake health-gate |
 
 ## Per-provider
