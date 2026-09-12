@@ -226,9 +226,14 @@ works:
   `generate-secrets.sh` uses (one source of truth). `fixed` stays constant; `editable`
   keeps the buyer override or the baked default.
 
+- **`derived_jwt`** is supported for the HMAC algorithms (HS256/384/512):
+  `clone.rs` precomputes the base64url header + claims and emits a run-command
+  that signs `header.payload` with the runtime value of the signing field (read
+  from `/etc/stacker/env` after it was regenerated) via `openssl dgst -hmac`,
+  ordered after the plain generated fields. Asymmetric algs are not supported on
+  this path (no private key is shipped).
+
 Open items on this path:
-- `derived_jwt` is deferred (the shell path can't sign a JWT on the box) — same
-  deferral the local `generate-secrets.sh` makes.
 - The value is minted **on the box only** — it is not written back into the
   `stacker secrets` engine, so it is not visible via `stacker secrets list` the way the
   normal-path §4 generation is. Deciding whether to report it back is a follow-up.

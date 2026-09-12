@@ -89,6 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         admin_email,
         env,
         regen: Vec::new(),
+        regen_jwt: Vec::new(),
     };
     let user_data = render_user_data(&boot);
 

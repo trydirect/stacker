@@ -33,6 +33,29 @@ pub struct BootConfig {
     /// The generator strings come from the same source of truth as a normal
     /// install's `generate-secrets.sh`.
     pub regen: Vec<(String, String)>,
+    /// `type: derived_jwt` fields to mint on the box AFTER `regen` runs (so the
+    /// signing field it depends on is already written to `/etc/stacker/env`).
+    /// The header/claims are precomputed to base64url here; only the HMAC
+    /// signature is done on the box (it depends on the runtime signing value).
+    pub regen_jwt: Vec<DerivedJwtSpec>,
+}
+
+/// A `type: derived_jwt` field to sign on the cloned box. `header_b64`/
+/// `payload_b64` are precomputed base64url (so no author data hits the shell);
+/// the box only HMACs `header.payload` with the runtime value of
+/// `signing_env_key` read from `/etc/stacker/env`.
+#[derive(Debug, Clone)]
+pub struct DerivedJwtSpec {
+    /// Env var that receives the signed JWT.
+    pub target_key: String,
+    /// Env var holding the signing secret (the `signing_key` field, resolved).
+    pub signing_env_key: String,
+    /// Precomputed base64url of `{"alg":..,"typ":"JWT"}`.
+    pub header_b64: String,
+    /// Precomputed base64url of the compact claims JSON.
+    pub payload_b64: String,
+    /// openssl digest flag matching `alg`: `sha256` | `sha384` | `sha512`.
+    pub openssl_dgst: String,
 }
 
 /// Render the cloud-init `#cloud-config` user-data for a baked-snapshot boot.
@@ -60,7 +83,7 @@ pub fn render_user_data(cfg: &BootConfig) -> String {
         // The compose file, images, and systemd unit are all baked into the
         // snapshot — first boot regenerates any per-install secrets, then
         // (re)starts the stack with the injected env.
-        "runcmd": regen_runcmds(&cfg.regen),
+        "runcmd": regen_runcmds(&cfg.regen, &cfg.regen_jwt),
     });
 
     let yaml =
@@ -70,14 +93,22 @@ pub fn render_user_data(cfg: &BootConfig) -> String {
 
 /// The cloud-init `runcmd` list: one regeneration command per generated field
 /// (each mints a fresh value on the box and writes it into `/etc/stacker/env`),
-/// followed by the compose restart that reads that env.
+/// then the `derived_jwt` fields (which read their now-written signing field),
+/// then the compose restart that reads that env.
 ///
 /// Keys are restricted to env-identifier characters; anything else is dropped
 /// rather than interpolated into the shell.
-fn regen_runcmds(regen: &[(String, String)]) -> Vec<serde_json::Value> {
+fn regen_runcmds(
+    regen: &[(String, String)],
+    regen_jwt: &[DerivedJwtSpec],
+) -> Vec<serde_json::Value> {
+    fn valid_key(k: &str) -> bool {
+        !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+
     let mut cmds: Vec<serde_json::Value> = Vec::new();
     for (key, expr) in regen {
-        if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        if !valid_key(key) {
             continue;
         }
         // Compute the value once, then replace an existing line in place or
@@ -90,6 +121,36 @@ fn regen_runcmds(regen: &[(String, String)]) -> Vec<serde_json::Value> {
         );
         cmds.push(json!(["bash", "-lc", snippet]));
     }
+
+    // derived_jwt: sign header.payload (precomputed base64url) with the runtime
+    // value of the signing field, which the loop above has already written.
+    for spec in regen_jwt {
+        if !valid_key(&spec.target_key) || !valid_key(&spec.signing_env_key) {
+            continue;
+        }
+        if !matches!(spec.openssl_dgst.as_str(), "sha256" | "sha384" | "sha512") {
+            continue;
+        }
+        let DerivedJwtSpec {
+            target_key,
+            signing_env_key,
+            header_b64,
+            payload_b64,
+            openssl_dgst,
+        } = spec;
+        let snippet = format!(
+            "SK=$(grep '^{signing_env_key}=' /etc/stacker/env 2>/dev/null | cut -d= -f2-); \
+             SIG=$(printf '%s' \"{header_b64}.{payload_b64}\" | \
+             openssl dgst -{openssl_dgst} -hmac \"$SK\" -binary | \
+             openssl base64 -A | tr '+/' '-_' | tr -d '='); \
+             JWT=\"{header_b64}.{payload_b64}.${{SIG}}\"; \
+             if grep -q '^{target_key}=' /etc/stacker/env 2>/dev/null; then \
+             sed -i \"s#^{target_key}=.*#{target_key}=${{JWT}}#\" /etc/stacker/env; else \
+             echo \"{target_key}=${{JWT}}\" >> /etc/stacker/env; fi"
+        );
+        cmds.push(json!(["bash", "-lc", snippet]));
+    }
+
     cmds.push(json!(["systemctl", "restart", "stacker-compose.service"]));
     cmds
 }
@@ -128,6 +189,7 @@ mod tests {
             admin_email: "admin@example.com".to_string(),
             env,
             regen: Vec::new(),
+            regen_jwt: Vec::new(),
         }
     }
 

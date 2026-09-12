@@ -22,7 +22,7 @@ use crate::connectors::hetzner::{
     HetznerCloudClient, HetznerCloudConnector, HetznerCreateServerRequest,
 };
 use crate::connectors::user_service::UserServiceConnector;
-use crate::helpers::cloud_init::{render_user_data, BootConfig};
+use crate::helpers::cloud_init::{render_user_data, BootConfig, DerivedJwtSpec};
 use crate::helpers::VaultClient;
 use crate::models::User;
 
@@ -161,7 +161,8 @@ pub async fn clone_server(
     // all buyers). So we schedule a fresh value for each generated field the user
     // service did not already supply, minted *on the cloned box* at first boot by
     // the same shell generators a normal install's `generate-secrets.sh` runs —
-    // one source of truth, so `derived_jwt`/`enum` defer identically.
+    // one source of truth. `derived_jwt` fields are then signed on the box (HMAC)
+    // against the freshly written signing key; `enum` is deferred.
     //
     // The contract is pinned to the image (baked_snapshots.config_contract); for
     // snapshots baked before that column there is nothing to regenerate (the box
@@ -172,43 +173,47 @@ pub async fn clone_server(
     // the app persisted on first-run (secrets written into its DB/volume) is
     // already frozen in the snapshot and needs a post-clone rotation step or a
     // "clean" bake taken before first-run materialization.
-    let regen = match &snapshot.config_contract {
+    let (regen, regen_jwt) = match &snapshot.config_contract {
         Some(contract_json) => {
             match serde_json::from_value::<crate::cli::config_parser::ConfigContract>(
                 contract_json.clone(),
             ) {
                 Ok(contract) => {
                     let cmds = regen_commands(&contract, &form.env);
-                    if !cmds.is_empty() {
+                    let jwt = derived_jwt_commands(&contract, &form.env);
+                    if !cmds.is_empty() || !jwt.is_empty() {
                         tracing::info!(
                             stack = %form.stack,
                             fields = ?cmds.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+                            derived_jwt = ?jwt.iter().map(|s| &s.target_key).collect::<Vec<_>>(),
                             "will regenerate generated fields fresh on the cloned box"
                         );
                     }
-                    cmds
+                    (cmds, jwt)
                 }
                 Err(err) => {
                     tracing::warn!(error = %err, stack = %form.stack,
                         "config_contract on snapshot did not parse; skipping field regeneration");
-                    Vec::new()
+                    (Vec::new(), Vec::new())
                 }
             }
         }
         // Pre-column snapshots have no pinned contract; the box boots with the
         // baked values. Resolving it live by slug is a possible follow-up.
-        None => Vec::new(),
+        None => (Vec::new(), Vec::new()),
     };
 
     // Render cloud-init with per-user env + domain. Secrets are pre-resolved (by
     // the user service) into `form.env`; `regen` mints fresh values for
     // `mutability: generated` fields on the box at first boot, reusing the same
-    // shell generators a normal install's generate-secrets.sh runs.
+    // shell generators a normal install's generate-secrets.sh runs; `regen_jwt`
+    // signs `derived_jwt` fields afterwards with the freshly-written signing key.
     let boot = BootConfig {
         domain: form.domain.clone(),
         admin_email: form.admin_email.clone(),
         env: form.env.clone(),
         regen,
+        regen_jwt,
     };
     let user_data = render_user_data(&boot);
 
@@ -578,7 +583,8 @@ pub async fn clone_server(
 /// source of truth for the type→generator mapping
 /// (`console::…::init::generator_shell_expression`) rather than duplicating it:
 /// generation stays on the box, exactly as a normal install's
-/// `generate-secrets.sh` does, so `derived_jwt`/`enum` are deferred identically.
+/// `generate-secrets.sh` does. `enum` is deferred here; `derived_jwt` is handled
+/// separately by [`derived_jwt_commands`] (it needs its signing field first).
 ///
 /// A key already supplied (non-empty) in `already_set` is skipped — the user
 /// service may have resolved it deliberately; we only fill the gap the frozen
@@ -600,9 +606,71 @@ fn regen_commands(
     cmds
 }
 
+/// Build the `derived_jwt` specs to sign on the box after `regen_commands` runs.
+///
+/// The header and claims are known at build time, so we precompute their
+/// base64url here and let the box do only the HMAC over `header.payload` with
+/// the runtime value of the signing field (which `regen_commands` will have
+/// written to `/etc/stacker/env`). Only HMAC algorithms (HS256/384/512) are
+/// supported — they can be signed with the shared secret already on the box;
+/// asymmetric algs would need a private key we don't ship. A field already
+/// supplied in `already_set` is skipped.
+fn derived_jwt_commands(
+    contract: &crate::cli::config_parser::ConfigContract,
+    already_set: &BTreeMap<String, String>,
+) -> Vec<DerivedJwtSpec> {
+    use crate::cli::config_parser::{FieldType, Mutability};
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    let mut specs = Vec::new();
+    for service in contract.services.values() {
+        for (key, policy) in &service.fields {
+            if policy.mutability != Mutability::Generated
+                || policy.type_spec != Some(FieldType::DerivedJwt)
+            {
+                continue;
+            }
+            if already_set.get(key).map(|v| !v.is_empty()).unwrap_or(false) {
+                continue;
+            }
+            let (Some(signing_ref), Some(claims), Some(alg)) = (
+                policy.signing_key.as_deref(),
+                policy.claims.as_ref(),
+                policy.alg.as_deref(),
+            ) else {
+                continue;
+            };
+            let openssl_dgst = match alg {
+                "HS256" => "sha256",
+                "HS384" => "sha384",
+                "HS512" => "sha512",
+                _ => continue,
+            }
+            .to_string();
+            // signing_key is "service.FIELD_NAME"; the env var is FIELD_NAME.
+            let signing_env_key = signing_ref
+                .rsplit('.')
+                .next()
+                .unwrap_or(signing_ref)
+                .to_string();
+            let header = format!("{{\"alg\":\"{alg}\",\"typ\":\"JWT\"}}");
+            let claims_json = serde_json::to_string(claims).unwrap_or_else(|_| "{}".to_string());
+            specs.push(DerivedJwtSpec {
+                target_key: key.clone(),
+                signing_env_key,
+                header_b64: URL_SAFE_NO_PAD.encode(header.as_bytes()),
+                payload_b64: URL_SAFE_NO_PAD.encode(claims_json.as_bytes()),
+                openssl_dgst,
+            });
+        }
+    }
+    specs.sort_by(|a, b| a.target_key.cmp(&b.target_key));
+    specs
+}
+
 #[cfg(test)]
 mod regen_tests {
-    use super::regen_commands;
+    use super::{derived_jwt_commands, regen_commands};
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -638,6 +706,59 @@ mod regen_tests {
         );
         // And it reuses the openssl-based hex generator, not a bespoke one.
         assert!(cmds[0].1.contains("openssl rand -hex"));
+    }
+
+    /// A `derived_jwt` field produces a spec that: targets the right signing env
+    /// var, precomputes the correct header/claims (base64url), and picks the
+    /// matching openssl digest — and is NOT emitted as a plain shell generator.
+    #[test]
+    fn derived_jwt_spec_is_built_from_policy() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+        let contract: crate::cli::config_parser::ConfigContract = serde_json::from_value(json!({
+            "services": {
+                "auth": {
+                    "fields": {
+                        "JWT_SECRET": { "mutability": "generated", "type": "hex", "length": 32 },
+                        "ANON_KEY": {
+                            "mutability": "generated",
+                            "type": "derived_jwt",
+                            "signing_key": "auth.JWT_SECRET",
+                            "claims": { "role": "anon", "iss": "supabase" },
+                            "alg": "HS256"
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("contract parses");
+        let empty = BTreeMap::new();
+
+        // derived_jwt is not emitted as a shell generator...
+        let shell = regen_commands(&contract, &empty);
+        assert!(
+            shell.iter().all(|(k, _)| k != "ANON_KEY"),
+            "derived_jwt must not go through the plain shell-generator path"
+        );
+
+        // ...it's a dedicated jwt spec.
+        let jwt = derived_jwt_commands(&contract, &empty);
+        assert_eq!(jwt.len(), 1);
+        let spec = &jwt[0];
+        assert_eq!(spec.target_key, "ANON_KEY");
+        assert_eq!(spec.signing_env_key, "JWT_SECRET"); // resolved from "auth.JWT_SECRET"
+        assert_eq!(spec.openssl_dgst, "sha256");
+
+        let header = URL_SAFE_NO_PAD
+            .decode(&spec.header_b64)
+            .expect("header b64url");
+        assert_eq!(header, br#"{"alg":"HS256","typ":"JWT"}"#);
+        let payload = URL_SAFE_NO_PAD
+            .decode(&spec.payload_b64)
+            .expect("payload b64url");
+        let claims: serde_json::Value = serde_json::from_slice(&payload).expect("claims json");
+        assert_eq!(claims["role"], "anon");
+        assert_eq!(claims["iss"], "supabase");
     }
 }
 
