@@ -133,6 +133,16 @@ pub struct MarketplaceWebhookPayload {
     /// Version string of the federated definition.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+
+    /// Author-declared per-field policy (`config_contract`) for the federated
+    /// version. The User Service must persist this and forward it into the
+    /// install payload so the Install Service can regenerate `mutability:
+    /// generated` fields per buyer. It lives in its OWN column upstream and is
+    /// NOT embedded in `stack_definition`, so it must travel here explicitly —
+    /// otherwise buyers receive the author's literal secrets (see
+    /// docs/MARKETPLACE_FIELD_POLICY.md §8).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_contract: Option<serde_json::Value>,
 }
 
 /// Returns the JSON value only when it carries content — filters out `null`,
@@ -242,6 +252,9 @@ impl MarketplaceWebhookSender {
             definition_format: latest_version.and_then(|v| v.definition_format.clone()),
             config_files: latest_version.and_then(|v| non_empty_json(&v.config_files)),
             version: latest_version.map(|v| v.version.clone()),
+            config_contract: latest_version
+                .and_then(|v| v.config_contract.clone())
+                .and_then(|c| non_empty_json(&c)),
             stack_template_id: template.id.to_string(),
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),
@@ -310,6 +323,9 @@ impl MarketplaceWebhookSender {
             definition_format: latest_version.and_then(|v| v.definition_format.clone()),
             config_files: latest_version.and_then(|v| non_empty_json(&v.config_files)),
             version: latest_version.map(|v| v.version.clone()),
+            config_contract: latest_version
+                .and_then(|v| v.config_contract.clone())
+                .and_then(|c| non_empty_json(&c)),
             stack_template_id: template.id.to_string(),
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),
@@ -376,6 +392,7 @@ impl MarketplaceWebhookSender {
             definition_format: None,
             config_files: None,
             version: None,
+            config_contract: None,
             stack_template_id: template.id.to_string(),
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),
@@ -443,6 +460,7 @@ impl MarketplaceWebhookSender {
             definition_format: None,
             config_files: None,
             version: None,
+            config_contract: None,
             stack_template_id: template.id.to_string(),
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),
@@ -510,6 +528,7 @@ impl MarketplaceWebhookSender {
             definition_format: None,
             config_files: None,
             version: None,
+            config_contract: None,
             stack_template_id: template.id.to_string(),
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),
@@ -577,6 +596,7 @@ impl MarketplaceWebhookSender {
             definition_format: None,
             config_files: None,
             version: None,
+            config_contract: None,
             stack_template_id: template.id.to_string(),
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),
@@ -644,6 +664,7 @@ impl MarketplaceWebhookSender {
             definition_format: None,
             config_files: None,
             version: None,
+            config_contract: None,
             stack_template_id: stack_template_id.to_string(),
             external_id: stack_template_id.to_string(),
             code: None,
@@ -693,6 +714,7 @@ impl MarketplaceWebhookSender {
             definition_format: None,
             config_files: None,
             version: None,
+            config_contract: None,
             stack_template_id: template.id.to_string(),
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),

@@ -1,6 +1,26 @@
 # Marketplace field policy (secret regeneration + installer-editable fields)
 
-> Status: planned, not yet implemented. Tracking branch: `feature/marketplace-field-policy`.
+> Status: **partially implemented — broken end-to-end on the normal install path.** Tracking branch: `feature/marketplace-field-policy`.
+
+## Implementation status (audited 2026-09-11, confirmed by an independent read of `stacker`/`tools`/`user`/`config`)
+
+Both ends of the feature are built, but the pipe between them is missing, so on the
+normal marketplace install path (Stacker → User Service webhook → AMQP → Python
+mapper) the author-declared policy **never reaches the generator** and
+`apply_field_policy` is a no-op. The original security hole (every buyer receives
+the author's literal secrets) is therefore **still open on that path**.
+
+| Area | Where | Status |
+|------|-------|--------|
+| §1 Schema/parser `FieldPolicy`/`Mutability`/`FieldType` | `stacker/src/cli/config_parser.rs` (Mutability@907, FieldType@919, FieldPolicy@930) | ✅ done |
+| §2 Publish gates (`ensure_has_successful_deployment`, `source_project_id`, contract-completeness `ensure_contract_declares_generated_secrets`) + tests | `stacker/src/routes/marketplace/creator.rs` (357, 523/541, `field_policy_gate_tests`@1624) | ✅ done |
+| §4 Install-time generator `apply_field_policy`, wired into the mapper | `tools/v1/additional/field_policy.py:129`, called at `custom_stack_mapper.py:697` (reads `install_data["config_contract"]`@692) | ✅ done |
+| §5 Local CLI parity `generator_shell_expression` | `stacker/src/console/commands/cli/init.rs` | ✅ done |
+| §6 Project API exposes `config_contract` | `stacker/src/routes/project/app.rs` (315/337) | ✅ done |
+| Shared contract JSON | `config/shared-fixtures/api-contracts/marketplace-field-policy.json` | ✅ done |
+| **§3 Federation of `config_contract`** | webhook payload + User Service | ❌ **MISSING — see §8** |
+| §6 Persist on CLI push | `stacker/src/project_app/upsert.rs` | ❌ not wired (only the explicit `app.rs` route writes it) |
+| Immutable / bake-clone path | `stacker/src/bin/bake.rs`, `src/routes/oneclick_deploy/clone.rs` | ✅ done — see §9 (separate path) |
 
 ## Context
 
@@ -120,6 +140,19 @@ TDD throughout, per the mandate above: every bullet below is written as a failin
 - **Rust unit tests** (colocated `#[cfg(test)]`): `TargetConfigContract`/`FieldPolicy` custom deserialize — legacy shorthand lists (`required`/`optional`/`secret`) map to the correct default `mutability`, and full per-field policy form parses correctly; `ensure_has_successful_deployment` gate (400 with no/failed deployments, success with a `"completed"`/`"running"` row); contract-completeness check flags an unmapped secret-looking field and passes when fully declared as `generated`; `config_contract` round-trips through `project_app/upsert.rs` push and appears in `HydratedProjectApp`/the project config GET route.
 - **Python tests** (Install Service/tools): `_apply_field_policy` — two installs produce different values for the same `generated` field; a `derived_jwt` field verifies (`jwt.decode`) against its own install's generated signing secret; an `editable` field takes the installer's override when supplied and falls back to the author's default otherwise; redeploy of the same install reuses previously generated values and previously submitted overrides (idempotency); empty/no-policy `config_contract` is a no-op (legacy regression safety).
 - **End-to-end**: publish a Supabase-style stack with an incomplete `config_contract` → rejected with the specific missing-field list. Complete the contract, publish without a prior deployment → rejected (deployment gate). Deploy once, resubmit → accepted. Approve, confirm `marketplace_templates` federation retains `config_contract`. Install as two different "buyers" → diff compose files (values differ from each other and from the author's originals); decode each install's generated `ANON_KEY` and verify it validates against that same install's generated `JWT_SECRET`. Redeploy one buyer's install → confirm values are stable, not rotated. Confirm `stacker secrets list` for each buyer's project shows their own values as `[REDACTED]`.
+- **Federation delivery + no-leak (§8) — BDD/TDD, write red first.** Canonical scenarios:
+  `config/shared-fixtures/features/marketplace-field-policy-delivery.feature`.
+  - *Rust (`stacker`)*: `StackTemplateVersion` (de)serializes `config_contract`; the
+    approve/publish webhook payload carries `config_contract` sourced from the version.
+    (Red today: neither the model field nor the payload field exists.)
+  - *Python (`user`)*: the webhook cache persists `config_contract`, and the install
+    payload includes it so `install_data["config_contract"]` is populated. (Red today:
+    zero references in the repo.)
+  - *Python (`tools`)*: **no-leak guarantee** — given a compose carrying the author's
+    literal secret values and a `config_contract` marking them `generated`, the compose
+    the buyer receives contains none of the author's secret values, two independent
+    installs differ from each other, `fixed` fields are preserved verbatim, and
+    `editable` fields take the buyer override or the author default.
 - Run `SQLX_OFFLINE=true cargo test` in `stacker` and `cargo sqlx prepare` after query changes, per this repo's CLAUDE.md rules.
 
 ## Critical files
@@ -137,3 +170,68 @@ TDD throughout, per the mandate above: every bullet below is written as a failin
 - `src/connectors/user_service/marketplace_webhook.rs` (confirm `config_contract` federates through)
 - `tools/v1/additional/custom_stack_mapper.py` (install-time policy-driven generation)
 - `user/app/installations/views.py` (confirm `config_contract` forwarded in install payload)
+
+## 8. Federation gap — the one missing link (audited)
+
+The install-time generator (§4) reads its policy from
+`self.install_data.get("config_contract")` (`custom_stack_mapper.py:692`). Nothing
+populates that key, because `config_contract` is **not federated** from Stacker to
+the User Service by any route:
+
+- **Webhook payload has no `config_contract` field.**
+  `stacker/src/connectors/user_service/marketplace_webhook.rs` — `MarketplaceWebhookPayload`
+  federates `stack_definition`, `definition_format`, `config_files`, `version`
+  (payload builds at 239/307) but never `config_contract`. `grep -c config_contract`
+  on that file = 0.
+- **User Service never references `config_contract`.** `grep -rn config_contract`
+  across the whole `user` repo = 0 matches. It caches only `stack_definition` into
+  `marketplace_templates` (`app/marketplace/views.py`) and builds the install payload
+  from `stack_definition` only (`app/deployments/services.py:98-137`,
+  `_load_compose_document` keys = `stack_definition`/`compose`/`docker_compose`/`latest_version`).
+- **It is NOT embedded inside `stack_definition`.** `config_contract` lives in its own
+  DB column (`stack_template_version.config_contract`, written by
+  `db::marketplace::set_config_contract`, read by `get_config_contract`); the model
+  `StackTemplateVersion` does not even map that column. `stack_definition` is the
+  compose document — the mapper pulls `compose_content` out of it and passes the
+  contract *separately*. So there is no path by which the contract reaches
+  `install_data`.
+
+**Fix (the single missing link):**
+1. Add `config_contract` to the `StackTemplateVersion` model (map the existing column)
+   or fetch it via `get_config_contract` in the approve/publish handlers.
+2. Add `config_contract: Option<Value>` to `MarketplaceWebhookPayload` and populate it
+   in `send_template_approved`/`send_template_published` (and the resubmit builders).
+3. User Service: add a `config_contract` JSONB column to `marketplace_templates`,
+   persist it from the webhook (`app/marketplace/views.py`), and include it in the
+   install payload so it lands in `install_data["config_contract"]`
+   (`app/deployments/services.py`).
+
+Every step is guarded by the BDD scenarios in
+`config/shared-fixtures/features/marketplace-field-policy-delivery.feature` and the
+TDD tests listed in Verification below.
+
+## 9. Immutable / bake-clone path (separate from the normal install path)
+
+The one-click "clone a baked snapshot" flow does **not** go through the User Service
+webhook or the Python mapper, so it needs its own regeneration. It is implemented and
+works:
+
+- **Bake** pins the policy to the image: `bin/bake.rs` resolves the contract by slug
+  (`get_approved_by_slug` → `get_config_contract`) and stores it on
+  `baked_snapshots.config_contract`.
+- **Clone** regenerates on the box: `routes/oneclick_deploy/clone.rs` reads
+  `snapshot.config_contract`, and `regen_commands` emits, per `mutability: generated`
+  field the buyer did not supply, a cloud-init run-command that mints a fresh value on
+  the cloned box using **the same** `generator_shell_expression` a normal install's
+  `generate-secrets.sh` uses (one source of truth). `fixed` stays constant; `editable`
+  keeps the buyer override or the baked default.
+
+Open items on this path:
+- `derived_jwt` is deferred (the shell path can't sign a JWT on the box) — same
+  deferral the local `generate-secrets.sh` makes.
+- The value is minted **on the box only** — it is not written back into the
+  `stacker secrets` engine, so it is not visible via `stacker secrets list` the way the
+  normal-path §4 generation is. Deciding whether to report it back is a follow-up.
+- Only fixes values the app reads from env each boot; anything persisted to a
+  volume/DB on the source box's first run is frozen in the snapshot (needs a
+  post-clone rotation or a "clean" bake).

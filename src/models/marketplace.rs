@@ -102,6 +102,14 @@ pub struct StackTemplateVersion {
     pub definition_format: Option<String>,
     pub changelog: Option<String>,
     pub is_latest: Option<bool>,
+    /// Author-declared per-field policy (`config_contract`), stored in its own
+    /// `stack_template_version.config_contract` column. `#[sqlx(default)]` so the
+    /// many SELECTs that don't list the column still map (they get `None`); the
+    /// federation reads (`get_latest_version`, `get_latest_version_by_template`,
+    /// `get_by_slug_with_latest`) do list it so the webhook can deliver it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub config_contract: Option<serde_json::Value>,
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -385,7 +393,47 @@ pub struct TemplateAnalytics {
 
 #[cfg(test)]
 mod tests {
-    use super::{InfrastructureRequirements, MarketplaceVendorProfile};
+    use super::{InfrastructureRequirements, MarketplaceVendorProfile, StackTemplateVersion};
+
+    // TDD (red): the federation fix (docs/MARKETPLACE_FIELD_POLICY.md §8) requires the
+    // model to CARRY config_contract so the marketplace webhook builder can read
+    // `latest_version.config_contract`. Today the column exists in the DB
+    // (stack_template_version.config_contract, via db::marketplace::set/get_config_contract)
+    // but is NOT mapped on this struct, so it is silently dropped on (de)serialize —
+    // which is exactly why the policy never federates. Failing until the field is added.
+    #[test]
+    fn stack_template_version_carries_config_contract() {
+        let raw = serde_json::json!({
+            "id": "11111111-1111-1111-1111-111111111111",
+            "template_id": "22222222-2222-2222-2222-222222222222",
+            "version": "1.0.0",
+            "stack_definition": "services: {}\n",
+            "assets": {},
+            "config_contract": {
+                "services": {
+                    "web": {
+                        "fields": {
+                            "JWT_SECRET": { "mutability": "generated", "type": "hex", "length": 32 }
+                        }
+                    }
+                }
+            }
+        });
+
+        let version: StackTemplateVersion =
+            serde_json::from_value(raw).expect("deserialize StackTemplateVersion");
+        let round_trip = serde_json::to_value(&version).expect("serialize StackTemplateVersion");
+
+        assert!(
+            round_trip.get("config_contract").is_some(),
+            "StackTemplateVersion must map the config_contract column so the webhook \
+             payload can federate it; it is being dropped (federation gap §8)"
+        );
+        assert_eq!(
+            round_trip["config_contract"]["services"]["web"]["fields"]["JWT_SECRET"]["mutability"],
+            "generated"
+        );
+    }
 
     #[test]
     fn infrastructure_requirements_default_is_empty() {

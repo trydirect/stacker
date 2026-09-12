@@ -291,6 +291,7 @@ pub async fn get_by_slug_and_user(
     })
 }
 
+#[derive(Debug)]
 pub enum SlugLookupError {
     NotFound,
     Internal,
@@ -362,6 +363,7 @@ pub async fn get_by_slug_with_latest(
             definition_format,
             changelog,
             is_latest,
+            config_contract,
             created_at
         FROM stack_template_version WHERE template_id = $1 AND is_latest = true LIMIT 1"#,
     )
@@ -400,6 +402,7 @@ pub async fn get_latest_version(
             definition_format,
             changelog,
             is_latest,
+            config_contract,
             created_at
         FROM stack_template_version WHERE template_id = $1 AND is_latest = true LIMIT 1"#,
     )
@@ -1694,7 +1697,7 @@ pub async fn list_versions_by_template(
         r#"
         SELECT id, template_id, version, stack_definition, config_files, assets, seed_jobs,
                post_deploy_hooks, update_mode_capabilities, definition_format, changelog,
-               is_latest, created_at
+               is_latest, config_contract, created_at
         FROM stack_template_version
         WHERE template_id = $1
         ORDER BY created_at DESC
@@ -1721,7 +1724,7 @@ pub async fn get_latest_version_by_template(
         r#"
         SELECT id, template_id, version, stack_definition, config_files, assets, seed_jobs,
                post_deploy_hooks, update_mode_capabilities, definition_format, changelog,
-               is_latest, created_at
+               is_latest, config_contract, created_at
         FROM stack_template_version
         WHERE template_id = $1 AND is_latest = true
         LIMIT 1

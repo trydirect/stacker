@@ -1361,6 +1361,7 @@ mod tests {
             definition_format: Some("yaml".to_string()),
             changelog: None,
             is_latest: Some(true),
+            config_contract: None,
             created_at: None,
         }
     }
@@ -1781,6 +1782,7 @@ mod tests {
             definition_format: None,
             changelog: None,
             is_latest: Some(true),
+            config_contract: None,
             created_at: None,
         };
 
@@ -1853,6 +1855,7 @@ mod tests {
             definition_format: None,
             changelog: None,
             is_latest: Some(true),
+            config_contract: None,
             created_at: None,
         };
 
