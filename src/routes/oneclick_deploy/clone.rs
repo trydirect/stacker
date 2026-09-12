@@ -153,12 +153,62 @@ pub async fn clone_server(
         }));
     };
 
-    // Render cloud-init with per-user env + domain. Secrets are expected to be
-    // pre-resolved (by the user service) into `form.env`.
+    // ── field_policy regeneration point ───────────────────────────────────
+    // A baked snapshot froze whatever value each field held when the source box
+    // was baked. For `mutability: generated` fields that is exactly wrong: the
+    // policy means "a fresh value per install", but every clone of this image
+    // would otherwise inherit the one baked secret (shared JWT/DB creds across
+    // all buyers). So we schedule a fresh value for each generated field the user
+    // service did not already supply, minted *on the cloned box* at first boot by
+    // the same shell generators a normal install's `generate-secrets.sh` runs —
+    // one source of truth, so `derived_jwt`/`enum` defer identically.
+    //
+    // The contract is pinned to the image (baked_snapshots.config_contract); for
+    // snapshots baked before that column there is nothing to regenerate (the box
+    // boots with the baked values). Best-effort — a missing/invalid contract just
+    // skips regeneration.
+    //
+    // CAVEAT: this only fixes values the app reads from env on each boot. Anything
+    // the app persisted on first-run (secrets written into its DB/volume) is
+    // already frozen in the snapshot and needs a post-clone rotation step or a
+    // "clean" bake taken before first-run materialization.
+    let regen = match &snapshot.config_contract {
+        Some(contract_json) => {
+            match serde_json::from_value::<crate::cli::config_parser::ConfigContract>(
+                contract_json.clone(),
+            ) {
+                Ok(contract) => {
+                    let cmds = regen_commands(&contract, &form.env);
+                    if !cmds.is_empty() {
+                        tracing::info!(
+                            stack = %form.stack,
+                            fields = ?cmds.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+                            "will regenerate generated fields fresh on the cloned box"
+                        );
+                    }
+                    cmds
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, stack = %form.stack,
+                        "config_contract on snapshot did not parse; skipping field regeneration");
+                    Vec::new()
+                }
+            }
+        }
+        // Pre-column snapshots have no pinned contract; the box boots with the
+        // baked values. Resolving it live by slug is a possible follow-up.
+        None => Vec::new(),
+    };
+
+    // Render cloud-init with per-user env + domain. Secrets are pre-resolved (by
+    // the user service) into `form.env`; `regen` mints fresh values for
+    // `mutability: generated` fields on the box at first boot, reusing the same
+    // shell generators a normal install's generate-secrets.sh runs.
     let boot = BootConfig {
         domain: form.domain.clone(),
         admin_email: form.admin_email.clone(),
         env: form.env.clone(),
+        regen,
     };
     let user_data = render_user_data(&boot);
 
@@ -176,17 +226,91 @@ pub async fn clone_server(
     let hex = &deployment_hash[deployment_hash.len() - 8..];
     let project_name = format!("oneclick-{}-{}", form.stack, hex);
 
-    let project = match crate::db::project::insert(
-        &pg_pool,
-        crate::models::Project::new(
-            user.id.clone(),
-            project_name,
-            json!({"source": "oneclick_clone", "stack": form.stack}),
-            json!({}),
-        ),
-    )
-    .await
-    {
+    // Carry the stack composition into the one-click project so the User Service
+    // can populate the Applications panel / Stack Builder / Redeploy. The baked
+    // snapshot records only an image id (baked_snapshots: stack/version/provider/
+    // image_id/digests), never the composition it was baked from, so we resolve it
+    // from the marketplace catalog by the slug the registry keys on:
+    //   baked_snapshots.stack == stack_template.slug
+    //
+    // Preference order, freshest first:
+    //   1. The template's *source project* (stack_template_version.source_project_id
+    //      -> project.request_json). This is the authoritative, up-to-date
+    //      composition — already in the exact ProjectForm shape the User Service
+    //      seeder consumes under `request_json.custom`, and it reflects what was
+    //      actually deployed & baked (e.g. floci runs two services though the
+    //      template's tech_stack lists one). It is *unsanitized*, so we run it
+    //      through the same redaction the published definition gets before storing
+    //      it on the buyer's project.
+    //   2. Fallback: the published (already-redacted) stack_definition on the
+    //      latest StackTemplateVersion, when no source project is linked. NOTE:
+    //      this raw shape still needs seeder-side handling; older templates that
+    //      lack a source_project_id degrade to it.
+    //
+    // Best-effort throughout: on any miss we fall back to an empty payload; the
+    // deployment_daily billing block below still 404s unknown stacks before any
+    // server is created.
+    let mut source_template_id: Option<uuid::Uuid> = None;
+    let mut template_version: Option<String> = None;
+    let mut request_json = json!({});
+
+    match crate::db::marketplace::get_by_slug_with_latest(&pg_pool, &form.stack).await {
+        Ok((template, version)) => {
+            source_template_id = Some(template.id);
+            template_version = version.as_ref().map(|v| v.version.clone());
+
+            // 1. Prefer the source project's live composition.
+            let source_project =
+                match crate::db::marketplace::get_source_project_id(&pg_pool, template.id).await {
+                    Ok(Some(pid)) => crate::db::project::fetch(&pg_pool, pid)
+                        .await
+                        .ok()
+                        .flatten(),
+                    _ => None,
+                };
+
+            if let Some(src) = source_project {
+                let mut rj = src.request_json.clone();
+                crate::helpers::redact::redact_sensitive_json_values(&mut rj);
+                // Re-tag provenance for this one-click deploy.
+                if let Some(obj) = rj.as_object_mut() {
+                    obj.insert("source".into(), json!("oneclick_clone"));
+                    obj.insert("stack".into(), json!(form.stack));
+                }
+                request_json = rj;
+            } else if let Some(v) = version {
+                // 2. Fallback to the published (redacted) template definition.
+                request_json = json!({
+                    "source": "oneclick_clone",
+                    "stack": form.stack,
+                    "custom": {
+                        "stack_definition": v.stack_definition,
+                        "definition_format": v.definition_format,
+                        "config_files": v.config_files,
+                    },
+                });
+            }
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = ?err,
+                stack = %form.stack,
+                "could not resolve composition for one-click project; \
+                 request_json will be empty (Applications panel may show 0 services)"
+            );
+        }
+    }
+
+    let mut project_model = crate::models::Project::new(
+        user.id.clone(),
+        project_name,
+        json!({"source": "oneclick_clone", "stack": form.stack}),
+        request_json,
+    );
+    project_model.source_template_id = source_template_id;
+    project_model.template_version = template_version;
+
+    let project = match crate::db::project::insert(&pg_pool, project_model).await {
         Ok(p) => p,
         Err(err) => {
             tracing::error!(error = %err, "failed to create project for clone deploy");
@@ -447,6 +571,74 @@ pub async fn clone_server(
         ssh_private_key: private_key,
         authorization_id,
     })
+}
+
+/// The generated fields whose fresh value must be minted on the cloned box,
+/// paired with the canonical shell generator for each. Reuses the *single*
+/// source of truth for the type→generator mapping
+/// (`console::…::init::generator_shell_expression`) rather than duplicating it:
+/// generation stays on the box, exactly as a normal install's
+/// `generate-secrets.sh` does, so `derived_jwt`/`enum` are deferred identically.
+///
+/// A key already supplied (non-empty) in `already_set` is skipped — the user
+/// service may have resolved it deliberately; we only fill the gap the frozen
+/// snapshot leaves.
+fn regen_commands(
+    contract: &crate::cli::config_parser::ConfigContract,
+    already_set: &BTreeMap<String, String>,
+) -> Vec<(String, String)> {
+    use crate::console::commands::cli::init::{
+        flatten_generated_field_policies, generator_shell_expression,
+    };
+
+    let mut cmds: Vec<(String, String)> = flatten_generated_field_policies(contract)
+        .into_iter()
+        .filter(|(key, _)| already_set.get(key).map(|v| v.is_empty()).unwrap_or(true))
+        .filter_map(|(key, policy)| generator_shell_expression(&policy).map(|expr| (key, expr)))
+        .collect();
+    cmds.sort();
+    cmds
+}
+
+#[cfg(test)]
+mod regen_tests {
+    use super::regen_commands;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    /// A `generated` field with no installer-supplied value gets a regen command
+    /// reusing the canonical shell generator; a `fixed` field and an
+    /// already-supplied value are left alone.
+    #[test]
+    fn regen_commands_only_for_unset_generated_fields() {
+        let contract: crate::cli::config_parser::ConfigContract = serde_json::from_value(json!({
+            "services": {
+                "web": {
+                    "fields": {
+                        "JWT_SECRET": { "mutability": "generated", "type": "hex", "length": 32 },
+                        "API_KEY":    { "mutability": "generated", "type": "alphanumeric" },
+                        "LOG_LEVEL":  { "mutability": "fixed" }
+                    }
+                }
+            }
+        }))
+        .expect("contract parses");
+
+        // API_KEY already supplied by the installer → must be skipped.
+        let mut already = BTreeMap::new();
+        already.insert("API_KEY".to_string(), "supplied".to_string());
+
+        let cmds = regen_commands(&contract, &already);
+        let keys: Vec<&str> = cmds.iter().map(|(k, _)| k.as_str()).collect();
+
+        assert_eq!(
+            keys,
+            vec!["JWT_SECRET"],
+            "only the unset generated field regenerates"
+        );
+        // And it reuses the openssl-based hex generator, not a bespoke one.
+        assert!(cmds[0].1.contains("openssl rand -hex"));
+    }
 }
 
 #[cfg(test)]

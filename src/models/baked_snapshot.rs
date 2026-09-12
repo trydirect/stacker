@@ -13,6 +13,12 @@ pub struct BakedSnapshot {
     pub healthy: bool,
     /// JSON object mapping image ref -> digest (digest-pinned pulls at bake).
     pub digests: Option<serde_json::Value>,
+    /// The author-declared field policy (`ConfigContract`) captured at bake time,
+    /// pinned to this image. The clone path reads it to regenerate
+    /// `mutability: generated` fields fresh per buyer rather than inheriting the
+    /// single value baked into the snapshot. `None` for snapshots baked before
+    /// this column existed.
+    pub config_contract: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
 }
 

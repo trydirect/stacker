@@ -26,6 +26,13 @@ pub struct BootConfig {
     pub admin_email: String,
     /// Per-user environment (KEY -> value). BTreeMap → deterministic ordering.
     pub env: BTreeMap<String, String>,
+    /// `mutability: generated` fields to (re)generate on the box at first boot,
+    /// as `(env_key, shell_generator_expr)`. Each runs before the compose
+    /// restart and overwrites (or appends) the key in `/etc/stacker/env`, so a
+    /// clone gets a fresh secret instead of the one frozen into the snapshot.
+    /// The generator strings come from the same source of truth as a normal
+    /// install's `generate-secrets.sh`.
+    pub regen: Vec<(String, String)>,
 }
 
 /// Render the cloud-init `#cloud-config` user-data for a baked-snapshot boot.
@@ -51,15 +58,40 @@ pub fn render_user_data(cfg: &BootConfig) -> String {
             },
         ],
         // The compose file, images, and systemd unit are all baked into the
-        // snapshot — first boot just (re)starts them with the injected env.
-        "runcmd": [
-            ["systemctl", "restart", "stacker-compose.service"],
-        ],
+        // snapshot — first boot regenerates any per-install secrets, then
+        // (re)starts the stack with the injected env.
+        "runcmd": regen_runcmds(&cfg.regen),
     });
 
     let yaml =
         serde_yaml::to_string(&doc).unwrap_or_else(|_| "write_files: []\nruncmd: []\n".to_string());
     format!("#cloud-config\n{yaml}")
+}
+
+/// The cloud-init `runcmd` list: one regeneration command per generated field
+/// (each mints a fresh value on the box and writes it into `/etc/stacker/env`),
+/// followed by the compose restart that reads that env.
+///
+/// Keys are restricted to env-identifier characters; anything else is dropped
+/// rather than interpolated into the shell.
+fn regen_runcmds(regen: &[(String, String)]) -> Vec<serde_json::Value> {
+    let mut cmds: Vec<serde_json::Value> = Vec::new();
+    for (key, expr) in regen {
+        if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        // Compute the value once, then replace an existing line in place or
+        // append it. `#` as the sed delimiter avoids clashing with `/` in
+        // base64 output; the generated types never contain `#`.
+        let snippet = format!(
+            "V=$({expr}); if grep -q '^{key}=' /etc/stacker/env 2>/dev/null; then \
+             sed -i \"s#^{key}=.*#{key}=${{V}}#\" /etc/stacker/env; else \
+             echo \"{key}=${{V}}\" >> /etc/stacker/env; fi"
+        );
+        cmds.push(json!(["bash", "-lc", snippet]));
+    }
+    cmds.push(json!(["systemctl", "restart", "stacker-compose.service"]));
+    cmds
 }
 
 /// `KEY=value` lines, deterministically ordered.
@@ -95,6 +127,7 @@ mod tests {
             domain: "app.example.com".to_string(),
             admin_email: "admin@example.com".to_string(),
             env,
+            regen: Vec::new(),
         }
     }
 

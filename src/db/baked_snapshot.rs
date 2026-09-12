@@ -63,11 +63,12 @@ pub async fn record(
     image_id: i64,
     healthy: bool,
     digests: Option<serde_json::Value>,
+    config_contract: Option<serde_json::Value>,
 ) -> Result<BakedSnapshot, String> {
     sqlx::query_as::<_, BakedSnapshot>(
         r#"
-        INSERT INTO baked_snapshots (stack, version, provider, image_id, healthy, digests)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO baked_snapshots (stack, version, provider, image_id, healthy, digests, config_contract)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING *
         "#,
     )
@@ -77,6 +78,7 @@ pub async fn record(
     .bind(image_id)
     .bind(healthy)
     .bind(digests)
+    .bind(config_contract)
     .fetch_one(pool)
     .await
     .map_err(|e| format!("Failed to record baked snapshot: {e}"))

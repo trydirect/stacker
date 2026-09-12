@@ -1966,7 +1966,9 @@ pub fn flatten_generated_field_policies(
 /// generates a value matching `policy`, or `None` when the policy can't be
 /// satisfied by a local shell script (e.g. `derived_jwt`, which needs a
 /// signing key + JWT library — left to the app's own auth bootstrap).
-fn generator_shell_expression(policy: &crate::cli::config_parser::FieldPolicy) -> Option<String> {
+pub fn generator_shell_expression(
+    policy: &crate::cli::config_parser::FieldPolicy,
+) -> Option<String> {
     use crate::cli::config_parser::FieldType;
 
     match policy.type_spec {
