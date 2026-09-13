@@ -37,4 +37,5 @@ pub mod bake;
 pub mod bake_registry;
 pub mod cloud_init;
 pub mod compose_yaml;
+pub mod field_policy_backfill;
 pub mod rate_limit;

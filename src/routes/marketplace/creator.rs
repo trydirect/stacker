@@ -217,6 +217,11 @@ pub async fn create_handler(
     // Optional initial version
     if let Some(def) = req.stack_definition {
         let version = req.version.unwrap_or("1.0.0".to_string());
+        // P2: never persist author secret values for generated fields.
+        let def = match req.config_contract.as_ref() {
+            Some(cc) => strip_generated_field_values(&def, req.definition_format.as_deref(), cc),
+            None => def,
+        };
         db::marketplace::upsert_latest_version(
             pg_pool.get_ref(),
             &template.id,
@@ -538,6 +543,42 @@ pub(crate) fn missing_generated_secret_fields(
         .collect()
 }
 
+/// Defense-in-depth (P2): blank the values of every `mutability: generated` field
+/// in `stack_definition` before it is persisted, so the stored/federated template
+/// never carries the author's secret values. The installer regenerates these per
+/// buyer; if regeneration ever fails, the field is empty (fail-closed) rather than
+/// leaking the author's secret. `fixed`/`editable`/undeclared fields are untouched;
+/// with no generated fields this returns the input unchanged.
+pub(crate) fn strip_generated_field_values(
+    stack_definition: &serde_json::Value,
+    definition_format: Option<&str>,
+    config_contract: &serde_json::Value,
+) -> serde_json::Value {
+    let contract: crate::cli::config_parser::ConfigContract =
+        serde_json::from_value(config_contract.clone()).unwrap_or_default();
+    let generated: std::collections::BTreeSet<String> = contract
+        .services
+        .values()
+        .flat_map(|target| target.secret_keys())
+        .collect();
+    if generated.is_empty() {
+        return stack_definition.clone();
+    }
+
+    if definition_format == Some("yaml") {
+        if let Some(yaml_text) = stack_definition.as_str() {
+            let stripped =
+                crate::helpers::redact::strip_yaml_string_for_keys(yaml_text, &generated, "");
+            return serde_json::Value::String(stripped);
+        }
+        return stack_definition.clone();
+    }
+
+    let mut value = stack_definition.clone();
+    crate::helpers::redact::strip_json_values_for_keys(&mut value, &generated, "");
+    value
+}
+
 fn ensure_contract_declares_generated_secrets(
     stack_definition: &serde_json::Value,
     definition_format: Option<&str>,
@@ -742,6 +783,17 @@ pub async fn update_handler(
             .update_mode_capabilities
             .clone()
             .or(current_version.update_mode_capabilities.clone());
+
+        // P2: strip author secret values for generated fields before persisting,
+        // against the effective contract (this request's, else the stored one).
+        let effective_contract = match req.config_contract.clone() {
+            Some(cc) => cc,
+            None => db::marketplace::get_config_contract(pg_pool.get_ref(), id)
+                .await
+                .unwrap_or(serde_json::Value::Null),
+        };
+        let stack_definition =
+            strip_generated_field_values(&stack_definition, definition_format, &effective_contract);
 
         db::marketplace::upsert_latest_version(
             pg_pool.get_ref(),
@@ -1168,6 +1220,13 @@ pub async fn resubmit_handler(
         definition_format.as_deref(),
         &resolved_config_contract,
     )?;
+
+    // P2: strip author secret values for generated fields before persisting.
+    let stack_definition = strip_generated_field_values(
+        &stack_definition,
+        definition_format.as_deref(),
+        &resolved_config_contract,
+    );
 
     let version = db::marketplace::resubmit_with_new_version(
         pg_pool.get_ref(),
@@ -1623,6 +1682,77 @@ pub async fn complete_onboarding_handler(
 #[cfg(test)]
 mod field_policy_gate_tests {
     use super::*;
+
+    fn generated_contract() -> serde_json::Value {
+        serde_json::json!({
+            "services": {
+                "auth": {
+                    "fields": {
+                        "JWT_SECRET": { "mutability": "generated", "type": "hex", "length": 32 },
+                        "LOG_LEVEL": { "mutability": "editable" },
+                        "POSTGRES_HOST": { "mutability": "fixed" }
+                    }
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn strip_blanks_generated_values_in_json_definition() {
+        let def = serde_json::json!({
+            "services": {
+                "auth": {
+                    "environment": {
+                        "JWT_SECRET": "author-secret-DO-NOT-SHIP",
+                        "LOG_LEVEL": "warning",
+                        "POSTGRES_HOST": "db.internal"
+                    }
+                }
+            }
+        });
+        let out = strip_generated_field_values(&def, None, &generated_contract());
+        let env = &out["services"]["auth"]["environment"];
+        assert_eq!(env["JWT_SECRET"], "", "generated value must be blanked");
+        assert_eq!(env["LOG_LEVEL"], "warning", "editable value must survive");
+        assert_eq!(
+            env["POSTGRES_HOST"], "db.internal",
+            "fixed value must survive"
+        );
+    }
+
+    #[test]
+    fn strip_blanks_generated_values_in_yaml_definition() {
+        let yaml = "services:\n  auth:\n    environment:\n      JWT_SECRET: author-secret-DO-NOT-SHIP\n      LOG_LEVEL: warning\n";
+        let def = serde_json::Value::String(yaml.to_string());
+        let out = strip_generated_field_values(&def, Some("yaml"), &generated_contract());
+        let text = out.as_str().expect("yaml stays a string");
+        assert!(
+            !text.contains("author-secret-DO-NOT-SHIP"),
+            "generated value gone"
+        );
+        assert!(text.contains("warning"), "editable value survives");
+    }
+
+    #[test]
+    fn strip_blanks_projectform_key_value_pairs() {
+        let def = serde_json::json!([
+            { "key": "JWT_SECRET", "value": "author-secret-DO-NOT-SHIP" },
+            { "key": "POSTGRES_HOST", "value": "db.internal" }
+        ]);
+        let out = strip_generated_field_values(&def, None, &generated_contract());
+        assert_eq!(out[0]["value"], "", "generated pair blanked");
+        assert_eq!(out[1]["value"], "db.internal", "fixed pair survives");
+    }
+
+    #[test]
+    fn strip_is_noop_without_generated_fields() {
+        let def = serde_json::json!({
+            "services": { "auth": { "environment": { "JWT_SECRET": "x" } } }
+        });
+        let empty = serde_json::json!({ "services": {} });
+        let out = strip_generated_field_values(&def, None, &empty);
+        assert_eq!(out, def, "no generated fields → unchanged");
+    }
 
     #[test]
     fn deployment_status_completed_and_running_count_as_successful() {
