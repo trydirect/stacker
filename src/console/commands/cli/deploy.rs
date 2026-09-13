@@ -3995,7 +3995,7 @@ impl CallableTrait for DeployCommand {
         // access, so this must NOT be gated behind should_fetch_remote_details.
         // install_cloud_backup_key internally guards on server IP + active key.
         if should_install_cloud_backup_key(&result, self.dry_run) {
-            self.install_cloud_backup_key(&result)?;
+            self.install_cloud_backup_key(&result, &project_dir)?;
         }
 
         if should_notify {
@@ -4060,26 +4060,105 @@ impl DeployCommand {
     /// you cannot log into is not a successful deploy: reporting success
     /// here is what let a broken Vault policy go unnoticed for days while
     /// every deploy printed a green checkmark (Sept 2026).
-/// A cloud deploy whose SSH access could not be *confirmed* must not report
-/// success. "Could not check" is not "checked and fine" — treating the two
-/// the same is what hid a broken Vault policy behind green checkmarks.
-fn unverified_ssh_access(reason: &str) -> Box<dyn std::error::Error> {
-    eprintln!("  ✗ SSH access to the new server could not be verified: {}", reason);
-    eprintln!("    The app may be running, but nothing confirmed you can log in,");
-    eprintln!("    so this deploy is reported as failed rather than assumed good.");
-    format!("SSH access could not be verified: {}", reason).into()
-}
+    /// A cloud deploy whose SSH access could not be *confirmed* must not report
+    /// success. "Could not check" is not "checked and fine" — treating the two
+    /// the same is what hid a broken Vault policy behind green checkmarks.
+    /// Resolve the public key that `deploy.cloud.ssh_key` points at.
+    ///
+    /// Split out of `authorize_configured_user_key` so everything except the HTTP
+    /// call is testable: config loading, target resolution, path expansion and the
+    /// empty/missing cases are where this has actually gone wrong before.
+    ///
+    /// Returns `Ok(None)` when there is simply nothing to install — no config file,
+    /// a config that will not parse, or no `deploy.cloud.ssh_key` set. Returns
+    /// `Err` only when a key IS configured but cannot be used, because silently
+    /// skipping a key the user explicitly asked for is the bug this whole path
+    /// exists to fix.
+    ///
+    /// The config is loaded with an explicit `"cloud"` target on purpose. With
+    /// `target: server` written in the file, `deploy.cloud` is the *inactive*
+    /// section and its `${VAR}`s are deliberately left unresolved, so
+    /// `cloud.ssh_key` would still read `${BASE_PATH}/...` and the `.pub` lookup
+    /// would miss. See `config_parser::inactive_deploy_sections`.
+    fn configured_user_public_key(
+        config_path: &Path,
+    ) -> Result<Option<(PathBuf, String)>, Box<dyn std::error::Error>> {
+        if !config_path.exists() {
+            return Ok(None);
+        }
+
+        let config = match StackerConfig::from_file_for_target(config_path, Some("cloud")) {
+            Ok(config) => config,
+            Err(err) => {
+                // Not fatal: the deploy already succeeded using a config the CLI
+                // parsed earlier, so a failure here is a re-read problem, not a
+                // missing key.
+                eprintln!(
+                    "  note: could not re-read config for SSH key install: {}",
+                    err
+                );
+                return Ok(None);
+            }
+        };
+
+        let Some(key_path) = config
+            .deploy
+            .cloud
+            .as_ref()
+            .and_then(|cloud| cloud.ssh_key.as_ref())
+        else {
+            return Ok(None);
+        };
+
+        // `~` and `${VAR}` are already expanded by the loader; this handles the
+        // home-relative form the same way build_deploy_form() does.
+        let resolved = crate::cli::install_runner::resolve_ssh_key_path(key_path);
+        let pub_path = PathBuf::from(format!("{}.pub", resolved.display()));
+
+        let public_key = std::fs::read_to_string(&pub_path).map_err(|err| {
+            format!(
+                "deploy.cloud.ssh_key is set but its public key could not be read at \
+             {}: {}. You would have no SSH access with that key.",
+                pub_path.display(),
+                err
+            )
+        })?;
+
+        let public_key = public_key.trim().to_string();
+        if public_key.is_empty() {
+            return Err(format!(
+                "deploy.cloud.ssh_key is set but {} is empty.",
+                pub_path.display()
+            )
+            .into());
+        }
+
+        Ok(Some((pub_path, public_key)))
+    }
+
+    fn unverified_ssh_access(reason: &str) -> Box<dyn std::error::Error> {
+        eprintln!(
+            "  ✗ SSH access to the new server could not be verified: {}",
+            reason
+        );
+        eprintln!("    The app may be running, but nothing confirmed you can log in,");
+        eprintln!("    so this deploy is reported as failed rather than assumed good.");
+        format!("SSH access could not be verified: {}", reason).into()
+    }
 
     fn install_cloud_backup_key(
         &self,
         result: &DeployResult,
+        project_dir: &Path,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if result.target != DeployTarget::Cloud {
             return Ok(());
         }
 
         let Some(project_id) = result.project_id else {
-            return Err(Self::unverified_ssh_access("deployment returned no project ID"));
+            return Err(Self::unverified_ssh_access(
+                "deployment returned no project ID",
+            ));
         };
 
         let server = match fetch_server_for_project(
@@ -4090,7 +4169,9 @@ fn unverified_ssh_access(reason: &str) -> Box<dyn std::error::Error> {
         ) {
             Ok(Some(server)) => server,
             Ok(None) => {
-                return Err(Self::unverified_ssh_access("server details are not available"));
+                return Err(Self::unverified_ssh_access(
+                    "server details are not available",
+                ));
             }
             Err(err) => {
                 return Err(Self::unverified_ssh_access(&format!(
@@ -4144,17 +4225,28 @@ fn unverified_ssh_access(reason: &str) -> Box<dyn std::error::Error> {
                 eprintln!("    Key: {}", auth.private_key_path.display());
                 eprintln!("    Public key: {}", auth.public_key_path.display());
                 eprintln!("    Connect: {}", auth.ssh_command);
+
+                // The user's own key from deploy.cloud.ssh_key goes through the
+                // SAME endpoint that just succeeded above — one call per key,
+                // appended idempotently over SSH (see SSH_KEY_LIFECYCLE.md).
+                //
+                // It deliberately does not ride on the provider's ssh_keys
+                // field: that carries exactly one key, so a newline-joined list
+                // was collapsed onto a single authorized_keys line and only the
+                // first key stayed usable.
+                self.authorize_configured_user_key(&rt, &client, &server, project_dir)?;
             }
             Err(err) => {
-                eprintln!("  ✗ No SSH access was established for server {}.", server.id);
+                eprintln!(
+                    "  ✗ No SSH access was established for server {}.",
+                    server.id
+                );
                 eprintln!("    Reason: {}", err);
                 eprintln!(
                     "    Repair: stacker ssh-key inject --server-id {} --with-key <existing-private-key>",
                     server.id
                 );
-                eprintln!(
-                    "    The app may be running, but you cannot log in to the machine,"
-                );
+                eprintln!("    The app may be running, but you cannot log in to the machine,");
                 eprintln!("    so this deploy is reported as failed.");
                 return Err(format!(
                     "no SSH access was established for server {}: {}",
@@ -4165,6 +4257,41 @@ fn unverified_ssh_access(reason: &str) -> Box<dyn std::error::Error> {
         }
 
         Ok(())
+    }
+
+    /// Authorize the user's own `deploy.cloud.ssh_key` on the new server.
+    ///
+    /// Uses the same `authorize-public-key` endpoint as the local backup key —
+    /// one call per key, appended to authorized_keys idempotently over SSH.
+    /// A key the user explicitly configured and cannot log in with is a failed
+    /// deploy, so this propagates rather than warning.
+    fn authorize_configured_user_key(
+        &self,
+        rt: &tokio::runtime::Runtime,
+        client: &StackerClient,
+        server: &crate::cli::stacker_client::ServerInfo,
+        project_dir: &Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let config_path = match &self.file {
+            Some(file) => project_dir.join(file),
+            None => project_dir.join("stacker.yml"),
+        };
+
+        let Some((pub_path, public_key)) = Self::configured_user_public_key(&config_path)? else {
+            return Ok(());
+        };
+
+        match rt.block_on(client.authorize_ssh_public_key(server.id, &public_key, None, None)) {
+            Ok(_) => {
+                eprintln!("  ✓ Your SSH key authorized ({})", pub_path.display());
+                Ok(())
+            }
+            Err(err) => Err(format!(
+                "could not authorize your deploy.cloud.ssh_key on server {}: {}",
+                server.id, err
+            )
+            .into()),
+        }
     }
 
     /// Save deployment context to `.stacker/deployment.lock` after a successful deploy.
@@ -4870,6 +4997,200 @@ mod tests {
     use crate::cli::install_runner::CommandOutput;
     use std::sync::Mutex;
     use tempfile::TempDir;
+
+    // ── configured_user_public_key ─────────────────────────────────────────
+    //
+    // Everything except the HTTP call in authorize_configured_user_key(). The
+    // cases below are the ones that actually broke in production: a key that
+    // resolves to nothing, a .pub that is missing, and a config whose
+    // deploy.cloud section is left unresolved because the file says
+    // `target: server`.
+
+    /// Write a stacker.yml (and optional .env) into a temp project dir.
+    fn write_project(config: &str, env: Option<&str>) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("stacker.yml"), config).unwrap();
+        if let Some(env) = env {
+            std::fs::write(dir.path().join(".env"), env).unwrap();
+        }
+        dir
+    }
+
+    const TEST_PUBLIC_KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEYVALUE user@example.com";
+
+    #[test]
+    fn configured_user_public_key_returns_none_when_no_config_file() {
+        let dir = TempDir::new().unwrap();
+
+        let result =
+            DeployCommand::configured_user_public_key(&dir.path().join("stacker.yml")).unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn configured_user_public_key_returns_none_when_cloud_ssh_key_unset() {
+        // Nothing configured means nothing to install — not an error.
+        let dir = write_project(
+            r#"
+name: app
+app:
+    type: static
+deploy:
+    target: cloud
+    cloud:
+        provider: hetzner
+        region: fsn1
+"#,
+            None,
+        );
+
+        let result =
+            DeployCommand::configured_user_public_key(&dir.path().join("stacker.yml")).unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn configured_user_public_key_reads_the_pub_file() {
+        let dir = TempDir::new().unwrap();
+        let key = dir.path().join("id_test");
+        std::fs::write(&key, "PRIVATE").unwrap();
+        // trailing newline must be trimmed — authorized_keys entries are per-line
+        std::fs::write(
+            PathBuf::from(format!("{}.pub", key.display())),
+            format!("{}\n", TEST_PUBLIC_KEY),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("stacker.yml"),
+            format!(
+                r#"
+name: app
+app:
+    type: static
+deploy:
+    target: cloud
+    cloud:
+        provider: hetzner
+        ssh_key: {}
+"#,
+                key.display()
+            ),
+        )
+        .unwrap();
+
+        let (pub_path, public_key) =
+            DeployCommand::configured_user_public_key(&dir.path().join("stacker.yml"))
+                .unwrap()
+                .expect("key should be resolved");
+
+        assert_eq!(public_key, TEST_PUBLIC_KEY);
+        assert!(pub_path.ends_with("id_test.pub"));
+    }
+
+    #[test]
+    fn configured_user_public_key_errors_when_pub_file_is_missing() {
+        // The old behaviour printed a note and carried on, so a key the user
+        // explicitly configured silently never reached authorized_keys.
+        let dir = write_project(
+            r#"
+name: app
+app:
+    type: static
+deploy:
+    target: cloud
+    cloud:
+        provider: hetzner
+        ssh_key: /nonexistent/path/to/key
+"#,
+            None,
+        );
+
+        let err = DeployCommand::configured_user_public_key(&dir.path().join("stacker.yml"))
+            .expect_err("a configured key that cannot be read must fail");
+
+        assert!(
+            err.to_string().contains("could not be read"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn configured_user_public_key_errors_when_pub_file_is_empty() {
+        let dir = TempDir::new().unwrap();
+        let key = dir.path().join("id_empty");
+        std::fs::write(PathBuf::from(format!("{}.pub", key.display())), "   \n").unwrap();
+        std::fs::write(
+            dir.path().join("stacker.yml"),
+            format!(
+                r#"
+name: app
+app:
+    type: static
+deploy:
+    target: cloud
+    cloud:
+        provider: hetzner
+        ssh_key: {}
+"#,
+                key.display()
+            ),
+        )
+        .unwrap();
+
+        let err = DeployCommand::configured_user_public_key(&dir.path().join("stacker.yml"))
+            .expect_err("an empty .pub must fail");
+
+        assert!(err.to_string().contains("is empty"), "unexpected: {}", err);
+    }
+
+    #[test]
+    fn configured_user_public_key_resolves_vars_even_when_file_target_is_server() {
+        // The regression that hid this for days: with `target: server` written
+        // in the file, deploy.cloud is the inactive section and its ${VAR}s are
+        // left alone. Loading with an explicit "cloud" target is what makes
+        // ${BASE_PATH} resolve so the .pub is found at all.
+        let dir = TempDir::new().unwrap();
+        let key = dir.path().join("id_var");
+        std::fs::write(
+            PathBuf::from(format!("{}.pub", key.display())),
+            TEST_PUBLIC_KEY,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            format!("BASE_PATH={}\n", dir.path().display()),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("stacker.yml"),
+            r#"
+name: app
+app:
+    type: static
+env_file: .env
+deploy:
+    target: server
+    server:
+        host: 203.0.113.5
+        user: root
+    cloud:
+        provider: hetzner
+        ssh_key: ${BASE_PATH}/id_var
+"#,
+        )
+        .unwrap();
+
+        let (_, public_key) =
+            DeployCommand::configured_user_public_key(&dir.path().join("stacker.yml"))
+                .unwrap()
+                .expect("cloud.ssh_key must resolve despite target: server");
+
+        assert_eq!(public_key, TEST_PUBLIC_KEY);
+    }
 
     /// Mock executor that records commands and returns configurable output.
     struct MockExecutor {
@@ -6006,9 +6327,13 @@ services:
         )
         .unwrap();
 
-        let err =
-            reject_build_sections_for_cloud(&compose_path, DeployTarget::Cloud, false, "hermes-agent")
-                .unwrap_err();
+        let err = reject_build_sections_for_cloud(
+            &compose_path,
+            DeployTarget::Cloud,
+            false,
+            "hermes-agent",
+        )
+        .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("'app'"), "names the service: {msg}");
         // A generated compose must blame stacker.yml, not the file the user
@@ -6048,7 +6373,10 @@ services:
             !msg.contains("app.image is not set"),
             "must not blame stacker.yml for a hand-written compose: {msg}"
         );
-        assert!(msg.contains("image: your-org/my-proj:1.0.0"), "shows the fix: {msg}");
+        assert!(
+            msg.contains("image: your-org/my-proj:1.0.0"),
+            "shows the fix: {msg}"
+        );
     }
 
     /// `image:` next to `build:` is still rejected: on a fresh host the image is

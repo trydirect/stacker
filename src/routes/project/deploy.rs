@@ -1360,13 +1360,14 @@ async fn execute_deployment(
                     server.id,
                     e
                 );
-                return Err(JsonResponse::<models::Project>::build()
-                    .internal_server_error(format!(
+                return Err(
+                    JsonResponse::<models::Project>::build().internal_server_error(format!(
                         "Could not generate an SSH keypair for server {}, so no key would be \
                          installed on the machine and you would have no SSH access to it. \
                          Deploy aborted before creating anything. Error: {}",
                         server.id, e
-                    )));
+                    )),
+                );
             }
         }
     } else {
