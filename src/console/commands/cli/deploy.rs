@@ -4060,6 +4060,16 @@ impl DeployCommand {
     /// you cannot log into is not a successful deploy: reporting success
     /// here is what let a broken Vault policy go unnoticed for days while
     /// every deploy printed a green checkmark (Sept 2026).
+/// A cloud deploy whose SSH access could not be *confirmed* must not report
+/// success. "Could not check" is not "checked and fine" — treating the two
+/// the same is what hid a broken Vault policy behind green checkmarks.
+fn unverified_ssh_access(reason: &str) -> Box<dyn std::error::Error> {
+    eprintln!("  ✗ SSH access to the new server could not be verified: {}", reason);
+    eprintln!("    The app may be running, but nothing confirmed you can log in,");
+    eprintln!("    so this deploy is reported as failed rather than assumed good.");
+    format!("SSH access could not be verified: {}", reason).into()
+}
+
     fn install_cloud_backup_key(
         &self,
         result: &DeployResult,
@@ -4069,10 +4079,7 @@ impl DeployCommand {
         }
 
         let Some(project_id) = result.project_id else {
-            eprintln!(
-                "  ⚠ Local SSH backup key was not installed: deployment returned no project ID."
-            );
-            return Ok(());
+            return Err(Self::unverified_ssh_access("deployment returned no project ID"));
         };
 
         let server = match fetch_server_for_project(
@@ -4083,17 +4090,13 @@ impl DeployCommand {
         ) {
             Ok(Some(server)) => server,
             Ok(None) => {
-                eprintln!(
-                    "  ⚠ Local SSH backup key was not installed: server details are not available yet."
-                );
-                return Ok(());
+                return Err(Self::unverified_ssh_access("server details are not available"));
             }
             Err(err) => {
-                eprintln!(
-                    "  ⚠ Local SSH backup key was not installed: could not fetch server details: {}",
+                return Err(Self::unverified_ssh_access(&format!(
+                    "could not fetch server details: {}",
                     err
-                );
-                return Ok(());
+                )));
             }
         };
 
@@ -4102,21 +4105,17 @@ impl DeployCommand {
             .as_deref()
             .is_none_or(|ip| ip.trim().is_empty())
         {
-            eprintln!(
-                "  ⚠ Local SSH backup key was not installed: server IP is not available yet."
-            );
-            return Ok(());
+            return Err(Self::unverified_ssh_access("server IP is not available"));
         }
 
         let (base_url, creds) = match resolve_saved_stacker_base_url("SSH backup key authorization")
         {
             Ok(values) => values,
             Err(err) => {
-                eprintln!(
-                    "  ⚠ Local SSH backup key was not installed: could not load credentials: {}",
+                return Err(Self::unverified_ssh_access(&format!(
+                    "could not load credentials: {}",
                     err
-                );
-                return Ok(());
+                )));
             }
         };
 
@@ -4126,11 +4125,10 @@ impl DeployCommand {
         {
             Ok(rt) => rt,
             Err(err) => {
-                eprintln!(
-                    "  ⚠ Local SSH backup key was not installed: failed to initialize runtime: {}",
+                return Err(Self::unverified_ssh_access(&format!(
+                    "failed to initialize runtime: {}",
                     err
-                );
-                return Ok(());
+                )));
             }
         };
 
