@@ -4215,30 +4215,27 @@ impl DeployCommand {
 
         let client =
             StackerClient::new_for_target(&base_url, &creds.access_token, DeployTarget::Cloud);
-        match rt.block_on(
+
+        // The two keys are authorized INDEPENDENTLY. They are separate keys
+        // going through the same endpoint, and the user's own key is most
+        // needed exactly when the backup key failed — nesting it inside the
+        // backup key's success arm meant a single failure silently cost the
+        // user both (server 179).
+        let backup = rt.block_on(
             crate::console::commands::cli::ssh_key::ensure_local_backup_key_authorized(
                 &client, &server,
             ),
-        ) {
+        );
+        match &backup {
             Ok(auth) => {
                 eprintln!("  ✓ Local SSH backup key authorized");
                 eprintln!("    Key: {}", auth.private_key_path.display());
                 eprintln!("    Public key: {}", auth.public_key_path.display());
                 eprintln!("    Connect: {}", auth.ssh_command);
-
-                // The user's own key from deploy.cloud.ssh_key goes through the
-                // SAME endpoint that just succeeded above — one call per key,
-                // appended idempotently over SSH (see SSH_KEY_LIFECYCLE.md).
-                //
-                // It deliberately does not ride on the provider's ssh_keys
-                // field: that carries exactly one key, so a newline-joined list
-                // was collapsed onto a single authorized_keys line and only the
-                // first key stayed usable.
-                self.authorize_configured_user_key(&rt, &client, &server, project_dir)?;
             }
             Err(err) => {
                 eprintln!(
-                    "  ✗ No SSH access was established for server {}.",
+                    "  ✗ Local SSH backup key was not authorized for server {}.",
                     server.id
                 );
                 eprintln!("    Reason: {}", err);
@@ -4246,15 +4243,36 @@ impl DeployCommand {
                     "    Repair: stacker ssh-key inject --server-id {} --with-key <existing-private-key>",
                     server.id
                 );
-                eprintln!("    The app may be running, but you cannot log in to the machine,");
-                eprintln!("    so this deploy is reported as failed.");
-                return Err(format!(
-                    "no SSH access was established for server {}: {}",
-                    server.id, err
-                )
-                .into());
             }
         }
+
+        // The user's own key from deploy.cloud.ssh_key goes through the SAME
+        // endpoint — one call per key, appended idempotently over SSH (see
+        // config/docs/SSH_KEY_LIFECYCLE.md). It deliberately does not ride on
+        // the provider's ssh_keys field: that carries exactly one key, so a
+        // newline-joined list was collapsed onto a single authorized_keys line
+        // and only the first key stayed usable.
+        let user_key = self.authorize_configured_user_key(&rt, &client, &server, project_dir);
+        if let Err(err) = &user_key {
+            eprintln!(
+                "  ✗ Your SSH key was not authorized for server {}.",
+                server.id
+            );
+            eprintln!("    Reason: {}", err);
+        }
+
+        // Fail if either key is missing: the app may be running, but a machine
+        // the user cannot log into is not a successful deploy.
+        if let Err(err) = backup {
+            eprintln!("    The app may be running, but you cannot log in to the machine,");
+            eprintln!("    so this deploy is reported as failed.");
+            return Err(format!(
+                "no SSH access was established for server {}: {}",
+                server.id, err
+            )
+            .into());
+        }
+        user_key?;
 
         Ok(())
     }

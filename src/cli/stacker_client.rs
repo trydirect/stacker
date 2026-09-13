@@ -4375,43 +4375,14 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
         }
     }
 
-    // If the user specified deploy.cloud.ssh_key, read the corresponding
-    // public key (.pub file) so the Install Service can install it alongside
-    // the Vault-managed key on the cloud VM.
-    if let Some(cloud_cfg) = config.deploy.cloud.as_ref() {
-        if let Some(ssh_key_path) = cloud_cfg.ssh_key.as_ref() {
-            let resolved = crate::cli::install_runner::resolve_ssh_key_path(ssh_key_path);
-            let pub_path = std::path::PathBuf::from(format!("{}.pub", resolved.display()));
-            match std::fs::read_to_string(&pub_path) {
-                Ok(pub_key) => {
-                    let pub_key = pub_key.trim().to_string();
-                    if !pub_key.is_empty() {
-                        if let Some(server_obj) =
-                            form.get_mut("server").and_then(|v| v.as_object_mut())
-                        {
-                            server_obj.insert(
-                                "additional_public_keys".to_string(),
-                                serde_json::json!([pub_key]),
-                            );
-                        }
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    eprintln!(
-                        "  note: SSH public key not found at {} — skipping user key installation",
-                        pub_path.display()
-                    );
-                }
-                Err(e) => {
-                    eprintln!(
-                        "  warning: could not read SSH public key {}: {}",
-                        pub_path.display(),
-                        e
-                    );
-                }
-            }
-        }
-    }
+    // deploy.cloud.ssh_key is NOT sent in the deploy form. It used to be passed
+    // as server.additional_public_keys and newline-joined into
+    // server.public_key, which is single-valued downstream (one provider
+    // ssh_key object, one TF_VAR_public_key_content) — the list collapsed onto
+    // one authorized_keys line and only the first key stayed usable. The key is
+    // now authorized after deploy, one call per key, via
+    // POST /server/{id}/ssh-key/authorize-public-key. See
+    // DeployCommand::authorize_configured_user_key.
 
     if let Some(cloud_cfg) = config.deploy.cloud.as_ref() {
         if !cloud_cfg.public_ports.is_empty() {

@@ -1849,10 +1849,10 @@ fn validate_deploy_semantics(
             }
 
             // A key under deploy.server is silently dropped on a cloud deploy:
-            // build_deploy_form() reads only deploy.cloud.ssh_key into
-            // additional_public_keys, so the VM comes up with the Vault-managed
-            // key alone and the user's own key is missing from authorized_keys.
-            // Say so rather than ignoring the field.
+            // only deploy.cloud.ssh_key is ever authorized on the VM, so the
+            // machine comes up with the Vault-managed key alone and the user's
+            // own key is missing from authorized_keys. Say so rather than
+            // ignoring the field.
             if cloud.ssh_key.is_none() {
                 if let Some(server_key) = deploy.server.as_ref().and_then(|s| s.ssh_key.as_ref()) {
                     issues.push(ValidationIssue {
@@ -3012,10 +3012,10 @@ deploy:
         // Deployment 14125. With `target: server` written in the file,
         // deploy.cloud is the *inactive* section, so its ${VAR}s are
         // deliberately left untouched. deploy.cloud.ssh_key then stays the
-        // literal "${BASE_PATH}/..." — build_deploy_form()'s .pub lookup
-        // misses, and the user's key is never sent as
-        // additional_public_keys, so it never reaches authorized_keys.
-        // Passing --target cloud resolves the section and the key is found.
+        // literal "${BASE_PATH}/..." — the .pub lookup in
+        // configured_user_public_key() misses, and the key is never authorized,
+        // so it never reaches authorized_keys. Passing --target cloud resolves
+        // the section and the key is found.
         let dir = TempDir::new().unwrap();
         let config_path = dir.path().join("stacker.yml");
         fs::write(dir.path().join(".env"), "BASE_PATH=/keys\n").unwrap();

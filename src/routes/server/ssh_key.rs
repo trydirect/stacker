@@ -268,6 +268,56 @@ pub async fn get_public_key(
 
 /// Authorize a caller-provided public key on the remote server.
 ///
+/// Backoff between SSH authorize attempts, in seconds. Attempt 1 waits
+/// `[0]` before attempt 2, and so on; running off the end means give up.
+///
+/// Four attempts at a 15s connect timeout plus these delays is ~76s worst
+/// case, which covers the 30-60s a freshly created cloud VM can take before
+/// sshd accepts connections (see commit 37456a5f).
+const SSH_AUTHORIZE_RETRY_DELAYS_SECS: [u64; 3] = [3, 5, 8];
+
+/// Decide whether a failed SSH authorize attempt is worth retrying.
+///
+/// `attempt` is 1-based. Returns `Some(delay)` to sleep and try again, `None`
+/// to surface the error.
+///
+/// Only connection-shaped failures are retried: a brand new VM routinely
+/// refuses connections or times out for the first half-minute of its life, and
+/// a single 15s attempt against it is what left server 179 (and others)
+/// without any authorized key. Authentication failures are the opposite —
+/// waiting never fixes a wrong key, so they surface immediately.
+fn ssh_authorize_retry(attempt: u32, error: &str) -> Option<Duration> {
+    let error = error.to_lowercase();
+
+    // Auth-shaped failures never become successes by waiting. Mirrors the
+    // classification already used by ssh_client::check_server.
+    if error.contains("auth")
+        || error.contains("permission")
+        || error.contains("invalid")
+        || error.contains("cannot be empty")
+    {
+        return None;
+    }
+
+    // Allow-list rather than deny-list: anything we have not positively
+    // identified as "the box is not up yet" is surfaced instead of silently
+    // costing the caller another minute.
+    let is_connection_failure = error.contains("timed out")
+        || error.contains("timeout")
+        || error.contains("connection refused")
+        || error.contains("connection reset")
+        || error.contains("no route to host")
+        || error.contains("network unreachable")
+        || error.contains("broken pipe");
+    if !is_connection_failure {
+        return None;
+    }
+
+    SSH_AUTHORIZE_RETRY_DELAYS_SECS
+        .get(attempt.saturating_sub(1) as usize)
+        .map(|secs| Duration::from_secs(*secs))
+}
+
 /// POST /server/{id}/ssh-key/authorize-public-key
 ///
 /// The caller sends only public key material. Stacker retrieves the server's
@@ -343,19 +393,45 @@ pub async fn authorize_public_key(
         .port
         .unwrap_or_else(|| server.ssh_port.unwrap_or(22) as u16);
 
-    ssh_client::authorize_public_key(
-        &srv_ip,
-        ssh_port,
-        &ssh_user,
-        &private_key,
-        public_key,
-        Duration::from_secs(15),
-    )
-    .await
-    .map_err(|e| {
+    // Retry while the VM is still booting — see ssh_authorize_retry.
+    let mut attempt: u32 = 1;
+    let authorized = loop {
+        let outcome = ssh_client::authorize_public_key(
+            &srv_ip,
+            ssh_port,
+            &ssh_user,
+            &private_key,
+            public_key,
+            Duration::from_secs(15),
+        )
+        .await;
+
+        let error = match outcome {
+            Ok(()) => break Ok(()),
+            Err(error) => error,
+        };
+
+        match ssh_authorize_retry(attempt, &error.to_string()) {
+            Some(delay) => {
+                tracing::info!(
+                    "SSH authorize attempt {} for server {} failed ({}); retrying in {}s",
+                    attempt,
+                    server_id,
+                    error,
+                    delay.as_secs()
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+            None => break Err(error),
+        }
+    };
+
+    authorized.map_err(|e| {
         tracing::warn!(
-            "Failed to authorize backup public key for server {}: {}",
+            "Failed to authorize backup public key for server {} after {} attempt(s): {}",
             server_id,
+            attempt,
             e
         );
         JsonResponse::<AuthorizePublicKeyResponse>::build()
@@ -620,4 +696,76 @@ pub async fn delete_key(
     Ok(JsonResponse::build()
         .set_item(Some(updated_server))
         .ok("SSH key deleted successfully"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retries_a_connection_timeout_while_the_vm_boots() {
+        // The exact error that left server 179 with no authorized key:
+        // "Connection timed out after 15 seconds" against a VM still booting.
+        let delay = ssh_authorize_retry(1, "Connection timed out after 15 seconds")
+            .expect("a connection timeout must be retried");
+
+        assert_eq!(delay, Duration::from_secs(3));
+    }
+
+    #[test]
+    fn retries_connection_refused() {
+        assert!(ssh_authorize_retry(1, "Connection refused (os error 61)").is_some());
+    }
+
+    #[test]
+    fn backs_off_progressively_then_gives_up() {
+        assert_eq!(
+            ssh_authorize_retry(1, "connection refused"),
+            Some(Duration::from_secs(3))
+        );
+        assert_eq!(
+            ssh_authorize_retry(2, "connection refused"),
+            Some(Duration::from_secs(5))
+        );
+        assert_eq!(
+            ssh_authorize_retry(3, "connection refused"),
+            Some(Duration::from_secs(8))
+        );
+        // Four attempts total, then surface the failure rather than hanging.
+        assert_eq!(ssh_authorize_retry(4, "connection refused"), None);
+        assert_eq!(ssh_authorize_retry(99, "connection refused"), None);
+    }
+
+    #[test]
+    fn never_retries_authentication_failures() {
+        // Waiting does not turn a wrong key into a right one.
+        for error in [
+            "Authentication failed: no more auth methods available",
+            "Permission denied (publickey)",
+            "Invalid SSH key: unsupported format",
+        ] {
+            assert!(
+                ssh_authorize_retry(1, error).is_none(),
+                "must not retry: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn never_retries_an_empty_public_key() {
+        assert!(ssh_authorize_retry(1, "Public key cannot be empty").is_none());
+    }
+
+    #[test]
+    fn does_not_retry_unrecognised_errors() {
+        // Allow-list behaviour: anything not positively identified as a
+        // connection failure surfaces immediately instead of costing a minute.
+        assert!(ssh_authorize_retry(1, "disk quota exceeded").is_none());
+    }
+
+    #[test]
+    fn classification_is_case_insensitive() {
+        assert!(ssh_authorize_retry(1, "CONNECTION REFUSED").is_some());
+        assert!(ssh_authorize_retry(1, "PERMISSION DENIED").is_none());
+    }
 }
