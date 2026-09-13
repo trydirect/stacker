@@ -1333,22 +1333,40 @@ async fn execute_deployment(
                         })
                     }
                     Err(e) => {
-                        tracing::warn!(
+                        // Hard-fail rather than warn: without this key the row
+                        // keeps key_status="none", nothing is ever authorized
+                        // on the box, and the deploy would still report
+                        // success. The loss only surfaces hours later as
+                        // "Permission denied (publickey)".
+                        tracing::error!(
                             "Failed to store auto-generated SSH key in Vault for server {}: {}",
                             server.id,
                             e
                         );
-                        server
+                        return Err(JsonResponse::<models::Project>::build()
+                            .internal_server_error(format!(
+                                "Could not store the SSH key for server {} in Vault, so no key \
+                                 would be installed on the machine and you would have no SSH \
+                                 access to it. Deploy aborted before creating anything. \
+                                 Vault error: {}",
+                                server.id, e
+                            )));
                     }
                 }
             }
             Err(e) => {
-                tracing::warn!(
+                tracing::error!(
                     "Failed to auto-generate SSH keypair for server {}: {}",
                     server.id,
                     e
                 );
-                server
+                return Err(JsonResponse::<models::Project>::build()
+                    .internal_server_error(format!(
+                        "Could not generate an SSH keypair for server {}, so no key would be \
+                         installed on the machine and you would have no SSH access to it. \
+                         Deploy aborted before creating anything. Error: {}",
+                        server.id, e
+                    )));
             }
         }
     } else {

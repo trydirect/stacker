@@ -3008,6 +3008,65 @@ deploy:
     }
 
     #[test]
+    fn test_cloud_ssh_key_is_left_unresolved_when_the_file_target_is_server() {
+        // Deployment 14125. With `target: server` written in the file,
+        // deploy.cloud is the *inactive* section, so its ${VAR}s are
+        // deliberately left untouched. deploy.cloud.ssh_key then stays the
+        // literal "${BASE_PATH}/..." — build_deploy_form()'s .pub lookup
+        // misses, and the user's key is never sent as
+        // additional_public_keys, so it never reaches authorized_keys.
+        // Passing --target cloud resolves the section and the key is found.
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        fs::write(dir.path().join(".env"), "BASE_PATH=/keys\n").unwrap();
+        fs::write(
+            &config_path,
+            r#"
+name: vikunja
+app:
+    type: custom
+    path: .
+    image: vikunja/vikunja:latest
+env_file: .env
+deploy:
+    target: server
+    server:
+        host: 203.0.113.5
+        user: root
+    cloud:
+        provider: hetzner
+        region: fsn1
+        ssh_key: ${BASE_PATH}/stacker-project-test
+"#,
+        )
+        .unwrap();
+
+        let cloud_key = |cfg: &StackerConfig| -> Option<String> {
+            cfg.deploy
+                .cloud
+                .as_ref()
+                .and_then(|c| c.ssh_key.as_ref())
+                .map(|p| p.display().to_string())
+        };
+
+        // no override: the file says `server`, so cloud keeps its placeholder
+        let from_file = StackerConfig::from_file_for_target(&config_path, None).unwrap();
+        assert_eq!(
+            cloud_key(&from_file).as_deref(),
+            Some("${BASE_PATH}/stacker-project-test"),
+            "cloud.ssh_key should still be an unresolved placeholder"
+        );
+
+        // --target cloud: the section is active and the path resolves
+        let as_cloud = StackerConfig::from_file_for_target(&config_path, Some("cloud")).unwrap();
+        assert_eq!(
+            cloud_key(&as_cloud).as_deref(),
+            Some("/keys/stacker-project-test"),
+            "--target cloud should resolve the key path"
+        );
+    }
+
+    #[test]
     fn test_from_file_for_target_falls_back_to_literal_deploy_target_in_file() {
         let dir = TempDir::new().unwrap();
         let config_path = dir.path().join("stacker.yml");

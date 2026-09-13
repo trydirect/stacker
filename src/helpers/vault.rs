@@ -38,15 +38,33 @@ impl VaultClient {
                 }
             }
         }
-        if let Some(ca_pem) = &settings.ca_cert {
-            match Certificate::from_pem(ca_pem.as_bytes()) {
+        match &settings.ca_cert {
+            Some(ca_pem) => match Certificate::from_pem(ca_pem.as_bytes()) {
                 Ok(ca) => {
                     client_builder = client_builder.add_root_certificate(ca);
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to load CA certificate for Vault client: {}", e);
+                    tracing::error!(
+                        "Failed to load CA certificate for Vault client, falling back to the \
+                         system trust store — every Vault call will fail if Vault uses a \
+                         private CA: {}",
+                        e
+                    );
                 }
+            },
+            // Silence here is what made this expensive to find: a private-CA
+            // Vault over https with no CA configured fails every call with
+            // "unable to get local issuer certificate" and nothing ever says
+            // the CA was missing. Set VAULT_CACERT to the CA's PEM *contents*.
+            None if settings.address.starts_with("https://") => {
+                tracing::error!(
+                    "Vault address {} is https but no CA certificate is configured \
+                     (VAULT_CACERT unset or empty) — relying on the system trust store. \
+                     If Vault uses a private CA, every Vault call will fail TLS verification.",
+                    settings.address
+                );
             }
+            None => {}
         }
         let client = client_builder.build().unwrap_or_else(|_| Client::new());
 
