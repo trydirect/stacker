@@ -3995,7 +3995,7 @@ impl CallableTrait for DeployCommand {
         // access, so this must NOT be gated behind should_fetch_remote_details.
         // install_cloud_backup_key internally guards on server IP + active key.
         if should_install_cloud_backup_key(&result, self.dry_run) {
-            self.install_cloud_backup_key(&result);
+            self.install_cloud_backup_key(&result)?;
         }
 
         if should_notify {
@@ -4035,7 +4035,7 @@ impl DeployCommand {
             project_id as i32,
             DeployTarget::Cloud,
             result.server_name.as_deref(),
-            false,
+            self.force_new,
         ) {
             Ok(Some(server)) => server,
             _ => return,
@@ -4054,37 +4054,46 @@ impl DeployCommand {
         }
     }
 
-    fn install_cloud_backup_key(&self, result: &DeployResult) {
+    /// Authorize an SSH key for the freshly created cloud server.
+    ///
+    /// Returns Err when no SSH access could be established. A cloud server
+    /// you cannot log into is not a successful deploy: reporting success
+    /// here is what let a broken Vault policy go unnoticed for days while
+    /// every deploy printed a green checkmark (Sept 2026).
+    fn install_cloud_backup_key(
+        &self,
+        result: &DeployResult,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if result.target != DeployTarget::Cloud {
-            return;
+            return Ok(());
         }
 
         let Some(project_id) = result.project_id else {
             eprintln!(
                 "  ⚠ Local SSH backup key was not installed: deployment returned no project ID."
             );
-            return;
+            return Ok(());
         };
 
         let server = match fetch_server_for_project(
             project_id as i32,
             DeployTarget::Cloud,
             result.server_name.as_deref(),
-            false,
+            self.force_new,
         ) {
             Ok(Some(server)) => server,
             Ok(None) => {
                 eprintln!(
                     "  ⚠ Local SSH backup key was not installed: server details are not available yet."
                 );
-                return;
+                return Ok(());
             }
             Err(err) => {
                 eprintln!(
                     "  ⚠ Local SSH backup key was not installed: could not fetch server details: {}",
                     err
                 );
-                return;
+                return Ok(());
             }
         };
 
@@ -4096,7 +4105,7 @@ impl DeployCommand {
             eprintln!(
                 "  ⚠ Local SSH backup key was not installed: server IP is not available yet."
             );
-            return;
+            return Ok(());
         }
 
         let (base_url, creds) = match resolve_saved_stacker_base_url("SSH backup key authorization")
@@ -4107,7 +4116,7 @@ impl DeployCommand {
                     "  ⚠ Local SSH backup key was not installed: could not load credentials: {}",
                     err
                 );
-                return;
+                return Ok(());
             }
         };
 
@@ -4121,7 +4130,7 @@ impl DeployCommand {
                     "  ⚠ Local SSH backup key was not installed: failed to initialize runtime: {}",
                     err
                 );
-                return;
+                return Ok(());
             }
         };
 
@@ -4139,16 +4148,25 @@ impl DeployCommand {
                 eprintln!("    Connect: {}", auth.ssh_command);
             }
             Err(err) => {
-                eprintln!(
-                    "  ⚠ App deploy succeeded, but local SSH backup access was not installed."
-                );
+                eprintln!("  ✗ No SSH access was established for server {}.", server.id);
                 eprintln!("    Reason: {}", err);
                 eprintln!(
                     "    Repair: stacker ssh-key inject --server-id {} --with-key <existing-private-key>",
                     server.id
                 );
+                eprintln!(
+                    "    The app may be running, but you cannot log in to the machine,"
+                );
+                eprintln!("    so this deploy is reported as failed.");
+                return Err(format!(
+                    "no SSH access was established for server {}: {}",
+                    server.id, err
+                )
+                .into());
             }
         }
+
+        Ok(())
     }
 
     /// Save deployment context to `.stacker/deployment.lock` after a successful deploy.
