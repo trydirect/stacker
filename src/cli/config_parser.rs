@@ -1848,6 +1848,27 @@ fn validate_deploy_semantics(
                 }
             }
 
+            // A key under deploy.server is silently dropped on a cloud deploy:
+            // build_deploy_form() reads only deploy.cloud.ssh_key into
+            // additional_public_keys, so the VM comes up with the Vault-managed
+            // key alone and the user's own key is missing from authorized_keys.
+            // Say so rather than ignoring the field.
+            if cloud.ssh_key.is_none() {
+                if let Some(server_key) = deploy.server.as_ref().and_then(|s| s.ssh_key.as_ref()) {
+                    issues.push(ValidationIssue {
+                        severity: Severity::Warning,
+                        code: "W003".to_string(),
+                        message: format!(
+                            "deploy.server.ssh_key ({}) is ignored when target is cloud. \
+                             Set deploy.cloud.ssh_key instead, or this key will not be \
+                             installed in authorized_keys on the new VM.",
+                            server_key.display()
+                        ),
+                        field: Some(field("cloud.ssh_key")),
+                    });
+                }
+            }
+
             // Validate public_ports format up front so invalid entries are
             // surfaced by `stacker config validate` instead of being silently
             // dropped during cloud firewall provisioning. Bare numbers and
@@ -3634,6 +3655,87 @@ proxy:
                 .iter()
                 .any(|issue| issue.code == "W003"),
             "no ingress overlap should produce no W003"
+        );
+    }
+
+    #[test]
+    fn test_validate_semantics_warns_when_ssh_key_only_under_server_on_cloud_target() {
+        let config = StackerConfig::from_str(
+            r#"
+name: hermes-agent
+app:
+  type: static
+deploy:
+  target: cloud
+  server:
+    host: 116.202.19.183
+    user: root
+    ssh_key: /home/me/.ssh/stacker-project-test
+  cloud:
+    provider: hetzner
+    region: fsn1
+"#,
+        )
+        .unwrap();
+
+        let issues = config.validate_semantics();
+        let w003: Vec<_> = issues.iter().filter(|i| i.code == "W003").collect();
+        assert_eq!(w003.len(), 1, "expected one W003: {issues:?}");
+        assert_eq!(w003[0].severity, Severity::Warning);
+        assert!(
+            w003[0].message.contains("stacker-project-test"),
+            "message should name the ignored key: {}",
+            w003[0].message
+        );
+    }
+
+    #[test]
+    fn test_validate_semantics_no_w003_when_cloud_ssh_key_is_set() {
+        let config = StackerConfig::from_str(
+            r#"
+name: hermes-agent
+app:
+  type: static
+deploy:
+  target: cloud
+  server:
+    host: 116.202.19.183
+    user: root
+    ssh_key: /home/me/.ssh/stacker-project-test
+  cloud:
+    provider: hetzner
+    region: fsn1
+    ssh_key: /home/me/.ssh/stacker-project-test
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            !config.validate_semantics().iter().any(|i| i.code == "W003"),
+            "deploy.cloud.ssh_key is set, so nothing is being ignored"
+        );
+    }
+
+    #[test]
+    fn test_validate_semantics_no_w003_on_server_target() {
+        let config = StackerConfig::from_str(
+            r#"
+name: hermes-agent
+app:
+  type: static
+deploy:
+  target: server
+  server:
+    host: 116.202.19.183
+    user: root
+    ssh_key: /home/me/.ssh/stacker-project-test
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            !config.validate_semantics().iter().any(|i| i.code == "W003"),
+            "deploy.server.ssh_key is the right place for a server-target deploy"
         );
     }
 
