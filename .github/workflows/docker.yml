@@ -277,11 +277,13 @@ jobs:
       - name: Set Docker tags
         id: stackerdb_tags
         run: |
+          echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+          echo "trydirect/stackerdb:build-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "trydirect/stackerdb:latest" >> "$GITHUB_OUTPUT"
           if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tags=trydirect/stackerdb:${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tags=trydirect/stackerdb:latest" >> "$GITHUB_OUTPUT"
+            echo "trydirect/stackerdb:${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           fi
+          echo "EOF" >> "$GITHUB_OUTPUT"
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
