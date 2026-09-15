@@ -256,7 +256,6 @@ jobs:
     name: StackerDB Docker
     runs-on: ubuntu-latest
     #runs-on: [self-hosted, linux]
-    needs: cicd-docker
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
@@ -291,3 +290,5 @@ jobs:
           file: ./stackerdb/Dockerfile
           push: true
           tags: ${{ steps.stackerdb_tags.outputs.tags }}
+          cache-from: type=gha,scope=stackerdb
+          cache-to: type=gha,mode=max,scope=stackerdb
