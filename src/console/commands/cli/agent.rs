@@ -2916,8 +2916,12 @@ impl CallableTrait for AgentInstallCommand {
                 )
             })?;
 
-            let stacker_url = std::env::var("STACKER_URL")
-                .unwrap_or_else(|_| stacker_client::DEFAULT_STACKER_URL.to_string());
+            let stacker_url = ctx
+                .creds
+                .server_url
+                .clone()
+                .or_else(|| std::env::var("STACKER_URL").ok())
+                .unwrap_or_else(|| stacker_client::DEFAULT_STACKER_URL.to_string());
 
             eprintln!(
                 "Server {} is on a private network — using local SSH to install agent.",

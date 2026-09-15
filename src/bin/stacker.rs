@@ -208,6 +208,9 @@ enum StackerCommands {
         /// Stack version (default: from stacker.yml or "1.0.0")
         #[arg(long)]
         version: Option<String>,
+        /// Unique marketplace slug (defaults to a slug derived from the stack name)
+        #[arg(long)]
+        slug: Option<String>,
         /// Short description for marketplace listing
         #[arg(long)]
         description: Option<String>,
@@ -620,6 +623,9 @@ enum MarketplaceCommands {
         /// Stack version (default: from stacker.yml or "1.0.0")
         #[arg(long)]
         version: Option<String>,
+        /// Unique marketplace slug (defaults to a slug derived from the stack name)
+        #[arg(long)]
+        slug: Option<String>,
         /// Short description for marketplace listing
         #[arg(long)]
         description: Option<String>,
@@ -2956,6 +2962,7 @@ fn get_command(
         StackerCommands::Submit {
             file,
             version,
+            slug,
             description,
             category,
             plan_type,
@@ -2963,6 +2970,7 @@ fn get_command(
         } => Box::new(stacker::console::commands::cli::submit::SubmitCommand::new(
             file,
             version,
+            slug,
             description,
             category,
             plan_type,
@@ -3015,6 +3023,7 @@ fn get_command(
             MarketplaceCommands::Submit {
                 file,
                 version,
+                slug,
                 description,
                 category,
                 plan_type,
@@ -3022,6 +3031,7 @@ fn get_command(
             } => Box::new(stacker::console::commands::cli::submit::SubmitCommand::new(
                 file,
                 version,
+                slug,
                 description,
                 category,
                 plan_type,

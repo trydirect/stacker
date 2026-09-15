@@ -11,7 +11,7 @@
   ],
   "_notes": [
     "This schema governs one field entry under config_contract.services.<service>.fields.<FIELD_NAME> in stacker.yml.",
-    "mutability decides who controls the field's final value at install time: fixed (author's value only), editable (author's value is a default the installer can override), generated (system produces a fresh value per install).",
+    "mutability decides who controls the field's final value at install time: fixed (author's value only), editable (author's value is a default the installer can override), provided (buyer must supply the value; author's value is never shipped), generated (system produces a fresh value per install).",
     "type/length/min_length/values/signing_key/claims/alg only apply when mutability requires them (generated always needs a type; editable may optionally constrain via type+values).",
     "A legacy stacker.yml using the old required/optional/secret plain string-list shorthand must still parse: required -> {mutability: fixed, required: true}, optional -> {mutability: fixed, required: false}, secret -> {mutability: generated, required: true, type: alphanumeric, min_length: 32}.",
     "derived_jwt's signing_key is a \"service.FIELD_NAME\" reference to another field in the same config_contract that must itself resolve before this one (independent generated/editable fields resolve first)."
@@ -25,7 +25,7 @@
       "properties": {
         "mutability": {
           "type": "string",
-          "enum": ["fixed", "editable", "generated"]
+          "enum": ["fixed", "editable", "provided", "generated"]
         },
         "required": {
           "type": "boolean",

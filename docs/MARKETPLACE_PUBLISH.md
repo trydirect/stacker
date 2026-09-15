@@ -241,7 +241,7 @@ re-purchase.
 | Reason | Fix |
 |---|---|
 | Embedded secrets | Replace hardcoded credentials with env vars; use `${VAR}` interpolation |
-| Undeclared secret fields | Declare a `mutability: generated` policy for each secret so buyers get their own values — see [FIELD_POLICY.md](./FIELD_POLICY.md) |
+| Undeclared secret fields | Declare `mutability: generated` for generated values or `mutability: provided` for buyer-supplied credentials — see [FIELD_POLICY.md](./FIELD_POLICY.md) |
 | Insecure defaults | Disable insecure flags (e.g. `--api.insecure=true`); restrict bind addresses; require passwords |
 | Stack doesn't deploy | Test on a fresh server before resubmitting; check `stacker deploy --target local` works clean |
 | Vague metadata | Use a specific business-problem name; describe concrete use cases |

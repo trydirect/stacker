@@ -909,6 +909,8 @@ pub enum Mutability {
     Fixed,
     /// Author's value is only a default; an installer's override can replace it.
     Editable,
+    /// The installer must provide the value; the author's value is never shipped.
+    Provided,
     /// The system produces a fresh value per install; the installer never enters it.
     Generated,
 }
@@ -1146,6 +1148,11 @@ impl TargetConfigContract {
     /// install must produce a fresh value for.
     pub fn secret_keys(&self) -> Vec<String> {
         self.keys_where(|p| p.mutability == Mutability::Generated)
+    }
+
+    /// Fields whose author values must never be shipped to marketplace buyers.
+    pub fn protected_keys(&self) -> Vec<String> {
+        self.keys_where(|p| matches!(p.mutability, Mutability::Generated | Mutability::Provided))
     }
 
     /// Fields declared `mutability: editable` — the ones an installer's
@@ -2591,6 +2598,29 @@ config_contract:
           mutability: readonly
 "#;
         assert!(StackerConfig::from_str(yaml).is_err());
+    }
+
+    #[test]
+    fn field_policy_provided_is_accepted_without_a_generator_type() {
+        let yaml = r#"
+name: aws-stack
+config_contract:
+  services:
+    app:
+      fields:
+        AWS_ACCESS_KEY_ID:
+          mutability: provided
+        AWS_SECRET_ACCESS_KEY:
+          mutability: provided
+          required: true
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let fields = &config.config_contract.services["app"].fields;
+        assert_eq!(fields["AWS_ACCESS_KEY_ID"].mutability, Mutability::Provided);
+        assert_eq!(
+            fields["AWS_SECRET_ACCESS_KEY"].mutability,
+            Mutability::Provided
+        );
     }
 
     #[test]

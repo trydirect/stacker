@@ -1029,7 +1029,10 @@ impl CallableTrait for MarketplaceStatusCommand {
         let cred_manager = CredentialsManager::with_default_store();
         let creds = cred_manager.require_valid_token("marketplace status")?;
         let base_url = crate::cli::install_runner::normalize_stacker_server_url(
-            crate::cli::stacker_client::DEFAULT_STACKER_URL,
+            creds
+                .server_url
+                .as_deref()
+                .unwrap_or(crate::cli::stacker_client::DEFAULT_STACKER_URL),
         );
 
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -1131,7 +1134,10 @@ impl CallableTrait for MarketplaceLogsCommand {
         let cred_manager = CredentialsManager::with_default_store();
         let creds = cred_manager.require_valid_token("marketplace logs")?;
         let base_url = crate::cli::install_runner::normalize_stacker_server_url(
-            crate::cli::stacker_client::DEFAULT_STACKER_URL,
+            creds
+                .server_url
+                .as_deref()
+                .unwrap_or(crate::cli::stacker_client::DEFAULT_STACKER_URL),
         );
 
         let rt = tokio::runtime::Builder::new_current_thread()

@@ -513,11 +513,11 @@ fn collect_json_environment_block(
 
 /// A template can only be published once every secret-shaped field in its
 /// `stack_definition` (per the existing `is_secret_env_key` heuristic) has a
-/// `mutability: generated` policy declared in `config_contract` — otherwise
-/// the author's literal value would be copied verbatim to every installer.
+/// `mutability: generated` or `provided` policy declared in `config_contract` —
+/// otherwise the author's literal value would be copied verbatim to every installer.
 /// See `docs/MARKETPLACE_FIELD_POLICY.md`.
 /// Secret-shaped fields (per `is_secret_env_key`) in `stack_definition` that
-/// have no `mutability: generated` policy in `config_contract`. Empty means
+/// have no protected (`generated` or `provided`) policy in `config_contract`. Empty means
 /// the contract is complete. Shared by the publish-time gate below and the
 /// admin re-scan endpoint (`admin.rs`'s `detect_secrets_handler`), which
 /// reports the same list for already-approved legacy templates instead of
@@ -533,7 +533,7 @@ pub(crate) fn missing_generated_secret_fields(
     let declared_generated: std::collections::BTreeSet<String> = contract
         .services
         .values()
-        .flat_map(|target| target.secret_keys())
+        .flat_map(|target| target.protected_keys())
         .collect();
 
     collect_env_key_names(stack_definition, definition_format)
@@ -559,7 +559,7 @@ pub(crate) fn strip_generated_field_values(
     let generated: std::collections::BTreeSet<String> = contract
         .services
         .values()
-        .flat_map(|target| target.secret_keys())
+        .flat_map(|target| target.protected_keys())
         .collect();
     if generated.is_empty() {
         return stack_definition.clone();
@@ -591,8 +591,8 @@ fn ensure_contract_declares_generated_secrets(
         Ok(())
     } else {
         Err(JsonResponse::<serde_json::Value>::build().bad_request(format!(
-            "config_contract is missing a `mutability: generated` policy for secret-shaped field(s): {}. \
-             Declare a generator for each in config_contract before publishing.",
+            "config_contract is missing a `mutability: generated` or `provided` policy for secret-shaped field(s): {}. \
+             Declare a generator or buyer-provided field for each in config_contract before publishing.",
             missing.join(", ")
         )))
     }

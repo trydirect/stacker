@@ -21,11 +21,13 @@ A field policy tells the platform **who controls each field's final value**:
 
 - values you want kept constant (a hostname, a log level default),
 - values a buyer may override,
+- credentials or tokens that the buyer must provide — the author's value is never shipped,
 - and **secrets that must be generated fresh, per install** — the buyer never
   sees your value, and no two buyers share one.
 
-Your literal values are never shipped to buyers for generated fields; the
-platform generates a new value for each installation.
+Your literal values are never shipped to buyers for generated or provided
+fields; generated values are minted by the platform, while provided values
+must come from the buyer.
 
 ---
 
@@ -40,7 +42,7 @@ config_contract:
     <service-name>:        # must match a service in your compose
       fields:
         <ENV_VAR_NAME>:
-          mutability: fixed | editable | generated
+          mutability: fixed | editable | provided | generated
           # ...type/constraints depending on mutability
 ```
 
@@ -52,6 +54,7 @@ config_contract:
 |---|---|---|
 | `fixed` | Your value is baked in; the buyer never changes it. | Constants: internal hostnames, ports, feature flags. |
 | `editable` | Your value is a **default**; the buyer may override it. | Tunables: `LOG_LEVEL`, region, replica count. |
+| `provided` | The buyer must provide the value; your value is never shipped. | External credentials: AWS access keys, API tokens, private keys. |
 | `generated` | The system produces a **fresh value per install**; the buyer never enters it and never sees yours. | Every secret: passwords, API keys, JWT signing keys. |
 
 Fields you don't declare default to `fixed` (today's copy-through behavior) — so
@@ -126,12 +129,15 @@ At install time each buyer gets a unique `JWT_SECRET`, a unique
 ## The publish requirement
 
 When you submit to the marketplace, the platform scans your template for
-secret-shaped environment variables. If any of them lacks a `mutability:
-generated` policy, the submission is rejected with:
+secret-shaped environment variables. If any of them lacks a protected
+`mutability: generated` or `mutability: provided` policy, the submission is
+rejected. Use `generated` for values the platform can create and `provided`
+for credentials the buyer must enter.
 
 ```
-config_contract is missing a `mutability: generated` policy for secret-shaped
-field(s): <NAMES>. Declare a generator for each in config_contract before publishing.
+config_contract is missing a `mutability: generated` or `provided` policy for
+secret-shaped field(s): <NAMES>. Declare a generator or buyer-provided field
+for each in config_contract before publishing.
 ```
 
 Add a `generated` policy for each listed field and resubmit. This is the single
@@ -143,7 +149,13 @@ most common publish rejection related to secrets.
 
 - `generated` → a fresh, unique value minted for their install (never yours).
 - `editable` → the value they chose, or your default if they chose nothing.
+- `provided` → the buyer-supplied value; if it is missing, the field is blanked rather than falling back to your value.
 - `fixed` → your value, unchanged.
+
+For `provided` fields, the Marketplace deployment form asks the buyer for the
+value. TryDirect stores it in the installation-scoped Vault path and removes
+the plaintext value from the installation request before it is persisted or
+sent through AMQP.
 
 ---
 
