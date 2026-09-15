@@ -893,6 +893,7 @@ pub struct ProjectConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigContract {
     #[serde(default)]
     pub services: BTreeMap<String, TargetConfigContract>,
@@ -1163,7 +1164,7 @@ impl TargetConfigContract {
 }
 
 #[derive(Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct RawTargetConfigContract {
     required: Vec<String>,
     optional: Vec<String>,
@@ -2621,6 +2622,24 @@ config_contract:
             fields["AWS_SECRET_ACCESS_KEY"].mutability,
             Mutability::Provided
         );
+    }
+
+    #[test]
+    fn field_policy_rejects_whitespace_variant_of_required_key() {
+        let contract = serde_json::json!({
+            "services": {
+                "app": {
+                    "fields": {
+                        "API_KEY": {
+                            "mutability": "generated",
+                            "type": "alphanumeric",
+                            "required ": true
+                        }
+                    }
+                }
+            }
+        });
+        assert!(serde_json::from_value::<ConfigContract>(contract).is_err());
     }
 
     #[test]

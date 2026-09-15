@@ -102,6 +102,27 @@ pub struct CreateTemplateRequest {
     pub config_contract: Option<serde_json::Value>,
 }
 
+fn validate_config_contract(
+    config_contract: Option<&serde_json::Value>,
+) -> Result<(), actix_web::Error> {
+    let Some(config_contract) = config_contract else {
+        return Ok(());
+    };
+
+    if config_contract.is_null() {
+        return Ok(());
+    }
+
+    serde_json::from_value::<crate::cli::config_parser::ConfigContract>(config_contract.clone())
+        .map(|_| ())
+        .map_err(|error| {
+            JsonResponse::<serde_json::Value>::build().bad_request(format!(
+                "Invalid config_contract: {}. Check field names and mutability values.",
+                error
+            ))
+        })
+}
+
 #[tracing::instrument(name = "Create draft template", skip_all)]
 #[post("")]
 pub async fn create_handler(
@@ -110,6 +131,7 @@ pub async fn create_handler(
     body: web::Json<CreateTemplateRequest>,
 ) -> Result<impl Responder> {
     let req = body.into_inner();
+    validate_config_contract(req.config_contract.as_ref())?;
 
     let tags = req.tags.unwrap_or(serde_json::json!([]));
     let tech_stack = req.tech_stack.unwrap_or(serde_json::json!({}));
@@ -706,6 +728,7 @@ pub async fn update_handler(
     }
 
     let req = body.into_inner();
+    validate_config_contract(req.config_contract.as_ref())?;
     let infrastructure_requirements = req.infrastructure_requirements.clone();
 
     // Normalize pricing: plan_type "free" forces price to 0
@@ -1161,6 +1184,7 @@ pub async fn resubmit_handler(
     }
 
     let req = body.into_inner();
+    validate_config_contract(req.config_contract.as_ref())?;
     ensure_no_secrets_confirmation(req.confirm_no_secrets)?;
 
     let existing_source_project_id = db::marketplace::get_source_project_id(pg_pool.get_ref(), id)
