@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
+use futures::future::join_all;
 
 /// Request body for uploading an existing SSH key pair
 #[derive(Debug, Deserialize)]
@@ -657,6 +658,166 @@ pub async fn validate_key(
     Ok(JsonResponse::build()
         .set_item(Some(response))
         .ok(ok_message))
+}
+
+/// Batch response for validating all servers at once
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchValidateResponse {
+    pub servers: Vec<ValidateResponse>,
+    pub total: usize,
+    pub valid: usize,
+    pub invalid: usize,
+}
+
+/// Validate SSH connection for ALL servers belonging to the user
+/// POST /server/ssh-key/validate-all
+///
+/// Instead of N sequential requests from the frontend, this validates
+/// all servers in a single request with parallel SSH connections.
+#[tracing::instrument(name = "Validate SSH for all servers.", skip_all)]
+#[post("/ssh-key/validate-all")]
+pub async fn validate_all(
+    user: web::ReqData<Arc<models::User>>,
+    pg_pool: web::Data<PgPool>,
+    vault_client: web::Data<VaultClient>,
+) -> Result<impl Responder> {
+    use crate::helpers::ssh_client;
+
+    let servers = db::server::fetch_by_user(pg_pool.get_ref(), &user.id)
+        .await
+        .map_err(|e| {
+            JsonResponse::<()>::build()
+                .internal_server_error(&format!("Failed to fetch servers: {}", e))
+        })?;
+
+    let mut futures = Vec::with_capacity(servers.len());
+
+    for server in &servers {
+        let server = server.clone();
+        let user_id = user.id.clone();
+        let vault_client = vault_client.clone();
+
+        futures.push(async move {
+            let vault = vault_client.get_ref();
+            // Quick pre-checks (cheap, no network)
+            if server.key_status != "active" {
+                return ValidateResponse {
+                    valid: false,
+                    server_id: server.id,
+                    srv_ip: server.srv_ip.clone(),
+                    message: format!("SSH key status is '{}', not active", server.key_status),
+                    ..Default::default()
+                };
+            }
+
+            let vault_key_path = match &server.vault_key_path {
+                Some(p) if !p.is_empty() => p,
+                _ => {
+                    return ValidateResponse {
+                        valid: false,
+                        server_id: server.id,
+                        srv_ip: server.srv_ip.clone(),
+                        message: "SSH key is not stored in Vault".to_string(),
+                        ..Default::default()
+                    };
+                }
+            };
+
+            let srv_ip = match &server.srv_ip {
+                Some(ip) if !ip.is_empty() => ip.clone(),
+                _ => {
+                    return ValidateResponse {
+                        valid: false,
+                        server_id: server.id,
+                        srv_ip: server.srv_ip.clone(),
+                        message: "Server IP address not configured".to_string(),
+                        ..Default::default()
+                    };
+                }
+            };
+
+            let private_key = match vault.fetch_ssh_key(&user_id, server.id).await {
+                Ok(key) => key,
+                Err(_) => {
+                    return ValidateResponse {
+                        valid: false,
+                        server_id: server.id,
+                        srv_ip: Some(srv_ip),
+                        message: "SSH key could not be retrieved from secure storage".to_string(),
+                        ..Default::default()
+                    };
+                }
+            };
+
+            let vault_public_key = vault
+                .fetch_ssh_public_key(&user_id, server.id)
+                .await
+                .ok();
+
+            let ssh_port = server.ssh_port.unwrap_or(22) as u16;
+            let ssh_user = server
+                .ssh_user
+                .clone()
+                .unwrap_or_else(|| "root".to_string());
+
+            let check_result = ssh_client::check_server(
+                &srv_ip,
+                ssh_port,
+                &ssh_user,
+                &private_key,
+                Duration::from_secs(30),
+            )
+            .await;
+
+            let valid = check_result.connected && check_result.authenticated;
+            let message = if valid {
+                check_result.summary()
+            } else {
+                check_result
+                    .error
+                    .unwrap_or_else(|| "SSH validation failed".to_string())
+            };
+
+            ValidateResponse {
+                valid,
+                server_id: server.id,
+                srv_ip: Some(srv_ip),
+                message,
+                connected: check_result.connected,
+                authenticated: check_result.authenticated,
+                vault_public_key: if !check_result.authenticated {
+                    vault_public_key
+                } else {
+                    None
+                },
+                username: check_result.username,
+                disk_total_gb: check_result.disk_total_gb,
+                disk_available_gb: check_result.disk_available_gb,
+                disk_usage_percent: check_result.disk_usage_percent,
+                docker_installed: check_result.docker_installed,
+                docker_version: check_result.docker_version,
+                os_name: check_result.os_name,
+                os_version: check_result.os_version,
+                memory_total_mb: check_result.memory_total_mb,
+                memory_available_mb: check_result.memory_available_mb,
+            }
+        });
+    }
+
+    let results: Vec<ValidateResponse> = join_all(futures).await;
+
+    let valid_count = results.iter().filter(|r| r.valid).count();
+
+    let response = BatchValidateResponse {
+        total: results.len(),
+        valid: valid_count,
+        invalid: results.len() - valid_count,
+        servers: results,
+    };
+
+    Ok(JsonResponse::build()
+        .set_item(Some(response))
+        .ok("Batch validation complete"))
 }
 
 /// Delete SSH key for a server (disconnect)

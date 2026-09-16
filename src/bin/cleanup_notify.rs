@@ -3,7 +3,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 use sqlx::Row;
 use stacker::configuration::get_configuration;
 use stacker::helpers::MqManager;
-use stacker::services::project_cleanup_notifier;
+use stacker::services::{project_cleanup_notifier, server_cleanup_notifier};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -40,8 +40,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let internal_key = std::env::var("INTERNAL_SERVICES_ACCESS_KEY").unwrap_or_default();
 
-    // Find projects that are marked for deletion but haven't been notified yet
-    let rows = sqlx::query(
+    // ── Project deletion warnings ────────────────────────────────
+    let project_rows = sqlx::query(
         r#"
         SELECT id, name, user_id, deletion_scheduled_at
         FROM project
@@ -53,67 +53,116 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .fetch_all(&pool)
     .await?;
 
-    if rows.is_empty() {
-        tracing::info!("No new projects to notify about.");
-        return Ok(());
+    let mut project_sent = 0u32;
+    let mut project_failed = 0u32;
+
+    if !project_rows.is_empty() {
+        tracing::info!("Found {} projects needing deletion warnings.", project_rows.len());
+
+        for row in &project_rows {
+            let project_id: i32 = row.get("id");
+            let project_name: String = row.get("name");
+            let user_id: String = row.get("user_id");
+            let deletion_scheduled_at: chrono::DateTime<Utc> = row.get("deletion_scheduled_at");
+
+            let result = project_cleanup_notifier::notify_project_deletion_warning(
+                &mq_manager,
+                &http_client,
+                &user_service_url,
+                &internal_key,
+                project_id,
+                &project_name,
+                &user_id,
+                deletion_scheduled_at,
+            )
+            .await;
+
+            if result.email_sent || result.bell_sent {
+                sqlx::query(
+                    "UPDATE project SET deletion_warning_sent_at = NOW() at time zone 'utc' WHERE id = $1",
+                )
+                .bind(project_id)
+                .execute(&pool)
+                .await?;
+                project_sent += 1;
+                tracing::info!(
+                    "Notified user {} about project {} ({})",
+                    user_id, project_name, project_id
+                );
+            } else {
+                project_failed += 1;
+                tracing::warn!(
+                    "Failed to notify user {} about project {} ({}): {:?}",
+                    user_id, project_name, project_id, result.error
+                );
+            }
+        }
     }
 
-    tracing::info!("Found {} projects needing deletion warnings.", rows.len());
+    // ── Server deletion warnings ─────────────────────────────────
+    let server_rows = sqlx::query(
+        r#"
+        SELECT id, name, user_id, srv_ip, deletion_scheduled_at
+        FROM server
+        WHERE deletion_scheduled_at IS NOT NULL
+          AND deletion_warning_sent_at IS NULL
+        ORDER BY id
+        "#,
+    )
+    .fetch_all(&pool)
+    .await?;
 
-    let mut sent = 0;
-    let mut failed = 0;
+    let mut server_sent = 0u32;
+    let mut server_failed = 0u32;
 
-    for row in &rows {
-        let project_id: i32 = row.get("id");
-        let project_name: String = row.get("name");
-        let user_id: String = row.get("user_id");
-        let deletion_scheduled_at: chrono::DateTime<Utc> = row.get("deletion_scheduled_at");
+    if !server_rows.is_empty() {
+        tracing::info!("Found {} servers needing deletion warnings.", server_rows.len());
 
-        let result = project_cleanup_notifier::notify_project_deletion_warning(
-            &mq_manager,
-            &http_client,
-            &user_service_url,
-            &internal_key,
-            project_id,
-            &project_name,
-            &user_id,
-            deletion_scheduled_at,
-        )
-        .await;
+        for row in &server_rows {
+            let server_id: i32 = row.get("id");
+            let server_name: String = row.get::<Option<String>, _>("name").unwrap_or_else(|| "unnamed".to_string());
+            let user_id: String = row.get("user_id");
+            let server_ip: Option<String> = row.get("srv_ip");
+            let deletion_scheduled_at: chrono::DateTime<Utc> = row.get("deletion_scheduled_at");
 
-        if result.email_sent || result.bell_sent {
-            // Mark as notified
-            sqlx::query(
-                "UPDATE project SET deletion_warning_sent_at = NOW() at time zone 'utc' WHERE id = $1",
+            let result = server_cleanup_notifier::notify_server_deletion_warning(
+                &mq_manager,
+                &http_client,
+                &user_service_url,
+                &internal_key,
+                server_id,
+                &server_name,
+                server_ip.as_deref(),
+                &user_id,
+                deletion_scheduled_at,
             )
-            .bind(project_id)
-            .execute(&pool)
-            .await?;
+            .await;
 
-            sent += 1;
-            tracing::info!(
-                "Notified user {} about project {} ({})",
-                user_id,
-                project_name,
-                project_id
-            );
-        } else {
-            failed += 1;
-            tracing::warn!(
-                "Failed to notify user {} about project {} ({}): {:?}",
-                user_id,
-                project_name,
-                project_id,
-                result.error
-            );
+            if result.email_sent || result.bell_sent {
+                sqlx::query(
+                    "UPDATE server SET deletion_warning_sent_at = NOW() at time zone 'utc' WHERE id = $1",
+                )
+                .bind(server_id)
+                .execute(&pool)
+                .await?;
+                server_sent += 1;
+                tracing::info!(
+                    "Notified user {} about server {} ({})",
+                    user_id, server_name, server_id
+                );
+            } else {
+                server_failed += 1;
+                tracing::warn!(
+                    "Failed to notify user {} about server {} ({}): {:?}",
+                    user_id, server_name, server_id, result.error
+                );
+            }
         }
     }
 
     tracing::info!(
-        "Cleanup notification complete: {} sent, {} failed, {} total",
-        sent,
-        failed,
-        rows.len()
+        "Cleanup notification complete: projects ({} sent, {} failed), servers ({} sent, {} failed)",
+        project_sent, project_failed, server_sent, server_failed
     );
 
     Ok(())
