@@ -79,7 +79,7 @@ pub fn redact_sensitive_json_values(value: &mut serde_json::Value) {
 
             // Pattern 1: standard JSON keys
             for (key, val) in map.iter_mut() {
-                if is_sensitive_key(key) && !val.is_null() {
+                if is_sensitive_key(key) && !val.is_null() && !val.is_object() && !val.is_array() {
                     *val = serde_json::Value::String("***REDACTED***".to_string());
                 } else {
                     redact_sensitive_json_values(val);
@@ -270,6 +270,20 @@ mod tests {
         redact_sensitive_json_values(&mut v);
         assert_eq!(v["db"]["db_password"], "***REDACTED***");
         assert_eq!(v["db"]["host"], "localhost");
+    }
+
+    #[test]
+    fn preserves_sensitive_object_shape_while_redacting_nested_values() {
+        let mut v = json!({
+            "credentials": {
+                "passwd": "secret123",
+                "username": "root"
+            }
+        });
+        redact_sensitive_json_values(&mut v);
+
+        assert_eq!(v["credentials"]["passwd"], "***REDACTED***");
+        assert_eq!(v["credentials"]["username"], "root");
     }
 
     #[test]
