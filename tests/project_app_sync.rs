@@ -164,3 +164,62 @@ async fn update_project_reconciles_project_level_apps_without_removing_deploymen
     assert_eq!(project_level_codes, vec!["website", "upload"]);
     assert_eq!(deployment_codes, vec!["deployed-only"]);
 }
+
+#[tokio::test]
+async fn sync_project_updates_apps_without_creating_a_deployment() {
+    let Some(app) = common::spawn_app().await else {
+        return;
+    };
+
+    let client = reqwest::Client::new();
+    let create_response = client
+        .post(format!("{}/project", app.address))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .json(&project_payload("sync-project-endpoint", &["redis"]))
+        .send()
+        .await
+        .expect("project create request should succeed");
+    assert_eq!(create_response.status(), StatusCode::OK);
+
+    let project_id = create_response
+        .json::<Value>()
+        .await
+        .expect("create response should be json")["item"]["id"]
+        .as_i64()
+        .expect("project id should be present") as i32;
+
+    let sync_response = client
+        .put(format!(
+            "{}/api/v1/project/{}/sync",
+            app.address, project_id
+        ))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .json(&project_payload("sync-project-endpoint", &["postgres"]))
+        .send()
+        .await
+        .expect("project sync request should succeed");
+
+    assert_eq!(sync_response.status(), StatusCode::OK);
+    let body: Value = sync_response
+        .json()
+        .await
+        .expect("sync response should be json");
+    assert_eq!(body["item"]["deployment_created"], false);
+    assert_eq!(body["item"]["server_contacted"], false);
+    assert_eq!(body["item"]["containers_started"], false);
+
+    let apps = db::project_app::fetch_by_project(&app.db_pool, project_id)
+        .await
+        .expect("project apps should load");
+    let codes = apps.iter().map(|app| app.code.as_str()).collect::<Vec<_>>();
+    assert_eq!(codes, vec!["website", "postgres"]);
+
+    let deployment_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM deployment WHERE project_id = $1 AND deleted = false",
+    )
+    .bind(project_id)
+    .fetch_one(&app.db_pool)
+    .await
+    .expect("deployments should load");
+    assert_eq!(deployment_count, 0, "sync must not create a deployment");
+}
