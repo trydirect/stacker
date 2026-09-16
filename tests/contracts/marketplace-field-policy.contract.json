@@ -35,6 +35,11 @@
           "type": "string",
           "enum": ["hex", "base64", "alphanumeric", "uuid", "enum", "derived_jwt"]
         },
+        "display": {
+          "type": "string",
+          "enum": ["boolean", "string", "number", "password"],
+          "description": "UI rendering hint. Tells the frontend which input widget to render (checkbox, text input, number input, password field). Independent from the generation type."
+        },
         "length": {
           "type": "integer",
           "minimum": 1,

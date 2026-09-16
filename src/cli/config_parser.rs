@@ -928,6 +928,20 @@ pub enum FieldType {
     DerivedJwt,
 }
 
+/// UI rendering hint for a field, selected via `display:`.
+///
+/// When present, tells the frontend which input widget to render.
+/// Independent from `FieldType` — a field can have both a generation
+/// type (`type: base64`) and a display hint (`display: password`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayType {
+    Boolean,
+    String,
+    Number,
+    Password,
+}
+
 /// Declared policy for one `config_contract.services.<service>.fields.<NAME>` entry.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FieldPolicy {
@@ -935,6 +949,8 @@ pub struct FieldPolicy {
     pub required: bool,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub type_spec: Option<FieldType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display: Option<DisplayType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub length: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -965,6 +981,8 @@ struct RawFieldPolicy {
     required: bool,
     #[serde(rename = "type", default)]
     type_spec: Option<FieldType>,
+    #[serde(default)]
+    display: Option<DisplayType>,
     #[serde(default)]
     length: Option<usize>,
     #[serde(default)]
@@ -1010,6 +1028,7 @@ impl<'de> Deserialize<'de> for FieldPolicy {
             mutability: raw.mutability,
             required: raw.required,
             type_spec: raw.type_spec,
+            display: raw.display,
             length: raw.length,
             min_length: raw.min_length,
             values: raw.values,
@@ -1028,6 +1047,7 @@ impl FieldPolicy {
             mutability: Mutability::Fixed,
             required,
             type_spec: None,
+            display: None,
             length: None,
             min_length: None,
             values: Vec::new(),
@@ -1045,6 +1065,7 @@ impl FieldPolicy {
             mutability: Mutability::Generated,
             required: true,
             type_spec: Some(FieldType::Alphanumeric),
+            display: None,
             length: None,
             min_length: Some(32),
             values: Vec::new(),
@@ -1057,6 +1078,7 @@ impl FieldPolicy {
     fn is_plain_fixed(&self) -> bool {
         self.mutability == Mutability::Fixed
             && self.type_spec.is_none()
+            && self.display.is_none()
             && self.length.is_none()
             && self.min_length.is_none()
             && self.values.is_empty()

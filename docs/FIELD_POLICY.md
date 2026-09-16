@@ -87,6 +87,56 @@ enter (e.g. an `enum`).
 
 ---
 
+## Display types (`display`)
+
+The `display` field tells the frontend **which input widget to render** for a
+field. It is independent from the generation `type` — a field can have both:
+
+| `display` | Renders | Example |
+|-----------|---------|---------|
+| `boolean` | Checkbox / toggle | Feature flags, `_ENABLED` switches |
+| `string` | Text input | Hostnames, URLs, log levels |
+| `number` | Number input | Ports, replica counts, ratios |
+| `password` | Password input (masked, with regeneration) | Secrets the buyer enters or that are generated |
+
+When `display` is omitted, the frontend falls back to `text` for most fields and
+`password` for fields whose `mutability` is `generated`.
+
+### When to use `display`
+
+- Use `display: boolean` on `editable` fields whose value is `true`/`false`.
+- Use `display: password` on `provided` fields that are credentials but whose
+  key name does not contain `SECRET`, `PASSWORD`, `TOKEN`, etc. (the platform
+  auto-detects password inputs for those names, but an explicit display is clearer).
+- Use `display: number` on `editable` fields that must be numeric.
+- Use `display: string` explicitly when you want to be unambiguous, though it is
+  the default for non-secret fields.
+
+### Combining `type` and `display`
+
+A `generated` field can declare both how to produce the value (`type`) and how to
+show it if the buyer ever edits it (`display`):
+
+```yaml
+JWT_SECRET:
+  mutability: generated
+  type: base64          # how to generate
+  display: password     # how to render in the form
+  length: 48
+```
+
+For `editable` or `provided` fields, `display` is the primary hint since there
+is no generation involved:
+
+```yaml
+TLS_ENABLED:
+  mutability: editable
+  display: boolean
+  value: "true"
+```
+
+---
+
 ## Worked example
 
 A Supabase-style stack:
