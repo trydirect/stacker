@@ -100,3 +100,69 @@ stacker/  StackerConfig::from_str+validate_semantics   registry lookup → cloud
 1. Badge in `ai-automation-workflows` opens console preloaded with Flowise+n8n+Ollama+Qdrant.
 2. `.env.example` vars land in the env form (secrets autofilled).
 3. Invalid stacker.yml → `Invalid stacker.yml in target repository` (422), never a 500.
+
+---
+
+## Env field types
+
+The `POST /deploy/prepare` response includes a `type` field on each env entry so
+the frontend can render the correct input widget (text, checkbox, password).
+
+### How types are determined
+
+Types are resolved in two stages:
+
+1. **Declared types from `config_contract`** — when `stacker.yml` declares a
+   `display` field on a `config_contract.services.<service>.fields.<FIELD>`
+   entry, the user service reads it from the validate response and applies it
+   to the matching `env_fields` entry. This is the **primary** source of truth.
+
+2. **Fallback heuristic** — for fields not declared in `config_contract`, the
+   user service infers `boolean` from values `true`/`false`/`yes`/`no`/`1`/`0`/`on`/`off`,
+   and `password` for fields whose key matches secret-related keywords
+   (`SECRET`, `PASSWORD`, `TOKEN`, etc.). Everything else defaults to `text`.
+
+### Response shape
+
+```json
+{
+  "key": "FLOCI_TLS_ENABLED",
+  "value": "true",
+  "required": true,
+  "secret": false,
+  "type": "boolean"
+}
+```
+
+### Frontend rendering
+
+| `type` | Widget | Value sent to `/deploy/start` |
+|--------|--------|-------------------------------|
+| `boolean` | Checkbox (toggle) | `"true"` or `"false"` (string) |
+| `number` | Number input | The numeric string as-is |
+| `password` | Password input (masked, with regeneration) | The string value |
+| `text` | Text input | The string value |
+
+### Declaring types in stacker.yml
+
+Template authors declare `display` on `config_contract` fields:
+
+```yaml
+config_contract:
+  services:
+    app:
+      fields:
+        TLS_ENABLED:
+          mutability: editable
+          display: boolean
+        PORT:
+          mutability: editable
+          display: number
+        API_SECRET:
+          mutability: generated
+          type: base64
+          display: password
+          length: 48
+```
+
+See [FIELD_POLICY.md](./FIELD_POLICY.md) for the full `display` reference.
