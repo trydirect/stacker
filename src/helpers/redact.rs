@@ -1,14 +1,45 @@
+/// Conservative fallback for identifying secret-shaped environment names.
+///
+/// Explicit config-contract protected keys take precedence over this helper.
+/// Keep generic `KEY`, `TLS`, `CERT`, and `USERNAME` out: they commonly refer
+/// to public identifiers, feature flags, or connection settings rather than
+/// secret material.
+pub(crate) fn is_sensitive_env_key(key: &str) -> bool {
+    const SENSITIVE_PATTERNS: &[&str] = &[
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "access_key",
+        "auth_key",
+        "credential",
+        "private_key",
+        "jwt",
+        "bearer",
+        "refresh_token",
+        "registry_username",
+        "app_key",
+        "license_key",
+        "masterkey",
+        "session_key",
+        "crypto_key",
+        "encryption_key",
+        "signing_key",
+        "decryption_key",
+    ];
+
+    let key = key.to_ascii_lowercase();
+    SENSITIVE_PATTERNS
+        .iter()
+        .any(|pattern| key.contains(pattern))
+        || key.split('_').any(|segment| segment == "pass")
+}
+
 fn is_sensitive_key(key: &str) -> bool {
-    let k = key.to_lowercase();
-    k.contains("password")
-        || k.contains("passwd")
-        || k.contains("pwd")
-        || k.contains("secret")
-        || k.contains("api_key")
-        || k.contains("apikey")
-        || k.contains("private_key")
-        || k.contains("access_key")
-        || k.contains("auth_key")
+    is_sensitive_env_key(key)
 }
 
 // ─── JSON redaction ───────────────────────────────────────────────────────────
@@ -220,7 +251,7 @@ pub fn strip_yaml_string_for_keys(
 
 #[cfg(test)]
 mod tests {
-    use super::{redact_sensitive_json_values, redact_yaml_string};
+    use super::{is_sensitive_env_key, redact_sensitive_json_values, redact_yaml_string};
     use serde_json::json;
 
     // JSON tests
@@ -262,6 +293,19 @@ mod tests {
         redact_sensitive_json_values(&mut v);
         assert_eq!(v["DB_PASSWORD"], "***REDACTED***");
         assert_eq!(v["API_KEY"], "***REDACTED***");
+    }
+
+    #[test]
+    fn sensitive_name_fallback_avoids_common_non_secret_keys() {
+        assert!(is_sensitive_env_key("DATABASE_PASSWORD"));
+        assert!(is_sensitive_env_key("SERVICE_TOKEN"));
+        assert!(is_sensitive_env_key("AWS_ACCESS_KEY_ID"));
+        assert!(is_sensitive_env_key("DB_PASS"));
+        assert!(is_sensitive_env_key("ZITADEL_MASTERKEY"));
+        assert!(is_sensitive_env_key("APP_KEY"));
+        assert!(!is_sensitive_env_key("FLOCI_TLS_ENABLED"));
+        assert!(!is_sensitive_env_key("PUBLIC_KEY_ID"));
+        assert!(is_sensitive_env_key("REGISTRY_USERNAME"));
     }
 
     /// stack_definition stores env vars as [{key: "NAME", value: "DATA"}] objects.

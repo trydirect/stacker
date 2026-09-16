@@ -63,7 +63,10 @@ cat stacker.yml
 # 4. Deploy locally
 stacker deploy --target local
 
-# 5. Check status
+# 5. Synchronize project configuration without deploying
+stacker sync --verify
+
+# 6. Check status
 stacker status
 ```
 
@@ -1469,6 +1472,7 @@ Configuration issues:
 |---------|-------------|
 | `stacker init` | Initialize a new project — generates `stacker.yml` and `.stacker/` directory (Dockerfile + docker-compose.yml). Use `--from-github <url>` to generate config from a remote repo without cloning it first. |
 | `stacker deploy` | Build and deploy the stack; cloud deploys also install a local SSH backup key when possible |
+| `stacker sync` | Synchronize project metadata and app configuration with Stacker without creating a deployment, contacting a target server, or starting containers |
 | `stacker status` | Show container status |
 | `stacker logs` | Show container logs |
 | `stacker secrets` | Manage local `.env` secrets or remote Vault-backed service/server secrets |
@@ -1578,6 +1582,21 @@ stacker deploy --force-rebuild         # Force regenerate .stacker/ artifacts
 > **IP persistence:** If a cloud/server install pauses or fails after the
 > installer has reported an IP address, Stacker saves that discovered IP in the
 > local deployment context and persists it server-side when possible.
+
+### `stacker sync` flags
+
+```bash
+stacker sync                              # Synchronize current project configuration
+stacker sync --verify                     # Verify the API/database synchronization
+stacker sync --json                       # Print a machine-readable result
+stacker sync --env production             # Synchronize a selected environment
+stacker sync --deployment deployment_...  # Validate and associate a deployment hash
+```
+
+`stacker sync` only updates project metadata and app configuration through the
+Stacker API. It does not upload files to a target server, create a deployment,
+invoke Install Service, or start/restart containers. Run `stacker deploy` to
+apply the synchronized configuration to the runtime.
 
 ### Remote secrets
 

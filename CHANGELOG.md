@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — Developer project synchronization
+
+- Added `stacker sync` to synchronize declarative project and app configuration
+  with Stacker without creating a deployment, contacting a target server, or
+  starting containers.
+- Added `stacker sync --verify`, `--json`, `--env`, and `--deployment` options.
+- Added `PUT /api/v1/project/{id}/sync` for authenticated project configuration
+  synchronization.
+- Added centralized sensitive environment-name redaction and validation for
+  marketplace asset and seed-job metadata.
+
 ## [0.3.2] — 2026-08-26
 
 ### Added — Container-health monitoring & alerts (`stacker monitor`)

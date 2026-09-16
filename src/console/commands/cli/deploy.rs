@@ -4606,7 +4606,7 @@ fn fetch_server_for_project(
                         break;
                     }
                     eprintln!(
-                        "  Deployment still in progress ({}), waiting for IP...",
+                        "  Deployment still in progress ({}), waiting for deployment to finish...",
                         info.status_message
                             .as_deref()
                             .unwrap_or(&info.status),

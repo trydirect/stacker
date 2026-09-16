@@ -377,14 +377,7 @@ fn is_placeholder_value(value: &str) -> bool {
 }
 
 fn is_sensitive_env_key(key: &str) -> bool {
-    let upper = key.to_ascii_uppercase();
-    upper.contains("PASSWORD")
-        || upper.contains("PASS")
-        || upper.contains("SECRET")
-        || upper.contains("TOKEN")
-        || upper.contains("KEY")
-        || upper.contains("CREDENTIAL")
-        || upper.contains("PRIVATE")
+    crate::helpers::redact::is_sensitive_env_key(key)
 }
 
 fn compose_depends_on(mapping: &Mapping) -> Vec<String> {

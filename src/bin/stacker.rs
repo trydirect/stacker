@@ -194,6 +194,24 @@ enum StackerCommands {
         #[arg(long)]
         notify: bool,
     },
+    /// Synchronize project configuration without deploying it
+    Sync {
+        /// Path to stacker.yml (default: ./stacker.yml)
+        #[arg(long, value_name = "FILE")]
+        file: Option<std::path::PathBuf>,
+        /// Explicit deployment hash to associate with this synchronization
+        #[arg(long, value_name = "HASH")]
+        deployment: Option<String>,
+        /// Environment/profile to synchronize
+        #[arg(long = "env", alias = "environment", value_name = "ENVIRONMENT")]
+        environment: Option<String>,
+        /// Verify that Stacker acknowledged the synchronized configuration
+        #[arg(long)]
+        verify: bool,
+        /// Print the synchronization result as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Attach this directory to an existing deployment from the dashboard
     Connect {
         /// Handoff token or full handoff URL copied from the dashboard
@@ -2147,6 +2165,19 @@ fn get_command(
             .with_hook_flags(no_hooks, allow_untrusted_hooks)
             .with_notify(notify),
         ),
+        StackerCommands::Sync {
+            file,
+            deployment,
+            environment,
+            verify,
+            json,
+        } => Box::new(stacker::console::commands::cli::sync::SyncCommand::new(
+            file,
+            deployment,
+            environment,
+            verify,
+            json,
+        )),
         StackerCommands::Connect { handoff } => {
             Box::new(stacker::console::commands::cli::connect::ConnectCommand::new(handoff))
         }
@@ -3136,6 +3167,37 @@ mod tests {
                 assert_eq!(environment.as_deref(), Some("staging"));
             }
             _ => panic!("expected deploy command"),
+        }
+    }
+
+    #[test]
+    fn test_sync_parses_verification_and_deployment() {
+        let cli = Cli::try_parse_from([
+            "stacker",
+            "sync",
+            "--deployment",
+            "deployment_abc",
+            "--env",
+            "production",
+            "--verify",
+            "--json",
+        ])
+        .unwrap();
+
+        match cli.command.unwrap() {
+            StackerCommands::Sync {
+                deployment,
+                environment,
+                verify,
+                json,
+                ..
+            } => {
+                assert_eq!(deployment.as_deref(), Some("deployment_abc"));
+                assert_eq!(environment.as_deref(), Some("production"));
+                assert!(verify);
+                assert!(json);
+            }
+            _ => panic!("expected sync command"),
         }
     }
 

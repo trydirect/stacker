@@ -54,6 +54,23 @@ stacker deploy            # builds and runs locally via docker compose
 stacker status            # check running containers
 ```
 
+### Synchronize project configuration without deploying
+
+Use `stacker sync` for fast developer iteration. It updates project metadata
+and app configuration in Stacker, but does not create a deployment, contact a
+target server, or start containers.
+
+```bash
+stacker sync                              # synchronize the current project
+stacker sync --verify                     # verify the synchronized result
+stacker sync --json                       # machine-readable result
+stacker sync --deployment deployment_...  # pin to a project deployment
+```
+
+Runtime files are uploaded and containers are started only by a subsequent
+`stacker deploy`. Sensitive environment values are omitted from project
+metadata; store new secrets with `stacker secrets`.
+
 ### Deploy from any GitHub repo
 
 Generate a `stacker.yml` from a GitHub repository — no clone required.
@@ -200,6 +217,7 @@ The end-user tool. No server required for local deploys.
 |---------|-------------|
 | `stacker init` | Detect project type, generate `stacker.yml` + `.stacker/` artifacts |
 | `stacker deploy` | Build & deploy the stack (local, cloud, or server). Cloud deploys also install a local SSH backup key when possible. `--runtime kata\|runc` selects container runtime |
+| `stacker sync` | Synchronize project metadata and app configuration with Stacker without creating a deployment, contacting a server, or starting containers |
 | `stacker status` | Show running containers and health |
 | `stacker logs` | View container logs (`--follow`, `--service`, `--tail`) |
 | `stacker deployment state` / `stacker deployment status` | Show canonical deployment state (defaults to latest; `--pinned` uses stacker.yml hash) |
@@ -270,7 +288,11 @@ stacker deploy --target local     # docker compose up (default)
 stacker deploy --target cloud     # Terraform + Ansible → cloud provider
 stacker deploy --target server    # deploy to existing server via SSH
 stacker deploy --dry-run          # preview generated files without executing
+stacker sync --verify              # sync and verify project configuration only
 ```
+
+`stacker sync` is database/API synchronization, not a remote file upload. Use
+`stacker deploy` to apply the synchronized configuration to a target server.
 
 After a successful cloud deploy, Stacker creates or reuses a local backup key at
 `~/.config/stacker/ssh/server-<id>_ed25519` (or under `$XDG_CONFIG_HOME`) and

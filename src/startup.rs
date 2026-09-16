@@ -30,6 +30,7 @@ fn project_scope(path: &str) -> actix_web::Scope {
         .service(crate::routes::project::get::item)
         .service(crate::routes::project::add::item)
         .service(crate::routes::project::update::item)
+        .service(crate::routes::project::sync::item)
         .service(crate::routes::project::delete::item)
         .service(crate::routes::project::protection::toggle)
         .service(crate::routes::project::app::list_apps)

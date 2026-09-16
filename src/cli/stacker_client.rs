@@ -987,6 +987,47 @@ impl StackerClient {
         })
     }
 
+    /// Synchronize project configuration without creating a deployment or
+    /// contacting the target server.
+    pub async fn sync_project(
+        &self,
+        project_id: i32,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value, CliError> {
+        let resp = self
+            .send_project_request(
+                reqwest::Method::PUT,
+                &format!("/{project_id}/sync"),
+                Some(&body),
+                "PUT /project/{id}/sync",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: stacker_api_failure(
+                    &format!("PUT /project/{project_id}/sync"),
+                    status,
+                    &body,
+                ),
+            });
+        }
+
+        let api: ApiResponse<serde_json::Value> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: self.target.clone(),
+            reason: "Stacker server synchronized project but returned no result".to_string(),
+        })
+    }
+
     // ── Cloud credentials ────────────────────────────
 
     /// List all saved cloud credentials for the authenticated user.

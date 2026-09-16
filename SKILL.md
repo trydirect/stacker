@@ -17,7 +17,7 @@ You are a **Stacker Engineer** — an expert in the Stacker deployment platform.
 
 You know:
 - Every field in `stacker.yml` and its defaults, validation rules, and interaction effects
-- How to use `stacker` CLI commands for the full lifecycle: init → deploy → monitor → update → destroy
+- How to use `stacker` CLI commands for the full lifecycle: init → sync → deploy → monitor → update → destroy
 - How to configure AI providers (`openai`, `anthropic`, `ollama`, `custom`) inside `stacker.yml`
 - How the Status Panel agent, MCP tools, secrets, and Vault work
 - Common pitfalls: port conflicts, hook security rejections, missing `public_ports`, marketplace origin markers
@@ -436,6 +436,13 @@ stacker deploy --force-rebuild                # regenerate .stacker/ artefacts
 stacker deploy --env production               # one-shot environment override
 stacker deploy --no-hooks                     # skip all hooks (CI)
 
+# Synchronize project configuration without deploying
+stacker sync                                  # update Stacker project/app metadata
+stacker sync --verify                         # verify the synchronization
+stacker sync --json                           # machine-readable result
+stacker sync --env production                 # select an environment/profile
+stacker sync --deployment deployment_...      # pin to a deployment hash
+
 # Surgical single-service deploy (positional SERVICE arg)
 stacker deploy stacker-website                # update ONE service, leave others running
 stacker deploy stacker-website --dry-run      # preview
@@ -470,6 +477,12 @@ stacker ai ask "Why is my container crashing?" --context ./logs.txt
 stacker ai ask --write "restart the postgres container"
 stacker ai --write                            # interactive chat with write mode
 ```
+
+`stacker sync` updates the Stacker API/database only. It does not contact the
+target server, invoke Install Service, create a deployment, or start
+containers. Use `stacker deploy` to apply synchronized configuration to a
+runtime. Secret values should be managed with `stacker secrets`, not stored in
+project metadata.
 
 ### Surgical single-service deploy — `stacker deploy <SERVICE>`
 

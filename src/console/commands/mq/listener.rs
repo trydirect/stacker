@@ -76,6 +76,17 @@ struct ProgressMessage {
     ssh_port: Option<i32>,
 }
 
+/// Select the identifier that unambiguously names the deployment.
+///
+/// Install-service progress messages may contain both fields. `deploy_id` is
+/// an older compatibility field and has historically been populated with a
+/// project/deployment number depending on the producer. A deployment hash is
+/// generated for this deploy and is the only safe source of identity when it
+/// is present.
+fn progress_deployment_identifier(msg: &ProgressMessage) -> Option<&str> {
+    msg.deployment_hash.as_deref().or(msg.deploy_id.as_deref())
+}
+
 impl ListenCommand {
     pub fn new() -> Self {
         Self {}
@@ -464,32 +475,26 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                                 } else {
                                     msg.status.clone()
                                 };
-                                // Try to find deployment by deploy_id or deployment_hash
-                                let deployment_result = if let Some(ref deploy_id_str) =
-                                    msg.deploy_id
+                                // Prefer deployment_hash when both identifiers are present.
+                                // deploy_id is retained only as a compatibility fallback.
+                                let deployment_result = if let Some(identifier) =
+                                    progress_deployment_identifier(&msg)
                                 {
-                                    // Try deploy_id first (numeric ID)
-                                    if let Ok(id) = deploy_id_str.parse::<i32>() {
-                                        deployment::fetch(db_pool.get_ref(), id).await
-                                    } else if let Some(ref hash) = msg.deployment_hash {
-                                        // deploy_id might be the hash string
+                                    if msg.deployment_hash.is_some() {
                                         deployment::fetch_by_deployment_hash(
                                             db_pool.get_ref(),
-                                            hash,
+                                            identifier,
                                         )
                                         .await
+                                    } else if let Ok(id) = identifier.parse::<i32>() {
+                                        deployment::fetch(db_pool.get_ref(), id).await
                                     } else {
-                                        // Try deploy_id as hash
                                         deployment::fetch_by_deployment_hash(
                                             db_pool.get_ref(),
-                                            deploy_id_str,
+                                            identifier,
                                         )
                                         .await
                                     }
-                                } else if let Some(ref hash) = msg.deployment_hash {
-                                    // Use deployment_hash
-                                    deployment::fetch_by_deployment_hash(db_pool.get_ref(), hash)
-                                        .await
                                 } else {
                                     // No identifier available
                                     println!("No deploy_id or deployment_hash in message");
@@ -684,5 +689,20 @@ mod tests {
             progress_message_server_ip(&msg),
             Some("178.104.222.170".to_string())
         );
+    }
+
+    #[test]
+    fn progress_uses_hash_before_legacy_deploy_id() {
+        let msg = progress_message("deploying", None);
+
+        assert_eq!(progress_deployment_identifier(&msg), Some("hash"));
+    }
+
+    #[test]
+    fn progress_falls_back_to_deploy_id_without_hash() {
+        let mut msg = progress_message("deploying", None);
+        msg.deployment_hash = None;
+
+        assert_eq!(progress_deployment_identifier(&msg), Some("174"));
     }
 }

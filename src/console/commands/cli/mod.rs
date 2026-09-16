@@ -24,5 +24,6 @@ pub mod service;
 pub mod ssh_key;
 pub mod status;
 pub mod submit;
+pub mod sync;
 pub mod update;
 pub mod whoami;

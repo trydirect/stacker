@@ -325,25 +325,6 @@ mod hydrate {
     }
 
     fn redact_sensitive_env_vars(env: Value) -> Value {
-        // Note: bare "key" is intentionally excluded — it's too broad and false-positives
-        // on benign names like "VISIBLE_KEY" or "PUBLIC_KEY_ID". "api_key"/"apikey" and
-        // "private" already cover the common secret-key naming conventions.
-        const SENSITIVE_PATTERNS: &[&str] = &[
-            "password",
-            "passwd",
-            "secret",
-            "token",
-            "api_key",
-            "apikey",
-            "access_key",
-            "auth",
-            "credential",
-            "private",
-            "cert",
-            "ssl",
-            "tls",
-        ];
-
         let normalized = normalize_environment(env);
         let Some(obj) = normalized.as_object() else {
             return normalized;
@@ -352,11 +333,7 @@ mod hydrate {
         let redacted = obj
             .iter()
             .map(|(key, value)| {
-                let key_lower = key.to_lowercase();
-                let is_sensitive = SENSITIVE_PATTERNS
-                    .iter()
-                    .any(|pattern| key_lower.contains(pattern));
-                if is_sensitive {
+                if crate::helpers::redact::is_sensitive_env_key(&key) {
                     (key.clone(), Value::String("[REDACTED]".to_string()))
                 } else {
                     (key.clone(), value.clone())
