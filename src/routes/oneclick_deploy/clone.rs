@@ -595,6 +595,31 @@ pub async fn clone_server(
         );
     }
 
+    // Create a cloud firewall and attach it to the server so the app is
+    // reachable from the internet.  Without this, Hetzner blocks everything
+    // except SSH (port 22) at the provider edge.
+    let firewall_rules: Vec<crate::connectors::hetzner::HetznerFirewallRule> = ["22", "80", "443"]
+        .iter()
+        .map(|port| crate::connectors::hetzner::HetznerFirewallRule {
+            direction: "in".to_string(),
+            protocol: "tcp".to_string(),
+            port: port.to_string(),
+            source_ips: vec!["0.0.0.0/0".to_string(), "::/0".to_string()],
+        })
+        .collect();
+
+    let firewall_name = format!("frw-{}", &deployment_hash[11..19]);
+
+    if let Err(err) = client
+        .create_firewall(token, &firewall_name, firewall_rules, provisioned.id)
+        .await
+    {
+        tracing::warn!(
+            error = %err,
+            "failed to create cloud firewall — ports may be unreachable"
+        );
+    }
+
     HttpResponse::Ok().json(CloneResponse {
         server_id: provisioned.id,
         public_ipv4: provisioned.public_ipv4,

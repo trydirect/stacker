@@ -55,6 +55,34 @@ pub struct HetznerSshKey {
     pub name: String,
 }
 
+/// A single inbound/outbound rule for a Hetzner cloud firewall.
+#[derive(Debug, Clone, Serialize)]
+pub struct HetznerFirewallRule {
+    pub direction: String,
+    pub protocol: String,
+    pub port: String,
+    pub source_ips: Vec<String>,
+}
+
+/// Response from `POST /firewalls`.
+#[derive(Debug, Deserialize)]
+struct HetznerCreateFirewallResponse {
+    firewall: HetznerFirewallBody,
+}
+
+#[derive(Debug, Deserialize)]
+struct HetznerFirewallBody {
+    id: i64,
+    name: String,
+}
+
+/// Result returned after creating a firewall.
+#[derive(Debug, Clone)]
+pub struct HetznerFirewallResult {
+    pub id: i64,
+    pub name: String,
+}
+
 #[async_trait]
 pub trait HetznerCloudConnector: Send + Sync {
     async fn create_server_snapshot(
@@ -84,6 +112,15 @@ pub trait HetznerCloudConnector: Send + Sync {
         name: &str,
         public_key: &str,
     ) -> Result<HetznerSshKey, ConnectorError>;
+
+    /// Create a cloud firewall and attach it to a server in a single API call.
+    async fn create_firewall(
+        &self,
+        token: &str,
+        name: &str,
+        rules: Vec<HetznerFirewallRule>,
+        server_id: i64,
+    ) -> Result<HetznerFirewallResult, ConnectorError>;
 }
 
 #[derive(Clone)]
@@ -307,6 +344,58 @@ impl HetznerCloudConnector for HetznerCloudClient {
             .map_err(|err| ConnectorError::InvalidResponse(err.to_string()))?;
 
         Ok(body.ssh_key)
+    }
+
+    async fn create_firewall(
+        &self,
+        token: &str,
+        name: &str,
+        rules: Vec<HetznerFirewallRule>,
+        server_id: i64,
+    ) -> Result<HetznerFirewallResult, ConnectorError> {
+        let url = format!("{}/firewalls", self.base_url);
+
+        let hetzner_rules: Vec<serde_json::Value> = rules
+            .iter()
+            .map(|r| {
+                json!({
+                    "direction": r.direction,
+                    "protocol": r.protocol,
+                    "port": r.port,
+                    "source_ips": r.source_ips,
+                })
+            })
+            .collect();
+
+        let payload = json!({
+            "name": name,
+            "rules": hetzner_rules,
+            "apply_to": [{ "server": { "id": server_id } }],
+        });
+
+        let response = self
+            .http_client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(ConnectorError::from)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(error_with_body(response, "Hetzner create-firewall failed").await);
+        }
+
+        let body: HetznerCreateFirewallResponse = response
+            .json()
+            .await
+            .map_err(|err| ConnectorError::InvalidResponse(err.to_string()))?;
+
+        Ok(HetznerFirewallResult {
+            id: body.firewall.id,
+            name: body.firewall.name,
+        })
     }
 }
 
