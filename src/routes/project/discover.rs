@@ -179,11 +179,24 @@ pub async fn discover_containers(
                             .to_string();
 
                         if !running_containers.iter().any(|rc| rc.name == name) {
+                            // The agent reports the logical app code from the
+                            // `my.stacker.service` label; fall back to reading
+                            // the label ourselves for agents predating that.
+                            // Leaving this None made matching name-based, and
+                            // `suggest_app_info` then split `project-floci-ui-1`
+                            // into `ui`.
+                            let app_code = c
+                                .get("app_code")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string)
+                                .or_else(|| app_code_from_labels(c))
+                                .filter(|code| !code.trim().is_empty());
+
                             running_containers.push(ContainerInfo {
                                 name: name.clone(),
                                 image,
                                 status,
-                                app_code: None, // Will be matched later
+                                app_code,
                             });
                         }
                     }
@@ -201,56 +214,12 @@ pub async fn discover_containers(
         for cmd in container_commands.iter() {
             if cmd.r#type == "health" && cmd.status == "completed" {
                 if let Some(result) = &cmd.result {
-                    // Try to extract from system_containers array first
-                    if let Some(system_arr) =
-                        result.get("system_containers").and_then(|c| c.as_array())
-                    {
-                        for c in system_arr {
-                            let name = c
-                                .get("container_name")
-                                .or_else(|| c.get("app_code"))
-                                .and_then(|n| n.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            if name.is_empty() {
-                                continue;
-                            }
-                            let status = c
-                                .get("container_state")
-                                .or_else(|| c.get("status"))
-                                .and_then(|s| s.as_str())
-                                .unwrap_or("unknown")
-                                .to_string();
-
-                            if !running_containers.iter().any(|rc| rc.name == name) {
-                                running_containers.push(ContainerInfo {
-                                    name: name.clone(),
-                                    image: String::new(),
-                                    status,
-                                    app_code: c
-                                        .get("app_code")
-                                        .and_then(|a| a.as_str())
-                                        .map(|s| s.to_string()),
-                                });
-                            }
-                        }
-                    }
-
-                    // Also try app_code from single-app health checks
-                    if let Some(app_code) = result.get("app_code").and_then(|a| a.as_str()) {
-                        let status = result
-                            .get("container_state")
-                            .and_then(|s| s.as_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-
-                        if !running_containers.iter().any(|c| c.name == app_code) {
-                            running_containers.push(ContainerInfo {
-                                name: app_code.to_string(),
-                                image: String::new(),
-                                status,
-                                app_code: Some(app_code.to_string()),
-                            });
+                    for container in container_infos_from_health(result) {
+                        if !running_containers
+                            .iter()
+                            .any(|rc| rc.name == container.name)
+                        {
+                            running_containers.push(container);
                         }
                     }
                 }
@@ -314,8 +283,18 @@ pub async fn discover_containers(
         });
 
         if !is_registered {
-            let (suggested_code, suggested_name) =
-                suggest_app_info(&container.name, &container.image);
+            // Prefer the code the container reports about itself. The
+            // heuristic only guesses from the container name, and Compose
+            // names (`project-floci-ui-1`) do not contain the app code, so it
+            // suggested `ui` for `floci-ui` and `app` for `floci`. Importing
+            // those creates project_app rows that never match anything
+            // resolving by `my.stacker.service`.
+            let (suggested_code, suggested_name) = match container.app_code.as_deref() {
+                Some(code) if !code.trim().is_empty() => {
+                    (code.trim().to_string(), capitalize(code.trim()))
+                }
+                _ => suggest_app_info(&container.name, &container.image),
+            };
 
             unregistered.push(DiscoveredContainer {
                 container_name: container.name.clone(),
@@ -433,6 +412,7 @@ pub async fn import_containers(
             config_hash: None,
             parent_app_code: None,
             deployment_id: None,
+            config_contract: None,
         };
 
         match db::project_app::insert(pg_pool.get_ref(), &app).await {
@@ -519,6 +499,95 @@ fn container_matches_app(container_name: &str, app_code: &str) -> bool {
 }
 
 /// Suggest app_code and name from container name and image
+/// Containers named by one completed `health` command result.
+///
+/// Used only when no `list_containers` result is available — for a server the
+/// client attached themselves, discovery may see nothing else.
+///
+/// Reads three shapes, because the agent produces two and the platform adds a
+/// third:
+///   - `containers[]` — the project's own containers, from an `all_health`
+///     report (a `health` command with `app_code: "all"`);
+///   - `system_containers[]` — platform-managed ones, same report;
+///   - a flat `app_code` + `container_state` — a single-app health check.
+///
+/// `containers[]` was previously not read at all, so a deployment whose most
+/// recent command was an aggregate health check surfaced only platform
+/// containers — exactly the ones discovery then filters out. It stayed hidden
+/// because `list_containers` is preferred and normally present.
+fn container_infos_from_health(result: &serde_json::Value) -> Vec<ContainerInfo> {
+    let mut found: Vec<ContainerInfo> = Vec::new();
+
+    for key in ["containers", "system_containers"] {
+        let Some(reported) = result.get(key).and_then(|c| c.as_array()) else {
+            continue;
+        };
+        for c in reported {
+            let name = c
+                .get("container_name")
+                .or_else(|| c.get("app_code"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_string();
+            if name.is_empty() || found.iter().any(|f| f.name == name) {
+                continue;
+            }
+            found.push(ContainerInfo {
+                name,
+                image: String::new(),
+                status: c
+                    .get("container_state")
+                    .or_else(|| c.get("status"))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                app_code: c
+                    .get("app_code")
+                    .and_then(|a| a.as_str())
+                    .map(str::to_string),
+            });
+        }
+    }
+
+    // Single-app health check: the report itself describes one container.
+    if let Some(app_code) = result.get("app_code").and_then(|a| a.as_str()) {
+        if !found.iter().any(|f| f.name == app_code) {
+            found.push(ContainerInfo {
+                name: app_code.to_string(),
+                image: String::new(),
+                status: result
+                    .get("container_state")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                app_code: Some(app_code.to_string()),
+            });
+        }
+    }
+
+    found
+}
+
+/// The app code carried by a container's Docker labels, if the agent shipped
+/// them. Mirrors the agent's resolution order: Stacker's own label first,
+/// Compose's service name second.
+///
+/// See `config/shared-fixtures/agent-contract/app-code-resolution.md`.
+fn app_code_from_labels(container: &serde_json::Value) -> Option<String> {
+    let labels = container.get("labels")?.as_object()?;
+    for key in [
+        crate::helpers::stacker_labels::SERVICE,
+        "com.docker.compose.service",
+    ] {
+        if let Some(code) = labels.get(key).and_then(|v| v.as_str()) {
+            if !code.trim().is_empty() {
+                return Some(code.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
 fn suggest_app_info(container_name: &str, image: &str) -> (String, String) {
     // Try to extract service name from Docker Compose pattern: {project}_{service}_{replica}
     if let Some(parts) = extract_compose_service(container_name) {
@@ -598,6 +667,135 @@ fn is_blocked_system_container(container_name: &str, image: &str, app_code: Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    /// The agent reports `app_code` from `my.stacker.service`; discovery must
+    /// use it rather than fall back to the container-name heuristic.
+    #[test]
+    fn app_code_from_labels_prefers_the_stacker_label() {
+        let container = json!({
+            "name": "project-app-1",
+            "labels": {
+                "my.stacker.service": "floci",
+                "com.docker.compose.service": "app"
+            }
+        });
+        assert_eq!(app_code_from_labels(&container).as_deref(), Some("floci"));
+    }
+
+    #[test]
+    fn app_code_from_labels_falls_back_to_compose() {
+        let container = json!({
+            "name": "someproject-web-1",
+            "labels": {"com.docker.compose.service": "web"}
+        });
+        assert_eq!(app_code_from_labels(&container).as_deref(), Some("web"));
+    }
+
+    #[test]
+    fn app_code_from_labels_is_none_without_usable_labels() {
+        assert_eq!(app_code_from_labels(&json!({"name": "x"})), None);
+        assert_eq!(
+            app_code_from_labels(&json!({"name": "x", "labels": {"my.stacker.service": "  "}})),
+            None
+        );
+    }
+
+    /// A reported app_code must win over the name heuristic — that is the
+    /// whole point of the label. Guards the `suggested_code` path, which is
+    /// computed separately from the matching path and was missed at first.
+    #[test]
+    fn reported_app_code_beats_the_name_heuristic() {
+        let reported = Some("floci-ui".to_string());
+        let (code, name) = match reported.as_deref() {
+            Some(c) if !c.trim().is_empty() => (c.trim().to_string(), capitalize(c.trim())),
+            _ => suggest_app_info("project-floci-ui-1", "floci/floci-ui"),
+        };
+        assert_eq!(code, "floci-ui");
+        assert_eq!(name, "Floci-ui");
+
+        // Without a reported code the heuristic still applies, and still errs.
+        let absent: Option<String> = None;
+        let (code, _) = match absent.as_deref() {
+            Some(c) if !c.trim().is_empty() => (c.trim().to_string(), capitalize(c.trim())),
+            _ => suggest_app_info("project-floci-ui-1", "floci/floci-ui"),
+        };
+        assert_eq!(code, "ui");
+    }
+
+    /// The aggregate a `health` command with `app_code: "all"` produces. The
+    /// project's own containers live in `containers[]`, which discovery did
+    /// not read at all — so a server whose only completed command was a health
+    /// check surfaced nothing but platform containers, which are then filtered
+    /// out. This is the path a client-attached server relies on.
+    #[test]
+    fn health_fallback_reads_project_containers() {
+        let result = json!({
+            "type": "all_health",
+            "deployment_hash": "deployment_abc",
+            "status": "ok",
+            "containers": [
+                {"app_code": "floci", "container_name": "project-app-1",
+                 "container_state": "running", "status": "ok"},
+                {"app_code": "floci-ui", "container_name": "project-floci-ui-1",
+                 "container_state": "running", "status": "ok"}
+            ],
+            "system_containers": [
+                {"app_code": "statuspanel", "container_name": "statuspanel",
+                 "container_state": "running", "status": "ok"}
+            ]
+        });
+
+        let found = container_infos_from_health(&result);
+        let names: Vec<&str> = found.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["project-app-1", "project-floci-ui-1", "statuspanel"],
+            "project containers must come through, not only platform ones"
+        );
+        assert_eq!(found[0].app_code.as_deref(), Some("floci"));
+        assert_eq!(found[0].status, "running");
+    }
+
+    /// A single-app health check describes one container in the report itself.
+    #[test]
+    fn health_fallback_reads_the_single_app_shape() {
+        let result = json!({
+            "type": "health",
+            "deployment_hash": "deployment_abc",
+            "app_code": "floci",
+            "container_state": "running"
+        });
+
+        let found = container_infos_from_health(&result);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "floci");
+        assert_eq!(found[0].app_code.as_deref(), Some("floci"));
+    }
+
+    /// A container already named by `containers[]` must not be added twice by
+    /// the single-app branch.
+    #[test]
+    fn health_fallback_does_not_duplicate() {
+        let result = json!({
+            "type": "all_health",
+            "app_code": "floci",
+            "containers": [{"app_code": "floci", "container_name": "floci",
+                            "container_state": "running"}]
+        });
+        assert_eq!(container_infos_from_health(&result).len(), 1);
+    }
+
+    /// Why the label is needed: the name heuristic splits on dashes and takes
+    /// the second-to-last segment, so both floci services get the wrong code.
+    #[test]
+    fn name_heuristic_is_wrong_for_compose_named_containers() {
+        assert_eq!(suggest_app_info("project-app-1", "floci/floci").0, "app");
+        assert_eq!(
+            suggest_app_info("project-floci-ui-1", "floci/floci-ui").0,
+            "ui"
+        );
+    }
 
     #[test]
     fn blocks_platform_managed_nginx_proxy_manager_container() {

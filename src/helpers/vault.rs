@@ -1,4 +1,5 @@
 use crate::configuration::VaultSettings;
+use reqwest::Certificate;
 use reqwest::Client;
 use reqwest::Identity;
 use serde_json::json;
@@ -36,6 +37,34 @@ impl VaultClient {
                     tracing::warn!("Failed to load mTLS identity for Vault client: {}", e);
                 }
             }
+        }
+        match &settings.ca_cert {
+            Some(ca_pem) => match Certificate::from_pem(ca_pem.as_bytes()) {
+                Ok(ca) => {
+                    client_builder = client_builder.add_root_certificate(ca);
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to load CA certificate for Vault client, falling back to the \
+                         system trust store — every Vault call will fail if Vault uses a \
+                         private CA: {}",
+                        e
+                    );
+                }
+            },
+            // Silence here is what made this expensive to find: a private-CA
+            // Vault over https with no CA configured fails every call with
+            // "unable to get local issuer certificate" and nothing ever says
+            // the CA was missing. Set VAULT_CACERT to the CA's PEM *contents*.
+            None if settings.address.starts_with("https://") => {
+                tracing::error!(
+                    "Vault address {} is https but no CA certificate is configured \
+                     (VAULT_CACERT unset or empty) — relying on the system trust store. \
+                     If Vault uses a private CA, every Vault call will fail TLS verification.",
+                    settings.address
+                );
+            }
+            None => {}
         }
         let client = client_builder.build().unwrap_or_else(|_| Client::new());
 
@@ -99,58 +128,6 @@ impl VaultClient {
             deployment_hash
         );
         Ok(())
-    }
-
-    /// Fetch agent token from Vault
-    #[tracing::instrument(name = "Fetch agent token from Vault", skip_all)]
-    pub async fn fetch_agent_token(&self, deployment_hash: &str) -> Result<String, String> {
-        let base = self.address.trim_end_matches('/');
-        let prefix = self.agent_path_prefix.trim_matches('/');
-        let api_prefix = self.api_prefix.trim_matches('/');
-        let path = if api_prefix.is_empty() {
-            format!("{}/{}/{}/token", base, prefix, deployment_hash)
-        } else {
-            format!(
-                "{}/{}/{}/{}/token",
-                base, api_prefix, prefix, deployment_hash
-            )
-        };
-
-        let response = self
-            .client
-            .get(&path)
-            .header("X-Vault-Token", &self.token)
-            .send()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to fetch token from Vault: {:?}", e);
-                format!("Vault fetch error: {}", e)
-            })?;
-
-        if response.status() == 404 {
-            return Err("Token not found in Vault".to_string());
-        }
-
-        let vault_response: serde_json::Value = response
-            .error_for_status()
-            .map_err(|e| {
-                tracing::error!("Vault returned error status: {:?}", e);
-                format!("Vault error: {}", e)
-            })?
-            .json()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to parse Vault response: {:?}", e);
-                format!("Vault parse error: {}", e)
-            })?;
-
-        vault_response["data"]["data"]["token"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| {
-                tracing::error!("Token not found in Vault response");
-                "Token not in Vault response".to_string()
-            })
     }
 
     /// Delete agent token from Vault
@@ -632,19 +609,6 @@ mod tests {
         }
     }
 
-    async fn mock_fetch(path: web::Path<(String, String)>) -> HttpResponse {
-        let (_prefix, deployment_hash) = path.into_inner();
-        let resp = json!({
-            "data": {
-                "data": {
-                    "token": "test-token-123",
-                    "deployment_hash": deployment_hash
-                }
-            }
-        });
-        HttpResponse::Ok().json(resp)
-    }
-
     async fn mock_delete() -> HttpResponse {
         HttpResponse::NoContent().finish()
     }
@@ -685,8 +649,18 @@ mod tests {
         HttpResponse::NotFound().finish()
     }
 
+    /// Vault KV v1 read where the install-service Ansible role wrote the
+    /// fields flat: `{"data": {"token": ..., "agent_id": ...}}`.
+
+    /// Vault KV v1 read where `store_agent_token` wrote the value, wrapping it
+    /// in a `{"data": {...}}` envelope that becomes the secret body itself.
+
     #[tokio::test]
-    async fn test_vault_client_store_fetch_delete() {
+    /// Store and delete only: Stacker no longer reads agent tokens back, and
+    /// `mock_store` rejects anything but `{data:{token, deployment_hash}}` —
+    /// which is the shape the agent's own reader expects, so this still pins
+    /// the write contract that matters.
+    async fn test_vault_client_store_and_delete_agent_token() {
         // Start mock Vault server
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind port");
         let port = listener.local_addr().unwrap().port();
@@ -699,11 +673,6 @@ mod tests {
                 .route(
                     "/v1/{prefix}/{deployment_hash}/token",
                     web::post().to(mock_store),
-                )
-                // GET /v1/{prefix}/{deployment_hash}/token
-                .route(
-                    "/v1/{prefix}/{deployment_hash}/token",
-                    web::get().to(mock_fetch),
                 )
                 // DELETE /v1/{prefix}/{deployment_hash}/token
                 .route(
@@ -726,6 +695,7 @@ mod tests {
             ssh_key_path_prefix: None,
             client_cert: None,
             client_key: None,
+            ca_cert: None,
         };
         let client = VaultClient::new(&settings);
         let dh = "dep_test_abc";
@@ -735,10 +705,6 @@ mod tests {
             .store_agent_token(dh, "test-token-123")
             .await
             .expect("store token");
-
-        // Fetch
-        let fetched = client.fetch_agent_token(dh).await.expect("fetch token");
-        assert_eq!(fetched, "test-token-123");
 
         // Delete
         client.delete_agent_token(dh).await.expect("delete token");
@@ -779,6 +745,7 @@ mod tests {
             ssh_key_path_prefix: None,
             client_cert: None,
             client_key: None,
+            ca_cert: None,
         };
         let client = VaultClient::new(&settings);
         let dh = "dep_runtime_test";
@@ -829,6 +796,7 @@ mod tests {
             ssh_key_path_prefix: None,
             client_cert: None,
             client_key: None,
+            ca_cert: None,
         };
         let client = VaultClient::new(&settings);
 
@@ -865,6 +833,7 @@ mod tests {
             ssh_key_path_prefix: None,
             client_cert: None,
             client_key: None,
+            ca_cert: None,
         };
         let client = VaultClient::new(&settings);
 

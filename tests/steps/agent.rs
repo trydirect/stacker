@@ -33,6 +33,7 @@ async fn register_agent_raw(world: &mut StepWorld, body: &serde_json::Value) {
     let resp = world
         .client
         .post(&url)
+        .header("X-Internal-Key", crate::steps::common::BDD_INTERNAL_KEY)
         .json(body)
         .send()
         .await

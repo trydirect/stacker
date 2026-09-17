@@ -154,6 +154,12 @@ jobs:
           command: build
           args: --release --bin server
 
+      - name: Build cleanup-notify (release)
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --bin cleanup-notify
+
       - name: Set up Node.js
         if: ${{ hashFiles('web/package.json') != '' }}
         uses: actions/setup-node@v4
@@ -187,6 +193,7 @@ jobs:
         run: |
           mkdir -p app/stacker/dist
           cp target/release/server app/stacker/server
+          cp target/release/cleanup-notify app/stacker/cleanup-notify
           if [ -d web/dist ]; then cp -a web/dist/. app/stacker; fi
           cp Dockerfile app/Dockerfile
           cp access_control.conf.dist app/access_control.conf.dist
@@ -249,7 +256,6 @@ jobs:
     name: StackerDB Docker
     runs-on: ubuntu-latest
     #runs-on: [self-hosted, linux]
-    needs: cicd-docker
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
@@ -270,11 +276,13 @@ jobs:
       - name: Set Docker tags
         id: stackerdb_tags
         run: |
+          echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+          echo "trydirect/stackerdb:build-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "trydirect/stackerdb:latest" >> "$GITHUB_OUTPUT"
           if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tags=trydirect/stackerdb:${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tags=trydirect/stackerdb:latest" >> "$GITHUB_OUTPUT"
+            echo "trydirect/stackerdb:${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           fi
+          echo "EOF" >> "$GITHUB_OUTPUT"
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -282,3 +290,5 @@ jobs:
           file: ./stackerdb/Dockerfile
           push: true
           tags: ${{ steps.stackerdb_tags.outputs.tags }}
+          cache-from: type=gha,scope=stackerdb
+          cache-to: type=gha,mode=max,scope=stackerdb

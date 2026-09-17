@@ -695,6 +695,37 @@ fn resolve_compose_cmd(executor: &dyn CommandExecutor) -> (&'static str, Vec<&'s
     ("docker-compose", vec![])
 }
 
+/// Pre-flight: verify the Docker daemon is actually reachable before running
+/// `docker compose`. When the daemon is down, compose emits cryptic errors such
+/// as `unexpected end of JSON input` or `Cannot connect to the Docker daemon`,
+/// which look like a project/config bug rather than "start Docker". `docker
+/// compose version` (see `resolve_compose_cmd`) only checks the client, so it
+/// succeeds even with the daemon stopped — `docker info` is the daemon probe.
+/// See GH issue #212.
+fn ensure_docker_daemon_running(executor: &dyn CommandExecutor) -> Result<(), CliError> {
+    match executor.execute("docker", &["info", "--format", "{{.ServerVersion}}"]) {
+        // `docker info` exits 0 only when the daemon is reachable; it exits
+        // non-zero when the daemon is stopped/unreachable.
+        Ok(out) if out.success() => Ok(()),
+        // Non-zero exit (daemon down) or spawn error (`docker` not installed) —
+        // both mean there is no usable container runtime.
+        _ => Err(CliError::ContainerRuntimeUnavailable),
+    }
+}
+
+/// Heuristic: does this `docker compose` stderr indicate the daemon is down
+/// rather than a genuine build/config failure? Used as a fallback so a daemon
+/// that dies mid-deploy (after the pre-flight passed) still maps to the clear
+/// `ContainerRuntimeUnavailable` message. See GH issue #212.
+fn stderr_indicates_daemon_down(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    s.contains("cannot connect to the docker daemon")
+        || s.contains("is the docker daemon running")
+        || s.contains("unexpected end of json input")
+        || s.contains("error during connect")
+        || s.contains("the docker daemon is not running")
+}
+
 /// Compose project name for local deploys, derived from the project's own
 /// identity rather than left to Compose's default (the containing
 /// directory's basename). Every project's generated compose file lives
@@ -740,6 +771,12 @@ impl DeployStrategy for LocalDeploy {
                 server_name: None,
             });
         }
+
+        // Pre-flight: the Docker daemon must be reachable. Without this, a
+        // stopped daemon surfaces as a cryptic `docker compose` error
+        // (`unexpected end of JSON input`) that looks like a project bug.
+        // See GH issue #212.
+        ensure_docker_daemon_running(executor)?;
 
         let compose_path = context.compose_path.to_string_lossy().to_string();
         let project_name = local_compose_project_name(config);
@@ -790,6 +827,11 @@ impl DeployStrategy for LocalDeploy {
         }
 
         if !output.success() {
+            // A daemon that died after the pre-flight passed still yields a
+            // cryptic compose error — map it to the clear runtime message.
+            if stderr_indicates_daemon_down(&output.stderr) {
+                return Err(CliError::ContainerRuntimeUnavailable);
+            }
             return Err(CliError::DeployFailed {
                 target: DeployTarget::Local,
                 reason: format!("docker compose failed: {}", output.stderr.trim()),
@@ -2523,34 +2565,22 @@ impl DeployStrategy for ServerDeploy {
         &self,
         config: &StackerConfig,
         context: &DeployContext,
-        executor: &dyn CommandExecutor,
+        _executor: &dyn CommandExecutor,
     ) -> Result<DeployResult, CliError> {
+        // Dry-run must not have side effects: the real (non-dry-run) path
+        // below never touches Docker at all — it deploys either via a direct
+        // SSH/rsync flow (`deploy_to_intranet_server`) or via HTTP calls to
+        // the Stacker API (`StackerClient`). Previously this branch ran a
+        // real `docker` invocation of the `trydirect/install-service`
+        // container in "Plan" mode, which is a genuinely different (and
+        // unavailable — the image doesn't resolve on Docker Hub) code path
+        // from what actually deploys. See GH issue #238.
         if context.dry_run {
-            let action = InstallAction::Plan;
-            let cmd = InstallContainerCommand::from_config(config, context, action);
-            let args = cmd.build_args();
-            let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-
-            let output = executor.execute("docker", &args_refs)?;
-
-            if !output.success() {
-                let mut reason = format!("Server deployment failed: {}", output.stderr.trim());
-                let port_hints = detect_port_conflicts_in_output(&output.stderr, &output.stdout);
-                if !port_hints.is_empty() {
-                    reason.push_str("\n\nPort conflict details:\n  • ");
-                    reason.push_str(&port_hints.join("\n  • "));
-                }
-                return Err(CliError::DeployFailed {
-                    target: DeployTarget::Server,
-                    reason,
-                });
-            }
-
             let server_host = config.deploy.server.as_ref().map(|s| s.host.clone());
 
             return Ok(DeployResult {
                 target: DeployTarget::Server,
-                message: "Server deployment plan completed".to_string(),
+                message: "Server deployment previewed successfully (dry-run)".to_string(),
                 server_ip: server_host,
                 deployment_id: None,
                 project_id: None,
@@ -2876,6 +2906,10 @@ mod tests {
         exit_code: i32,
         stdout: String,
         stderr: String,
+        /// Overrides the exit code for `docker info ...` specifically, so a test
+        /// can model "daemon is up but compose fails" independently of the
+        /// global `exit_code`. `None` ⇒ use `exit_code`.
+        info_exit_code: Option<i32>,
     }
 
     impl MockExecutor {
@@ -2885,6 +2919,7 @@ mod tests {
                 exit_code: 0,
                 stdout: String::new(),
                 stderr: String::new(),
+                info_exit_code: None,
             }
         }
 
@@ -2895,6 +2930,7 @@ mod tests {
                 exit_code: 0,
                 stdout: stdout.to_string(),
                 stderr: String::new(),
+                info_exit_code: None,
             }
         }
 
@@ -2904,7 +2940,16 @@ mod tests {
                 exit_code: 1,
                 stdout: String::new(),
                 stderr: stderr.to_string(),
+                info_exit_code: None,
             }
+        }
+
+        /// Force the `docker info` daemon probe to succeed regardless of the
+        /// global exit code — models a running daemon whose later compose
+        /// command still fails.
+        fn with_docker_info_ok(mut self) -> Self {
+            self.info_exit_code = Some(0);
+            self
         }
 
         fn last_call(&self) -> (String, Vec<String>) {
@@ -2923,8 +2968,15 @@ mod tests {
                 args.iter().map(|s| s.to_string()).collect(),
             ));
 
+            // Let the daemon probe (`docker info ...`) be controlled separately.
+            let is_docker_info = program == "docker" && args.first() == Some(&"info");
+            let exit_code = match (is_docker_info, self.info_exit_code) {
+                (true, Some(code)) => code,
+                _ => self.exit_code,
+            };
+
             Ok(CommandOutput {
-                exit_code: self.exit_code,
+                exit_code,
                 stdout: self.stdout.clone(),
                 stderr: self.stderr.clone(),
             })
@@ -3526,11 +3578,118 @@ mod tests {
     fn test_local_deploy_failure() {
         let config = ConfigBuilder::new().name("local-app").build().unwrap();
         let context = sample_context(false);
-        let executor = MockExecutor::failure("service failed to start");
+        // Daemon is up; the compose command itself fails.
+        let executor = MockExecutor::failure("service failed to start").with_docker_info_ok();
         let strategy = LocalDeploy;
 
         let result = strategy.deploy(&config, &context, &executor);
-        assert!(result.is_err());
+        assert!(matches!(result, Err(CliError::DeployFailed { .. })));
+    }
+
+    // ── GH issue #212: clear error when the Docker daemon is not running ──
+
+    #[test]
+    fn test_ensure_docker_daemon_running_ok_when_info_succeeds() {
+        let executor = MockExecutor::success();
+        assert!(ensure_docker_daemon_running(&executor).is_ok());
+        let (program, args) = executor.last_call();
+        assert_eq!(program, "docker");
+        assert_eq!(args.first().map(String::as_str), Some("info"));
+    }
+
+    #[test]
+    fn test_ensure_docker_daemon_running_errors_when_info_fails() {
+        let executor = MockExecutor::failure("Cannot connect to the Docker daemon");
+        assert!(matches!(
+            ensure_docker_daemon_running(&executor),
+            Err(CliError::ContainerRuntimeUnavailable)
+        ));
+    }
+
+    #[test]
+    fn test_local_deploy_aborts_with_clear_error_when_daemon_down() {
+        let config = ConfigBuilder::new().name("local-app").build().unwrap();
+        let context = sample_context(false);
+        // Global failure ⇒ `docker info` also fails ⇒ daemon considered down.
+        let executor = MockExecutor::failure(
+            "unable to get image 'postgres:16-alpine': unexpected end of JSON input",
+        );
+        let strategy = LocalDeploy;
+
+        let result = strategy.deploy(&config, &context, &executor);
+        assert!(
+            matches!(result, Err(CliError::ContainerRuntimeUnavailable)),
+            "daemon-down local deploy should return the clear runtime error, got: {result:?}"
+        );
+
+        // The daemon probe must run before any `compose up`.
+        let calls = executor.recorded_calls.lock().unwrap();
+        let info_idx = calls
+            .iter()
+            .position(|(p, a)| p == "docker" && a.first().map(String::as_str) == Some("info"));
+        assert!(
+            info_idx.is_some(),
+            "expected a `docker info` pre-flight probe"
+        );
+        let up_idx = calls.iter().position(|(_, a)| a.iter().any(|x| x == "up"));
+        if let (Some(i), Some(u)) = (info_idx, up_idx) {
+            assert!(i < u, "daemon probe must precede `compose up`");
+        }
+    }
+
+    // ── GH issue #238: server --dry-run must not touch Docker ──
+
+    #[test]
+    fn test_server_deploy_dry_run_does_not_invoke_docker() {
+        let config = sample_server_config();
+        let context = sample_context(true);
+        // If dry-run touches Docker at all, this failing executor will
+        // surface as a DeployFailed error instead of a clean plan result.
+        let executor = MockExecutor::failure(
+            "Unable to find image 'trydirect/install-service:latest' locally",
+        );
+        let strategy = ServerDeploy;
+
+        let result = strategy.deploy(&config, &context, &executor);
+        assert!(
+            result.is_ok(),
+            "server dry-run must not depend on Docker/install-service being available: {result:?}"
+        );
+
+        let calls = executor.recorded_calls.lock().unwrap();
+        assert!(
+            calls.is_empty(),
+            "server dry-run must not execute any external command, ran: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn test_server_deploy_dry_run_reports_server_host() {
+        let config = sample_server_config();
+        let context = sample_context(true);
+        let executor = MockExecutor::success();
+        let strategy = ServerDeploy;
+
+        let result = strategy.deploy(&config, &context, &executor).unwrap();
+        assert_eq!(result.target, DeployTarget::Server);
+        assert_eq!(result.server_ip.as_deref(), Some("192.168.1.100"));
+    }
+
+    #[test]
+    fn test_stderr_indicates_daemon_down() {
+        assert!(stderr_indicates_daemon_down(
+            "unable to get image 'postgres:16-alpine': unexpected end of JSON input"
+        ));
+        assert!(stderr_indicates_daemon_down(
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"
+        ));
+        assert!(stderr_indicates_daemon_down(
+            "error during connect: Get \"http://...\": EOF"
+        ));
+        assert!(!stderr_indicates_daemon_down(
+            "service 'db' failed to build"
+        ));
+        assert!(!stderr_indicates_daemon_down("port is already allocated"));
     }
 
     #[test]

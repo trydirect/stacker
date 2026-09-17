@@ -206,6 +206,38 @@ impl Into<CloudForm> for models::Cloud {
 }
 
 #[cfg(test)]
+mod cloud_form_owner_tests {
+    use super::*;
+
+    fn form(user_id: Option<String>) -> CloudForm {
+        let mut f = CloudForm::default();
+        f.provider = "htz".to_string();
+        f.user_id = user_id;
+        f.save_token = Some(true);
+        f.cloud_token = Some("tok".to_string());
+        f
+    }
+
+    #[test]
+    fn into_cloud_uses_the_form_owner() {
+        // routes::cloud::update must set user_id before converting, because the
+        // Into impl unwraps it.
+        let f = form(Some("user-123".to_string()));
+        let cloud: models::Cloud = (&f).into();
+        assert_eq!(cloud.user_id, "user-123");
+    }
+
+    #[test]
+    #[should_panic]
+    fn into_cloud_without_an_owner_panics() {
+        // Documents the sharp edge that produced a 500 on PUT /cloud/{id}:
+        // a body with no user_id panics rather than erroring.
+        let f = form(None);
+        let _: models::Cloud = (&f).into();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

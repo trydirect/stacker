@@ -2997,7 +2997,9 @@ mod selectable_operation_tests {
         assert_eq!(retry.backoff_max_ms, 30_000); // default
         assert_eq!(
             cfg.on_failure,
-            Some(crate::models::pipe_config::HandlerRef::Pipe("oncall".into()))
+            Some(crate::models::pipe_config::HandlerRef::Pipe(
+                "oncall".into()
+            ))
         );
         // And it merges into an existing config without clobbering other keys.
         let merged = cfg.merge_into(Some(json!({ "retry_count": 3, "matching_mode": "manual" })));
@@ -4566,7 +4568,10 @@ impl CallableTrait for PipeDiffCommand {
                 PipeAction::Create => println!("  + {}  (create)", e.name),
                 PipeAction::Unchanged => println!("  = {}  (unchanged)", e.name),
                 PipeAction::Orphan => {
-                    println!("  - {}  (deployed but not declared; `apply --prune` to remove)", e.name)
+                    println!(
+                        "  - {}  (deployed but not declared; `apply --prune` to remove)",
+                        e.name
+                    )
                 }
                 PipeAction::Update { changes } => {
                     println!("  ~ {}  (update)", e.name);
@@ -4699,8 +4704,8 @@ impl CallableTrait for PipeApplyCommand {
                             config: Some(config_value),
                             is_public: Some(false),
                         };
-                    let template = ctx
-                        .block_on(ctx.client.create_pipe_template(&template_request))?;
+                    let template =
+                        ctx.block_on(ctx.client.create_pipe_template(&template_request))?;
 
                     // 2. Instance binds the template to this deployment's containers.
                     let instance_request =
@@ -4780,7 +4785,11 @@ impl CallableTrait for PipeApplyCommand {
             pruned.len(),
             skipped_update.len(),
             skipped_orphan.len(),
-            if self.dry_run { "  (dry-run — nothing applied)" } else { "" }
+            if self.dry_run {
+                "  (dry-run — nothing applied)"
+            } else {
+                ""
+            }
         );
         Ok(())
     }

@@ -493,6 +493,10 @@ pub struct VaultSettings {
     /// Read from VAULT_CLIENT_KEY env var.
     #[serde(default)]
     pub client_key: Option<String>,
+    /// CA certificate PEM for verifying the Vault server certificate.
+    /// Read from VAULT_CACERT env var.
+    #[serde(default)]
+    pub ca_cert: Option<String>,
 }
 
 impl std::fmt::Debug for VaultSettings {
@@ -511,6 +515,7 @@ impl std::fmt::Debug for VaultSettings {
                 "client_key",
                 &self.client_key.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("ca_cert", &self.ca_cert.as_ref().map(|_| "[REDACTED]"))
             .finish()
     }
 }
@@ -525,6 +530,7 @@ impl Default for VaultSettings {
             ssh_key_path_prefix: Some("users".to_string()),
             client_cert: None,
             client_key: None,
+            ca_cert: None,
         }
     }
 }
@@ -548,6 +554,7 @@ impl VaultSettings {
         );
         let client_cert = std::env::var("VAULT_CLIENT_CERT").ok().or(self.client_cert);
         let client_key = std::env::var("VAULT_CLIENT_KEY").ok().or(self.client_key);
+        let ca_cert = std::env::var("VAULT_CACERT").ok().or(self.ca_cert);
 
         VaultSettings {
             address,
@@ -557,6 +564,7 @@ impl VaultSettings {
             ssh_key_path_prefix: Some(ssh_key_path_prefix),
             client_cert,
             client_key,
+            ca_cert,
         }
     }
 }

@@ -35,7 +35,7 @@ fn store_template_id(world: &mut StepWorld) {
     }
 }
 
-fn template_create_body(slug: &str) -> serde_json::Value {
+fn template_create_body(slug: &str, source_project_id: i32) -> serde_json::Value {
     json!({
         "name": format!("BDD Test Template {}", slug),
         "slug": slug,
@@ -54,22 +54,59 @@ fn template_create_body(slug: &str) -> serde_json::Value {
             }
         },
         "definition_format": "yaml",
-        "plan_type": "free"
+        "plan_type": "free",
+        "source_project_id": source_project_id
     })
+}
+
+/// Seed a project with a successful ("running") deployment and return its
+/// id, so BDD-created templates satisfy the submit/resubmit deployment gate
+/// (`ensure_has_successful_deployment` in `routes/marketplace/creator.rs`) —
+/// a template can't be submitted for review without one.
+async fn seed_source_project(world: &StepWorld) -> i32 {
+    let pool = world.db_pool.as_ref().expect("no db_pool");
+    let deployment_hash = format!("bdd-marketplace-src-{}", uuid::Uuid::new_v4());
+    let proj_name = format!("bdd-marketplace-src-{}", uuid::Uuid::new_v4());
+
+    let project_id: i32 = sqlx::query_scalar(
+        r#"INSERT INTO project (stack_id, user_id, name, metadata, request_json, created_at, updated_at)
+           VALUES (gen_random_uuid(), $1, $2, '{}'::json, '{}'::json, NOW(), NOW())
+           RETURNING id"#,
+    )
+    .bind(super::common::USER_A_ID)
+    .bind(&proj_name)
+    .fetch_one(pool)
+    .await
+    .expect("Failed to seed source project for marketplace template");
+
+    sqlx::query(
+        r#"INSERT INTO deployment (project_id, deployment_hash, user_id, metadata, status, runtime, created_at, updated_at)
+           VALUES ($1, $2, $3, '{}'::jsonb, 'running', 'runc', NOW(), NOW())"#,
+    )
+    .bind(project_id)
+    .bind(&deployment_hash)
+    .bind(super::common::USER_A_ID)
+    .execute(pool)
+    .await
+    .expect("Failed to seed source deployment for marketplace template");
+
+    project_id
 }
 
 // ─── Creator steps ───
 
 #[when(regex = r#"^I create a marketplace template with slug "([^"]+)"$"#)]
 async fn create_template(world: &mut StepWorld, slug: String) {
-    let body = template_create_body(&slug);
+    let source_project_id = seed_source_project(world).await;
+    let body = template_create_body(&slug, source_project_id);
     world.post_json("/api/templates", &body).await;
     store_template_id(world);
 }
 
 #[given(regex = r#"^I have created a marketplace template with slug "([^"]+)"$"#)]
 async fn given_created_template(world: &mut StepWorld, slug: String) {
-    let body = template_create_body(&slug);
+    let source_project_id = seed_source_project(world).await;
+    let body = template_create_body(&slug, source_project_id);
     world.post_json("/api/templates", &body).await;
     store_template_id(world);
 }
@@ -319,9 +356,9 @@ async fn given_template_has_usage_metrics(world: &mut StepWorld) {
     let _ = sqlx::query(
         r#"INSERT INTO marketplace_template_event 
            (template_id, event_type, user_id, created_at)
-           VALUES ($1, 'view', 'viewer-1', NOW() - INTERVAL '5 days'),
-                  ($1, 'view', 'viewer-2', NOW() - INTERVAL '3 days'),
-                  ($1, 'view', 'viewer-3', NOW() - INTERVAL '1 day')"#,
+           VALUES ($1::uuid, 'view', 'viewer-1', NOW() - INTERVAL '5 days'),
+                  ($1::uuid, 'view', 'viewer-2', NOW() - INTERVAL '3 days'),
+                  ($1::uuid, 'view', 'viewer-3', NOW() - INTERVAL '1 day')"#,
     )
     .bind(&template_id)
     .execute(pool)
@@ -331,8 +368,8 @@ async fn given_template_has_usage_metrics(world: &mut StepWorld) {
     let _ = sqlx::query(
         r#"INSERT INTO marketplace_template_event 
            (template_id, event_type, user_id, cloud_provider, created_at)
-           VALUES ($1, 'deploy', 'deployer-1', 'hetzner', NOW() - INTERVAL '4 days'),
-                  ($1, 'deploy', 'deployer-2', 'digitalocean', NOW() - INTERVAL '2 days')"#,
+           VALUES ($1::uuid, 'deploy', 'deployer-1', 'hetzner', NOW() - INTERVAL '4 days'),
+                  ($1::uuid, 'deploy', 'deployer-2', 'digitalocean', NOW() - INTERVAL '2 days')"#,
     )
     .bind(&template_id)
     .execute(pool)
@@ -353,8 +390,8 @@ async fn given_template_has_usage_events_across_periods(world: &mut StepWorld) {
     let _ = sqlx::query(
         r#"INSERT INTO marketplace_template_event 
            (template_id, event_type, user_id, created_at)
-           VALUES ($1, 'view', 'viewer-recent-1', NOW() - INTERVAL '2 days'),
-                  ($1, 'view', 'viewer-recent-2', NOW() - INTERVAL '5 days')"#,
+           VALUES ($1::uuid, 'view', 'viewer-recent-1', NOW() - INTERVAL '2 days'),
+                  ($1::uuid, 'view', 'viewer-recent-2', NOW() - INTERVAL '5 days')"#,
     )
     .bind(&template_id)
     .execute(pool)
@@ -364,8 +401,8 @@ async fn given_template_has_usage_events_across_periods(world: &mut StepWorld) {
     let _ = sqlx::query(
         r#"INSERT INTO marketplace_template_event 
            (template_id, event_type, user_id, created_at)
-           VALUES ($1, 'view', 'viewer-old-1', NOW() - INTERVAL '15 days'),
-                  ($1, 'view', 'viewer-old-2', NOW() - INTERVAL '25 days')"#,
+           VALUES ($1::uuid, 'view', 'viewer-old-1', NOW() - INTERVAL '15 days'),
+                  ($1::uuid, 'view', 'viewer-old-2', NOW() - INTERVAL '25 days')"#,
     )
     .bind(&template_id)
     .execute(pool)

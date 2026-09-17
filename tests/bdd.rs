@@ -1,3 +1,6 @@
+#[path = "vault_kv_mock.rs"]
+mod vault_kv_mock;
+
 mod steps;
 
 use cucumber::World as _;

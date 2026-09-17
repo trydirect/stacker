@@ -132,10 +132,7 @@ impl CallableTrait for MonitorCommand {
                             eprintln!("  alert dispatch error: {e}");
                         }
                     } else {
-                        println!(
-                            "· {} container(s), all healthy",
-                            snapshot.len()
-                        );
+                        println!("· {} container(s), all healthy", snapshot.len());
                     }
                     // Persist the *current* health as the new baseline.
                     write_state(WatchState::from(health_monitor::evaluate(&snapshot)));

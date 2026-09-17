@@ -81,6 +81,7 @@ struct ValidateOk {
     name: String,
     version: Option<String>,
     composition: Composition,
+    config_contract: crate::cli::config_parser::ConfigContract,
 }
 
 #[derive(Debug, Serialize)]
@@ -170,6 +171,7 @@ async fn validate(body: String) -> impl Responder {
         name: config.name.clone(),
         version: config.version.clone(),
         composition: compose_from(&config),
+        config_contract: config.config_contract.clone(),
     })
 }
 

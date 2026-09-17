@@ -1,7 +1,10 @@
 pub mod agent_capabilities;
 pub mod agent_client;
+pub mod agent_token;
+pub mod chat;
 pub mod client;
 pub mod db_pools;
+pub mod internal_key;
 pub(crate) mod json;
 pub mod mq_manager;
 pub mod project;
@@ -33,4 +36,6 @@ pub mod audit_cache;
 pub mod bake;
 pub mod bake_registry;
 pub mod cloud_init;
+pub mod compose_yaml;
+pub mod field_policy_backfill;
 pub mod rate_limit;

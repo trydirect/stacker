@@ -783,32 +783,7 @@ fn should_redact_env_var(name: &str, secure_keys: &HashSet<String>) -> bool {
 }
 
 fn is_sensitive_env_var_name(name: &str) -> bool {
-    // Note: bare "key" is intentionally excluded — it's too broad and false-positives
-    // on benign names like "VISIBLE_KEY" or "PUBLIC_KEY_ID". "api_key"/"apikey" already
-    // cover the common secret-key naming conventions.
-    const SENSITIVE_PATTERNS: &[&str] = &[
-        "password",
-        "passwd",
-        "username",
-        "secret",
-        "token",
-        "auth",
-        "credential",
-        "api_key",
-        "apikey",
-        "access_key",
-        "private",
-        "cert",
-        "jwt",
-        "bearer",
-        "access_token",
-        "refresh_token",
-    ];
-
-    let key_lower = name.to_lowercase();
-    SENSITIVE_PATTERNS
-        .iter()
-        .any(|pattern| key_lower.contains(pattern))
+    crate::helpers::redact::is_sensitive_env_key(name)
 }
 
 fn normalize_environment_object(env: &Value) -> Map<String, Value> {

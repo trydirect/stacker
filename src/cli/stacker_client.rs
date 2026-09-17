@@ -987,6 +987,47 @@ impl StackerClient {
         })
     }
 
+    /// Synchronize project configuration without creating a deployment or
+    /// contacting the target server.
+    pub async fn sync_project(
+        &self,
+        project_id: i32,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value, CliError> {
+        let resp = self
+            .send_project_request(
+                reqwest::Method::PUT,
+                &format!("/{project_id}/sync"),
+                Some(&body),
+                "PUT /project/{id}/sync",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: stacker_api_failure(
+                    &format!("PUT /project/{project_id}/sync"),
+                    status,
+                    &body,
+                ),
+            });
+        }
+
+        let api: ApiResponse<serde_json::Value> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: self.target.clone(),
+            reason: "Stacker server synchronized project but returned no result".to_string(),
+        })
+    }
+
     // ── Cloud credentials ────────────────────────────
 
     /// List all saved cloud credentials for the authenticated user.
@@ -2742,6 +2783,48 @@ impl StackerClient {
     /// Fetch the snapshot for the most recently active agent in a project.
     /// Returns `(snapshot_json, deployment_hash)` so the caller can use the hash
     /// for subsequent agent commands.
+    /// Reissue the agent's bearer token for a deployment.
+    ///
+    /// The token itself is not returned: the agent's only source is Vault, and
+    /// it adopts the new value on its next refresh, about a minute later.
+    pub async fn rotate_agent_token(
+        &self,
+        deployment_hash: &str,
+    ) -> Result<serde_json::Value, CliError> {
+        let url = format!(
+            "{}/api/v1/agent/rotate-token/{}",
+            self.base_url, deployment_hash
+        );
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: stacker_api_failure(
+                    &format!("POST /api/v1/agent/rotate-token/{deployment_hash}"),
+                    status,
+                    &body,
+                ),
+            });
+        }
+
+        resp.json().await.map_err(|e| CliError::AgentCommandFailed {
+            command_id: String::new(),
+            error: format!("Invalid rotate-token response: {}", e),
+        })
+    }
+
     pub async fn agent_snapshot_by_project(
         &self,
         project_id: i32,
@@ -3117,13 +3200,15 @@ impl StackerClient {
         }
         let status_code = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
-        Err(CliError::ConfigValidation(stacker_api_failure_with_message(
-            "Delete pipe template failed",
-            &format!("DELETE /api/v1/pipes/templates/{template_id}"),
-            status_code,
-            &body,
-            cli_debug_enabled(),
-        )))
+        Err(CliError::ConfigValidation(
+            stacker_api_failure_with_message(
+                "Delete pipe template failed",
+                &format!("DELETE /api/v1/pipes/templates/{template_id}"),
+                status_code,
+                &body,
+                cli_debug_enabled(),
+            ),
+        ))
     }
 
     /// Delete a pipe instance. `DELETE /api/v1/pipes/instances/{id}`.
@@ -3144,13 +3229,15 @@ impl StackerClient {
         }
         let status_code = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
-        Err(CliError::ConfigValidation(stacker_api_failure_with_message(
-            "Delete pipe instance failed",
-            &format!("DELETE /api/v1/pipes/instances/{instance_id}"),
-            status_code,
-            &body,
-            cli_debug_enabled(),
-        )))
+        Err(CliError::ConfigValidation(
+            stacker_api_failure_with_message(
+                "Delete pipe instance failed",
+                &format!("DELETE /api/v1/pipes/instances/{instance_id}"),
+                status_code,
+                &body,
+                cli_debug_enabled(),
+            ),
+        ))
     }
 
     /// List pipe templates visible to the current user.
@@ -4329,43 +4416,14 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
         }
     }
 
-    // If the user specified deploy.cloud.ssh_key, read the corresponding
-    // public key (.pub file) so the Install Service can install it alongside
-    // the Vault-managed key on the cloud VM.
-    if let Some(cloud_cfg) = config.deploy.cloud.as_ref() {
-        if let Some(ssh_key_path) = cloud_cfg.ssh_key.as_ref() {
-            let resolved = crate::cli::install_runner::resolve_ssh_key_path(ssh_key_path);
-            let pub_path = std::path::PathBuf::from(format!("{}.pub", resolved.display()));
-            match std::fs::read_to_string(&pub_path) {
-                Ok(pub_key) => {
-                    let pub_key = pub_key.trim().to_string();
-                    if !pub_key.is_empty() {
-                        if let Some(server_obj) =
-                            form.get_mut("server").and_then(|v| v.as_object_mut())
-                        {
-                            server_obj.insert(
-                                "additional_public_keys".to_string(),
-                                serde_json::json!([pub_key]),
-                            );
-                        }
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    eprintln!(
-                        "  note: SSH public key not found at {} — skipping user key installation",
-                        pub_path.display()
-                    );
-                }
-                Err(e) => {
-                    eprintln!(
-                        "  warning: could not read SSH public key {}: {}",
-                        pub_path.display(),
-                        e
-                    );
-                }
-            }
-        }
-    }
+    // deploy.cloud.ssh_key is NOT sent in the deploy form. It used to be passed
+    // as server.additional_public_keys and newline-joined into
+    // server.public_key, which is single-valued downstream (one provider
+    // ssh_key object, one TF_VAR_public_key_content) — the list collapsed onto
+    // one authorized_keys line and only the first key stayed usable. The key is
+    // now authorized after deploy, one call per key, via
+    // POST /server/{id}/ssh-key/authorize-public-key. See
+    // DeployCommand::authorize_configured_user_key.
 
     if let Some(cloud_cfg) = config.deploy.cloud.as_ref() {
         if !cloud_cfg.public_ports.is_empty() {

@@ -1088,7 +1088,10 @@ pub fn run_validate(
         };
         match &issue.field {
             Some(field) => {
-                format!("[{}] {} ({}): {}", issue.code, severity, field, issue.message)
+                format!(
+                    "[{}] {} ({}): {}",
+                    issue.code, severity, field, issue.message
+                )
             }
             None => format!("[{}] {}: {}", issue.code, severity, issue.message),
         }

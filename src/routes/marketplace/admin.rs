@@ -472,6 +472,73 @@ pub async fn security_scan_handler(
         .ok("Security scan completed"))
 }
 
+/// Re-scan an already-published template for `config_contract` field-policy
+/// completeness. Unlike the publish-time gate in `creator.rs`
+/// (`ensure_contract_declares_generated_secrets`), this never blocks —
+/// legacy templates approved before the field-policy feature existed have
+/// no way to satisfy it retroactively without a new version. Instead it
+/// flags the gap via `verifications.secrets_manifest_generated` so it's
+/// visible in admin review, and reports exactly which fields are missing a
+/// `mutability: generated` policy.
+#[tracing::instrument(name = "Detect secrets in template (admin)", skip_all)]
+#[post("/{id}/detect-secrets")]
+pub async fn detect_secrets_handler(
+    _admin: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    let versions = db::marketplace::list_versions_by_template(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    let latest = versions
+        .iter()
+        .find(|v| v.is_latest == Some(true))
+        .or_else(|| versions.first())
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build()
+                .bad_request("No versions found for this template")
+        })?;
+
+    let config_contract = db::marketplace::get_config_contract(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    let missing_fields = crate::routes::marketplace::creator::missing_generated_secret_fields(
+        &latest.stack_definition,
+        latest.definition_format.as_deref(),
+        &config_contract,
+    );
+    let complete = missing_fields.is_empty();
+
+    if let Err(e) = db::marketplace::update_verifications(
+        pg_pool.get_ref(),
+        &id,
+        serde_json::json!({ "secrets_manifest_generated": complete }),
+    )
+    .await
+    {
+        tracing::warn!(
+            "Failed to set secrets_manifest_generated verification: {}",
+            e
+        );
+    }
+
+    let result = serde_json::json!({
+        "template_id": id,
+        "version": latest.version,
+        "secrets_manifest_generated": complete,
+        "missing_generated_secret_fields": missing_fields,
+    });
+
+    Ok(JsonResponse::<serde_json::Value>::build()
+        .set_item(result)
+        .ok("Secret-field detection completed"))
+}
+
 #[tracing::instrument(name = "List available plans from User Service", skip_all)]
 #[get("/plans")]
 pub async fn list_plans_handler(

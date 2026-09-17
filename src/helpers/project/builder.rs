@@ -288,6 +288,9 @@ impl DcBuilder {
         let target_file = std::path::Path::new(fname.as_str());
         let serialized = serde_yaml::to_string(&compose_content)
             .map_err(|err| format!("Failed to serialize docker-compose file: {}", err))?;
+        // See helpers::compose_yaml — serde_yaml emits `2222:22` unquoted and
+        // Docker's YAML 1.1 reader turns it into the integer 133342.
+        let serialized = crate::helpers::compose_yaml::quote_port_entries(&serialized);
 
         if let Some(parent) = target_file.parent() {
             std::fs::create_dir_all(parent)
@@ -470,5 +473,6 @@ pub fn generate_single_app_compose(
     };
 
     serde_yaml::to_string(&compose)
+        .map(|yaml| crate::helpers::compose_yaml::quote_port_entries(&yaml))
         .map_err(|err| format!("Failed to serialize docker-compose: {}", err))
 }

@@ -717,6 +717,20 @@ fn default_ssh_port() -> u16 {
     22
 }
 
+impl Default for ServerConfig {
+    /// An empty-host skeleton with the same field defaults serde applies
+    /// (`user = root`, `port = 22`). Used when building a server config from
+    /// CLI flags (`--server-host/--server-user/--server-ssh-key`).
+    fn default() -> Self {
+        Self {
+            host: String::new(),
+            user: default_ssh_user(),
+            ssh_key: None,
+            port: default_ssh_port(),
+        }
+    }
+}
+
 /// Default AI request timeout in seconds.
 fn default_ai_timeout() -> u64 {
     300
@@ -812,7 +826,6 @@ fn default_notify_method_alert() -> String {
     "POST".to_string()
 }
 
-
 fn default_alert_interval() -> u64 {
     60
 }
@@ -880,21 +893,385 @@ pub struct ProjectConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigContract {
     #[serde(default)]
     pub services: BTreeMap<String, TargetConfigContract>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// Who controls a declared field's final value at install time.
+///
+/// Mirrors `shared-fixtures/api-contracts/marketplace-field-policy.json`
+/// (`stacker/tests/contracts/marketplace-field-policy.contract.json`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mutability {
+    /// Author's value is baked in; never exposed to an installer.
+    Fixed,
+    /// Author's value is only a default; an installer's override can replace it.
+    Editable,
+    /// The installer must provide the value; the author's value is never shipped.
+    Provided,
+    /// The system produces a fresh value per install; the installer never enters it.
+    Generated,
+}
+
+/// Generator/validation shape for a field's value, selected via `type:`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldType {
+    Hex,
+    Base64,
+    Alphanumeric,
+    Uuid,
+    Enum,
+    DerivedJwt,
+}
+
+/// UI rendering hint for a field, selected via `display:`.
+///
+/// When present, tells the frontend which input widget to render.
+/// Independent from `FieldType` — a field can have both a generation
+/// type (`type: base64`) and a display hint (`display: password`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayType {
+    Boolean,
+    String,
+    Number,
+    Password,
+}
+
+/// Declared policy for one `config_contract.services.<service>.fields.<NAME>` entry.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FieldPolicy {
+    pub mutability: Mutability,
+    pub required: bool,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub type_spec: Option<FieldType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display: Option<DisplayType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub length: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signing_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claims: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alg: Option<String>,
+}
+
+fn default_field_required() -> bool {
+    true
+}
+
+/// Wire shape used to deserialize a `FieldPolicy`, before the conditional
+/// validation below (generated needs a type; derived_jwt needs its signing
+/// trio; enum needs a value set) — matches the shared contract's `allOf`/`if`
+/// rules, since plain serde derives can't express those.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+struct RawFieldPolicy {
+    mutability: Mutability,
+    #[serde(default = "default_field_required")]
+    required: bool,
+    #[serde(rename = "type", default)]
+    type_spec: Option<FieldType>,
+    #[serde(default)]
+    display: Option<DisplayType>,
+    #[serde(default)]
+    length: Option<usize>,
+    #[serde(default)]
+    min_length: Option<usize>,
+    #[serde(default)]
+    values: Vec<String>,
+    #[serde(default)]
+    signing_key: Option<String>,
+    #[serde(default)]
+    claims: Option<serde_json::Value>,
+    #[serde(default)]
+    alg: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for FieldPolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawFieldPolicy::deserialize(deserializer)?;
+
+        if raw.mutability == Mutability::Generated && raw.type_spec.is_none() {
+            return Err(serde::de::Error::custom(
+                "field policy with mutability: generated must declare a type",
+            ));
+        }
+
+        if raw.type_spec == Some(FieldType::DerivedJwt)
+            && (raw.signing_key.is_none() || raw.claims.is_none() || raw.alg.is_none())
+        {
+            return Err(serde::de::Error::custom(
+                "field policy with type: derived_jwt must declare signing_key, claims, and alg",
+            ));
+        }
+
+        if raw.type_spec == Some(FieldType::Enum) && raw.values.is_empty() {
+            return Err(serde::de::Error::custom(
+                "field policy with type: enum must declare a non-empty values list",
+            ));
+        }
+
+        Ok(FieldPolicy {
+            mutability: raw.mutability,
+            required: raw.required,
+            type_spec: raw.type_spec,
+            display: raw.display,
+            length: raw.length,
+            min_length: raw.min_length,
+            values: raw.values,
+            signing_key: raw.signing_key,
+            claims: raw.claims,
+            alg: raw.alg,
+        })
+    }
+}
+
+impl FieldPolicy {
+    /// A `mutability: fixed` policy with no generator/validation constraints —
+    /// the shape a legacy `required:`/`optional:` list entry maps to.
+    pub fn fixed(required: bool) -> Self {
+        FieldPolicy {
+            mutability: Mutability::Fixed,
+            required,
+            type_spec: None,
+            display: None,
+            length: None,
+            min_length: None,
+            values: Vec::new(),
+            signing_key: None,
+            claims: None,
+            alg: None,
+        }
+    }
+
+    /// The default generator a legacy `secret:` list entry maps to: a
+    /// 32-char alphanumeric value, matching `generate_secret()`'s convention
+    /// (`console/commands/cli/service.rs`).
+    pub fn default_generated_secret() -> Self {
+        FieldPolicy {
+            mutability: Mutability::Generated,
+            required: true,
+            type_spec: Some(FieldType::Alphanumeric),
+            display: None,
+            length: None,
+            min_length: Some(32),
+            values: Vec::new(),
+            signing_key: None,
+            claims: None,
+            alg: None,
+        }
+    }
+
+    fn is_plain_fixed(&self) -> bool {
+        self.mutability == Mutability::Fixed
+            && self.type_spec.is_none()
+            && self.display.is_none()
+            && self.length.is_none()
+            && self.min_length.is_none()
+            && self.values.is_empty()
+            && self.signing_key.is_none()
+            && self.claims.is_none()
+            && self.alg.is_none()
+    }
+
+    fn is_default_generated_secret(&self) -> bool {
+        self.mutability == Mutability::Generated
+            && self.required
+            && self.type_spec == Some(FieldType::Alphanumeric)
+            && self.length.is_none()
+            && self.min_length == Some(32)
+            && self.values.is_empty()
+            && self.signing_key.is_none()
+            && self.claims.is_none()
+            && self.alg.is_none()
+    }
+}
+
+/// Per-service field policy declarations.
+///
+/// Backed by a single `fields: HashMap<String, FieldPolicy>`. Accepts and
+/// still emits the legacy `required`/`optional`/`secret` plain-string-list
+/// shape (mapped to `fixed`/`fixed`/`generated` policies respectively) so
+/// existing `stacker.yml` files keep parsing unchanged; new contracts can use
+/// the richer `fields:` map directly.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct TargetConfigContract {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub required: Vec<String>,
+    pub fields: HashMap<String, FieldPolicy>,
+}
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub optional: Vec<String>,
+impl TargetConfigContract {
+    /// Build a contract from the legacy three-list shape, used by
+    /// `stacker config suggest-contract` and any other code still producing
+    /// the plain required/optional/secret form.
+    pub fn from_legacy_lists(
+        required: Vec<String>,
+        optional: Vec<String>,
+        secret: Vec<String>,
+    ) -> Self {
+        let mut fields = HashMap::new();
+        // `secret` wins when a key appears in both lists (a key can be both
+        // required and secret in the legacy shape) — process it first with
+        // an overwriting insert so a later required/optional entry for the
+        // same key can't demote it back to `fixed`.
+        for key in secret {
+            fields.insert(key, FieldPolicy::default_generated_secret());
+        }
+        for key in required {
+            fields
+                .entry(key)
+                .or_insert_with(|| FieldPolicy::fixed(true));
+        }
+        for key in optional {
+            fields
+                .entry(key)
+                .or_insert_with(|| FieldPolicy::fixed(false));
+        }
+        TargetConfigContract { fields }
+    }
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub secret: Vec<String>,
+    fn keys_where(&self, predicate: impl Fn(&FieldPolicy) -> bool) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .fields
+            .iter()
+            .filter(|(_, policy)| predicate(policy))
+            .map(|(name, _)| name.clone())
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    /// Fields declared `required: true`, regardless of mutability — a
+    /// `generated` field can also be `required` (it must resolve to a value
+    /// even though the installer never types it in). Used by `stacker config
+    /// check`'s "must be present locally" semantics, which is orthogonal to
+    /// who controls the value.
+    pub fn required_keys(&self) -> Vec<String> {
+        self.keys_where(|p| p.required)
+    }
+
+    /// Fields declared `required: false`, regardless of mutability.
+    pub fn optional_keys(&self) -> Vec<String> {
+        self.keys_where(|p| !p.required)
+    }
+
+    /// Fields declared `mutability: generated` — the ones a marketplace
+    /// install must produce a fresh value for.
+    pub fn secret_keys(&self) -> Vec<String> {
+        self.keys_where(|p| p.mutability == Mutability::Generated)
+    }
+
+    /// Fields whose author values must never be shipped to marketplace buyers.
+    pub fn protected_keys(&self) -> Vec<String> {
+        self.keys_where(|p| matches!(p.mutability, Mutability::Generated | Mutability::Provided))
+    }
+
+    /// Fields declared `mutability: editable` — the ones an installer's
+    /// form/env can override, with the author's value as the default.
+    pub fn editable_keys(&self) -> Vec<String> {
+        self.keys_where(|p| p.mutability == Mutability::Editable)
+    }
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct RawTargetConfigContract {
+    required: Vec<String>,
+    optional: Vec<String>,
+    secret: Vec<String>,
+    fields: HashMap<String, FieldPolicy>,
+}
+
+impl<'de> Deserialize<'de> for TargetConfigContract {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawTargetConfigContract::deserialize(deserializer)?;
+        // Explicit `fields:` entries take precedence; among the legacy lists,
+        // `secret` wins when a key appears in both `secret` and
+        // `required`/`optional` (a key can be both required and secret).
+        let mut fields = raw.fields;
+
+        for key in raw.secret {
+            fields
+                .entry(key)
+                .or_insert_with(FieldPolicy::default_generated_secret);
+        }
+        for key in raw.required {
+            fields
+                .entry(key)
+                .or_insert_with(|| FieldPolicy::fixed(true));
+        }
+        for key in raw.optional {
+            fields
+                .entry(key)
+                .or_insert_with(|| FieldPolicy::fixed(false));
+        }
+
+        Ok(TargetConfigContract { fields })
+    }
+}
+
+#[derive(Serialize)]
+struct SerializedTargetConfigContract {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    required: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    optional: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    secret: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    fields: BTreeMap<String, FieldPolicy>,
+}
+
+impl Serialize for TargetConfigContract {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut required = Vec::new();
+        let mut optional = Vec::new();
+        let mut secret = Vec::new();
+        let mut fields = BTreeMap::new();
+
+        let mut sorted: Vec<_> = self.fields.iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(b.0));
+
+        for (name, policy) in sorted {
+            if policy.is_plain_fixed() {
+                if policy.required {
+                    required.push(name.clone());
+                } else {
+                    optional.push(name.clone());
+                }
+            } else if policy.is_default_generated_secret() {
+                secret.push(name.clone());
+            } else {
+                fields.insert(name.clone(), policy.clone());
+            }
+        }
+
+        SerializedTargetConfigContract {
+            required,
+            optional,
+            secret,
+            fields,
+        }
+        .serialize(serializer)
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1264,6 +1641,30 @@ impl StackerConfig {
             });
         }
 
+        // E007 — every port mapping must be a real port. Checked here so a bad
+        // value fails at `stacker config validate` rather than on the target
+        // host after the server is already provisioned.
+        for (field_name, port_str) in self
+            .app
+            .ports
+            .iter()
+            .map(|p| ("app.ports".to_string(), p))
+            .chain(self.services.iter().flat_map(|svc| {
+                svc.ports
+                    .iter()
+                    .map(move |p| (format!("services.{}.ports", svc.name), p))
+            }))
+        {
+            if let Err(err) = validate_port_mapping(port_str) {
+                issues.push(ValidationIssue {
+                    severity: Severity::Error,
+                    code: "E007".to_string(),
+                    message: format!("Invalid port mapping '{port_str}': {err}."),
+                    field: Some(field_name),
+                });
+            }
+        }
+
         // Port conflict detection across services, keyed by the *published
         // host port*. Only services that publish a fixed host port can collide;
         // the container-only form (no host port) is skipped. `host_port_binding`
@@ -1275,7 +1676,10 @@ impl StackerConfig {
         for svc in &self.services {
             for port_str in &svc.ports {
                 if let Some(host_port) = host_port_binding(port_str) {
-                    port_map.entry(host_port).or_default().push(svc.name.clone());
+                    port_map
+                        .entry(host_port)
+                        .or_default()
+                        .push(svc.name.clone());
                 }
             }
         }
@@ -1474,6 +1878,27 @@ fn validate_deploy_semantics(
                 }
             }
 
+            // A key under deploy.server is silently dropped on a cloud deploy:
+            // only deploy.cloud.ssh_key is ever authorized on the VM, so the
+            // machine comes up with the Vault-managed key alone and the user's
+            // own key is missing from authorized_keys. Say so rather than
+            // ignoring the field.
+            if cloud.ssh_key.is_none() {
+                if let Some(server_key) = deploy.server.as_ref().and_then(|s| s.ssh_key.as_ref()) {
+                    issues.push(ValidationIssue {
+                        severity: Severity::Warning,
+                        code: "W003".to_string(),
+                        message: format!(
+                            "deploy.server.ssh_key ({}) is ignored when target is cloud. \
+                             Set deploy.cloud.ssh_key instead, or this key will not be \
+                             installed in authorized_keys on the new VM.",
+                            server_key.display()
+                        ),
+                        field: Some(field("cloud.ssh_key")),
+                    });
+                }
+            }
+
             // Validate public_ports format up front so invalid entries are
             // surfaced by `stacker config validate` instead of being silently
             // dropped during cloud firewall provisioning. Bare numbers and
@@ -1559,6 +1984,87 @@ fn load_env_file_vars_from_yaml(path: &Path, raw_content: &str) -> HashMap<Strin
 /// suffix and all three binding forms:
 ///   `"80"` -> None (ephemeral), `"80:80"` -> `"80"`,
 ///   `"127.0.0.1:80:80"` -> `"80"`, `"80:80/tcp"` -> `"80"`.
+/// Validate one numeric port, rejecting anything outside Docker's 1-65535.
+fn validate_port_number(value: &str) -> Result<(), String> {
+    let parsed: u64 = value
+        .parse()
+        .map_err(|_| format!("'{value}' is not a port number"))?;
+    if parsed == 0 || parsed > u16::MAX as u64 {
+        return Err(format!(
+            "port {value} is out of range, must be 1-{}",
+            u16::MAX
+        ));
+    }
+    Ok(())
+}
+
+/// Validate one side of a mapping, which may be a range (`8000-8010`).
+fn validate_port_segment(segment: &str) -> Result<(), String> {
+    match segment.split_once('-') {
+        Some((low, high)) => {
+            validate_port_number(low)?;
+            validate_port_number(high)
+        }
+        None => validate_port_number(segment),
+    }
+}
+
+/// Validate a docker-compose short-form port mapping.
+///
+/// Accepts every shape Compose does — `container`, `host:container`,
+/// `ip:host:container` (including bracketed IPv6), ranges on either side, and
+/// an optional `/tcp`, `/udp` or `/sctp` suffix.
+///
+/// Without this, `app.ports` and `services[].ports` reached the generated
+/// compose verbatim and were only rejected on the target host, *after*
+/// provisioning: a bare out-of-range entry like `"133342"` is read by Docker
+/// as a container port and fails the deploy with "invalid containerPort".
+/// `deploy.cloud.public_ports` was already checked (E005); these were not.
+fn validate_port_mapping(spec: &str) -> Result<(), String> {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return Err("port mapping is empty".to_string());
+    }
+
+    let (mapping, protocol) = match spec.rsplit_once('/') {
+        Some((mapping, proto)) => (mapping, Some(proto)),
+        None => (spec, None),
+    };
+
+    if let Some(proto) = protocol {
+        if !matches!(proto, "tcp" | "udp" | "sctp") {
+            return Err(format!(
+                "unknown protocol '{proto}', expected tcp, udp or sctp"
+            ));
+        }
+    }
+
+    // A bracketed IPv6 host IP (`[::1]:8080:80`) is full of colons, so strip it
+    // before splitting on `:` — otherwise every hextet looks like a port.
+    let mapping = match mapping.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((_ip, remainder)) => remainder.strip_prefix(':').unwrap_or(remainder),
+            None => return Err(format!("'{spec}' has an unterminated IPv6 address")),
+        },
+        None => mapping,
+    };
+
+    let parts: Vec<&str> = mapping.split(':').collect();
+    let port_parts: &[&str] = match parts.len() {
+        // "container", "host:container"
+        1 | 2 => &parts,
+        // "ip:host:container" — the leading segment is a host IP, not a port.
+        3 => &parts[1..],
+        _ => return Err(format!("'{spec}' is not a valid port mapping")),
+    };
+
+    for segment in port_parts {
+        validate_port_segment(segment)?;
+    }
+
+    Ok(())
+}
+
 fn host_port_binding(port_str: &str) -> Option<String> {
     let spec = port_str.split('/').next().unwrap_or(port_str);
     let parts: Vec<&str> = spec.split(':').collect();
@@ -1739,6 +2245,7 @@ pub struct ConfigBuilder {
     app_image: Option<String>,
     app_dockerfile: Option<PathBuf>,
     app_volumes: Vec<String>,
+    app_ports: Vec<String>,
     build_args: HashMap<String, String>,
     services: Vec<ServiceDefinition>,
     proxy: Option<ProxyConfig>,
@@ -1796,6 +2303,11 @@ impl ConfigBuilder {
 
     pub fn app_dockerfile<P: Into<PathBuf>>(mut self, path: P) -> Self {
         self.app_dockerfile = Some(path.into());
+        self
+    }
+
+    pub fn app_ports(mut self, ports: Vec<String>) -> Self {
+        self.app_ports = ports;
         self
     }
 
@@ -1881,6 +2393,7 @@ impl ConfigBuilder {
             || self.app_image.is_some()
             || self.app_dockerfile.is_some()
             || !self.app_volumes.is_empty()
+            || !self.app_ports.is_empty()
             || !self.build_args.is_empty();
 
         let build_config = if self.build_args.is_empty() {
@@ -1905,7 +2418,7 @@ impl ConfigBuilder {
                 dockerfile: self.app_dockerfile,
                 image: self.app_image,
                 build: build_config,
-                ports: Vec::new(),
+                ports: self.app_ports,
                 volumes: self.app_volumes,
                 environment: HashMap::new(),
                 command: None,
@@ -1949,6 +2462,229 @@ mod tests {
     use std::env;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn field_policy_legacy_required_list_maps_to_fixed_required() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      required:
+        - POSTGRES_HOST
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let auth = &config.config_contract.services["auth"];
+        assert_eq!(auth.required_keys(), vec!["POSTGRES_HOST".to_string()]);
+        let policy = &auth.fields["POSTGRES_HOST"];
+        assert_eq!(policy.mutability, Mutability::Fixed);
+        assert!(policy.required);
+    }
+
+    #[test]
+    fn field_policy_legacy_optional_list_maps_to_fixed_not_required() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      optional:
+        - LOG_LEVEL
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let auth = &config.config_contract.services["auth"];
+        assert_eq!(auth.optional_keys(), vec!["LOG_LEVEL".to_string()]);
+        let policy = &auth.fields["LOG_LEVEL"];
+        assert_eq!(policy.mutability, Mutability::Fixed);
+        assert!(!policy.required);
+    }
+
+    #[test]
+    fn field_policy_legacy_secret_list_maps_to_generated_default() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      secret:
+        - JWT_SECRET
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let auth = &config.config_contract.services["auth"];
+        assert_eq!(auth.secret_keys(), vec!["JWT_SECRET".to_string()]);
+        let policy = &auth.fields["JWT_SECRET"];
+        assert_eq!(policy.mutability, Mutability::Generated);
+        assert!(policy.required);
+        assert_eq!(policy.type_spec, Some(FieldType::Alphanumeric));
+        assert_eq!(policy.min_length, Some(32));
+    }
+
+    #[test]
+    fn field_policy_full_form_parses_hex_editable_and_derived_jwt() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      fields:
+        JWT_SECRET:
+          mutability: generated
+          type: hex
+          length: 32
+        LOG_LEVEL:
+          mutability: editable
+          required: false
+          type: enum
+          values: [debug, info, warn, error]
+    storage:
+      fields:
+        ANON_KEY:
+          mutability: generated
+          type: derived_jwt
+          signing_key: auth.JWT_SECRET
+          claims:
+            role: anon
+            iss: supabase
+          alg: HS256
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+
+        let auth = &config.config_contract.services["auth"];
+        let jwt_secret = &auth.fields["JWT_SECRET"];
+        assert_eq!(jwt_secret.mutability, Mutability::Generated);
+        assert_eq!(jwt_secret.type_spec, Some(FieldType::Hex));
+        assert_eq!(jwt_secret.length, Some(32));
+
+        let log_level = &auth.fields["LOG_LEVEL"];
+        assert_eq!(log_level.mutability, Mutability::Editable);
+        assert!(!log_level.required);
+        assert_eq!(
+            log_level.values,
+            vec!["debug", "info", "warn", "error"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(auth.editable_keys(), vec!["LOG_LEVEL".to_string()]);
+
+        let storage = &config.config_contract.services["storage"];
+        let anon_key = &storage.fields["ANON_KEY"];
+        assert_eq!(anon_key.mutability, Mutability::Generated);
+        assert_eq!(anon_key.type_spec, Some(FieldType::DerivedJwt));
+        assert_eq!(anon_key.signing_key.as_deref(), Some("auth.JWT_SECRET"));
+        assert_eq!(anon_key.alg.as_deref(), Some("HS256"));
+    }
+
+    #[test]
+    fn field_policy_generated_without_type_is_rejected() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      fields:
+        JWT_SECRET:
+          mutability: generated
+"#;
+        let err = StackerConfig::from_str(yaml).unwrap_err();
+        assert!(format!("{err}").contains("must declare a type"));
+    }
+
+    #[test]
+    fn field_policy_derived_jwt_missing_signing_key_is_rejected() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    storage:
+      fields:
+        ANON_KEY:
+          mutability: generated
+          type: derived_jwt
+          claims:
+            role: anon
+          alg: HS256
+"#;
+        let err = StackerConfig::from_str(yaml).unwrap_err();
+        assert!(format!("{err}").contains("derived_jwt"));
+    }
+
+    #[test]
+    fn field_policy_unknown_mutability_is_rejected() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      fields:
+        SOME_FIELD:
+          mutability: readonly
+"#;
+        assert!(StackerConfig::from_str(yaml).is_err());
+    }
+
+    #[test]
+    fn field_policy_provided_is_accepted_without_a_generator_type() {
+        let yaml = r#"
+name: aws-stack
+config_contract:
+  services:
+    app:
+      fields:
+        AWS_ACCESS_KEY_ID:
+          mutability: provided
+        AWS_SECRET_ACCESS_KEY:
+          mutability: provided
+          required: true
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let fields = &config.config_contract.services["app"].fields;
+        assert_eq!(fields["AWS_ACCESS_KEY_ID"].mutability, Mutability::Provided);
+        assert_eq!(
+            fields["AWS_SECRET_ACCESS_KEY"].mutability,
+            Mutability::Provided
+        );
+    }
+
+    #[test]
+    fn field_policy_rejects_whitespace_variant_of_required_key() {
+        let contract = serde_json::json!({
+            "services": {
+                "app": {
+                    "fields": {
+                        "API_KEY": {
+                            "mutability": "generated",
+                            "type": "alphanumeric",
+                            "required ": true
+                        }
+                    }
+                }
+            }
+        });
+        assert!(serde_json::from_value::<ConfigContract>(contract).is_err());
+    }
+
+    #[test]
+    fn field_policy_round_trips_through_legacy_yaml_shape() {
+        let contract = TargetConfigContract::from_legacy_lists(
+            vec!["POSTGRES_HOST".to_string()],
+            vec!["LOG_LEVEL".to_string()],
+            vec!["JWT_SECRET".to_string()],
+        );
+        let yaml = serde_yaml::to_string(&contract).unwrap();
+        assert!(yaml.contains("required:"));
+        assert!(yaml.contains("- POSTGRES_HOST"));
+        assert!(yaml.contains("optional:"));
+        assert!(yaml.contains("- LOG_LEVEL"));
+        assert!(yaml.contains("secret:"));
+        assert!(yaml.contains("- JWT_SECRET"));
+        assert!(!yaml.contains("fields:"));
+
+        let reparsed: TargetConfigContract = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(reparsed.required_keys(), contract.required_keys());
+        assert_eq!(reparsed.optional_keys(), contract.optional_keys());
+        assert_eq!(reparsed.secret_keys(), contract.secret_keys());
+    }
 
     #[test]
     fn test_parse_minimal_config() {
@@ -2343,6 +3079,65 @@ deploy:
     }
 
     #[test]
+    fn test_cloud_ssh_key_is_left_unresolved_when_the_file_target_is_server() {
+        // Deployment 14125. With `target: server` written in the file,
+        // deploy.cloud is the *inactive* section, so its ${VAR}s are
+        // deliberately left untouched. deploy.cloud.ssh_key then stays the
+        // literal "${BASE_PATH}/..." — the .pub lookup in
+        // configured_user_public_key() misses, and the key is never authorized,
+        // so it never reaches authorized_keys. Passing --target cloud resolves
+        // the section and the key is found.
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        fs::write(dir.path().join(".env"), "BASE_PATH=/keys\n").unwrap();
+        fs::write(
+            &config_path,
+            r#"
+name: vikunja
+app:
+    type: custom
+    path: .
+    image: vikunja/vikunja:latest
+env_file: .env
+deploy:
+    target: server
+    server:
+        host: 203.0.113.5
+        user: root
+    cloud:
+        provider: hetzner
+        region: fsn1
+        ssh_key: ${BASE_PATH}/stacker-project-test
+"#,
+        )
+        .unwrap();
+
+        let cloud_key = |cfg: &StackerConfig| -> Option<String> {
+            cfg.deploy
+                .cloud
+                .as_ref()
+                .and_then(|c| c.ssh_key.as_ref())
+                .map(|p| p.display().to_string())
+        };
+
+        // no override: the file says `server`, so cloud keeps its placeholder
+        let from_file = StackerConfig::from_file_for_target(&config_path, None).unwrap();
+        assert_eq!(
+            cloud_key(&from_file).as_deref(),
+            Some("${BASE_PATH}/stacker-project-test"),
+            "cloud.ssh_key should still be an unresolved placeholder"
+        );
+
+        // --target cloud: the section is active and the path resolves
+        let as_cloud = StackerConfig::from_file_for_target(&config_path, Some("cloud")).unwrap();
+        assert_eq!(
+            cloud_key(&as_cloud).as_deref(),
+            Some("/keys/stacker-project-test"),
+            "--target cloud should resolve the key path"
+        );
+    }
+
+    #[test]
     fn test_from_file_for_target_falls_back_to_literal_deploy_target_in_file() {
         let dir = TempDir::new().unwrap();
         let config_path = dir.path().join("stacker.yml");
@@ -2528,7 +3323,9 @@ pipes:
         assert_eq!(retry.backoff_max_ms, 30_000); // default filled in
         assert_eq!(
             cfg.on_failure,
-            Some(crate::models::pipe_config::HandlerRef::Pipe("oncall-notify".into()))
+            Some(crate::models::pipe_config::HandlerRef::Pipe(
+                "oncall-notify".into()
+            ))
         );
     }
 
@@ -2679,6 +3476,119 @@ app:
         );
     }
 
+    // --- E007: port mappings must be real ports -----------------------
+    //
+    // A GitLab deploy provisioned a server, shipped the compose, and only then
+    // died on the host with `invalid containerPort: 133342`. `app.ports` went
+    // into the generated compose verbatim with no range check; a bare
+    // out-of-range entry is read by Docker as a container port.
+
+    #[test]
+    fn validate_port_mapping_accepts_every_compose_shape() {
+        for good in [
+            "80",
+            "8080:80",
+            "127.0.0.1:5432:5432",
+            "[::1]:8080:80",
+            "8000-8010:8000-8010",
+            "2222:22/tcp",
+            "53:53/udp",
+            "65535:65535",
+        ] {
+            assert!(
+                validate_port_mapping(good).is_ok(),
+                "{good} should be valid: {:?}",
+                validate_port_mapping(good)
+            );
+        }
+    }
+
+    #[test]
+    fn validate_port_mapping_rejects_out_of_range_and_malformed() {
+        for bad in [
+            "133342",
+            "8082:133342",
+            "0",
+            "65536",
+            "127.0.0.1:0:80",
+            "abc:80",
+            "",
+            "80/http",
+            "1:2:3:4",
+        ] {
+            assert!(
+                validate_port_mapping(bad).is_err(),
+                "{bad} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn e007_flags_out_of_range_app_port() {
+        let config = ConfigBuilder::new()
+            .name("gitlab")
+            .app_type(AppType::Custom)
+            .app_image("gitlab/gitlab-ce:18.10.1-ce.0")
+            .app_ports(vec!["133342".to_string()])
+            .build()
+            .unwrap();
+
+        let issues = config.validate_semantics();
+        let e007: Vec<_> = issues
+            .iter()
+            .filter(|i| i.code == "E007" && i.severity == Severity::Error)
+            .collect();
+
+        assert_eq!(e007.len(), 1, "expected one E007, got: {issues:?}");
+        assert_eq!(e007[0].field.as_deref(), Some("app.ports"));
+        assert!(e007[0].message.contains("133342"));
+    }
+
+    #[test]
+    fn e007_names_the_offending_service() {
+        let svc = ServiceDefinition {
+            name: "db".to_string(),
+            image: "postgres:16".to_string(),
+            ports: vec!["5432:5432".to_string(), "99999:5432".to_string()],
+            environment: HashMap::new(),
+            volumes: vec![],
+            depends_on: vec![],
+            command: None,
+            healthcheck: None,
+        };
+
+        let config = ConfigBuilder::new()
+            .name("stack")
+            .add_service(svc)
+            .build()
+            .unwrap();
+
+        let e007: Vec<_> = config
+            .validate_semantics()
+            .into_iter()
+            .filter(|i| i.code == "E007")
+            .collect();
+
+        assert_eq!(e007.len(), 1, "only the bad mapping should be flagged");
+        assert_eq!(e007[0].field.as_deref(), Some("services.db.ports"));
+    }
+
+    #[test]
+    fn e007_stays_quiet_on_valid_ports() {
+        let config = ConfigBuilder::new()
+            .name("gitlab")
+            .app_type(AppType::Custom)
+            .app_image("gitlab/gitlab-ce:18.10.1-ce.0")
+            .app_ports(vec!["8082:80".to_string(), "2222:22".to_string()])
+            .build()
+            .unwrap();
+
+        assert!(
+            !config.validate_semantics().iter().any(|i| i.code == "E007"),
+            "valid ports must not raise E007"
+        );
+    }
+
     #[test]
     fn test_validate_semantics_port_conflict() {
         let config = StackerConfig::from_str(
@@ -2802,7 +3712,11 @@ services:
             .into_iter()
             .filter(|issue| issue.code == "W001")
             .collect();
-        assert_eq!(w001.len(), 1, "expected one W001 for the port-80 clash: {w001:?}");
+        assert_eq!(
+            w001.len(),
+            1,
+            "expected one W001 for the port-80 clash: {w001:?}"
+        );
         assert!(w001[0].message.contains("80"));
         assert!(w001[0].message.contains("web") && w001[0].message.contains("legacy"));
     }
@@ -2871,6 +3785,87 @@ proxy:
                 .iter()
                 .any(|issue| issue.code == "W003"),
             "no ingress overlap should produce no W003"
+        );
+    }
+
+    #[test]
+    fn test_validate_semantics_warns_when_ssh_key_only_under_server_on_cloud_target() {
+        let config = StackerConfig::from_str(
+            r#"
+name: hermes-agent
+app:
+  type: static
+deploy:
+  target: cloud
+  server:
+    host: 116.202.19.183
+    user: root
+    ssh_key: /home/me/.ssh/stacker-project-test
+  cloud:
+    provider: hetzner
+    region: fsn1
+"#,
+        )
+        .unwrap();
+
+        let issues = config.validate_semantics();
+        let w003: Vec<_> = issues.iter().filter(|i| i.code == "W003").collect();
+        assert_eq!(w003.len(), 1, "expected one W003: {issues:?}");
+        assert_eq!(w003[0].severity, Severity::Warning);
+        assert!(
+            w003[0].message.contains("stacker-project-test"),
+            "message should name the ignored key: {}",
+            w003[0].message
+        );
+    }
+
+    #[test]
+    fn test_validate_semantics_no_w003_when_cloud_ssh_key_is_set() {
+        let config = StackerConfig::from_str(
+            r#"
+name: hermes-agent
+app:
+  type: static
+deploy:
+  target: cloud
+  server:
+    host: 116.202.19.183
+    user: root
+    ssh_key: /home/me/.ssh/stacker-project-test
+  cloud:
+    provider: hetzner
+    region: fsn1
+    ssh_key: /home/me/.ssh/stacker-project-test
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            !config.validate_semantics().iter().any(|i| i.code == "W003"),
+            "deploy.cloud.ssh_key is set, so nothing is being ignored"
+        );
+    }
+
+    #[test]
+    fn test_validate_semantics_no_w003_on_server_target() {
+        let config = StackerConfig::from_str(
+            r#"
+name: hermes-agent
+app:
+  type: static
+deploy:
+  target: server
+  server:
+    host: 116.202.19.183
+    user: root
+    ssh_key: /home/me/.ssh/stacker-project-test
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            !config.validate_semantics().iter().any(|i| i.code == "W003"),
+            "deploy.server.ssh_key is the right place for a server-target deploy"
         );
     }
 

@@ -8,10 +8,12 @@ pub async fn insert(pool: &PgPool, agent: models::Agent) -> Result<models::Agent
     sqlx::query_as::<_, models::Agent>(
         r#"
         INSERT INTO agents (id, deployment_hash, capabilities, version, system_info, 
-                           last_heartbeat, status, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                           last_heartbeat, status, token_hash, token_hash_updated_at,
+                           created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING id, deployment_hash, capabilities, version, system_info, 
-                  last_heartbeat, status, created_at, updated_at
+                  last_heartbeat, status, token_hash, token_hash_updated_at,
+                  created_at, updated_at
         "#,
     )
     .bind(agent.id)
@@ -21,6 +23,8 @@ pub async fn insert(pool: &PgPool, agent: models::Agent) -> Result<models::Agent
     .bind(agent.system_info)
     .bind(agent.last_heartbeat)
     .bind(agent.status)
+    .bind(agent.token_hash)
+    .bind(agent.token_hash_updated_at)
     .bind(agent.created_at)
     .bind(agent.updated_at)
     .fetch_one(pool)
@@ -37,7 +41,8 @@ pub async fn fetch_by_id(pool: &PgPool, agent_id: Uuid) -> Result<Option<models:
     sqlx::query_as::<_, models::Agent>(
         r#"
         SELECT id, deployment_hash, capabilities, version, system_info, 
-               last_heartbeat, status, created_at, updated_at
+               last_heartbeat, status, token_hash, token_hash_updated_at,
+               created_at, updated_at
         FROM agents 
         WHERE id = $1
         "#,
@@ -60,7 +65,8 @@ pub async fn fetch_by_deployment_hash(
     sqlx::query_as::<_, models::Agent>(
         r#"
         SELECT id, deployment_hash, capabilities, version, system_info, 
-               last_heartbeat, status, created_at, updated_at
+               last_heartbeat, status, token_hash, token_hash_updated_at,
+               created_at, updated_at
         FROM agents 
         WHERE deployment_hash = $1
         "#,
@@ -100,7 +106,8 @@ pub async fn fetch_active_by_project(
     sqlx::query_as::<_, models::Agent>(
         r#"
         SELECT a.id, a.deployment_hash, a.capabilities, a.version, a.system_info,
-               a.last_heartbeat, a.status, a.created_at, a.updated_at
+               a.last_heartbeat, a.status, a.token_hash, a.token_hash_updated_at,
+               a.created_at, a.updated_at
         FROM agents a
         JOIN deployment d ON a.deployment_hash = d.deployment_hash
         WHERE d.project_id = $1
@@ -116,6 +123,48 @@ pub async fn fetch_active_by_project(
     .map_err(|err| {
         tracing::error!("Failed to fetch active agent by project: {:?}", err);
         "Database error".to_string()
+    })
+}
+
+/// Store the digest of a freshly issued bearer token.
+///
+/// Separate from `update` on purpose: that function refreshes an agent's
+/// metadata on every re-registration and must never touch the credential.
+/// Callers should go through `services::agent_token::issue`, which writes this
+/// and Vault together, so the two cannot drift.
+pub async fn set_token_hash(pool: &PgPool, agent_id: Uuid, token_hash: &str) -> Result<(), String> {
+    let query_span = tracing::info_span!("Storing agent token hash");
+    // Runtime query rather than `sqlx::query!` despite CLAUDE.md's preference:
+    // the macro needs an offline cache, and `cargo sqlx prepare` does not
+    // currently succeed on this repo — `models::ProjectApp` is missing the
+    // `config_contract` column that migration 20260828130000 added, so eight
+    // `query_as!(ProjectApp, "SELECT *")` sites fail to compile against a
+    // migrated database. Unrelated to this change; five of the seven queries
+    // in this file are already runtime.
+    sqlx::query(
+        r#"
+        UPDATE agents
+        SET token_hash = $2, token_hash_updated_at = NOW(), updated_at = NOW()
+        WHERE id = $1
+        "#,
+    )
+    .bind(agent_id)
+    .bind(token_hash)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to store agent token hash: {:?}", err);
+        "Failed to store agent token hash".to_string()
+    })
+    .and_then(|res| {
+        if res.rows_affected() == 0 {
+            // A token was minted for an agent row that does not exist; the
+            // caller must not hand it out.
+            Err("Agent not found".to_string())
+        } else {
+            Ok(())
+        }
     })
 }
 
@@ -145,11 +194,16 @@ pub async fn update(pool: &PgPool, agent: models::Agent) -> Result<models::Agent
     sqlx::query_as::<_, models::Agent>(
         r#"
         UPDATE agents 
+        -- token_hash is deliberately absent from SET: register/link refresh an
+        -- agent's metadata on every re-registration, and including it here
+        -- would null out the credential each time. It appears in RETURNING
+        -- only because FromRow needs every column the struct declares.
         SET capabilities = $2, version = $3, system_info = $4, 
             last_heartbeat = $5, status = $6, updated_at = NOW()
         WHERE id = $1
         RETURNING id, deployment_hash, capabilities, version, system_info, 
-                  last_heartbeat, status, created_at, updated_at
+                  last_heartbeat, status, token_hash, token_hash_updated_at,
+                  created_at, updated_at
         "#,
     )
     .bind(agent.id)

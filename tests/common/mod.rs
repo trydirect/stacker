@@ -44,8 +44,25 @@ fn infra_handle() -> tokio::runtime::Handle {
         .clone()
 }
 
+/// Shared key for the service-to-service endpoints in tests.
+///
+/// `require_internal_key` fails closed when `INTERNAL_SERVICES_ACCESS_KEY` is
+/// unset, so a harness that does not configure it cannot register an agent —
+/// which is the intended production behaviour, not a test inconvenience.
+pub const TEST_INTERNAL_KEY: &str = "test-internal-key";
+
+/// Configure the shared key for the app under test. Idempotent; the server runs
+/// in this process, so the variable it reads is the one set here.
+pub fn set_test_internal_key() {
+    std::env::set_var(
+        stacker::helpers::internal_key::INTERNAL_KEY_ENV,
+        TEST_INTERNAL_KEY,
+    );
+}
+
 pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option<TestApp> {
     ensure_test_access_control_conf();
+    set_test_internal_key();
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind random port");
 
@@ -905,10 +922,18 @@ pub async fn get_or_init_vault_app_fresh(
     })
 }
 
+#[path = "../vault_kv_mock.rs"]
+mod vault_kv_mock;
+// Not every test binary that includes this module uses the Vault mock; each
+// one that does not would otherwise warn on the re-export.
+#[allow(unused_imports)]
+pub use vault_kv_mock::{mount_vault_kv_mock, VaultKvMock};
+
 /// Spawn the full app with a mock Vault server.
 /// The returned `vault_server` is a wiremock MockServer — mount expectations on it
 /// before calling API endpoints that touch Vault.
 pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
+    set_test_internal_key();
     let mut configuration = get_configuration().expect("Failed to get configuration");
 
     // Disable DockerHub connector in tests to skip Redis connection timeout
@@ -934,6 +959,10 @@ pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
     configuration.vault.ssh_key_path_prefix = Some("users".to_string());
     configuration.connectors.install_service =
         Some(stacker::connectors::InstallServiceConfig { enabled: false });
+
+    // `spawn_app` honours PGHOST/PGUSER/PGPASSWORD; this path did not, so a
+    // local Postgres with non-default credentials failed here only.
+    apply_test_database_env_overrides(&mut configuration);
 
     configuration.database.database_name = uuid::Uuid::new_v4().to_string();
     let connection_string = configuration.database.connection_string();

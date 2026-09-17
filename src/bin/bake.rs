@@ -96,6 +96,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Persist into the snapshot registry so /api/v1/deploy/clone can resolve it.
     if let Ok(db_url) = std::env::var("DATABASE_URL") {
         let pool = sqlx::PgPool::connect(&db_url).await?;
+
+        // Pin the author's field policy to this image so the clone path can
+        // regenerate `mutability: generated` fields fresh per buyer instead of
+        // shipping the single value baked into the snapshot. Resolved by the same
+        // slug the registry keys on (record.stack == stack_template.slug).
+        // Best-effort: an un-catalogued or unapproved stack bakes with no
+        // contract, and the clone path degrades to the baked values.
+        let config_contract =
+            match stacker::db::marketplace::get_approved_by_slug(&pool, &record.stack).await {
+                Ok(Some(template)) => {
+                    match stacker::db::marketplace::get_config_contract(&pool, template.id).await {
+                        Ok(serde_json::Value::Null) => None,
+                        Ok(contract) => Some(contract),
+                        Err(err) => {
+                            eprintln!(
+                                "WARNING: could not read config_contract for '{}': {err}",
+                                record.stack
+                            );
+                            None
+                        }
+                    }
+                }
+                Ok(None) => None,
+                Err(err) => {
+                    eprintln!(
+                        "WARNING: could not resolve template for '{}': {err}",
+                        record.stack
+                    );
+                    None
+                }
+            };
+
         let row = stacker::db::baked_snapshot::record(
             &pool,
             &record.stack,
@@ -104,6 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             record.image_id,
             record.healthy,
             None,
+            config_contract,
         )
         .await
         .map_err(|e| e.to_string())?;

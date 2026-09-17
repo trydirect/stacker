@@ -827,12 +827,25 @@ async fn submit_template_sends_template_submitted_webhook() {
         .mount(&mock_user_service)
         .await;
 
-    let create_response = create_template(
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+    common::create_test_deployment(
+        &app.db_pool,
+        "test_user_id",
+        project_id,
+        &format!("dpl-{}", Uuid::new_v4()),
+    )
+    .await;
+
+    let create_response = create_template_with_body(
         &client,
         &app.address,
         "test-bearer-token",
-        "Submit Notification Template",
-        "submit-notification-template",
+        json!({
+            "name": "Submit Notification Template",
+            "slug": "submit-notification-template",
+            "source_project_id": project_id,
+            "stack_definition": { "services": {} }
+        }),
     )
     .await;
     assert_eq!(StatusCode::CREATED, create_response.status());
@@ -1382,4 +1395,273 @@ async fn create_template_persists_extended_version_contract_in_public_detail() {
         }),
         latest_version["update_mode_capabilities"]
     );
+}
+
+#[tokio::test]
+async fn submit_template_without_source_project_id_is_rejected() {
+    let _env_lock = env_lock().lock().expect("env lock should be available");
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let create_response = create_template_with_body(
+        &client,
+        &app.address,
+        "test-bearer-token",
+        json!({
+            "name": "No Source Project Template",
+            "slug": "no-source-project-template",
+            "stack_definition": { "services": {} }
+        }),
+    )
+    .await;
+    assert_eq!(StatusCode::CREATED, create_response.status());
+    let create_body: Value = create_response
+        .json()
+        .await
+        .expect("Create response should be valid JSON");
+    let template_id = create_body["item"]["id"]
+        .as_str()
+        .expect("Created template should include an id");
+
+    let submit_response = client
+        .post(format!(
+            "{}/api/templates/{}/submit",
+            app.address, template_id
+        ))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({ "confirm_no_secrets": true }))
+        .send()
+        .await
+        .expect("Failed to submit template for review");
+    assert_eq!(StatusCode::BAD_REQUEST, submit_response.status());
+}
+
+#[tokio::test]
+async fn submit_template_with_source_project_but_no_successful_deployment_is_rejected() {
+    let _env_lock = env_lock().lock().expect("env lock should be available");
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+
+    let create_response = create_template_with_body(
+        &client,
+        &app.address,
+        "test-bearer-token",
+        json!({
+            "name": "Undeployed Source Project Template",
+            "slug": "undeployed-source-project-template",
+            "source_project_id": project_id,
+            "stack_definition": { "services": {} }
+        }),
+    )
+    .await;
+    assert_eq!(StatusCode::CREATED, create_response.status());
+    let create_body: Value = create_response
+        .json()
+        .await
+        .expect("Create response should be valid JSON");
+    let template_id = create_body["item"]["id"]
+        .as_str()
+        .expect("Created template should include an id");
+
+    let submit_response = client
+        .post(format!(
+            "{}/api/templates/{}/submit",
+            app.address, template_id
+        ))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({ "confirm_no_secrets": true }))
+        .send()
+        .await
+        .expect("Failed to submit template for review");
+    assert_eq!(StatusCode::BAD_REQUEST, submit_response.status());
+}
+
+#[tokio::test]
+async fn submit_template_with_successful_deployment_is_accepted() {
+    let _env_lock = env_lock().lock().expect("env lock should be available");
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+    common::create_test_deployment(
+        &app.db_pool,
+        "test_user_id",
+        project_id,
+        &format!("dpl-{}", Uuid::new_v4()),
+    )
+    .await;
+
+    let create_response = create_template_with_body(
+        &client,
+        &app.address,
+        "test-bearer-token",
+        json!({
+            "name": "Deployed Source Project Template",
+            "slug": "deployed-source-project-template",
+            "source_project_id": project_id,
+            "stack_definition": { "services": {} }
+        }),
+    )
+    .await;
+    assert_eq!(StatusCode::CREATED, create_response.status());
+    let create_body: Value = create_response
+        .json()
+        .await
+        .expect("Create response should be valid JSON");
+    let template_id = create_body["item"]["id"]
+        .as_str()
+        .expect("Created template should include an id");
+
+    let submit_response = client
+        .post(format!(
+            "{}/api/templates/{}/submit",
+            app.address, template_id
+        ))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({ "confirm_no_secrets": true }))
+        .send()
+        .await
+        .expect("Failed to submit template for review");
+    assert_eq!(StatusCode::OK, submit_response.status());
+}
+
+#[tokio::test]
+async fn submit_template_with_undeclared_secret_shaped_field_is_rejected() {
+    let _env_lock = env_lock().lock().expect("env lock should be available");
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+    common::create_test_deployment(
+        &app.db_pool,
+        "test_user_id",
+        project_id,
+        &format!("dpl-{}", Uuid::new_v4()),
+    )
+    .await;
+
+    let create_response = create_template_with_body(
+        &client,
+        &app.address,
+        "test-bearer-token",
+        json!({
+            "name": "Undeclared Secret Template",
+            "slug": "undeclared-secret-template",
+            "source_project_id": project_id,
+            "stack_definition": {
+                "services": {
+                    "auth": { "environment": { "JWT_SECRET": "dev-only-value" } }
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(StatusCode::CREATED, create_response.status());
+    let create_body: Value = create_response
+        .json()
+        .await
+        .expect("Create response should be valid JSON");
+    let template_id = create_body["item"]["id"]
+        .as_str()
+        .expect("Created template should include an id");
+
+    let submit_response = client
+        .post(format!(
+            "{}/api/templates/{}/submit",
+            app.address, template_id
+        ))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({ "confirm_no_secrets": true }))
+        .send()
+        .await
+        .expect("Failed to submit template for review");
+    assert_eq!(StatusCode::BAD_REQUEST, submit_response.status());
+    let body: Value = submit_response
+        .json()
+        .await
+        .expect("Bad request response should be valid JSON");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("JWT_SECRET"),
+        "Rejection message should name the undeclared field: {message}"
+    );
+}
+
+#[tokio::test]
+async fn submit_template_with_generated_policy_for_secret_field_is_accepted() {
+    let _env_lock = env_lock().lock().expect("env lock should be available");
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+    common::create_test_deployment(
+        &app.db_pool,
+        "test_user_id",
+        project_id,
+        &format!("dpl-{}", Uuid::new_v4()),
+    )
+    .await;
+
+    let create_response = create_template_with_body(
+        &client,
+        &app.address,
+        "test-bearer-token",
+        json!({
+            "name": "Declared Secret Template",
+            "slug": "declared-secret-template",
+            "source_project_id": project_id,
+            "stack_definition": {
+                "services": {
+                    "auth": { "environment": { "JWT_SECRET": "dev-only-value" } }
+                }
+            },
+            "config_contract": {
+                "services": {
+                    "auth": {
+                        "fields": {
+                            "JWT_SECRET": { "mutability": "generated", "type": "hex", "length": 32 }
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(StatusCode::CREATED, create_response.status());
+    let create_body: Value = create_response
+        .json()
+        .await
+        .expect("Create response should be valid JSON");
+    let template_id = create_body["item"]["id"]
+        .as_str()
+        .expect("Created template should include an id");
+
+    let submit_response = client
+        .post(format!(
+            "{}/api/templates/{}/submit",
+            app.address, template_id
+        ))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({ "confirm_no_secrets": true }))
+        .send()
+        .await
+        .expect("Failed to submit template for review");
+    assert_eq!(StatusCode::OK, submit_response.status());
 }

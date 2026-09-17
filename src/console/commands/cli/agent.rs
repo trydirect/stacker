@@ -2916,8 +2916,12 @@ impl CallableTrait for AgentInstallCommand {
                 )
             })?;
 
-            let stacker_url = std::env::var("STACKER_URL")
-                .unwrap_or_else(|_| stacker_client::DEFAULT_STACKER_URL.to_string());
+            let stacker_url = ctx
+                .creds
+                .server_url
+                .clone()
+                .or_else(|| std::env::var("STACKER_URL").ok())
+                .unwrap_or_else(|| stacker_client::DEFAULT_STACKER_URL.to_string());
 
             eprintln!(
                 "Server {} is on a private network — using local SSH to install agent.",
@@ -3260,9 +3264,8 @@ mod tests {
             port: 22,
         };
 
-        let err =
-            select_server_for_agent_install(servers, 42, Some(&server_cfg), "demo", "server")
-                .expect_err("should not silently pick an unrelated server");
+        let err = select_server_for_agent_install(servers, 42, Some(&server_cfg), "demo", "server")
+            .expect_err("should not silently pick an unrelated server");
 
         let message = err.to_string();
         assert!(message.contains("203.0.113.10"));
@@ -4337,5 +4340,55 @@ monitoring:
             Some(value) => std::env::set_var("STACKER_DOCKER_REGISTRY", value),
             None => std::env::remove_var("STACKER_DOCKER_REGISTRY"),
         }
+    }
+}
+
+// ── rotate-token ────────────────────────────────────────────────────────────
+
+/// Reissue the agent's bearer token.
+///
+/// The recovery path when an agent cannot authenticate — after the move to
+/// stored digests, an agent whose `token_hash` was never provisioned fails
+/// closed and shows as offline, because a heartbeat is only recorded after a
+/// successful authentication.
+///
+/// This lives in the CLI rather than the `console` binary because it is an
+/// operator action, and `console` is built only with the `explain` feature: on
+/// a release image the one command that restores a locked-out agent was not
+/// there at all.
+pub struct AgentRotateTokenCommand {
+    pub json: bool,
+    pub deployment: Option<String>,
+}
+
+impl AgentRotateTokenCommand {
+    pub fn new(json: bool, deployment: Option<String>) -> Self {
+        Self { json, deployment }
+    }
+}
+
+impl CallableTrait for AgentRotateTokenCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = CliRuntime::new("agent rotate-token")?;
+        let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+
+        let response = ctx.block_on(ctx.client.rotate_agent_token(&hash))?;
+
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&response)?);
+            return Ok(());
+        }
+
+        println!("✓ Agent token rotated for {}", hash);
+        println!(
+            "  The agent reads the new value from Vault on its next refresh \
+             (about a minute); no reinstall is needed."
+        );
+        println!(
+            "  The token is not printed: the agent's only source is Vault, so \
+             nothing here needs a copy of it."
+        );
+
+        Ok(())
     }
 }

@@ -1,14 +1,45 @@
+/// Conservative fallback for identifying secret-shaped environment names.
+///
+/// Explicit config-contract protected keys take precedence over this helper.
+/// Keep generic `KEY`, `TLS`, `CERT`, and `USERNAME` out: they commonly refer
+/// to public identifiers, feature flags, or connection settings rather than
+/// secret material.
+pub(crate) fn is_sensitive_env_key(key: &str) -> bool {
+    const SENSITIVE_PATTERNS: &[&str] = &[
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "access_key",
+        "auth_key",
+        "credential",
+        "private_key",
+        "jwt",
+        "bearer",
+        "refresh_token",
+        "registry_username",
+        "app_key",
+        "license_key",
+        "masterkey",
+        "session_key",
+        "crypto_key",
+        "encryption_key",
+        "signing_key",
+        "decryption_key",
+    ];
+
+    let key = key.to_ascii_lowercase();
+    SENSITIVE_PATTERNS
+        .iter()
+        .any(|pattern| key.contains(pattern))
+        || key.split('_').any(|segment| segment == "pass")
+}
+
 fn is_sensitive_key(key: &str) -> bool {
-    let k = key.to_lowercase();
-    k.contains("password")
-        || k.contains("passwd")
-        || k.contains("pwd")
-        || k.contains("secret")
-        || k.contains("api_key")
-        || k.contains("apikey")
-        || k.contains("private_key")
-        || k.contains("access_key")
-        || k.contains("auth_key")
+    is_sensitive_env_key(key)
 }
 
 // ─── JSON redaction ───────────────────────────────────────────────────────────
@@ -48,7 +79,7 @@ pub fn redact_sensitive_json_values(value: &mut serde_json::Value) {
 
             // Pattern 1: standard JSON keys
             for (key, val) in map.iter_mut() {
-                if is_sensitive_key(key) && !val.is_null() {
+                if is_sensitive_key(key) && !val.is_null() && !val.is_object() && !val.is_array() {
                     *val = serde_json::Value::String("***REDACTED***".to_string());
                 } else {
                     redact_sensitive_json_values(val);
@@ -110,11 +141,117 @@ pub fn redact_yaml_string(yaml: &str) -> String {
     }
 }
 
+// ─── generated-field stripping (publish-time, key-set driven) ───────────────────
+//
+// Unlike the name-heuristic redaction above, these replace the values of an
+// EXPLICIT set of keys (the author-declared `mutability: generated` fields from
+// config_contract) with `replacement`. Used at publish time so the stored
+// `stack_definition` never carries the author's secret values for fields the
+// installer will regenerate — fail-closed if regeneration ever doesn't run.
+
+use std::collections::BTreeSet;
+
+/// Replace, in place, the values of env entries whose key is in `keys`.
+/// Handles the same shapes as [`redact_sensitive_json_values`] plus `KEY=value`
+/// strings in environment arrays.
+pub fn strip_json_values_for_keys(
+    value: &mut serde_json::Value,
+    keys: &BTreeSet<String>,
+    replacement: &str,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            // ProjectForm var entry: {"key": "NAME", "value": "..."}.
+            if let Some(name) = map.get("key").and_then(|v| v.as_str()) {
+                if keys.contains(name) {
+                    if let Some(val) = map.get_mut("value") {
+                        if !val.is_null() {
+                            *val = serde_json::Value::String(replacement.to_string());
+                        }
+                    }
+                    return;
+                }
+            }
+            for (key, val) in map.iter_mut() {
+                if keys.contains(key) && !val.is_null() {
+                    *val = serde_json::Value::String(replacement.to_string());
+                } else {
+                    strip_json_values_for_keys(val, keys, replacement);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                if let serde_json::Value::String(s) = item {
+                    if let Some(eq) = s.find('=') {
+                        if keys.contains(&s[..eq]) {
+                            *s = format!("{}={}", &s[..eq], replacement);
+                            continue;
+                        }
+                    }
+                }
+                strip_json_values_for_keys(item, keys, replacement);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn strip_yaml_values_for_keys(
+    value: &mut serde_yaml::Value,
+    keys: &BTreeSet<String>,
+    replacement: &str,
+) {
+    match value {
+        serde_yaml::Value::Mapping(map) => {
+            for (key, val) in map.iter_mut() {
+                if let serde_yaml::Value::String(k) = key {
+                    if keys.contains(k) && !val.is_null() {
+                        *val = serde_yaml::Value::String(replacement.to_string());
+                        continue;
+                    }
+                }
+                strip_yaml_values_for_keys(val, keys, replacement);
+            }
+        }
+        serde_yaml::Value::Sequence(seq) => {
+            for item in seq.iter_mut() {
+                if let serde_yaml::Value::String(s) = item {
+                    if let Some(eq) = s.find('=') {
+                        if keys.contains(&s[..eq]) {
+                            *s = format!("{}={}", &s[..eq], replacement);
+                        }
+                    }
+                } else {
+                    strip_yaml_values_for_keys(item, keys, replacement);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Parse a compose YAML string, blank the values of `keys`, re-serialize.
+/// Returns the original string on parse failure.
+pub fn strip_yaml_string_for_keys(
+    yaml: &str,
+    keys: &BTreeSet<String>,
+    replacement: &str,
+) -> String {
+    match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
+        Ok(mut value) => {
+            strip_yaml_values_for_keys(&mut value, keys, replacement);
+            serde_yaml::to_string(&value).unwrap_or_else(|_| yaml.to_string())
+        }
+        Err(_) => yaml.to_string(),
+    }
+}
+
 // ─── tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
-    use super::{redact_sensitive_json_values, redact_yaml_string};
+    use super::{is_sensitive_env_key, redact_sensitive_json_values, redact_yaml_string};
     use serde_json::json;
 
     // JSON tests
@@ -133,6 +270,20 @@ mod tests {
         redact_sensitive_json_values(&mut v);
         assert_eq!(v["db"]["db_password"], "***REDACTED***");
         assert_eq!(v["db"]["host"], "localhost");
+    }
+
+    #[test]
+    fn preserves_sensitive_object_shape_while_redacting_nested_values() {
+        let mut v = json!({
+            "credentials": {
+                "passwd": "secret123",
+                "username": "root"
+            }
+        });
+        redact_sensitive_json_values(&mut v);
+
+        assert_eq!(v["credentials"]["passwd"], "***REDACTED***");
+        assert_eq!(v["credentials"]["username"], "root");
     }
 
     #[test]
@@ -156,6 +307,19 @@ mod tests {
         redact_sensitive_json_values(&mut v);
         assert_eq!(v["DB_PASSWORD"], "***REDACTED***");
         assert_eq!(v["API_KEY"], "***REDACTED***");
+    }
+
+    #[test]
+    fn sensitive_name_fallback_avoids_common_non_secret_keys() {
+        assert!(is_sensitive_env_key("DATABASE_PASSWORD"));
+        assert!(is_sensitive_env_key("SERVICE_TOKEN"));
+        assert!(is_sensitive_env_key("AWS_ACCESS_KEY_ID"));
+        assert!(is_sensitive_env_key("DB_PASS"));
+        assert!(is_sensitive_env_key("ZITADEL_MASTERKEY"));
+        assert!(is_sensitive_env_key("APP_KEY"));
+        assert!(!is_sensitive_env_key("FLOCI_TLS_ENABLED"));
+        assert!(!is_sensitive_env_key("PUBLIC_KEY_ID"));
+        assert!(is_sensitive_env_key("REGISTRY_USERNAME"));
     }
 
     /// stack_definition stores env vars as [{key: "NAME", value: "DATA"}] objects.

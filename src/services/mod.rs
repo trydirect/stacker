@@ -1,7 +1,9 @@
 pub mod agent_dispatcher;
+pub mod agent_token;
 pub mod config_renderer;
 pub mod dag_executor;
 pub mod deploy_plan;
+pub mod deployment_container_sweeper;
 pub mod deployment_events;
 pub mod deployment_identifier;
 pub mod deployment_state;
@@ -17,6 +19,8 @@ pub mod marketplace_assets;
 pub mod payout_provider;
 pub mod project;
 pub mod project_app_service;
+pub mod project_cleanup_notifier;
+pub mod server_cleanup_notifier;
 mod rating;
 pub mod resilience_engine;
 pub mod step_executor;

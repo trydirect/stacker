@@ -33,17 +33,6 @@ fn normalized_status_panel_capabilities(capabilities: &[String]) -> serde_json::
 }
 
 /// Generate a secure random agent token (86 characters)
-fn generate_agent_token() -> String {
-    use rand::Rng;
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut rng = rand::thread_rng();
-    (0..86)
-        .map(|_| {
-            let idx = rng.gen_range(0..CHARSET.len());
-            CHARSET[idx] as char
-        })
-        .collect()
-}
 
 /// POST /api/v1/agent/link
 ///
@@ -121,23 +110,21 @@ pub async fn link_handler(
                 helpers::JsonResponse::<LinkAgentResponse>::build().internal_server_error(e)
             })?;
 
-        // Fetch existing token from Vault or regenerate
-        let token = vault_client
-            .fetch_agent_token(&deployment.deployment_hash)
-            .await
-            .unwrap_or_else(|_| {
-                tracing::warn!("Existing agent found but token missing in Vault, regenerating");
-                let new_token = generate_agent_token();
-                let vault = vault_client.clone();
-                let hash = deployment.deployment_hash.clone();
-                let token = new_token.clone();
-                actix_web::rt::spawn(async move {
-                    if let Err(e) = vault.store_agent_token(&hash, &token).await {
-                        tracing::error!("Failed to store regenerated token in Vault: {:?}", e);
-                    }
-                });
-                new_token
-            });
+        // Re-issue rather than recovering the old value: verification now
+        // compares against the digest in Postgres. The previous shape also
+        // regenerated on any Vault error, and stored with a single attempt —
+        // no retry, unlike every other site.
+        let token = crate::services::agent_token::issue(
+            agent_pool.as_ref(),
+            vault_client.as_ref(),
+            existing.id,
+            &deployment.deployment_hash,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to issue agent token on re-link: {}", e);
+            helpers::JsonResponse::<LinkAgentResponse>::build().internal_server_error(e)
+        })?;
 
         (existing, token)
     } else {
@@ -146,35 +133,25 @@ pub async fn link_handler(
         agent.system_info = Some(payload.server_fingerprint.clone());
         agent.capabilities = Some(normalized_status_panel_capabilities(&payload.capabilities));
 
-        let agent_token = generate_agent_token();
-
         let saved_agent = db::agent::insert(agent_pool.as_ref(), agent)
             .await
             .map_err(|e| {
                 helpers::JsonResponse::<LinkAgentResponse>::build().internal_server_error(e)
             })?;
 
-        // Store token in Vault
-        let vault = vault_client.clone();
-        let hash = deployment.deployment_hash.clone();
-        let token = agent_token.clone();
-        actix_web::rt::spawn(async move {
-            for retry in 0..3 {
-                match vault.store_agent_token(&hash, &token).await {
-                    Ok(_) => {
-                        tracing::info!("Token stored in Vault for linked agent {}", hash);
-                        break;
-                    }
-                    Err(e) => {
-                        tracing::warn!("Vault store attempt {} failed: {:?}", retry + 1, e);
-                        if retry < 2 {
-                            tokio::time::sleep(tokio::time::Duration::from_secs(2_u64.pow(retry)))
-                                .await;
-                        }
-                    }
-                }
-            }
-        });
+        // Issue the token: digest to Postgres, value to Vault, both awaited,
+        // so the caller never receives a credential that cannot be verified.
+        let agent_token = crate::services::agent_token::issue(
+            agent_pool.as_ref(),
+            vault_client.as_ref(),
+            saved_agent.id,
+            &deployment.deployment_hash,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to issue agent token on link: {}", e);
+            helpers::JsonResponse::<LinkAgentResponse>::build().internal_server_error(e)
+        })?;
 
         (saved_agent, agent_token)
     };

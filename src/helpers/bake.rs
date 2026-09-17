@@ -158,6 +158,21 @@ mod tests {
                 name: "mock".into(),
             })
         }
+        async fn create_firewall(
+            &self,
+            _t: &str,
+            _n: &str,
+            _r: Vec<crate::connectors::hetzner::HetznerFirewallRule>,
+            _s: i64,
+        ) -> Result<
+            crate::connectors::hetzner::HetznerFirewallResult,
+            crate::connectors::ConnectorError,
+        > {
+            Ok(crate::connectors::hetzner::HetznerFirewallResult {
+                id: 1,
+                name: "mock".into(),
+            })
+        }
     }
 
     #[tokio::test]

@@ -27,24 +27,10 @@ enum Commands {
         #[command(subcommand)]
         command: AppMqCommands,
     },
-    Agent {
-        #[command(subcommand)]
-        command: AgentCommands,
-    },
     /// Stacker CLI — deploy apps from a stacker.yml config
     Stacker {
         #[command(subcommand)]
         command: StackerCommands,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum AgentCommands {
-    RotateToken {
-        #[arg(long)]
-        deployment_hash: String,
-        #[arg(long)]
-        new_token: String,
     },
 }
 
@@ -417,17 +403,6 @@ fn get_command(
         Commands::MQ { command } => match command {
             AppMqCommands::Listen {} => Ok(Box::new(
                 stacker::console::commands::mq::ListenCommand::new(),
-            )),
-        },
-        Commands::Agent { command } => match command {
-            AgentCommands::RotateToken {
-                deployment_hash,
-                new_token,
-            } => Ok(Box::new(
-                stacker::console::commands::agent::RotateTokenCommand::new(
-                    deployment_hash,
-                    new_token,
-                ),
             )),
         },
         Commands::Stacker { command } => match command {

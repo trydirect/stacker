@@ -963,10 +963,14 @@ fn print_compose_sync_result(result: &ComposeServiceSyncResult) {
 fn try_build_online_catalog() -> Option<StackerClient> {
     let cred_manager = CredentialsManager::with_default_store();
     let creds = cred_manager.require_valid_token("service catalog").ok()?;
-    Some(StackerClient::new(
-        stacker_client::DEFAULT_STACKER_URL,
-        &creds.access_token,
-    ))
+    let env_url = std::env::var("STACKER_URL").ok();
+    let base_url = creds
+        .server_url
+        .as_deref()
+        .or(env_url.as_deref())
+        .map(crate::cli::install_runner::normalize_stacker_server_url)
+        .unwrap_or_else(|| stacker_client::DEFAULT_STACKER_URL.to_string());
+    Some(StackerClient::new(&base_url, &creds.access_token))
 }
 
 fn category_icon(category: &str) -> &str {

@@ -24,17 +24,9 @@ pub async fn agent_audit_ingest_handler(
     body: web::Json<AuditBatchRequest>,
     pool: web::Data<PgPool>,
 ) -> Result<HttpResponse> {
-    // Validate internal service key
-    let expected = std::env::var("INTERNAL_SERVICES_ACCESS_KEY").unwrap_or_default();
-    let provided = req
-        .headers()
-        .get("x-internal-key")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
-
-    if expected.is_empty() || provided != expected {
-        return Err(ErrorUnauthorized("invalid internal key"));
-    }
+    // Shared with the other service-to-service endpoints; the comparison is
+    // now constant-time.
+    crate::helpers::internal_key::require_internal_key(&req)?;
 
     // Short-circuit on empty batch
     if body.events.is_empty() {
@@ -68,8 +60,37 @@ pub struct AuditQueryParams {
 pub async fn agent_audit_query_handler(
     params: web::Query<AuditQueryParams>,
     pool: web::Data<PgPool>,
+    settings: web::Data<crate::configuration::Settings>,
+    caller_user: Option<web::ReqData<std::sync::Arc<crate::models::User>>>,
 ) -> Result<HttpResponse> {
     let limit = params.limit.unwrap_or(50).min(100).max(1);
+
+    // `installation_hash` is optional, and omitting it made `fetch_recent`
+    // return the most recent events across *every* installation — a
+    // cross-tenant read available to any authenticated user, since Casbin
+    // grants this route to `group_user`. Non-admins must now name an
+    // installation and prove they own it.
+    let user = caller_user
+        .as_deref()
+        .ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
+
+    let is_admin = matches!(user.role.as_str(), "admin_service" | "group_admin" | "root");
+
+    if !is_admin {
+        let installation_hash = params
+            .installation_hash
+            .as_deref()
+            .ok_or_else(|| JsonResponse::<String>::bad_request("installation_hash is required"))?;
+
+        crate::routes::agent::guard::authorize_deployment_access(
+            &pool,
+            settings.get_ref(),
+            installation_hash,
+            None,
+            Some(user),
+        )
+        .await?;
+    }
 
     let logs: Vec<AgentAuditLog> = audit_db::fetch_recent(
         &pool,

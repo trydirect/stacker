@@ -76,7 +76,7 @@ pub async fn mint_handler(
 
     Ok(JsonResponse::build()
         .set_item(DeploymentHandoffMintResponse {
-            command: format!("stacker connect --handoff {}", token),
+            command: format!("stacker connect --handoff {}", link.url),
             token: link.token,
             url: link.url,
             expires_at: link.expires_at,
@@ -102,7 +102,7 @@ pub async fn mint_account_handler(
 
     Ok(JsonResponse::build()
         .set_item(DeploymentHandoffMintResponse {
-            command: format!("stacker connect --handoff {}", token),
+            command: format!("stacker connect --handoff {}", link.url),
             token: link.token,
             url: link.url,
             expires_at: link.expires_at,
@@ -440,15 +440,47 @@ fn quote_yaml(value: &str) -> String {
         .unwrap_or_else(|_| format!("{:?}", value))
 }
 
+/// The public base URL of this Stacker, as a client outside the proxy sees it.
+///
+/// Must include any path prefix. Stacker is commonly mounted under one — dev
+/// serves it at `https://dev.try.direct/stacker` — and the domain root belongs
+/// to something else entirely (the dashboard), so a base without the prefix
+/// points a CLI at the wrong service. `connection_info` cannot see the prefix:
+/// the proxy strips it before Stacker ever sees the request. Hence
+/// `X-Forwarded-Prefix` when the proxy sends it, and `STACKER_PUBLIC_URL` —
+/// already this codebase's name for "the public base" — when it does not.
 fn resolve_public_base_url(request: &actix_web::HttpRequest) -> String {
     let connection_info = request.connection_info();
     let scheme = connection_info.scheme();
     let host = connection_info.host();
+
     if !host.is_empty() {
-        format!("{}://{}", scheme, host)
-    } else {
-        DEFAULT_STACKER_URL.to_string()
+        let prefix = request
+            .headers()
+            .get("x-forwarded-prefix")
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.trim().trim_end_matches('/'))
+            .filter(|value| !value.is_empty() && *value != "/");
+
+        if let Some(prefix) = prefix {
+            let prefix = prefix.strip_prefix('/').unwrap_or(prefix);
+            return format!("{}://{}/{}", scheme, host, prefix);
+        }
     }
+
+    if let Some(public_url) = std::env::var("STACKER_PUBLIC_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return public_url;
+    }
+
+    if !host.is_empty() {
+        return format!("{}://{}", scheme, host);
+    }
+
+    DEFAULT_STACKER_URL.to_string()
 }
 
 #[cfg(test)]
@@ -479,6 +511,63 @@ mod tests {
             URL_SAFE_NO_PAD.encode(header.to_string()),
             URL_SAFE_NO_PAD.encode(payload.to_string()),
         )
+    }
+
+    /// `connection_info` sees the request only after the proxy stripped the
+    /// mount prefix, so the base must come from `X-Forwarded-Prefix` when the
+    /// proxy sends it. Without this the minted link pointed at the domain
+    /// root, which on dev serves the dashboard rather than Stacker.
+    #[test]
+    fn public_base_url_keeps_the_forwarded_prefix() {
+        let request = TestRequest::default()
+            .insert_header(("host", "dev.try.direct"))
+            .insert_header(("x-forwarded-proto", "https"))
+            .insert_header(("x-forwarded-prefix", "/stacker"))
+            .to_http_request();
+
+        assert_eq!(
+            resolve_public_base_url(&request),
+            "https://dev.try.direct/stacker"
+        );
+    }
+
+    /// A trailing slash, or a prefix of just "/", must not produce a base that
+    /// ends in one — `format!("{base}/handoff#{token}")` would then double it.
+    #[test]
+    fn public_base_url_normalises_odd_forwarded_prefixes() {
+        for (prefix, expected) in [
+            ("/stacker/", "https://dev.try.direct/stacker"),
+            ("stacker", "https://dev.try.direct/stacker"),
+            ("/", "https://dev.try.direct"),
+            ("", "https://dev.try.direct"),
+        ] {
+            let request = TestRequest::default()
+                .insert_header(("host", "dev.try.direct"))
+                .insert_header(("x-forwarded-proto", "https"))
+                .insert_header(("x-forwarded-prefix", prefix))
+                .to_http_request();
+
+            assert_eq!(
+                resolve_public_base_url(&request),
+                expected,
+                "prefix {prefix:?} produced the wrong base"
+            );
+        }
+    }
+
+    /// Without a forwarded prefix the host alone is the base — the behaviour
+    /// production relies on, where Stacker owns its own domain.
+    #[test]
+    fn public_base_url_falls_back_to_the_host() {
+        let request = TestRequest::default()
+            .insert_header(("host", "stacker.try.direct"))
+            .insert_header(("x-forwarded-proto", "https"))
+            .to_http_request();
+
+        assert_eq!(
+            resolve_public_base_url(&request),
+            "https://stacker.try.direct"
+        );
     }
 
     #[test]

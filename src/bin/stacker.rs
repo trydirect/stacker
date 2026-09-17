@@ -150,6 +150,16 @@ enum StackerCommands {
         /// Name of saved server to reuse (overrides deploy.cloud.server in stacker.yml)
         #[arg(long, value_name = "SERVER_NAME")]
         server: Option<String>,
+        /// Existing server host/IP to deploy to (sets deploy.server.host without
+        /// editing stacker.yml). Use with --target server.
+        #[arg(long = "server-host", value_name = "HOST")]
+        server_host: Option<String>,
+        /// SSH user for --server-host (default: root)
+        #[arg(long = "server-user", value_name = "USER")]
+        server_user: Option<String>,
+        /// SSH private key path for --server-host (default: deploy.server.ssh_key)
+        #[arg(long = "server-ssh-key", value_name = "PATH")]
+        server_ssh_key: Option<String>,
         /// Watch deployment progress until complete (default for cloud deploys)
         #[arg(long)]
         watch: bool,
@@ -184,6 +194,24 @@ enum StackerCommands {
         #[arg(long)]
         notify: bool,
     },
+    /// Synchronize project configuration without deploying it
+    Sync {
+        /// Path to stacker.yml (default: ./stacker.yml)
+        #[arg(long, value_name = "FILE")]
+        file: Option<std::path::PathBuf>,
+        /// Explicit deployment hash to associate with this synchronization
+        #[arg(long, value_name = "HASH")]
+        deployment: Option<String>,
+        /// Environment/profile to synchronize
+        #[arg(long = "env", alias = "environment", value_name = "ENVIRONMENT")]
+        environment: Option<String>,
+        /// Verify that Stacker acknowledged the synchronized configuration
+        #[arg(long)]
+        verify: bool,
+        /// Print the synchronization result as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Attach this directory to an existing deployment from the dashboard
     Connect {
         /// Handoff token or full handoff URL copied from the dashboard
@@ -198,6 +226,9 @@ enum StackerCommands {
         /// Stack version (default: from stacker.yml or "1.0.0")
         #[arg(long)]
         version: Option<String>,
+        /// Unique marketplace slug (defaults to a slug derived from the stack name)
+        #[arg(long)]
+        slug: Option<String>,
         /// Short description for marketplace listing
         #[arg(long)]
         description: Option<String>,
@@ -610,6 +641,9 @@ enum MarketplaceCommands {
         /// Stack version (default: from stacker.yml or "1.0.0")
         #[arg(long)]
         version: Option<String>,
+        /// Unique marketplace slug (defaults to a slug derived from the stack name)
+        #[arg(long)]
+        slug: Option<String>,
         /// Short description for marketplace listing
         #[arg(long)]
         description: Option<String>,
@@ -1476,6 +1510,16 @@ enum AgentCommands {
         #[arg(long)]
         deployment: Option<String>,
     },
+    /// Reissue the agent's bearer token (recovery for an agent that cannot authenticate)
+    #[command(name = "rotate-token")]
+    RotateToken {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash (auto-detected from lock/config)
+        #[arg(long)]
+        deployment: Option<String>,
+    },
     /// Restart a container on the remote deployment
     Restart {
         /// App code to restart
@@ -2087,6 +2131,9 @@ fn get_command(
             key,
             key_id,
             server,
+            server_host,
+            server_user,
+            server_ssh_key,
             watch,
             no_watch,
             lock,
@@ -2107,6 +2154,7 @@ fn get_command(
             .with_service(service)
             .with_environment(environment)
             .with_remote_overrides(project, key, server)
+            .with_server_overrides(server_host, server_user, server_ssh_key)
             .with_key_id(key_id)
             .with_watch(watch, no_watch)
             .with_lock(lock)
@@ -2117,6 +2165,19 @@ fn get_command(
             .with_hook_flags(no_hooks, allow_untrusted_hooks)
             .with_notify(notify),
         ),
+        StackerCommands::Sync {
+            file,
+            deployment,
+            environment,
+            verify,
+            json,
+        } => Box::new(stacker::console::commands::cli::sync::SyncCommand::new(
+            file,
+            deployment,
+            environment,
+            verify,
+            json,
+        )),
         StackerCommands::Connect { handoff } => {
             Box::new(stacker::console::commands::cli::connect::ConnectCommand::new(handoff))
         }
@@ -2139,9 +2200,11 @@ fn get_command(
             once,
             interval,
             deployment,
-        } => Box::new(stacker::console::commands::cli::monitor::MonitorCommand::new(
-            once, interval, deployment,
-        )),
+        } => Box::new(
+            stacker::console::commands::cli::monitor::MonitorCommand::new(
+                once, interval, deployment,
+            ),
+        ),
         StackerCommands::Deployment { command } => match command {
             DeploymentCommands::State {
                 json,
@@ -2673,7 +2736,9 @@ fn get_command(
                     dry_run,
                     json,
                     deployment,
-                } => Box::new(pipe::PipeApplyCommand::new(prune, dry_run, json, deployment)),
+                } => Box::new(pipe::PipeApplyCommand::new(
+                    prune, dry_run, json, deployment,
+                )),
                 PipeCommands::List { json, deployment } => {
                     Box::new(pipe::PipeListCommand::new(json, deployment))
                 }
@@ -2748,6 +2813,9 @@ fn get_command(
                     json,
                     deployment,
                 )),
+                AgentCommands::RotateToken { json, deployment } => {
+                    Box::new(agent::AgentRotateTokenCommand::new(json, deployment))
+                }
                 AgentCommands::Restart {
                     app,
                     force,
@@ -2925,6 +2993,7 @@ fn get_command(
         StackerCommands::Submit {
             file,
             version,
+            slug,
             description,
             category,
             plan_type,
@@ -2932,6 +3001,7 @@ fn get_command(
         } => Box::new(stacker::console::commands::cli::submit::SubmitCommand::new(
             file,
             version,
+            slug,
             description,
             category,
             plan_type,
@@ -2984,6 +3054,7 @@ fn get_command(
             MarketplaceCommands::Submit {
                 file,
                 version,
+                slug,
                 description,
                 category,
                 plan_type,
@@ -2991,6 +3062,7 @@ fn get_command(
             } => Box::new(stacker::console::commands::cli::submit::SubmitCommand::new(
                 file,
                 version,
+                slug,
                 description,
                 category,
                 plan_type,
@@ -3046,6 +3118,39 @@ mod tests {
     }
 
     #[test]
+    fn test_deploy_parses_existing_server_flags() {
+        let cli = Cli::try_parse_from([
+            "stacker",
+            "deploy",
+            "--target",
+            "server",
+            "--server-host",
+            "1.2.3.4",
+            "--server-user",
+            "root",
+            "--server-ssh-key",
+            "~/.ssh/id_ed25519",
+        ])
+        .unwrap();
+
+        match cli.command.unwrap() {
+            StackerCommands::Deploy {
+                target,
+                server_host,
+                server_user,
+                server_ssh_key,
+                ..
+            } => {
+                assert_eq!(target.as_deref(), Some("server"));
+                assert_eq!(server_host.as_deref(), Some("1.2.3.4"));
+                assert_eq!(server_user.as_deref(), Some("root"));
+                assert_eq!(server_ssh_key.as_deref(), Some("~/.ssh/id_ed25519"));
+            }
+            _ => panic!("expected deploy command"),
+        }
+    }
+
+    #[test]
     fn test_deploy_parses_environment_long_alias() {
         let cli = Cli::try_parse_from([
             "stacker",
@@ -3062,6 +3167,37 @@ mod tests {
                 assert_eq!(environment.as_deref(), Some("staging"));
             }
             _ => panic!("expected deploy command"),
+        }
+    }
+
+    #[test]
+    fn test_sync_parses_verification_and_deployment() {
+        let cli = Cli::try_parse_from([
+            "stacker",
+            "sync",
+            "--deployment",
+            "deployment_abc",
+            "--env",
+            "production",
+            "--verify",
+            "--json",
+        ])
+        .unwrap();
+
+        match cli.command.unwrap() {
+            StackerCommands::Sync {
+                deployment,
+                environment,
+                verify,
+                json,
+                ..
+            } => {
+                assert_eq!(deployment.as_deref(), Some("deployment_abc"));
+                assert_eq!(environment.as_deref(), Some("production"));
+                assert!(verify);
+                assert!(json);
+            }
+            _ => panic!("expected sync command"),
         }
     }
 

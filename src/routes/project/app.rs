@@ -103,6 +103,9 @@ pub struct AppConfigResponse {
     pub ssl_enabled: bool,
     pub resources: Value,
     pub restart_policy: String,
+    /// Author-declared per-field policy (`config_contract`), `null` when
+    /// none has been declared for this app.
+    pub config_contract: Value,
 }
 
 /// Request to update environment variables
@@ -191,6 +194,11 @@ pub struct CreateAppRequest {
     pub deploy_order: Option<i32>,
     #[serde(default)]
     pub deployment_hash: Option<String>,
+    /// Author-declared per-field policy (`config_contract` from stacker.yml,
+    /// as JSON) — which env vars are fixed/editable/generated. See
+    /// `docs/MARKETPLACE_FIELD_POLICY.md`.
+    #[serde(default)]
+    pub config_contract: Option<Value>,
 }
 
 /// List all apps in a project
@@ -304,6 +312,16 @@ pub async fn create_app(
             .upsert(&app, &project, deployment_hash)
             .await
             .map_err(|e| JsonResponse::<()>::build().internal_server_error(e.to_string()))?;
+        if let Some(config_contract) = payload.config_contract.clone() {
+            db::project_app::set_config_contract(
+                pg_pool.get_ref(),
+                project_id,
+                code,
+                config_contract,
+            )
+            .await
+            .map_err(|e| JsonResponse::<()>::build().internal_server_error(e))?;
+        }
         return Ok(JsonResponse::build().set_item(Some(created)).ok("OK"));
     } else {
         ProjectAppService::new_without_sync(Arc::new(pg_pool.get_ref().clone()))
@@ -314,6 +332,12 @@ pub async fn create_app(
         .upsert(&app, &project, "")
         .await
         .map_err(|e| JsonResponse::<()>::build().internal_server_error(e.to_string()))?;
+
+    if let Some(config_contract) = payload.config_contract.clone() {
+        db::project_app::set_config_contract(pg_pool.get_ref(), project_id, code, config_contract)
+            .await
+            .map_err(|e| JsonResponse::<()>::build().internal_server_error(e))?;
+    }
 
     Ok(JsonResponse::build().set_item(Some(created)).ok("OK"))
 }
@@ -443,6 +467,11 @@ pub async fn get_app_config(
     .await
     .map_err(JsonResponse::internal_server_error)?;
 
+    let config_contract =
+        db::project_app::get_config_contract(pg_pool.get_ref(), project_id, &code)
+            .await
+            .map_err(JsonResponse::internal_server_error)?;
+
     let config = AppConfigResponse {
         project_id,
         app_code: code,
@@ -457,6 +486,7 @@ pub async fn get_app_config(
             .restart_policy
             .clone()
             .unwrap_or("unless-stopped".to_string()),
+        config_contract,
     };
 
     Ok(JsonResponse::build().set_item(Some(config)).ok("OK"))

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
+use futures::future::join_all;
 
 /// Request body for uploading an existing SSH key pair
 #[derive(Debug, Deserialize)]
@@ -268,6 +269,56 @@ pub async fn get_public_key(
 
 /// Authorize a caller-provided public key on the remote server.
 ///
+/// Backoff between SSH authorize attempts, in seconds. Attempt 1 waits
+/// `[0]` before attempt 2, and so on; running off the end means give up.
+///
+/// Four attempts at a 15s connect timeout plus these delays is ~76s worst
+/// case, which covers the 30-60s a freshly created cloud VM can take before
+/// sshd accepts connections (see commit 37456a5f).
+const SSH_AUTHORIZE_RETRY_DELAYS_SECS: [u64; 3] = [3, 5, 8];
+
+/// Decide whether a failed SSH authorize attempt is worth retrying.
+///
+/// `attempt` is 1-based. Returns `Some(delay)` to sleep and try again, `None`
+/// to surface the error.
+///
+/// Only connection-shaped failures are retried: a brand new VM routinely
+/// refuses connections or times out for the first half-minute of its life, and
+/// a single 15s attempt against it is what left server 179 (and others)
+/// without any authorized key. Authentication failures are the opposite —
+/// waiting never fixes a wrong key, so they surface immediately.
+fn ssh_authorize_retry(attempt: u32, error: &str) -> Option<Duration> {
+    let error = error.to_lowercase();
+
+    // Auth-shaped failures never become successes by waiting. Mirrors the
+    // classification already used by ssh_client::check_server.
+    if error.contains("auth")
+        || error.contains("permission")
+        || error.contains("invalid")
+        || error.contains("cannot be empty")
+    {
+        return None;
+    }
+
+    // Allow-list rather than deny-list: anything we have not positively
+    // identified as "the box is not up yet" is surfaced instead of silently
+    // costing the caller another minute.
+    let is_connection_failure = error.contains("timed out")
+        || error.contains("timeout")
+        || error.contains("connection refused")
+        || error.contains("connection reset")
+        || error.contains("no route to host")
+        || error.contains("network unreachable")
+        || error.contains("broken pipe");
+    if !is_connection_failure {
+        return None;
+    }
+
+    SSH_AUTHORIZE_RETRY_DELAYS_SECS
+        .get(attempt.saturating_sub(1) as usize)
+        .map(|secs| Duration::from_secs(*secs))
+}
+
 /// POST /server/{id}/ssh-key/authorize-public-key
 ///
 /// The caller sends only public key material. Stacker retrieves the server's
@@ -343,19 +394,45 @@ pub async fn authorize_public_key(
         .port
         .unwrap_or_else(|| server.ssh_port.unwrap_or(22) as u16);
 
-    ssh_client::authorize_public_key(
-        &srv_ip,
-        ssh_port,
-        &ssh_user,
-        &private_key,
-        public_key,
-        Duration::from_secs(15),
-    )
-    .await
-    .map_err(|e| {
+    // Retry while the VM is still booting — see ssh_authorize_retry.
+    let mut attempt: u32 = 1;
+    let authorized = loop {
+        let outcome = ssh_client::authorize_public_key(
+            &srv_ip,
+            ssh_port,
+            &ssh_user,
+            &private_key,
+            public_key,
+            Duration::from_secs(15),
+        )
+        .await;
+
+        let error = match outcome {
+            Ok(()) => break Ok(()),
+            Err(error) => error,
+        };
+
+        match ssh_authorize_retry(attempt, &error.to_string()) {
+            Some(delay) => {
+                tracing::info!(
+                    "SSH authorize attempt {} for server {} failed ({}); retrying in {}s",
+                    attempt,
+                    server_id,
+                    error,
+                    delay.as_secs()
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+            None => break Err(error),
+        }
+    };
+
+    authorized.map_err(|e| {
         tracing::warn!(
-            "Failed to authorize backup public key for server {}: {}",
+            "Failed to authorize backup public key for server {} after {} attempt(s): {}",
             server_id,
+            attempt,
             e
         );
         JsonResponse::<AuthorizePublicKeyResponse>::build()
@@ -583,6 +660,166 @@ pub async fn validate_key(
         .ok(ok_message))
 }
 
+/// Batch response for validating all servers at once
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchValidateResponse {
+    pub servers: Vec<ValidateResponse>,
+    pub total: usize,
+    pub valid: usize,
+    pub invalid: usize,
+}
+
+/// Validate SSH connection for ALL servers belonging to the user
+/// POST /server/ssh-key/validate-all
+///
+/// Instead of N sequential requests from the frontend, this validates
+/// all servers in a single request with parallel SSH connections.
+#[tracing::instrument(name = "Validate SSH for all servers.", skip_all)]
+#[post("/ssh-key/validate-all")]
+pub async fn validate_all(
+    user: web::ReqData<Arc<models::User>>,
+    pg_pool: web::Data<PgPool>,
+    vault_client: web::Data<VaultClient>,
+) -> Result<impl Responder> {
+    use crate::helpers::ssh_client;
+
+    let servers = db::server::fetch_by_user(pg_pool.get_ref(), &user.id)
+        .await
+        .map_err(|e| {
+            JsonResponse::<()>::build()
+                .internal_server_error(&format!("Failed to fetch servers: {}", e))
+        })?;
+
+    let mut futures = Vec::with_capacity(servers.len());
+
+    for server in &servers {
+        let server = server.clone();
+        let user_id = user.id.clone();
+        let vault_client = vault_client.clone();
+
+        futures.push(async move {
+            let vault = vault_client.get_ref();
+            // Quick pre-checks (cheap, no network)
+            if server.key_status != "active" {
+                return ValidateResponse {
+                    valid: false,
+                    server_id: server.id,
+                    srv_ip: server.srv_ip.clone(),
+                    message: format!("SSH key status is '{}', not active", server.key_status),
+                    ..Default::default()
+                };
+            }
+
+            let vault_key_path = match &server.vault_key_path {
+                Some(p) if !p.is_empty() => p,
+                _ => {
+                    return ValidateResponse {
+                        valid: false,
+                        server_id: server.id,
+                        srv_ip: server.srv_ip.clone(),
+                        message: "SSH key is not stored in Vault".to_string(),
+                        ..Default::default()
+                    };
+                }
+            };
+
+            let srv_ip = match &server.srv_ip {
+                Some(ip) if !ip.is_empty() => ip.clone(),
+                _ => {
+                    return ValidateResponse {
+                        valid: false,
+                        server_id: server.id,
+                        srv_ip: server.srv_ip.clone(),
+                        message: "Server IP address not configured".to_string(),
+                        ..Default::default()
+                    };
+                }
+            };
+
+            let private_key = match vault.fetch_ssh_key(&user_id, server.id).await {
+                Ok(key) => key,
+                Err(_) => {
+                    return ValidateResponse {
+                        valid: false,
+                        server_id: server.id,
+                        srv_ip: Some(srv_ip),
+                        message: "SSH key could not be retrieved from secure storage".to_string(),
+                        ..Default::default()
+                    };
+                }
+            };
+
+            let vault_public_key = vault
+                .fetch_ssh_public_key(&user_id, server.id)
+                .await
+                .ok();
+
+            let ssh_port = server.ssh_port.unwrap_or(22) as u16;
+            let ssh_user = server
+                .ssh_user
+                .clone()
+                .unwrap_or_else(|| "root".to_string());
+
+            let check_result = ssh_client::check_server(
+                &srv_ip,
+                ssh_port,
+                &ssh_user,
+                &private_key,
+                Duration::from_secs(30),
+            )
+            .await;
+
+            let valid = check_result.connected && check_result.authenticated;
+            let message = if valid {
+                check_result.summary()
+            } else {
+                check_result
+                    .error
+                    .unwrap_or_else(|| "SSH validation failed".to_string())
+            };
+
+            ValidateResponse {
+                valid,
+                server_id: server.id,
+                srv_ip: Some(srv_ip),
+                message,
+                connected: check_result.connected,
+                authenticated: check_result.authenticated,
+                vault_public_key: if !check_result.authenticated {
+                    vault_public_key
+                } else {
+                    None
+                },
+                username: check_result.username,
+                disk_total_gb: check_result.disk_total_gb,
+                disk_available_gb: check_result.disk_available_gb,
+                disk_usage_percent: check_result.disk_usage_percent,
+                docker_installed: check_result.docker_installed,
+                docker_version: check_result.docker_version,
+                os_name: check_result.os_name,
+                os_version: check_result.os_version,
+                memory_total_mb: check_result.memory_total_mb,
+                memory_available_mb: check_result.memory_available_mb,
+            }
+        });
+    }
+
+    let results: Vec<ValidateResponse> = join_all(futures).await;
+
+    let valid_count = results.iter().filter(|r| r.valid).count();
+
+    let response = BatchValidateResponse {
+        total: results.len(),
+        valid: valid_count,
+        invalid: results.len() - valid_count,
+        servers: results,
+    };
+
+    Ok(JsonResponse::build()
+        .set_item(Some(response))
+        .ok("Batch validation complete"))
+}
+
 /// Delete SSH key for a server (disconnect)
 /// DELETE /server/{id}/ssh-key
 #[tracing::instrument(name = "Delete SSH key for server.", skip_all)]
@@ -620,4 +857,76 @@ pub async fn delete_key(
     Ok(JsonResponse::build()
         .set_item(Some(updated_server))
         .ok("SSH key deleted successfully"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retries_a_connection_timeout_while_the_vm_boots() {
+        // The exact error that left server 179 with no authorized key:
+        // "Connection timed out after 15 seconds" against a VM still booting.
+        let delay = ssh_authorize_retry(1, "Connection timed out after 15 seconds")
+            .expect("a connection timeout must be retried");
+
+        assert_eq!(delay, Duration::from_secs(3));
+    }
+
+    #[test]
+    fn retries_connection_refused() {
+        assert!(ssh_authorize_retry(1, "Connection refused (os error 61)").is_some());
+    }
+
+    #[test]
+    fn backs_off_progressively_then_gives_up() {
+        assert_eq!(
+            ssh_authorize_retry(1, "connection refused"),
+            Some(Duration::from_secs(3))
+        );
+        assert_eq!(
+            ssh_authorize_retry(2, "connection refused"),
+            Some(Duration::from_secs(5))
+        );
+        assert_eq!(
+            ssh_authorize_retry(3, "connection refused"),
+            Some(Duration::from_secs(8))
+        );
+        // Four attempts total, then surface the failure rather than hanging.
+        assert_eq!(ssh_authorize_retry(4, "connection refused"), None);
+        assert_eq!(ssh_authorize_retry(99, "connection refused"), None);
+    }
+
+    #[test]
+    fn never_retries_authentication_failures() {
+        // Waiting does not turn a wrong key into a right one.
+        for error in [
+            "Authentication failed: no more auth methods available",
+            "Permission denied (publickey)",
+            "Invalid SSH key: unsupported format",
+        ] {
+            assert!(
+                ssh_authorize_retry(1, error).is_none(),
+                "must not retry: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn never_retries_an_empty_public_key() {
+        assert!(ssh_authorize_retry(1, "Public key cannot be empty").is_none());
+    }
+
+    #[test]
+    fn does_not_retry_unrecognised_errors() {
+        // Allow-list behaviour: anything not positively identified as a
+        // connection failure surfaces immediately instead of costing a minute.
+        assert!(ssh_authorize_retry(1, "disk quota exceeded").is_none());
+    }
+
+    #[test]
+    fn classification_is_case_insensitive() {
+        assert!(ssh_authorize_retry(1, "CONNECTION REFUSED").is_some());
+        assert!(ssh_authorize_retry(1, "PERMISSION DENIED").is_none());
+    }
 }

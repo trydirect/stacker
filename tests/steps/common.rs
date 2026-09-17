@@ -9,6 +9,10 @@ use std::net::TcpListener;
 use std::time::Duration;
 use tokio::time::sleep;
 
+/// Shared service key the BDD app is configured with; steps calling a
+/// service-to-service endpoint must send it as `X-Internal-Key`.
+pub const BDD_INTERNAL_KEY: &str = "bdd-internal-key";
+
 pub struct BddTestApp {
     pub address: String,
     pub db_pool: PgPool,
@@ -54,14 +58,30 @@ pub async fn spawn_bdd_app() -> Option<BddTestApp> {
         configuration.database.password = password;
     }
 
+    // A Vault that actually answers. Agent registration awaits its write to
+    // Vault before returning the token, so pointing at the default dead
+    // 127.0.0.1:8200 makes every registration scenario fail with a 500. It used
+    // to pass only because the write was a detached `spawn` whose failure
+    // nothing observed.
+    // Leaked deliberately: dropping a `MockServer` stops it, and the app holds
+    // its URI for the whole run. `spawn_bdd_app` is called once per process
+    // (`APP_INIT_ASYNC`), so this is a singleton, not a growing leak.
+    let vault_server: &'static wiremock::MockServer =
+        Box::leak(Box::new(wiremock::MockServer::start().await));
+    crate::vault_kv_mock::mount_vault_kv_mock(vault_server).await;
+    configuration.vault.address = vault_server.uri();
+    configuration.vault.token = "bdd-vault-token".to_string();
+    configuration.vault.api_prefix = "v1".to_string();
+
     // Unique database per BDD run
     configuration.database.database_name = format!("bdd_{}", uuid::Uuid::new_v4());
 
     // Increase client limit for BDD tests (multiple scenarios create clients)
     configuration.max_clients_number = 100;
 
-    // Set internal services access key for audit ingest tests
-    std::env::set_var("INTERNAL_SERVICES_ACCESS_KEY", "bdd-internal-key");
+    // Shared key for the service-to-service endpoints (audit ingest, agent
+    // registration). `require_internal_key` fails closed without it.
+    std::env::set_var("INTERNAL_SERVICES_ACCESS_KEY", BDD_INTERNAL_KEY);
 
     let connection_pool = match configure_database_with_retry(&configuration.database).await {
         Ok(pool) => pool,

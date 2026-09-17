@@ -98,6 +98,16 @@ pub struct ProjectApp {
     /// Deployment this app belongs to. NULL for legacy apps created before deployment scoping.
     #[sqlx(default)]
     pub deployment_id: Option<i32>,
+    /// Resolved configuration contract for this app.
+    ///
+    /// Added to the table by migration 20260828130000 but not to this struct,
+    /// which broke `cargo sqlx prepare` repo-wide: `query_as!(ProjectApp,
+    /// "SELECT *")` fails when the table returns a column the struct cannot
+    /// hold. That is why several queries here are written at runtime with a
+    /// note pointing at this drift.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub config_contract: Option<Value>,
 }
 
 impl ProjectApp {
@@ -135,6 +145,7 @@ impl ProjectApp {
             config_hash: None,
             parent_app_code: None,
             deployment_id: None,
+            config_contract: None,
         }
     }
 
@@ -206,6 +217,7 @@ impl Default for ProjectApp {
             config_hash: None,
             parent_app_code: None,
             deployment_id: None,
+            config_contract: None,
         }
     }
 }

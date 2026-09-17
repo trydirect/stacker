@@ -12,6 +12,17 @@ pub struct Agent {
     pub system_info: Option<Value>,
     pub last_heartbeat: Option<DateTime<Utc>>,
     pub status: String,
+    /// Algorithm-tagged digest of the agent's bearer token, e.g.
+    /// `sha256:<64 hex>` — never the token itself.
+    ///
+    /// `skip_serializing` because `Agent` is placed in request extensions as
+    /// `Arc<Agent>` and derives `Serialize`; no handler returns it today, and
+    /// this keeps a future one from leaking the digest into a response.
+    /// `None` means the agent predates token hashing and cannot authenticate.
+    #[serde(skip_serializing, default)]
+    pub token_hash: Option<String>,
+    #[serde(skip_serializing, default)]
+    pub token_hash_updated_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -26,6 +37,8 @@ impl Agent {
             system_info: Some(serde_json::json!({})),
             last_heartbeat: None,
             status: "offline".to_string(),
+            token_hash: None,
+            token_hash_updated_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

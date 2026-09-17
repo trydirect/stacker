@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::cli::config_parser::StackerConfig;
 use crate::cli::credentials::CredentialsManager;
+use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::stacker_client::StackerClient;
 use crate::console::commands::CallableTrait;
@@ -17,6 +18,7 @@ const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 pub struct SubmitCommand {
     file: Option<String>,
     version: Option<String>,
+    slug: Option<String>,
     description: Option<String>,
     category: Option<String>,
     plan_type: Option<String>,
@@ -27,6 +29,7 @@ impl SubmitCommand {
     pub fn new(
         file: Option<String>,
         version: Option<String>,
+        slug: Option<String>,
         description: Option<String>,
         category: Option<String>,
         plan_type: Option<String>,
@@ -35,6 +38,7 @@ impl SubmitCommand {
         Self {
             file,
             version,
+            slug,
             description,
             category,
             plan_type,
@@ -49,7 +53,10 @@ impl CallableTrait for SubmitCommand {
         let cred_manager = CredentialsManager::with_default_store();
         let creds = cred_manager.require_valid_token("submit")?;
         let base_url = crate::cli::install_runner::normalize_stacker_server_url(
-            crate::cli::stacker_client::DEFAULT_STACKER_URL,
+            creds
+                .server_url
+                .as_deref()
+                .unwrap_or(crate::cli::stacker_client::DEFAULT_STACKER_URL),
         );
 
         // 2. Read and parse stacker.yml
@@ -61,6 +68,9 @@ impl CallableTrait for SubmitCommand {
 
         let config = StackerConfig::from_file(&config_path)?;
         let name = config.name.clone();
+        let source_project_id = DeploymentLock::load_active(&project_dir)?
+            .and_then(|lock| lock.project_id)
+            .and_then(|id| i32::try_from(id).ok());
         let version = self
             .version
             .clone()
@@ -73,7 +83,7 @@ impl CallableTrait for SubmitCommand {
             serde_json::to_value(&serde_yaml::from_str::<serde_yaml::Value>(&raw_yaml)?)?;
 
         // Derive slug from project name (lowercase, hyphens)
-        let slug = name
+        let derived_slug = name
             .to_lowercase()
             .chars()
             .map(|c| {
@@ -88,6 +98,12 @@ impl CallableTrait for SubmitCommand {
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
             .join("-");
+        let slug = self
+            .slug
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&derived_slug);
 
         // Build the template body
         let mut body = serde_json::json!({
@@ -109,6 +125,19 @@ impl CallableTrait for SubmitCommand {
 
         if let Some(price) = self.price {
             body["price"] = serde_json::json!(price);
+        }
+
+        let config_contract = serde_json::to_value(&config.config_contract)?;
+        if config_contract
+            .get("services")
+            .and_then(|services| services.as_object())
+            .is_some_and(|services| !services.is_empty())
+        {
+            body["config_contract"] = config_contract;
+        }
+
+        if let Some(source_project_id) = source_project_id {
+            body["source_project_id"] = serde_json::json!(source_project_id);
         }
 
         // 3. Create async runtime and execute

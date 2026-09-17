@@ -394,7 +394,8 @@ pub trait OAuthClient: Send + Sync {
     /// email/password login endpoint with no OAuth refresh concept) — the
     /// caller treats that as "refresh not possible" and falls back to
     /// prompting `stacker login`, never surfacing it as a harder failure.
-    fn refresh_token(&self, auth_url: &str, refresh_token: &str) -> Result<TokenResponse, CliError>;
+    fn refresh_token(&self, auth_url: &str, refresh_token: &str)
+        -> Result<TokenResponse, CliError>;
 }
 
 /// Production OAuth client using `reqwest::blocking`.
@@ -465,7 +466,11 @@ impl OAuthClient for HttpOAuthClient {
         Ok(token_resp)
     }
 
-    fn refresh_token(&self, auth_url: &str, refresh_token: &str) -> Result<TokenResponse, CliError> {
+    fn refresh_token(
+        &self,
+        auth_url: &str,
+        refresh_token: &str,
+    ) -> Result<TokenResponse, CliError> {
         // The login endpoint (`.../auth/login`) mints tokens directly,
         // bypassing OAuth client authentication entirely — clients here
         // (CLI, web) never have a client_id/secret, so a generic
@@ -811,12 +816,47 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    /// Serializes tests that mutate STACKER_AUTH_URL/STACKER_API_URL, so
-    /// they don't race with each other (or with resolve_auth_url_from's
-    /// other callers) when the suite runs in parallel.
+    /// Serializes tests that mutate the environment, so they don't race with
+    /// each other (or with the resolvers' other callers) when the suite runs
+    /// in parallel.
+    ///
+    /// Every test that touches a process-wide variable must take this,
+    /// including the XDG_CONFIG_HOME ones. They did not, and that was the
+    /// intermittent failure that dogged this suite for months: two of them
+    /// pointed XDG_CONFIG_HOME at their own temporary directory, and whichever
+    /// finished first removed the variable while the other was still running.
+    /// The straggler then read the developer's real ~/.config/stacker/config.yml,
+    /// found a `server_url` in it, and login succeeded where the test required
+    /// it to fail. It reproduced roughly once in fifteen runs, and only on a
+    /// machine that had actually logged in.
     fn credentials_env_lock() -> &'static Mutex<()> {
         static LOCK: Mutex<()> = Mutex::new(());
         &LOCK
+    }
+
+    /// Sets an environment variable for as long as it is held, then restores
+    /// whatever was there before — including on a panicking assertion, which
+    /// plain set/remove pairs do not.
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
     }
 
     #[test]
@@ -1124,7 +1164,7 @@ mod tests {
         // (see e.g. the XDG_CONFIG_HOME-based FileCredentialStore tests
         // below), since resolve_auth_url_from() falls back to real env vars.
         let _env_guard = credentials_env_lock().lock().unwrap();
-        std::env::set_var("STACKER_AUTH_URL", "https://auth.example.test");
+        let _auth_url = EnvVarGuard::set("STACKER_AUTH_URL", "https://auth.example.test");
 
         let (manager, store) = make_manager();
         manager.save(&expired_creds()).unwrap();
@@ -1139,8 +1179,6 @@ mod tests {
         // so the next command doesn't have to refresh again.
         let persisted = store.load().unwrap().unwrap();
         assert_eq!(persisted.access_token, "mock-access-token");
-
-        std::env::remove_var("STACKER_AUTH_URL");
     }
 
     #[test]
@@ -1159,10 +1197,12 @@ mod tests {
     #[test]
     fn test_require_valid_token_expired_without_refresh_token_skips_refresh_attempt() {
         let (manager, _) = make_manager();
-        manager.save(&StoredCredentials {
-            refresh_token: None,
-            ..expired_creds()
-        }).unwrap();
+        manager
+            .save(&StoredCredentials {
+                refresh_token: None,
+                ..expired_creds()
+            })
+            .unwrap();
         // A mock that would succeed if called — proves it's never called
         // when there's no refresh_token to use.
         let oauth = MockOAuthClient::success();
@@ -1472,10 +1512,10 @@ mod tests {
         };
 
         // Isolate from the real ~/.config/stacker/config.yml which may provide a fallback URL.
+        let _env_guard = credentials_env_lock().lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("XDG_CONFIG_HOME", tmp.path());
+        let _xdg = EnvVarGuard::set("XDG_CONFIG_HOME", tmp.path());
         let err = login(&manager, &oauth, &request).unwrap_err();
-        std::env::remove_var("XDG_CONFIG_HOME");
         assert!(format!("{err}").contains("Missing auth URL"));
     }
 
@@ -1493,10 +1533,10 @@ mod tests {
         };
 
         // Isolate from the real ~/.config/stacker/config.yml which may provide a fallback URL.
+        let _env_guard = credentials_env_lock().lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("XDG_CONFIG_HOME", tmp.path());
+        let _xdg = EnvVarGuard::set("XDG_CONFIG_HOME", tmp.path());
         let err = login(&manager, &oauth, &request).unwrap_err();
-        std::env::remove_var("XDG_CONFIG_HOME");
         assert!(format!("{err}").contains("Missing Stacker API URL"));
     }
 
