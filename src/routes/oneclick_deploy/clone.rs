@@ -327,6 +327,26 @@ pub async fn clone_server(
         }
     };
 
+    // Seed project_app records so the Applications panel shows the stack's
+    // services.  Only works when request_json came from a live source project
+    // (which carries a ProjectForm-compatible composition).  The published-
+    // template fallback stores a stack_definition blob that is not a
+    // ProjectForm — parsing fails and the panel stays empty (the user can
+    // add apps manually).
+    if let Ok(form) = serde_json::from_value::<crate::forms::project::ProjectForm>(
+        project.request_json.clone(),
+    ) {
+        if let Err(err) =
+            crate::project_app::sync_project_level_apps_from_form(&pg_pool, project.id, &form)
+                .await
+        {
+            tracing::warn!(
+                error = %err,
+                "failed to seed project_app records — Applications panel may be empty"
+            );
+        }
+    }
+
     let mut deployment = crate::models::Deployment::new(
         project.id,
         Some(user.id.clone()),
