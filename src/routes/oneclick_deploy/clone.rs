@@ -24,6 +24,7 @@ use crate::connectors::hetzner::{
 use crate::connectors::user_service::UserServiceConnector;
 use crate::helpers::cloud_init::{render_user_data, BootConfig, DerivedJwtSpec};
 use crate::helpers::VaultClient;
+use crate::models;
 use crate::models::User;
 
 #[derive(Debug, Deserialize)]
@@ -565,6 +566,34 @@ pub async fn clone_server(
             }));
         }
     };
+
+    // Register the server in Stacker's inventory so secrets, agent, and
+    // monitoring features can resolve it.  Non-fatal: the Hetzner server is
+    // already created; a missing record only breaks Stacker-managed features.
+    let server_model = models::Server {
+        user_id: user.id.clone(),
+        project_id: project.id,
+        srv_ip: provisioned.public_ipv4.clone(),
+        ssh_port: Some(22),
+        ssh_user: Some("root".to_string()),
+        region: Some(form.region.clone()),
+        server: Some(form.server_type.clone()),
+        name: Some(format!(
+            "{}-{}",
+            form.stack,
+            &deployment_hash[deployment_hash.len() - 8..]
+        )),
+        connection_mode: "ssh".to_string(),
+        key_status: "active".to_string(),
+        ..Default::default()
+    };
+
+    if let Err(err) = crate::db::server::insert(&pg_pool, server_model).await {
+        tracing::warn!(
+            error = %err,
+            "failed to register server in inventory — secrets and agent features may not work"
+        );
+    }
 
     HttpResponse::Ok().json(CloneResponse {
         server_id: provisioned.id,
