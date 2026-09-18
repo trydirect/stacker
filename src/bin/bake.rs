@@ -106,9 +106,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let config_contract =
             match stacker::db::marketplace::get_approved_by_slug(&pool, &record.stack).await {
                 Ok(Some(template)) => {
+                    eprintln!(
+                        "DEBUG: resolved template '{}' id={} for stack '{}'",
+                        template.name, template.id, record.stack
+                    );
                     match stacker::db::marketplace::get_config_contract(&pool, template.id).await {
-                        Ok(serde_json::Value::Null) => None,
-                        Ok(contract) => Some(contract),
+                        Ok(serde_json::Value::Null) => {
+                            eprintln!("DEBUG: config_contract is Null for template id={}", template.id);
+                            None
+                        }
+                        Ok(contract) => {
+                            eprintln!("DEBUG: config_contract resolved, keys={:?}",
+                                contract.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+                            Some(contract)
+                        }
                         Err(err) => {
                             eprintln!(
                                 "WARNING: could not read config_contract for '{}': {err}",
@@ -118,7 +129,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
-                Ok(None) => None,
+                Ok(None) => {
+                    eprintln!("DEBUG: no approved template found for stack '{}'", record.stack);
+                    None
+                }
                 Err(err) => {
                     eprintln!(
                         "WARNING: could not resolve template for '{}': {err}",
@@ -127,6 +141,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     None
                 }
             };
+
+        eprintln!("DEBUG: config_contract to record: {:?}",
+            config_contract.as_ref().map(|c| c.as_object().map(|o| o.keys().collect::<Vec<_>>())));
 
         let row = stacker::db::baked_snapshot::record(
             &pool,

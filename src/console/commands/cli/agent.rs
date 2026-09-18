@@ -1754,11 +1754,15 @@ impl CallableTrait for AgentStatusCommand {
                         n_apps,
                     ),
                 );
-                let live_containers = match fetch_live_containers(&ctx, &hash) {
-                    Ok(list) => list,
-                    Err(err) => {
-                        eprintln!("Warning: failed to fetch live containers: {}", err);
-                        None
+                let live_containers = if agent_status == "offline" {
+                    None
+                } else {
+                    match fetch_live_containers(&ctx, &hash) {
+                        Ok(list) => list,
+                        Err(err) => {
+                            eprintln!("Warning: failed to fetch live containers: {}", err);
+                            None
+                        }
                     }
                 };
 
@@ -2260,10 +2264,32 @@ fn run_logs_command(
     )
 }
 
+/// Returns `true` if the agent for the given deployment is offline.
+///
+/// Fetches a lightweight snapshot to check status before attempting
+/// any agent commands that would hang waiting for an unreachable agent.
+fn is_agent_offline(ctx: &CliRuntime, deployment_hash: &str) -> bool {
+    let snapshot = ctx.block_on(ctx.client.agent_snapshot(deployment_hash));
+    match snapshot {
+        Ok(snap) => {
+            let item = snap.get("item").unwrap_or(&snap);
+            item.get("agent")
+                .and_then(|a| a.get("status"))
+                .and_then(|s| s.as_str())
+                == Some("offline")
+        }
+        Err(_) => false, // If we can't fetch snapshot, let the caller try
+    }
+}
+
 pub(crate) fn fetch_live_containers(
     ctx: &CliRuntime,
     deployment_hash: &str,
 ) -> Result<Option<Vec<serde_json::Value>>, CliError> {
+    if is_agent_offline(ctx, deployment_hash) {
+        return Ok(None);
+    }
+
     let params = crate::forms::status_panel::ListContainersCommandRequest {
         include_health: true,
         include_logs: false,
@@ -4340,6 +4366,71 @@ monitoring:
             Some(value) => std::env::set_var("STACKER_DOCKER_REGISTRY", value),
             None => std::env::remove_var("STACKER_DOCKER_REGISTRY"),
         }
+    }
+
+    // ── Agent status snapshot parsing ────────────────────────────────────
+
+    #[test]
+    fn extract_agent_status_from_snapshot_offline() {
+        let snap = serde_json::json!({
+            "item": {
+                "agent": { "status": "offline", "version": "1.0.0" },
+                "apps": []
+            }
+        });
+        let item = snapshot_item(&snap);
+        let status = item
+            .get("agent")
+            .and_then(|a| a.get("status"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("unknown");
+        assert_eq!(status, "offline");
+    }
+
+    #[test]
+    fn extract_agent_status_from_snapshot_online() {
+        let snap = serde_json::json!({
+            "item": {
+                "agent": { "status": "online", "version": "1.0.0" },
+                "apps": []
+            }
+        });
+        let item = snapshot_item(&snap);
+        let status = item
+            .get("agent")
+            .and_then(|a| a.get("status"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("unknown");
+        assert_eq!(status, "online");
+    }
+
+    #[test]
+    fn extract_agent_status_missing_defaults_unknown() {
+        let snap = serde_json::json!({ "item": { "apps": [] } });
+        let item = snapshot_item(&snap);
+        let status = item
+            .get("agent")
+            .and_then(|a| a.get("status"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("unknown");
+        assert_eq!(status, "unknown");
+    }
+
+    #[test]
+    fn snapshot_item_prefers_item_key() {
+        let snap = serde_json::json!({
+            "item": { "agent": { "status": "online" } },
+            "agent": { "status": "offline" }
+        });
+        let item = snapshot_item(&snap);
+        assert_eq!(item["agent"]["status"], "online");
+    }
+
+    #[test]
+    fn snapshot_item_falls_back_to_root() {
+        let snap = serde_json::json!({ "agent": { "status": "offline" } });
+        let item = snapshot_item(&snap);
+        assert_eq!(item["agent"]["status"], "offline");
     }
 }
 
