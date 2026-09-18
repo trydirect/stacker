@@ -4096,6 +4096,21 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
         service_apps.push(service_to_app_json(svc, &network_ids));
     }
 
+    // `project_app.config_contract` is persisted by a separate server-side
+    // accessor. Include the full contract on each generated app so `stacker
+    // sync` does not silently discard the policy from stacker.yml.
+    if let Ok(config_contract) = serde_json::to_value(&config.config_contract) {
+        let has_services = config_contract
+            .get("services")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|services| !services.is_empty());
+        if has_services {
+            for app in web_apps.iter_mut().chain(service_apps.iter_mut()) {
+                app["config_contract"] = config_contract.clone();
+            }
+        }
+    }
+
     serde_json::json!({
         "custom": {
             "custom_stack_code": stack_code,
@@ -5126,6 +5141,40 @@ mod tests {
             features.iter().all(|f| f["code"] != "nginx_proxy_manager"),
             "feature array should not contain nginx_proxy_manager project app: {:?}",
             features
+        );
+    }
+
+    #[test]
+    fn build_project_body_includes_config_contract_on_apps() {
+        let mut config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("contract-project")
+            .app_image("nginx:1.27")
+            .build()
+            .expect("config should build");
+        config.config_contract = serde_json::from_value(serde_json::json!({
+            "services": {
+                "app": {
+                    "fields": {
+                        "JWT_SECRET": {
+                            "mutability": "generated",
+                            "type": "hex",
+                            "length": 32
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("config contract should deserialize");
+
+        let body = build_project_body(&config);
+        let contract = &body["custom"]["web"][0]["config_contract"];
+        assert_eq!(
+            contract["services"]["app"]["fields"]["JWT_SECRET"]["mutability"],
+            "generated"
+        );
+        assert_eq!(
+            contract["services"]["app"]["fields"]["JWT_SECRET"]["type"],
+            "hex"
         );
     }
 
