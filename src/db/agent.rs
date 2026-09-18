@@ -239,6 +239,75 @@ pub async fn delete(pool: &PgPool, agent_id: Uuid) -> Result<(), String> {
     })
 }
 
+/// Delete agents whose deployment is gone (or soft-deleted) and that show no
+/// sign of life within the retention window.
+///
+/// "No sign of life" means both:
+///   - `last_heartbeat` is NULL or older than the window, AND
+///   - no `audit_log` row references the agent (by id or deployment_hash)
+///     within the same window.
+///
+/// The second condition protects agents that are alive but failing
+/// authentication — `last_heartbeat` only advances on successful `wait`/`report`,
+/// while `audit_log` captures `auth_failure` entries.
+#[tracing::instrument(name = "Sweep dead agents", skip(pool))]
+pub async fn sweep_dead(pool: &PgPool, retention_days: i32) -> Result<u64, String> {
+    let result = sqlx::query(
+        r#"
+        DELETE FROM agents a
+        WHERE NOT EXISTS (
+                SELECT 1 FROM deployment d
+                 WHERE d.deployment_hash = a.deployment_hash
+                   AND d.deleted IS NOT TRUE
+              )
+          AND (a.last_heartbeat IS NULL
+               OR a.last_heartbeat < NOW() - make_interval(days => $1))
+          AND NOT EXISTS (
+                SELECT 1 FROM audit_log l
+                 WHERE (l.agent_id = a.id OR l.deployment_hash = a.deployment_hash)
+                   AND l.created_at > NOW() - make_interval(days => $1)
+              )
+        "#,
+    )
+    .bind(retention_days)
+    .execute(pool)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to sweep dead agents: {:?}", err);
+        format!("Database error: {}", err)
+    })?;
+
+    Ok(result.rows_affected())
+}
+
+/// Delete agents whose `deployment_hash` is structurally invalid.
+///
+/// A valid hash matches `deployment_<uuid>` (36-char UUID with hyphens).
+/// Rows with an invalid hash can never be matched by their own agent — the
+/// lookup in `fetch_by_deployment_hash` will never find them. Among the 18
+/// currently broken rows, 17 store a raw agent token (86-char base64url)
+/// instead of a hash, leaking the secret in plaintext.
+///
+/// Returns its own count separate from `sweep_dead` so the caller can log
+/// exactly how many malformed rows were removed.
+#[tracing::instrument(name = "Sweep malformed agent rows", skip(pool))]
+pub async fn sweep_malformed(pool: &PgPool) -> Result<u64, String> {
+    let result = sqlx::query(
+        r#"
+        DELETE FROM agents
+        WHERE deployment_hash !~ '^deployment_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to sweep malformed agents: {:?}", err);
+        format!("Database error: {}", err)
+    })?;
+
+    Ok(result.rows_affected())
+}
+
 pub async fn log_audit(
     pool: &PgPool,
     audit_log: models::AuditLog,
