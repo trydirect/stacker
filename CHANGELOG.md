@@ -4,7 +4,35 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Added — Developer project synchronization
+## [0.3.3] — 2026-09-18
+
+### Added — Chat session management
+
+- Added chat session endpoints with archive and per-message encryption.
+- Added Casbin RBAC rules for `/api/chat` routes.
+
+### Added — Agent hardening & ownership
+
+- Enforced per-tenant ownership on `/v1/agent` routes.
+- Agent tokens now verified against a stored digest instead of round-tripping Vault.
+- Agent authentication fails closed on Vault errors.
+- Agent registration requires the service key; marketplace registration returns 501.
+- Accept aggregate `all_health` report from agents for container status.
+- Return `project_id` in agent snapshots and one-click clone endpoint.
+- Container scope classified from Docker label, not container name.
+- Moved `rotate-token` from the console binary to the CLI (`stacker agent rotate-token`).
+
+### Added — Marketplace field policy & secret federation
+
+- Added `config_contract` field-policy support (`fixed`/`editable`/`generated` + types: `hex`, `alphanumeric`, `uuid`, `derived_jwt`).
+- At publish, `generated`-field values are stripped from the stored `stack_definition` (fail-closed).
+- `derived_jwt` fields signed on cloned boxes via HMAC.
+- Config contract federated to the User Service.
+- Added `backfill_field_policy` one-shot tool to re-gate the existing catalog.
+- Policy-driven `generate-secrets.sh` reads `mutability:generated` field policy instead of hardcoding `openssl rand`.
+- Added `DisplayType` enum and `display` field to `FieldPolicy`.
+
+### Added — Project synchronization & one-click deploy
 
 - Added `stacker sync` to synchronize declarative project and app configuration
   with Stacker without creating a deployment, contacting a target server, or
@@ -14,6 +42,57 @@ All notable changes to this project will be documented in this file.
   synchronization.
 - Added centralized sensitive environment-name redaction and validation for
   marketplace asset and seed-job metadata.
+- One-click clone now registers the server in inventory and creates a cloud firewall.
+- One-click clone seeds `project_app` records for the Applications panel.
+
+### Added — Deployment lifecycle & cleanup
+
+- Added `deployment_container` table to track containers per deployment (replaces name inference).
+- Added deployment container sweeper for stale containers.
+- Added stale project and server cleanup with notification (`cleanup-notify` binary).
+- Added scheduled audit-log cleanup cron job.
+- Added env size validator.
+
+### Added — Security & infrastructure
+
+- mTLS for Vault access; Vault client reports missing CA.
+- `yaml_quote` now escapes control characters (`\n`, `\r`, `\t`).
+- Docker preflight check (`docker info`) before deploy.
+- New `W003` warning: `deploy.server.ssh_key` silently ignored on cloud deploys.
+
+### Fixed — SSH key authorization
+
+- Cloud deploy now fails when SSH key cannot be stored (was a silent warning).
+- Cloud deploy fails when no SSH access is verified after provisioning.
+- SSH key authorization retried while the VM boots; both Vault-managed and user keys authorized independently.
+- User's configured SSH key from `deploy.cloud.ssh_key` authorized through the correct endpoint.
+
+### Fixed — CLI & config
+
+- Fixed `server --dry-run` no longer runs a real Docker deploy (#238).
+- Fixed 500 on `PUT /cloud/{id}`: owner set before conversion.
+- Fixed #251: escape env/label values so multiline config survives YAML.
+- Ports validated by range, not by digit count.
+- Port values in `stacker.yml` handled correctly when unquoted.
+- Healthcheck `test` field emitted in the form docker compose expects (CMD list vs CMD-SHELL).
+
+### Fixed — Database & migrations
+
+- Fixed migration version collisions breaking CI.
+- Guard optional cron job lookup to prevent panics.
+- Reconcile audit-log cleanup cron after extension install.
+- Restored `sqlx prepare` with missing `config_contract` field.
+
+### Fixed — Auth & Casbin
+
+- Added missing Casbin rules for admin `detect-secrets` endpoint.
+- Agent auth accepts both Vault response shapes for the token.
+- Credentials tests no longer read the developer's own config.
+
+### Fixed — Marketplace BDD
+
+- BDD marketplace analytics fixtures: cast `template_id` to UUID.
+- BDD marketplace scenarios: seed `source_project_id` + deployment.
 
 ## [0.3.2] — 2026-08-26
 
