@@ -1665,3 +1665,161 @@ async fn submit_template_with_generated_policy_for_secret_field_is_accepted() {
         .expect("Failed to submit template for review");
     assert_eq!(StatusCode::OK, submit_response.status());
 }
+
+#[tokio::test]
+async fn create_handler_updates_approved_template_metadata() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let create_response = create_template_with_body(
+        &client,
+        &app.address,
+        "test-bearer-token",
+        json!({
+            "name": "Approved Metadata Template",
+            "slug": "approved-metadata-template",
+            "version": "1.0.0",
+            "stack_definition": { "services": { "web": { "image": "nginx:1.27" } } }
+        }),
+    )
+    .await;
+    assert_eq!(StatusCode::CREATED, create_response.status());
+    let template_id = create_response
+        .json::<Value>()
+        .await
+        .expect("Create response should be valid JSON")["item"]["id"]
+        .as_str()
+        .expect("Template id should be a string")
+        .to_string();
+
+    sqlx::query(
+        r#"UPDATE stack_template SET status = 'approved', approved_at = NOW() WHERE id = $1"#,
+    )
+    .bind(Uuid::parse_str(&template_id).expect("Template id should be a UUID"))
+    .execute(&app.db_pool)
+    .await
+    .expect("Failed to mark template approved");
+
+    let update_response = create_template_with_body(
+        &client,
+        &app.address,
+        "test-bearer-token",
+        json!({
+            "name": "Approved Metadata Template v2",
+            "slug": "approved-metadata-template",
+            "version": "1.0.0",
+            "stack_definition": { "services": { "web": { "image": "nginx:1.28" } } }
+        }),
+    )
+    .await;
+    assert_eq!(
+        StatusCode::CREATED,
+        update_response.status(),
+        "POST /api/templates should succeed for approved templates (uses update_metadata_for_resubmit)"
+    );
+    let body: Value = update_response
+        .json()
+        .await
+        .expect("Update response should be valid JSON");
+    assert_eq!(
+        "Approved Metadata Template v2",
+        body["item"]["name"].as_str().expect("name should be a string"),
+        "Template name should be updated"
+    );
+}
+
+#[tokio::test]
+async fn resubmit_approved_template_with_new_version_preserves_source_project_id() {
+    let _env_lock = env_lock().lock().expect("env lock should be available");
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+    common::create_test_deployment(
+        &app.db_pool,
+        "test_user_id",
+        project_id,
+        &format!("dpl-{}", Uuid::new_v4()),
+    )
+    .await;
+
+    let create_response = create_template_with_body(
+        &client,
+        &app.address,
+        "test-bearer-token",
+        json!({
+            "name": "Resubmit Version Template",
+            "slug": "resubmit-version-template",
+            "source_project_id": project_id,
+            "version": "1.0.0",
+            "stack_definition": { "services": { "web": { "image": "nginx:1.27" } } }
+        }),
+    )
+    .await;
+    assert_eq!(StatusCode::CREATED, create_response.status());
+    let template_id = create_response
+        .json::<Value>()
+        .await
+        .expect("Create response should be valid JSON")["item"]["id"]
+        .as_str()
+        .expect("Template id should be a string")
+        .to_string();
+
+    sqlx::query(
+        r#"UPDATE stack_template SET status = 'approved', approved_at = NOW() WHERE id = $1"#,
+    )
+    .bind(Uuid::parse_str(&template_id).expect("Template id should be a UUID"))
+    .execute(&app.db_pool)
+    .await
+    .expect("Failed to mark template approved");
+
+    let resubmit_response = client
+        .post(format!(
+            "{}/api/templates/{}/resubmit",
+            app.address, template_id
+        ))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({
+            "version": "1.1.0",
+            "stack_definition": { "services": { "web": { "image": "nginx:1.28" } } },
+            "confirm_no_secrets": true,
+            "source_project_id": project_id
+        }))
+        .send()
+        .await
+        .expect("Failed to resubmit template");
+    assert_eq!(
+        StatusCode::OK,
+        resubmit_response.status(),
+        "Resubmit with new version should succeed even when source_project_id was on the old version"
+    );
+
+    let stored_source_id: Option<i32> = sqlx::query_scalar(
+        r#"SELECT source_project_id FROM stack_template_version
+           WHERE template_id = $1::uuid AND is_latest = true"#,
+    )
+    .bind(Uuid::parse_str(&template_id).expect("Template id should be a UUID"))
+    .fetch_one(&app.db_pool)
+    .await
+    .expect("Failed to query latest version source_project_id");
+    assert_eq!(
+        Some(project_id),
+        stored_source_id,
+        "source_project_id should be persisted on the new version after resubmit"
+    );
+
+    let template_status: String = sqlx::query_scalar(
+        r#"SELECT status FROM stack_template WHERE id = $1::uuid"#,
+    )
+    .bind(Uuid::parse_str(&template_id).expect("Template id should be a UUID"))
+    .fetch_one(&app.db_pool)
+    .await
+    .expect("Failed to query template status");
+    assert_eq!("submitted", template_status, "Template should be in submitted status after resubmit");
+}

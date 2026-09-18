@@ -304,4 +304,76 @@ mod tests {
 
         assert!(apps.is_empty());
     }
+
+    #[test]
+    fn project_level_apps_from_form_propagates_config_contract() {
+        let form: ProjectForm = serde_json::from_value(json!({
+            "custom": {
+                "custom_stack_code": "contract-project",
+                "project_name": "Contract project",
+                "networks": [
+                    {"id": "net-1", "name": "default_network"}
+                ],
+                "web": [{
+                    "_id": "web-1",
+                    "name": "Website",
+                    "code": "website",
+                    "type": "web",
+                    "custom": true,
+                    "dockerhub_image": "nginx:1.27",
+                    "domain": "example.com",
+                    "restart": "always",
+                    "network": ["net-1"],
+                    "environment": [{"key": "JWT_SECRET", "value": "auto"}],
+                    "shared_ports": [{"host_port": "80", "container_port": "8080"}],
+                    "volumes": [],
+                    "config_contract": {
+                        "services": {
+                            "web": {
+                                "fields": {
+                                    "JWT_SECRET": { "mutability": "generated" }
+                                }
+                            }
+                        }
+                    }
+                }],
+                "service": [{
+                    "_id": "svc-1",
+                    "name": "Redis",
+                    "code": "redis",
+                    "type": "service",
+                    "custom": true,
+                    "dockerhub_image": "redis:7-alpine",
+                    "domain": "",
+                    "restart": "unless-stopped",
+                    "network": ["net-1"],
+                    "environment": [],
+                    "shared_ports": [],
+                    "volumes": []
+                }],
+                "feature": []
+            }
+        }))
+        .expect("project form should deserialize");
+
+        let apps = project_level_apps_from_form(42, &form);
+
+        assert_eq!(
+            apps[0].config_contract,
+            Some(json!({
+                "services": {
+                    "web": {
+                        "fields": {
+                            "JWT_SECRET": { "mutability": "generated" }
+                        }
+                    }
+                }
+            })),
+            "config_contract should be propagated from form app to project app"
+        );
+        assert_eq!(
+            apps[1].config_contract, None,
+            "apps without config_contract should remain None"
+        );
+    }
 }
