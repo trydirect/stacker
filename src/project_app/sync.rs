@@ -86,6 +86,7 @@ fn build_project_app(
     project_app.networks = app_networks_json(app, all_networks);
     project_app.enabled = Some(true);
     project_app.deploy_order = Some(deploy_order);
+    project_app.config_contract = app.config_contract.clone();
 
     project_app
 }
