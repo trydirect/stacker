@@ -15,9 +15,8 @@ pub struct IngestResponse {
 
 /// Receive a batch of audit events from the Status Panel agent.
 ///
-/// Auth: agent token via `X-Agent-Id` + `Bearer` headers (handled by
-/// middleware). The `installation_hash` in the request body must match the
-/// authenticated agent's `deployment_hash`.
+/// Auth: agent token via `X-Agent-Id` and `Bearer` headers (handled by
+/// middleware). The installation hash must belong to the authenticated agent.
 #[tracing::instrument(name = "Agent audit ingest", skip_all)]
 #[post("/audit")]
 pub async fn agent_audit_ingest_handler(
@@ -25,7 +24,6 @@ pub async fn agent_audit_ingest_handler(
     body: web::Json<AuditBatchRequest>,
     pool: web::Data<PgPool>,
 ) -> Result<HttpResponse> {
-    // Verify the agent owns this installation
     if agent.deployment_hash != body.installation_hash {
         return Err(helpers::JsonResponse::forbidden(
             "Not authorized for this installation",

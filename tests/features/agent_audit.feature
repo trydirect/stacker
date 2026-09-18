@@ -2,15 +2,15 @@ Feature: Agent Audit Log
   As a service operator I can ingest and query audit events
   via the /api/v1/agent/audit endpoints.
 
-  Scenario: Ingest audit events with valid internal key
+  Scenario: Ingest audit events with a registered agent
     Given I am authenticated as User A
     When I ingest audit events for installation "bdd-audit-hash"
     Then the response status should be 200
 
-  Scenario: Ingest audit events with invalid internal key
+  Scenario: Ingest audit events with an invalid agent token
     Given I am authenticated as User A
-    When I ingest audit events with invalid internal key
-    Then the response status should be 401
+    When I ingest audit events with invalid agent token
+    Then the response status should be 400
 
   # Querying is scoped to deployments the caller owns, so the installation
   # must belong to User A. Without that link the query is a cross-tenant read:
