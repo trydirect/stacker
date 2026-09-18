@@ -72,6 +72,11 @@ pub struct App {
     pub network: forms::project::ServiceNetworks,
     #[validate]
     pub shared_ports: Option<Vec<forms::project::Port>>,
+    /// Author-declared per-field policy (`config_contract` from stacker.yml).
+    /// Persisted to `project_app.config_contract` during sync so the Stack
+    /// Builder UI can render form fields with proper generation/validation rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_contract: Option<Value>,
 }
 
 impl App {
