@@ -3609,6 +3609,41 @@ impl StackerClient {
 
         Ok(())
     }
+
+    /// Resubmit an approved/rejected/needs_changes template with a new version.
+    pub async fn marketplace_resubmit(
+        &self,
+        template_id: &str,
+        body: serde_json::Value,
+    ) -> Result<(), CliError> {
+        let url = format!("{}/api/templates/{}/resubmit", self.base_url, template_id);
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                CliError::MarketplaceFailed(format!("Stacker server unreachable: {}", e))
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::MarketplaceFailed(
+                stacker_api_failure_with_message(
+                    "Resubmit failed",
+                    &format!("POST /api/templates/{template_id}/resubmit"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

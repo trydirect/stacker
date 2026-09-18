@@ -165,25 +165,58 @@ pub async fn create_handler(
     let template = if let Some(existing_template) = existing {
         // Update existing template
         tracing::info!("Updating existing template with slug: {}", req.slug);
-        let updated = db::marketplace::update_metadata(
-            pg_pool.get_ref(),
-            &existing_template.id,
-            Some(&req.name),
-            req.short_description.as_deref(),
-            req.long_description.as_deref(),
-            req.category_code.as_deref(),
-            Some(tags.clone()),
-            Some(tech_stack.clone()),
-            Some(infrastructure_requirements.clone()),
-            Some(price),
-            Some(billing_cycle.as_str()),
-            req.required_plan_name.as_deref(),
-            Some(currency.as_str()),
-            req.public_ports.clone(),
-            req.vendor_url.as_deref(),
-        )
-        .await
-        .map_err(|err| JsonResponse::<models::StackTemplate>::build().internal_server_error(err))?;
+
+        // Use the resubmit-aware update for templates that are already
+        // submitted, under review, or approved — `update_metadata` only
+        // allows draft/rejected/needs_changes.
+        let updated = if matches!(
+            existing_template.status.as_str(),
+            "submitted" | "under_review" | "approved"
+        ) {
+            db::marketplace::update_metadata_for_resubmit(
+                pg_pool.get_ref(),
+                &existing_template.id,
+                Some(&req.name),
+                req.short_description.as_deref(),
+                req.long_description.as_deref(),
+                req.category_code.as_deref(),
+                Some(tags.clone()),
+                Some(tech_stack.clone()),
+                Some(infrastructure_requirements.clone()),
+                Some(price),
+                Some(billing_cycle.as_str()),
+                req.required_plan_name.as_deref(),
+                Some(currency.as_str()),
+                req.public_ports.clone(),
+                req.vendor_url.as_deref(),
+            )
+            .await
+            .map_err(|err| {
+                JsonResponse::<models::StackTemplate>::build().internal_server_error(err)
+            })?
+        } else {
+            db::marketplace::update_metadata(
+                pg_pool.get_ref(),
+                &existing_template.id,
+                Some(&req.name),
+                req.short_description.as_deref(),
+                req.long_description.as_deref(),
+                req.category_code.as_deref(),
+                Some(tags.clone()),
+                Some(tech_stack.clone()),
+                Some(infrastructure_requirements.clone()),
+                Some(price),
+                Some(billing_cycle.as_str()),
+                req.required_plan_name.as_deref(),
+                Some(currency.as_str()),
+                req.public_ports.clone(),
+                req.vendor_url.as_deref(),
+            )
+            .await
+            .map_err(|err| {
+                JsonResponse::<models::StackTemplate>::build().internal_server_error(err)
+            })?
+        };
 
         if !updated {
             return Err(JsonResponse::<models::StackTemplate>::build()
