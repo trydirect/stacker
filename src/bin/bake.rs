@@ -7,7 +7,13 @@
 //! Usage:
 //!   HETZNER_TOKEN=... DATABASE_URL=... cargo run --bin bake -- \
 //!     --ip <build-box-ip> --stack ai-workflows-v2 --version 1.0.0 \
-//!     --health-url http://<ip>/health
+//!     --health-url http://<ip>/health --ssh-key ~/.ssh/id_ed25519
+//!
+//! `--ssh-key` is required: before snapshotting we sanitize the build box
+//! (strip machine identity, blank the author's `.env`, parameterize secrets
+//! embedded in compose values, drop initialized data volumes). Without it the
+//! image would carry the author's credentials to every buyer, so the bake is
+//! refused unless `--allow-unsanitized-snapshot` is passed deliberately.
 //!
 //! `DATABASE_URL` (the stacker Postgres) persists the BakeRecord; without it
 //! the bake still snapshots and prints the record, but it is not registered.
@@ -23,6 +29,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut stack = "lamp".to_string();
     let mut version = "v1".to_string();
     let mut health_url: Option<String> = None;
+    let mut ssh_key: Option<String> = None;
+    let mut ssh_user = "root".to_string();
+    let mut project_dir = "/home/trydirect/project".to_string();
+    let mut allow_unsanitized = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -46,6 +56,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--health-url" => {
                 health_url = args.get(i + 1).cloned();
                 i += 2;
+            }
+            "--ssh-key" => {
+                ssh_key = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--ssh-user" => {
+                ssh_user = args.get(i + 1).cloned().unwrap_or(ssh_user);
+                i += 2;
+            }
+            "--project-dir" => {
+                project_dir = args.get(i + 1).cloned().unwrap_or(project_dir);
+                i += 2;
+            }
+            "--allow-unsanitized-snapshot" => {
+                allow_unsanitized = true;
+                i += 1;
             }
             other => {
                 eprintln!("ignoring unknown arg: {other}");
@@ -77,7 +103,77 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let target = HetznerSnapshotTarget {
         provider_server_id: server_id,
         server_name: None,
-        public_ip: ip,
+        public_ip: ip.clone(),
+    };
+
+    // Resolve the author's field policy *before* finalizing: it decides which
+    // keys get blanked in `.env` and which names an embedded secret may be
+    // parameterized to. Also pinned to the snapshot further down so the clone
+    // path can regenerate those fields per buyer.
+    let pool = match std::env::var("DATABASE_URL") {
+        Ok(db_url) => Some(sqlx::PgPool::connect(&db_url).await?),
+        Err(_) => {
+            eprintln!("WARNING: DATABASE_URL not set — bake will NOT be registered in the snapshot registry.");
+            None
+        }
+    };
+
+    let config_contract = match &pool {
+        Some(pool) => resolve_config_contract(pool, &stack).await,
+        None => None,
+    };
+    let protected_keys = config_contract
+        .as_ref()
+        .map(stacker::helpers::bake_finalize::protected_keys_from_contract)
+        .unwrap_or_default();
+
+    // Sanitize the build box before the snapshot is taken.
+    let finalize_outcome = match (&ssh_key, allow_unsanitized) {
+        (Some(key_path), _) => {
+            let Some(host) = ip.clone() else {
+                return Err("--ssh-key needs --ip (the build box address to connect to)".into());
+            };
+            let private_key_pem = std::fs::read_to_string(key_path)
+                .map_err(|e| format!("could not read --ssh-key {key_path}: {e}"))?;
+
+            eprintln!("==> Finalizing build box before snapshot...");
+            let ctx = stacker::helpers::bake_finalize::FinalizeContext {
+                host,
+                port: 22,
+                user: ssh_user.clone(),
+                private_key_pem,
+                project_dir: project_dir.clone(),
+                stack: stack.clone(),
+                protected_keys: protected_keys.clone(),
+            };
+            let outcome = stacker::helpers::bake_finalize::finalize_build_box(&ctx).await?;
+            eprintln!(
+                "  Sanitized. Compose requires {} env key(s): {}",
+                outcome.required_env_keys.len(),
+                outcome
+                    .required_env_keys
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            Some(outcome)
+        }
+        (None, true) => {
+            eprintln!(
+                "WARNING: --allow-unsanitized-snapshot set. The image will keep the author's \
+                 .env values, data volumes and SSH host keys. Do NOT publish it to buyers."
+            );
+            None
+        }
+        (None, false) => {
+            return Err(
+                "--ssh-key is required so the build box can be sanitized before \
+                        snapshotting (pass --allow-unsanitized-snapshot to skip, for a \
+                        private image only)"
+                    .into(),
+            )
+        }
     };
 
     let connector = HetznerCloudClient::from_env().map_err(|e| e.to_string())?;
@@ -94,56 +190,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Persist into the snapshot registry so /api/v1/deploy/clone can resolve it.
-    if let Ok(db_url) = std::env::var("DATABASE_URL") {
-        let pool = sqlx::PgPool::connect(&db_url).await?;
-
-        // Pin the author's field policy to this image so the clone path can
-        // regenerate `mutability: generated` fields fresh per buyer instead of
-        // shipping the single value baked into the snapshot. Resolved by the same
-        // slug the registry keys on (record.stack == stack_template.slug).
-        // Best-effort: an un-catalogued or unapproved stack bakes with no
-        // contract, and the clone path degrades to the baked values.
-        let config_contract =
-            match stacker::db::marketplace::get_approved_by_slug(&pool, &record.stack).await {
-                Ok(Some(template)) => {
-                    eprintln!(
-                        "DEBUG: resolved template '{}' id={} for stack '{}'",
-                        template.name, template.id, record.stack
-                    );
-                    match stacker::db::marketplace::get_config_contract(&pool, template.id).await {
-                        Ok(serde_json::Value::Null) => {
-                            eprintln!("DEBUG: config_contract is Null for template id={}", template.id);
-                            None
-                        }
-                        Ok(contract) => {
-                            eprintln!("DEBUG: config_contract resolved, keys={:?}",
-                                contract.as_object().map(|o| o.keys().collect::<Vec<_>>()));
-                            Some(contract)
-                        }
-                        Err(err) => {
-                            eprintln!(
-                                "WARNING: could not read config_contract for '{}': {err}",
-                                record.stack
-                            );
-                            None
-                        }
-                    }
-                }
-                Ok(None) => {
-                    eprintln!("DEBUG: no approved template found for stack '{}'", record.stack);
-                    None
-                }
-                Err(err) => {
-                    eprintln!(
-                        "WARNING: could not resolve template for '{}': {err}",
-                        record.stack
-                    );
-                    None
-                }
-            };
-
-        eprintln!("DEBUG: config_contract to record: {:?}",
-            config_contract.as_ref().map(|c| c.as_object().map(|o| o.keys().collect::<Vec<_>>())));
+    if let Some(pool) = pool {
+        let required_env_keys = finalize_outcome.as_ref().map(|outcome| {
+            serde_json::Value::Array(
+                outcome
+                    .required_env_keys
+                    .iter()
+                    .map(|key| serde_json::Value::String(key.clone()))
+                    .collect(),
+            )
+        });
 
         let row = stacker::db::baked_snapshot::record(
             &pool,
@@ -154,6 +210,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             record.healthy,
             None,
             config_contract,
+            required_env_keys,
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -161,9 +218,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Registered snapshot in registry: id={} stack={}:{} image_id={}",
             row.id, row.stack, row.version, row.image_id
         );
-    } else {
-        eprintln!("WARNING: DATABASE_URL not set — bake NOT registered in the snapshot registry.");
     }
 
     Ok(())
+}
+
+/// The author's field policy for `stack`, resolved by the same slug the
+/// snapshot registry keys on (`baked_snapshots.stack == stack_template.slug`).
+///
+/// Best-effort: an un-catalogued or unapproved stack bakes with no contract and
+/// the clone path degrades to the baked values.
+async fn resolve_config_contract(pool: &sqlx::PgPool, stack: &str) -> Option<serde_json::Value> {
+    match stacker::db::marketplace::get_approved_by_slug(pool, stack).await {
+        Ok(Some(template)) => {
+            match stacker::db::marketplace::get_config_contract(pool, template.id).await {
+                Ok(serde_json::Value::Null) => {
+                    eprintln!("WARNING: template '{stack}' declares no config_contract — nothing will be regenerated per buyer.");
+                    None
+                }
+                Ok(contract) => Some(contract),
+                Err(err) => {
+                    eprintln!("WARNING: could not read config_contract for '{stack}': {err}");
+                    None
+                }
+            }
+        }
+        Ok(None) => {
+            eprintln!("WARNING: no approved template found for stack '{stack}'.");
+            None
+        }
+        Err(err) => {
+            eprintln!("WARNING: could not resolve template for '{stack}': {err}");
+            None
+        }
+    }
 }
