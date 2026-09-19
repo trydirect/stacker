@@ -686,6 +686,32 @@ fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError
     Ok(())
 }
 
+fn compose_env_keys(config: &StackerConfig) -> std::collections::HashSet<String> {
+    let mut keys: std::collections::HashSet<String> = config.env.keys().cloned().collect();
+
+    // Include policy-declared fields even when they are defined only in
+    // app.environment or services[].environment rather than top-level env.
+    if let Ok(contract) = serde_json::to_value(&config.config_contract) {
+        if let Some(services) = contract.get("services").and_then(|v| v.as_object()) {
+            for service in services.values() {
+                if let Some(fields) = service.get("fields").and_then(|v| v.as_object()) {
+                    for (name, policy) in fields {
+                        let protected = matches!(
+                            policy.get("mutability").and_then(|v| v.as_str()),
+                            Some("generated") | Some("provided")
+                        );
+                        if protected {
+                            keys.insert(name.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    keys
+}
+
 /// A compose service that declares a `build:` section.
 struct ComposeBuildService {
     name: String,
@@ -3561,8 +3587,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
                 // author's secrets.  Docker Compose resolves them from the
                 // co-located `.env` file at runtime.
                 let rendered = compose.render();
-                let env_keys: std::collections::HashSet<String> =
-                    config.env.keys().cloned().collect();
+                let env_keys = compose_env_keys(&config);
                 let parameterized =
                     crate::cli::generator::compose::parameterize_compose_env_vars(
                         &rendered,
@@ -3588,6 +3613,21 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
             }
             (compose_out, false)
         };
+
+    // Parameterize an existing generated compose file as well. This prevents
+    // a previously rendered file with literal secrets from bypassing the
+    // protection merely because it was considered up to date.
+    if !compose_is_user_supplied {
+        let env_keys = compose_env_keys(&config);
+        if !env_keys.is_empty() {
+            let content = std::fs::read_to_string(&compose_path)?;
+            let parameterized =
+                crate::cli::generator::compose::parameterize_compose_env_vars(&content, &env_keys);
+            if parameterized != content {
+                std::fs::write(&compose_path, parameterized)?;
+            }
+        }
+    }
 
     normalize_generated_compose_paths(&compose_path)?;
     validate_compose_for_deploy(&compose_path)?;
