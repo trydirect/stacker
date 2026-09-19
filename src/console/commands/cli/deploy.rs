@@ -3556,7 +3556,21 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
                 let compose = ComposeDefinition::try_from(&config)?;
                 // `write_to` refuses to clobber an existing file unless told to,
                 // so a staleness-driven regeneration must opt in explicitly.
-                compose.write_to(&compose_out, force_rebuild || compose_is_stale)?;
+                // Parameterize secret env vars: replace literal values with
+                // `${VAR}` references so the compose file never contains the
+                // author's secrets.  Docker Compose resolves them from the
+                // co-located `.env` file at runtime.
+                let rendered = compose.render();
+                let env_keys: std::collections::HashSet<String> =
+                    config.env.keys().cloned().collect();
+                let parameterized =
+                    crate::cli::generator::compose::parameterize_compose_env_vars(
+                        &rendered,
+                        &env_keys,
+                    );
+                if force_rebuild || compose_is_stale || !compose_out.exists() {
+                    std::fs::write(&compose_out, &parameterized)?;
+                }
                 // The synthesized caddy/nginx proxy service mounts a config file
                 // (./Caddyfile, ./nginx/conf.d) from the compose directory. For
                 // local/server deploys the tfa proxy role does NOT run, so the

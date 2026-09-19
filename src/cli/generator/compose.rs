@@ -773,6 +773,83 @@ impl fmt::Display for ComposeDefinition {
     }
 }
 
+/// Replace literal environment values with `${VAR}` references for a set of
+/// env var names.  This is used during **bake** so the snapshot's compose file
+/// never contains the author's secrets — Docker Compose resolves `${VAR}` from
+/// the env file (`/etc/stacker/env`) at runtime.
+///
+/// Only environment blocks inside service definitions are touched; other parts
+/// of the compose file (labels, volumes, etc.) are left alone.
+///
+/// `env_keys` is the set of env var names whose values should be
+/// parameterized.  Typically this is every key declared in the author's
+/// `config_contract` with `mutability: generated` plus any `provided` fields.
+pub fn parameterize_compose_env_vars(
+    compose_content: &str,
+    env_keys: &std::collections::HashSet<String>,
+) -> String {
+    if env_keys.is_empty() {
+        return compose_content.to_string();
+    }
+
+    let mut in_environment = false;
+    let mut env_indent = 0usize;
+    let mut result = String::with_capacity(compose_content.len());
+
+    for line in compose_content.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+
+        // Track whether we're inside an `environment:` block belonging to a
+        // service.  The block ends when we hit a line at the same or shallower
+        // indent that isn't blank.
+        if trimmed == "environment:" {
+            in_environment = true;
+            env_indent = indent;
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+
+        if in_environment {
+            // A blank line or a line at the same / shallower indent ends the block.
+            if trimmed.is_empty() || indent <= env_indent {
+                in_environment = false;
+            }
+        }
+
+        if in_environment {
+            // Match "      KEY: value" — the key must be a valid env identifier.
+            if let Some((key, _rest)) = trimmed.split_once(':') {
+                let key = key.trim();
+                if is_env_identifier(key) && env_keys.contains(key) {
+                    // Preserve the original indent and replace the value.
+                    let prefix = &line[..indent + key.len()];
+                    // Find where the value starts (after "KEY: ").
+                    result.push_str(prefix);
+                    result.push_str(": ${");
+                    result.push_str(key);
+                    result.push_str("}\n");
+                    continue;
+                }
+            }
+        }
+
+        result.push_str(line);
+        result.push('\n');
+    }
+
+    result
+}
+
+/// Returns `true` when `s` looks like a POSIX env-variable name.
+fn is_env_identifier(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().enumerate().all(|(i, c)| {
+            c.is_ascii_alphanumeric() || c == '_' || (i == 0 && c == '.')
+        })
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Tests
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1860,5 +1937,66 @@ services:
             "No runtime should appear in:\n{}",
             output
         );
+    }
+
+    #[test]
+    fn parameterize_replaces_secret_values_with_env_refs() {
+        let compose = "\
+services:
+  app:
+    image: trydirect/stackpilot:latest
+    ports:
+      - \"8080:8000\"
+    environment:
+      ADMIN_PASSWORD: 4f4237dd9bfe8e1622706cac7bab63c7
+      ADMIN_USER: admin
+      DATABASE_URL: postgresql://stackpilot:2213a996143863b99a0f2d3e22907690@db:5432/stackpilot
+      SECRET_KEY: b838f1f22379b8c268a4d3e0268459761c18947e1576956a6d9b1f3928070df4
+      OLLAMA_MODEL: llama3.1
+    restart: unless-stopped
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("ADMIN_PASSWORD".to_string());
+        keys.insert("SECRET_KEY".to_string());
+        keys.insert("DATABASE_URL".to_string());
+
+        let result = parameterize_compose_env_vars(compose, &keys);
+
+        assert!(result.contains("ADMIN_PASSWORD: ${ADMIN_PASSWORD}"), "admin pw:\n{result}");
+        assert!(result.contains("SECRET_KEY: ${SECRET_KEY}"), "secret key:\n{result}");
+        assert!(result.contains("DATABASE_URL: ${DATABASE_URL}"), "db url:\n{result}");
+        // Non-secret values stay as-is.
+        assert!(result.contains("ADMIN_USER: admin"), "admin user:\n{result}");
+        assert!(result.contains("OLLAMA_MODEL: llama3.1"), "model:\n{result}");
+    }
+
+    #[test]
+    fn parameterize_leaves_non_env_blocks_alone() {
+        let compose = "\
+services:
+  app:
+    image: myapp:latest
+    environment:
+      SECRET_KEY: abc123
+    labels:
+      my.stacker.service: myapp
+    volumes:
+      - app_data:/app/data
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("SECRET_KEY".to_string());
+
+        let result = parameterize_compose_env_vars(compose, &keys);
+
+        assert!(result.contains("SECRET_KEY: ${SECRET_KEY}"), "secret:\n{result}");
+        assert!(result.contains("my.stacker.service: myapp"), "label:\n{result}");
+        assert!(result.contains("- app_data:/app/data"), "volume:\n{result}");
+    }
+
+    #[test]
+    fn parameterize_no_keys_returns_original() {
+        let compose = "services:\n  app:\n    environment:\n      FOO: bar\n";
+        let keys = std::collections::HashSet::new();
+        assert_eq!(parameterize_compose_env_vars(compose, &keys), compose);
     }
 }
