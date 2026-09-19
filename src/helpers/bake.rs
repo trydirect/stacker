@@ -35,6 +35,11 @@ pub enum BakeError {
     NoImageId,
     #[error("bake backend error: {0}")]
     Backend(String),
+    /// The build box could not be sanitized before snapshotting. Refused rather
+    /// than published: an unsanitized image carries the author's credentials to
+    /// every buyer.
+    #[error("bake rejected: could not finalize build box: {0}")]
+    Finalize(String),
 }
 
 /// Pure gate: only a healthy build box with a real `image_id` yields a record.
