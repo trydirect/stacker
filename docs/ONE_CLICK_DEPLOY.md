@@ -61,11 +61,31 @@ stacker/  StackerConfig::from_str+validate_semantics   registry lookup → cloud
 - 200 `{ valid, name, version, composition {app, services[]} }`; 422 `{ valid:false, errors[], warnings[] }`.
 - Casbin `group_anonymous` rule (new migration, pattern `20260726120000_casbin_audit_public_rules.up.sql`).
 
+> For how one secret value travels from the author's machine into a buyer's
+> clone — and which component owns each step — see
+> [SECRET_LIFECYCLE.md](SECRET_LIFECYCLE.md).
+
 ### 2. `baked_snapshots` registry
-- Migration `bake_snapshots` (stack, version, provider, image_id, healthy, digests JSONB, created_at).
+- Columns: `stack`, `version`, `provider`, `image_id`, `healthy`, `digests` JSONB,
+  `created_at`, plus two added later:
+  - `config_contract` JSONB (`20260911120000`) — the author's field policy pinned to
+    the image, so the clone path regenerates `mutability: generated` fields per buyer
+    instead of every clone inheriting the one value baked at bake time.
+  - `required_env_keys` JSONB (`20260919120000`) — the `${VAR}` names the baked compose
+    references. The clone path refuses a deploy whose environment cannot satisfy them,
+    because Compose resolves an unsatisfied reference to an empty string with only a
+    warning. NULL means the check is skipped: either the snapshot predates the column,
+    or it was baked with `--allow-unsanitized-snapshot`.
 - `src/db/baked_snapshot.rs`, `src/models/baked_snapshot.rs`: `resolve`/`record`.
-- Extend `src/bin/bake.rs` / `src/helpers/bake.rs` to persist the `BakeRecord`.
-- Run `cargo sqlx prepare` after any sqlx query change.
+  Both reads are `SELECT *`. `required_env_keys` carries `#[sqlx(default)]`, so it
+  tolerates a database that has not run its migration yet; `config_contract` does
+  **not**, so `resolve()` fails outright against a database missing that column.
+- `src/bin/bake.rs` / `src/helpers/bake.rs` persist the `BakeRecord`. Before snapshotting,
+  `src/helpers/bake_finalize.rs` sanitizes the build box over SSH (blank the co-located
+  `.env`, parameterize secrets embedded in compose values, drop credential-bearing data
+  volumes, strip SSH host keys / machine-id / cloud-init state) — hence `bake --ssh-key`.
+- These three queries use runtime `sqlx::query_as`, not the compile-time macros, so they
+  need no `.sqlx` entry. Run `cargo sqlx prepare` after changing any *macro* query.
 
 ### 3. `POST /api/v1/deploy/clone` (protected)
 - Request `{ stack, version, region, server_type, domain, admin_email, env{} }`.

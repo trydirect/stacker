@@ -74,8 +74,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 i += 1;
             }
             other => {
-                eprintln!("ignoring unknown arg: {other}");
-                i += 1;
+                // Shrugging this off is how `--sshkey` silently became "no
+                // --ssh-key", and a mistyped `--stack` silently bakes under the
+                // default slug — pinning the wrong contract to the image.
+                return Err(format!(
+                    "unknown argument `{other}`. Supported: --ip, --server-id, --stack, \
+                     --version, --health-url, --ssh-key, --ssh-user, --project-dir, \
+                     --allow-unsanitized-snapshot"
+                )
+                .into());
             }
         }
     }
@@ -119,13 +126,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let config_contract = match &pool {
-        Some(pool) => resolve_config_contract(pool, &stack).await,
+        Some(pool) => resolve_config_contract(pool, &stack, &version).await,
         None => None,
     };
     let protected_keys = config_contract
         .as_ref()
         .map(stacker::helpers::bake_finalize::protected_keys_from_contract)
         .unwrap_or_default();
+
+    // Refuse before touching the box: with no contract there is nothing to
+    // sanitize, and publishing anyway is how the author's credentials reach
+    // every buyer.
+    stacker::helpers::bake_finalize::check_contract_usable(&protected_keys, allow_unsanitized)
+        .map_err(|e| e.to_string())?;
 
     // Sanitize the build box before the snapshot is taken.
     let finalize_outcome = match (&ssh_key, allow_unsanitized) {
@@ -226,11 +239,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// The author's field policy for `stack`, resolved by the same slug the
 /// snapshot registry keys on (`baked_snapshots.stack == stack_template.slug`).
 ///
-/// Best-effort: an un-catalogued or unapproved stack bakes with no contract and
-/// the clone path degrades to the baked values.
-async fn resolve_config_contract(pool: &sqlx::PgPool, stack: &str) -> Option<serde_json::Value> {
+/// `get_config_contract` reads the template's *latest* version. Baking some
+/// other version would pin the wrong field set to the image, so the versions
+/// are compared and a mismatch stops the bake rather than shipping a snapshot
+/// whose contract describes a different release.
+async fn resolve_config_contract(
+    pool: &sqlx::PgPool,
+    stack: &str,
+    version: &str,
+) -> Option<serde_json::Value> {
     match stacker::db::marketplace::get_approved_by_slug(pool, stack).await {
         Ok(Some(template)) => {
+            match stacker::db::marketplace::get_by_slug_with_latest(pool, stack).await {
+                Ok((_, Some(latest))) if latest.version != version => {
+                    eprintln!(
+                        "WARNING: baking '{stack}' v{version}, but the marketplace's latest \
+                         version is v{}. The contract describes the latest version, so it \
+                         would not match this image — resubmit or bake the latest version.",
+                        latest.version
+                    );
+                    return None;
+                }
+                _ => {}
+            }
             match stacker::db::marketplace::get_config_contract(pool, template.id).await {
                 Ok(serde_json::Value::Null) => {
                     eprintln!("WARNING: template '{stack}' declares no config_contract — nothing will be regenerated per buyer.");
