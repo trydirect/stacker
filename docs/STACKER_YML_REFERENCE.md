@@ -431,10 +431,28 @@ Docker health check configuration. Mapped directly to the compose `healthcheck:`
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `test` | `string` | — | Health check command (e.g. `"CMD pg_isready -U postgres"`) |
+| `test` | `string` | — | Health check command. See the forms below. |
 | `interval` | `string` | `30s` | Time between checks |
 | `timeout` | `string` | `30s` | Maximum time per check |
 | `retries` | `string \| integer` | `3` | Number of failures before unhealthy |
+
+**Forms of `test`.** Three spellings, all accepted:
+
+| What you write | What runs |
+|----------------|-----------|
+| `pg_isready -U postgres` | the command, through a shell |
+| `CMD-SHELL pg_isready -U postgres` | the same — the prefix is stripped and the list form emitted |
+| `CMD pg_isready -U postgres` | the command directly, without a shell |
+
+`CMD` executes the arguments as-is, so it cannot use `&&`, `|`, `$` or
+redirection; a `CMD` command containing any of those is emitted as `CMD-SHELL`
+instead, which is what the author meant.
+
+Write the prefix or leave it out, whichever reads better — stacker converts to
+the list form Docker expects either way. Writing the prefix inside a plain
+compose file would not work: Docker wraps a bare string in `CMD-SHELL` itself,
+so the prefix would be wrapped a second time and the container would try to run
+a program named `CMD-SHELL`.
 
 ```yaml
 services:
