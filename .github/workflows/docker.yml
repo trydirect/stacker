@@ -66,23 +66,20 @@ jobs:
           override: true
           components: rustfmt, clippy
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      # Registry and git only — not `target`. Caching the target directory here
+      # filled the runner's disk: `restore-keys: docker-` pulled in an older,
+      # already-bloated cache, the build added to it, and the post-job step
+      # saved a larger one still, so every run grew the next one's starting
+      # point. A 33-minute job that passed every check then died in cleanup
+      # with "No space left on device".
+      #
+      # rust.yml reached the same conclusion for the same reason; this keeps
+      # both workflows on one rule.
+      - name: Cache Cargo registry/git (no target — it grows without bound here)
+        uses: Swatinem/rust-cache@v2
         with:
-          path: ~/.cargo/registry
-          key: docker-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            docker-registry-
-            docker-
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: docker-index-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            docker-index-
-            docker-
+          cache-targets: "false"
+          key: docker-cicd
 
       - name: Generate Secret Key
         run: |
@@ -98,15 +95,6 @@ jobs:
           done
           echo "PostgreSQL did not become ready in time" >&2
           exit 1
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: docker-build-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            docker-build-
-            docker-
 
       - name: Cargo check
         uses: actions-rs/cargo@v1
