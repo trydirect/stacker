@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod agent_executor;
+pub mod bake_sanitization;
 pub mod cdc;
 pub mod cloud_server;
 pub mod common;
@@ -61,6 +62,8 @@ pub struct StepWorld {
     pub cdc_payload: Option<serde_json::Value>,
     /// CDC trigger config for CDC BDD tests
     pub cdc_trigger: Option<stacker::models::cdc::CdcTriggerConfig>,
+    /// Scratch state for the bake-sanitization scenarios
+    pub bake: bake_sanitization::BakeWorld,
 }
 
 /// Wrapper for WebSocket stream that implements Debug
@@ -124,6 +127,7 @@ impl StepWorld {
             cdc_event: None,
             cdc_payload: None,
             cdc_trigger: None,
+            bake: Default::default(),
         }
     }
 

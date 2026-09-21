@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt;
@@ -819,8 +820,26 @@ pub fn parameterize_compose_env_vars(
         }
 
         if in_environment {
-            // Match "      KEY: value" — the key must be a valid env identifier.
-            if let Some((key, _rest)) = trimmed.split_once(':') {
+            // Compose accepts either form inside `environment:`; a hand-written
+            // compose (`deploy.compose_file`) commonly uses the list one.
+            //
+            //   environment:            environment:
+            //     KEY: value              - KEY=value
+            if let Some(entry) = trimmed.strip_prefix("- ") {
+                if let Some((key, _value)) = entry.split_once('=') {
+                    let key = key.trim();
+                    if is_env_identifier(key) && env_keys.contains(key) {
+                        result.push_str(&line[..indent]);
+                        result.push_str("- ");
+                        result.push_str(key);
+                        result.push_str("=${");
+                        result.push_str(key);
+                        result.push_str("}\n");
+                        continue;
+                    }
+                }
+            } else if let Some((key, _rest)) = trimmed.split_once(':') {
+                // Match "      KEY: value" — the key must be a valid env identifier.
                 let key = key.trim();
                 if is_env_identifier(key) && env_keys.contains(key) {
                     // Preserve the original indent and replace the value.
@@ -1032,12 +1051,24 @@ pub fn collect_env_var_references(compose_content: &str) -> std::collections::BT
     let mut i = 0usize;
 
     while i + 1 < bytes.len() {
+        // `$$` is Compose's escape — the text is emitted literally and never
+        // interpolated, so neither `$` may start a reference.
+        if bytes[i] == b'$' && bytes[i + 1] == b'$' {
+            i += 2;
+            continue;
+        }
         if bytes[i] != b'$' || bytes[i + 1] != b'{' {
             i += 1;
             continue;
         }
-        let Some(end) = compose_content[i + 2..].find('}') else {
-            break;
+        // A reference never spans lines: bound the search so an unterminated
+        // `${` cannot swallow the next line's reference along with it.
+        let Some(end) = closing_brace_on_line(&compose_content[i + 2..]) else {
+            // Unterminated `${` — skip it and keep scanning. Abandoning the rest
+            // of the document here would silently under-report the references
+            // that follow.
+            i += 2;
+            continue;
         };
         let raw = &compose_content[i + 2..i + 2 + end];
         // Compose allows ${VAR:-default} / ${VAR-default} / ${VAR:?err}.
@@ -1049,6 +1080,117 @@ pub fn collect_env_var_references(compose_content: &str) -> std::collections::BT
     }
 
     names
+}
+
+/// A `${VAR}` in the baked compose that nothing will fill on the buyer's machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnresolvedReference {
+    pub name: String,
+}
+
+/// Put back the literal value of every `${VAR}` the contract does **not** cover,
+/// and report the ones that cannot be resolved.
+///
+/// Stage 4 (`parameterize_compose_env_vars`, in the CLI) turns two different
+/// things into references: contract fields, and plain top-level `env:` keys. For
+/// an ordinary deploy both are fine — the `.env` travels next to the compose and
+/// stays intact. For a baked image they are not: at first boot the buyer's
+/// machine overwrites that `.env` wholesale from `/etc/stacker/env`, which only
+/// ever holds contract fields and the buyer's own values. A reference to
+/// anything else would resolve to an empty string, and Compose only warns.
+///
+/// So the image keeps references *only* for values that have a source on the
+/// buyer's machine, and everything else goes back to being a literal — which is
+/// correct, because those values are the same for every buyer.
+///
+/// Left untouched: `$$`-escaped text (Compose never interpolates it) and
+/// `${VAR:-default}` forms that carry their own fallback.
+pub fn resolve_non_contract_references(
+    compose_content: &str,
+    env_values: &std::collections::BTreeMap<String, String>,
+    protected: &BTreeSet<String>,
+) -> (String, Vec<UnresolvedReference>) {
+    let mut out = String::with_capacity(compose_content.len());
+    let mut unresolved = Vec::new();
+    let bytes = compose_content.as_bytes();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        // `$$` is Compose's escape: it is emitted literally, never interpolated.
+        // Copy both bytes untouched so we do not mistake the second `$` for the
+        // start of a reference.
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'$' {
+            out.push_str("$$");
+            i += 2;
+            continue;
+        }
+
+        if bytes[i] != b'$' || i + 1 >= bytes.len() || bytes[i + 1] != b'{' {
+            out.push(compose_content[i..].chars().next().unwrap_or('\0'));
+            i += compose_content[i..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        }
+
+        let Some(end) = closing_brace_on_line(&compose_content[i + 2..]) else {
+            // Unterminated `${` — copy it and carry on rather than abandoning
+            // the rest of the document.
+            out.push_str("${");
+            i += 2;
+            continue;
+        };
+
+        let raw = &compose_content[i + 2..i + 2 + end];
+        let whole = &compose_content[i..i + 2 + end + 1];
+        let has_default = raw.contains(":-") || raw.contains(":?") || raw.contains('-');
+        let name = raw.split([':', '-', '?', '+']).next().unwrap_or("").trim();
+
+        if !is_env_identifier(name) || protected.contains(name) {
+            // Not a reference we manage, or one the buyer's machine will fill.
+            out.push_str(whole);
+        } else if let Some(value) = env_values.get(name) {
+            out.push_str(value);
+        } else if has_default {
+            // Compose supplies the fallback itself; nothing is missing.
+            out.push_str(whole);
+        } else {
+            out.push_str(whole);
+            unresolved.push(UnresolvedReference {
+                name: name.to_string(),
+            });
+        }
+
+        i += 2 + end + 1;
+    }
+
+    unresolved.sort_by(|a, b| a.name.cmp(&b.name));
+    unresolved.dedup();
+    (out, unresolved)
+}
+
+/// The contract fields the sanitized compose still references — exactly the set
+/// the buyer's machine has to fill.
+///
+/// Derived from the contract rather than from the text of the file: a reference
+/// is only "required" if something is expected to supply it, and the only
+/// suppliers are the regeneration commands and the buyer's own values, both of
+/// which are driven by the contract.
+pub fn required_env_keys(compose_content: &str, protected: &BTreeSet<String>) -> BTreeSet<String> {
+    collect_env_var_references(compose_content)
+        .into_iter()
+        .filter(|name| protected.contains(name))
+        .collect()
+}
+
+/// Offset of the `}` that closes a `${` opened at the start of `rest`, or
+/// `None` when the line ends first — a reference never spans lines, and letting
+/// the search run on would consume the next line's reference too.
+fn closing_brace_on_line(rest: &str) -> Option<usize> {
+    let line_end = rest.find('\n').unwrap_or(rest.len());
+    rest[..line_end].find('}')
 }
 
 /// Returns `true` when `s` looks like a POSIX env-variable name.
@@ -2157,10 +2299,10 @@ services:
     ports:
       - \"8080:8000\"
     environment:
-      ADMIN_PASSWORD: 4f4237dd9bfe8e1622706cac7bab63c7
+      ADMIN_PASSWORD: fedcba9876543210fedcba9876543210
       ADMIN_USER: admin
-      DATABASE_URL: postgresql://stackpilot:2213a996143863b99a0f2d3e22907690@db:5432/stackpilot
-      SECRET_KEY: b838f1f22379b8c268a4d3e0268459761c18947e1576956a6d9b1f3928070df4
+      DATABASE_URL: postgresql://stackpilot:0123456789abcdef0123456789abcdef@db:5432/stackpilot
+      SECRET_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
       OLLAMA_MODEL: llama3.1
     restart: unless-stopped
 ";
@@ -2243,9 +2385,9 @@ services:
 services:
   app:
     environment:
-      DATABASE_URL: postgresql://stackpilot:2213a996143863b99a0f2d3e22907690@db:5432/stackpilot
+      DATABASE_URL: postgresql://stackpilot:0123456789abcdef0123456789abcdef@db:5432/stackpilot
 ";
-        let env = env_map(&[("POSTGRES_PASSWORD", "2213a996143863b99a0f2d3e22907690")]);
+        let env = env_map(&[("POSTGRES_PASSWORD", "0123456789abcdef0123456789abcdef")]);
         let result =
             parameterize_embedded_secret_values(compose, &env, &key_set(&["POSTGRES_PASSWORD"]))
                 .expect("no conflict");
@@ -2255,7 +2397,7 @@ services:
             "password replaced in place:\n{result}"
         );
         assert!(
-            !result.contains("2213a996143863b99a0f2d3e22907690"),
+            !result.contains("0123456789abcdef0123456789abcdef"),
             "no literal left:\n{result}"
         );
     }
@@ -2296,9 +2438,9 @@ services:
 services:
   db:
     environment:
-      POSTGRES_PASSWORD: 2213a996143863b99a0f2d3e22907690
+      POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef
 ";
-        let env = env_map(&[("DB_PASSWORD", "2213a996143863b99a0f2d3e22907690")]);
+        let env = env_map(&[("DB_PASSWORD", "0123456789abcdef0123456789abcdef")]);
         let err = parameterize_embedded_secret_values(
             compose,
             &env,
@@ -2317,21 +2459,40 @@ services:
         let compose = "\
 services:
   app:
-    image: myapp:2213a996143863b99a0f2d3e22907690
+    image: myapp:0123456789abcdef0123456789abcdef
     environment:
-      TOKEN: 2213a996143863b99a0f2d3e22907690
+      TOKEN: 0123456789abcdef0123456789abcdef
 ";
-        let env = env_map(&[("TOKEN", "2213a996143863b99a0f2d3e22907690")]);
+        let env = env_map(&[("TOKEN", "0123456789abcdef0123456789abcdef")]);
         let result = parameterize_embedded_secret_values(compose, &env, &key_set(&["TOKEN"]))
             .expect("no conflict");
 
         assert!(
-            result.contains("image: myapp:2213a996143863b99a0f2d3e22907690"),
+            result.contains("image: myapp:0123456789abcdef0123456789abcdef"),
             "image digest untouched:\n{result}"
         );
         assert!(
             result.contains("TOKEN: ${TOKEN}"),
             "env replaced:\n{result}"
+        );
+    }
+
+    #[test]
+    fn collects_env_var_reference_skips_escaped_and_survives_unterminated() {
+        // `$$` is Compose's escape — the container sees literal `${HOME}` and
+        // nothing is interpolated, so it is not a reference.
+        let escaped = "services:\n  app:\n    command: sh -c 'echo $${HOME}'\n";
+        assert!(
+            collect_env_var_references(escaped).is_empty(),
+            "escaped text must not count as a reference"
+        );
+
+        // A stray `${` must not discard everything after it.
+        let broken =
+            "services:\n  app:\n    environment:\n      A: ${BROKEN\n      B: ${REAL_ONE}\n";
+        assert!(
+            collect_env_var_references(broken).contains("REAL_ONE"),
+            "scanning must continue past an unterminated reference"
         );
     }
 
@@ -2357,6 +2518,132 @@ services:
         let compose =
             "services:\n  app:\n    environment:\n      DATABASE_URL: postgres://u:${PW}@h/db\n";
         assert!(collect_env_var_references(compose).contains("PW"));
+    }
+
+    // ── references that survive into the baked image ───────────────────────
+
+    #[test]
+    fn non_contract_reference_goes_back_to_its_literal() {
+        // A top-level `env:` key is turned into a reference at deploy time, but
+        // nothing fills it on the buyer's machine — the .env there is replaced
+        // wholesale from /etc/stacker/env, which only holds contract fields.
+        let compose = "services:\n  app:\n    environment:\n      REGION: ${REGION}\n";
+        let env = env_map(&[("REGION", "fsn1")]);
+
+        let (out, unresolved) =
+            resolve_non_contract_references(compose, &env, &std::collections::BTreeSet::new());
+
+        assert!(
+            out.contains("REGION: fsn1"),
+            "put back as a literal:\n{out}"
+        );
+        assert!(unresolved.is_empty(), "nothing missing: {unresolved:?}");
+    }
+
+    #[test]
+    fn contract_reference_is_kept_as_a_reference() {
+        let compose =
+            "services:\n  db:\n    environment:\n      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}\n";
+        let env = env_map(&[("POSTGRES_PASSWORD", "aaaaaaaaaaaaaaaa")]);
+
+        let (out, _) =
+            resolve_non_contract_references(compose, &env, &key_set(&["POSTGRES_PASSWORD"]));
+
+        assert!(
+            out.contains("POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}"),
+            "the buyer's machine fills this one:\n{out}"
+        );
+        assert!(
+            !out.contains("aaaaaaaaaaaaaaaa"),
+            "the author's value must not come back:\n{out}"
+        );
+    }
+
+    #[test]
+    fn escaped_and_defaulted_references_are_left_untouched() {
+        let compose = "services:\n  app:\n    environment:\n      LOG: ${LOG_LEVEL:-info}\n\
+                       \x20     CMD: echo $${HOME}\n";
+        let (out, unresolved) = resolve_non_contract_references(
+            compose,
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeSet::new(),
+        );
+
+        assert!(out.contains("${LOG_LEVEL:-info}"), "default kept:\n{out}");
+        assert!(out.contains("$${HOME}"), "escape kept:\n{out}");
+        assert!(
+            unresolved.is_empty(),
+            "neither needs a source: {unresolved:?}"
+        );
+    }
+
+    #[test]
+    fn a_reference_with_no_value_and_no_default_is_reported() {
+        let compose = "services:\n  app:\n    environment:\n      TOKEN: ${MISSING}\n";
+        let (_, unresolved) = resolve_non_contract_references(
+            compose,
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeSet::new(),
+        );
+
+        assert_eq!(
+            unresolved,
+            vec![UnresolvedReference {
+                name: "MISSING".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn required_keys_come_from_the_contract_not_the_file_text() {
+        let compose = "services:\n  app:\n    environment:\n\
+                       \x20     SECRET_KEY: ${SECRET_KEY}\n\
+                       \x20     LOG: ${LOG_LEVEL:-info}\n\
+                       \x20     CMD: echo $${HOME}\n\
+                       \x20     REGION: ${REGION}\n";
+
+        let required = required_env_keys(compose, &key_set(&["SECRET_KEY"]));
+        let found: Vec<&str> = required.iter().map(String::as_str).collect();
+
+        assert_eq!(
+            found,
+            vec!["SECRET_KEY"],
+            "only contract fields have a source on the buyer's machine"
+        );
+    }
+
+    /// M5 — Compose accepts `environment:` as a list as well as a mapping, and
+    /// a user-supplied compose (`deploy.compose_file`) often uses the list form.
+    /// Missing it leaves the author's secrets literal in the snapshot.
+    #[test]
+    fn parameterize_handles_the_list_form_of_environment() {
+        let compose = "\
+services:
+  db:
+    environment:
+      - POSTGRES_PASSWORD=aaaaaaaaaaaaaaaa
+      - POSTGRES_USER=stackpilot
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("POSTGRES_PASSWORD".to_string());
+
+        let result = parameterize_compose_env_vars(compose, &keys);
+
+        assert!(
+            result.contains("- POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"),
+            "list entry replaced:\n{result}"
+        );
+        assert!(
+            result.contains("- POSTGRES_USER=stackpilot"),
+            "undeclared entry untouched:\n{result}"
+        );
+    }
+
+    #[test]
+    fn parameterize_list_form_leaves_undeclared_keys_alone() {
+        let compose = "services:\n  app:\n    environment:\n      - LOG_LEVEL=debug\n";
+        let keys = std::collections::HashSet::new();
+        assert_eq!(parameterize_compose_env_vars(compose, &keys), compose);
     }
 
     #[test]
