@@ -703,7 +703,10 @@ impl ComposeDefinition {
 
             if let Some(ref hc) = svc.healthcheck {
                 out.push_str("    healthcheck:\n");
-                out.push_str(&format!("      test: {}\n", yaml_quote(&hc.test)));
+                out.push_str(&format!(
+                    "      test: {}\n",
+                    render_healthcheck_test(&hc.test)
+                ));
                 out.push_str(&format!("      interval: {}\n", hc.interval));
                 out.push_str(&format!("      timeout: {}\n", hc.timeout));
                 out.push_str(&format!("      retries: {}\n", hc.retries));
@@ -1191,6 +1194,39 @@ pub fn required_env_keys(compose_content: &str, protected: &BTreeSet<String>) ->
 fn closing_brace_on_line(rest: &str) -> Option<usize> {
     let line_end = rest.find('\n').unwrap_or(rest.len());
     rest[..line_end].find('}')
+}
+
+/// Render a healthcheck `test` in the form Docker actually expects.
+///
+/// Docker wraps a plain *string* in `CMD-SHELL` on its own, so a string that
+/// already spells the prefix out is wrapped twice and the container ends up
+/// trying to run a program named `CMD-SHELL`:
+///
+/// ```text
+/// /bin/sh: 1: CMD-SHELL: not found
+/// ```
+///
+/// The prefix only means anything in the list form — and the prefix form is
+/// what the stacker.yml reference tells authors to write, so it is converted
+/// rather than rejected.
+///
+/// The decision itself lives in [`crate::cli::compose_service_sync::healthcheck_test_value`],
+/// which the server-side sync path already uses; this only renders its result
+/// as inline YAML. One rule, two call sites.
+fn render_healthcheck_test(test: &str) -> String {
+    match crate::cli::compose_service_sync::healthcheck_test_value(test) {
+        serde_yaml::Value::Sequence(parts) => {
+            let rendered = parts
+                .iter()
+                .filter_map(serde_yaml::Value::as_str)
+                .map(yaml_quote)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[{rendered}]")
+        }
+        serde_yaml::Value::String(plain) => yaml_quote(&plain),
+        other => yaml_quote(other.as_str().unwrap_or_default()),
+    }
 }
 
 /// Returns `true` when `s` looks like a POSIX env-variable name.
@@ -2644,6 +2680,56 @@ services:
         let compose = "services:\n  app:\n    environment:\n      - LOG_LEVEL=debug\n";
         let keys = std::collections::HashSet::new();
         assert_eq!(parameterize_compose_env_vars(compose, &keys), compose);
+    }
+
+    // ── healthcheck test form ──────────────────────────────────────────────
+
+    /// Docker wraps a *string* `test` in `CMD-SHELL` itself, so a string that
+    /// already carries the prefix is wrapped twice and the container tries to
+    /// execute a program literally named `CMD-SHELL`:
+    ///
+    ///     /bin/sh: 1: CMD-SHELL: not found
+    ///
+    /// The prefix is only meaningful in the list form, and the prefix form is
+    /// what `docs/STACKER_YML_REFERENCE.md` tells authors to write.
+    #[test]
+    fn healthcheck_cmd_shell_prefix_becomes_a_list() {
+        let rendered = render_healthcheck_test("CMD-SHELL pg_isready -d app -U app");
+        assert_eq!(rendered, r#"["CMD-SHELL", "pg_isready -d app -U app"]"#);
+    }
+
+    /// `CMD` runs the argv directly, so each word is its own element.
+    #[test]
+    fn healthcheck_cmd_prefix_becomes_an_argv_list() {
+        let rendered = render_healthcheck_test("CMD redis-cli ping");
+        assert_eq!(rendered, r#"["CMD", "redis-cli", "ping"]"#);
+    }
+
+    /// Without a prefix the string form is correct — Docker supplies the shell.
+    #[test]
+    fn healthcheck_without_a_prefix_stays_a_string() {
+        let rendered = render_healthcheck_test("curl -f http://localhost/health");
+        assert_eq!(rendered, r#""curl -f http://localhost/health""#);
+    }
+
+    /// The list form an author wrote by hand must survive untouched.
+    #[test]
+    fn healthcheck_already_a_list_is_left_alone() {
+        let rendered = render_healthcheck_test(r#"["CMD", "true"]"#);
+        assert_eq!(rendered, r#"["CMD", "true"]"#);
+    }
+
+    /// A value that merely starts with the letters CMD is not a prefix.
+    #[test]
+    fn healthcheck_cmdline_is_not_mistaken_for_a_prefix() {
+        let rendered = render_healthcheck_test("cmdline-check --fast");
+        assert_eq!(rendered, r#""cmdline-check --fast""#);
+    }
+
+    #[test]
+    fn healthcheck_quotes_are_escaped_inside_the_list() {
+        let rendered = render_healthcheck_test(r#"CMD-SHELL test "$(id -u)" = 0"#);
+        assert_eq!(rendered, r#"["CMD-SHELL", "test \"$(id -u)\" = 0"]"#);
     }
 
     #[test]
