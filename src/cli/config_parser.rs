@@ -1097,6 +1097,10 @@ impl FieldPolicy {
             && self.signing_key.is_none()
             && self.claims.is_none()
             && self.alg.is_none()
+            // The legacy `secret:` list cannot carry a display hint, so a field
+            // that has one must stay in `fields:` or the hint is dropped — and
+            // the buyer's form renders a text input for a password.
+            && self.display.is_none()
     }
 }
 
@@ -1136,22 +1140,28 @@ impl<'de> Deserialize<'de> for VolumePolicy {
         }
 
         let raw = Raw::deserialize(deserializer)?;
-        match raw.mutability {
-            Mutability::Fixed | Mutability::Generated => Ok(VolumePolicy {
-                mutability: raw.mutability,
-            }),
-            other => Err(serde::de::Error::custom(format!(
-                "`mutability: {}` is not meaningful for a volume — a volume holds \
-                 state, not a value somebody types. Use `fixed` to ship the \
-                 author's content in the image, or `generated` to have the buyer's \
-                 machine create it from scratch.",
-                match other {
-                    Mutability::Provided => "provided",
-                    Mutability::Editable => "editable",
-                    _ => unreachable!("fixed and generated are handled above"),
-                }
-            ))),
-        }
+
+        // Matched exhaustively on purpose: a fifth `Mutability` variant must be
+        // a compile error here, forcing a decision about what it means for a
+        // volume. A catch-all arm would compile and then panic inside a
+        // deserializer — aborting the CLI on a config file instead of reporting
+        // an error.
+        let rejected = match raw.mutability {
+            Mutability::Fixed | Mutability::Generated => {
+                return Ok(VolumePolicy {
+                    mutability: raw.mutability,
+                })
+            }
+            Mutability::Provided => "provided",
+            Mutability::Editable => "editable",
+        };
+
+        Err(serde::de::Error::custom(format!(
+            "`mutability: {rejected}` is not meaningful for a volume — a volume \
+             holds state, not a value somebody types. Use `fixed` to ship the \
+             author's content in the image, or `generated` to have the buyer's \
+             machine create it from scratch."
+        )))
     }
 }
 
@@ -1312,6 +1322,9 @@ struct SerializedTargetConfigContract {
     secret: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     fields: BTreeMap<String, FieldPolicy>,
+    /// Sorted, so a submitted contract is byte-stable across runs.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    volumes: BTreeMap<String, VolumePolicy>,
 }
 
 impl Serialize for TargetConfigContract {
@@ -1346,6 +1359,11 @@ impl Serialize for TargetConfigContract {
             optional,
             secret,
             fields,
+            volumes: self
+                .volumes
+                .iter()
+                .map(|(name, policy)| (name.clone(), *policy))
+                .collect(),
         }
         .serialize(serializer)
     }
@@ -2750,6 +2768,119 @@ config_contract:
 
     /// `provided` and `editable` describe who types a *value*; a volume has no
     /// value to type. Accepting them would leave the bake guessing.
+    /// Parsing is only half of it: the contract is serialized back out when
+    /// `stacker submit` sends it to the marketplace. A declaration that parses
+    /// but does not survive serialization never reaches the registry, and the
+    /// bake then resets the volume it was meant to keep — silently, because
+    /// everything else about the submit looks fine.
+    /// `display` is a UI hint with no legacy equivalent: the `secret:` shorthand
+    /// cannot express it. Collapsing a field into that list therefore loses it,
+    /// and the buyer's form renders a plain text input for a password.
+    ///
+    /// This travels further than the marketplace — `stacker sync` serializes the
+    /// contract onto every app of a project through the same code.
+    #[test]
+    fn a_display_hint_is_not_lost_to_the_legacy_shorthand() {
+        let yaml = r#"
+name: s
+config_contract:
+  services:
+    app:
+      fields:
+        ADMIN_PASSWORD:
+          mutability: generated
+          type: alphanumeric
+          min_length: 32
+          display: password
+"#;
+        let parsed = StackerConfig::from_str(yaml).unwrap();
+        let json = serde_json::to_value(&parsed.config_contract).unwrap();
+
+        assert_eq!(
+            json["services"]["app"]["fields"]["ADMIN_PASSWORD"]["display"], "password",
+            "the hint must survive: {json}"
+        );
+    }
+
+    #[test]
+    fn volume_policy_survives_a_round_trip() {
+        let yaml = r#"
+name: stackpilot
+config_contract:
+  services:
+    stackpilot-ollama:
+      volumes:
+        stackpilot_ollama:
+          mutability: fixed
+"#;
+        let parsed = StackerConfig::from_str(yaml).unwrap();
+        let json = serde_json::to_value(&parsed.config_contract).unwrap();
+
+        assert_eq!(
+            json["services"]["stackpilot-ollama"]["volumes"]["stackpilot_ollama"]["mutability"],
+            "fixed",
+            "the declaration must still be there after serializing: {json}"
+        );
+
+        // And it must come back identically on the far side.
+        let round_tripped: ConfigContract = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            round_tripped.services["stackpilot-ollama"].fixed_volumes(),
+            vec!["stackpilot_ollama".to_string()]
+        );
+    }
+
+    /// The legacy three-list shape predates volumes. It must keep round-tripping
+    /// untouched — a contract written before this kind existed is still valid,
+    /// and must not grow an empty `volumes:` key on the way through.
+    #[test]
+    fn a_legacy_contract_round_trips_without_gaining_a_volumes_key() {
+        let yaml = r#"
+name: old-stack
+config_contract:
+  services:
+    app:
+      secret: [API_KEY]
+      required: [HOST]
+"#;
+        let parsed = StackerConfig::from_str(yaml).unwrap();
+        let json = serde_json::to_value(&parsed.config_contract).unwrap();
+
+        let app = &json["services"]["app"];
+        assert!(app.get("secret").is_some(), "legacy shape preserved: {app}");
+        assert!(
+            app.get("volumes").is_none(),
+            "an empty kind must not be emitted: {app}"
+        );
+
+        let _: ConfigContract = serde_json::from_value(json).expect("still parses");
+    }
+
+    /// A service can declare only volumes — no fields at all. It must survive
+    /// the round trip rather than collapsing into an empty block, which is
+    /// exactly how the serialization defect showed up in production.
+    #[test]
+    fn a_service_with_only_volumes_survives_serialization() {
+        let yaml = r#"
+name: s
+config_contract:
+  services:
+    ollama:
+      volumes:
+        app_ollama: { mutability: fixed }
+"#;
+        let parsed = StackerConfig::from_str(yaml).unwrap();
+        let json = serde_json::to_value(&parsed.config_contract).unwrap();
+
+        assert!(
+            !json["services"]["ollama"]
+                .as_object()
+                .expect("service block is an object")
+                .is_empty(),
+            "the service block must not serialize to {{}}: {json}"
+        );
+    }
+
     #[test]
     fn volume_policy_rejects_mutabilities_that_make_no_sense_for_state() {
         for mutability in ["provided", "editable"] {

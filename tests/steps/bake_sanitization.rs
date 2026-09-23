@@ -192,7 +192,7 @@ async fn then_volumes_not_host_wide(world: &mut StepWorld) {
 
 #[then(regex = r#"^the commands skip the volume matching "([^"]*)"$"#)]
 async fn then_volumes_skip_kept(world: &mut StepWorld, name: String) {
-    let expected = format!("case \"$v\" in {name}|");
+    let expected = format!("case \"$v\" in {name})");
     assert!(
         world.bake.volume_commands.contains(&expected),
         "expected `{expected}`; commands: {}",
