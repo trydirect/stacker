@@ -5144,6 +5144,34 @@ mod tests {
         );
     }
 
+    /// Regression for the same defect the submit path had: the contract is
+    /// serialized here too, so a kind missing from `Serialize` silently drops
+    /// out of `project_app.config_contract` on every `stacker sync`.
+    #[test]
+    fn build_project_body_carries_volume_declarations() {
+        let mut config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("volume-project")
+            .app_image("nginx:1.27")
+            .build()
+            .expect("config should build");
+        config.config_contract = serde_json::from_value(serde_json::json!({
+            "services": {
+                "ollama": {
+                    "volumes": { "app_ollama": { "mutability": "fixed" } }
+                }
+            }
+        }))
+        .expect("config contract should deserialize");
+
+        let body = build_project_body(&config);
+        assert_eq!(
+            body["custom"]["web"][0]["config_contract"]["services"]["ollama"]["volumes"]
+                ["app_ollama"]["mutability"],
+            "fixed",
+            "the volume declaration must survive into the synced app"
+        );
+    }
+
     #[test]
     fn build_project_body_includes_config_contract_on_apps() {
         let mut config = crate::cli::config_parser::ConfigBuilder::new()

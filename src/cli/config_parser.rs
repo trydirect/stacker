@@ -2791,6 +2791,57 @@ config_contract:
         );
     }
 
+    /// The legacy three-list shape predates volumes. It must keep round-tripping
+    /// untouched — a contract written before this kind existed is still valid,
+    /// and must not grow an empty `volumes:` key on the way through.
+    #[test]
+    fn a_legacy_contract_round_trips_without_gaining_a_volumes_key() {
+        let yaml = r#"
+name: old-stack
+config_contract:
+  services:
+    app:
+      secret: [API_KEY]
+      required: [HOST]
+"#;
+        let parsed = StackerConfig::from_str(yaml).unwrap();
+        let json = serde_json::to_value(&parsed.config_contract).unwrap();
+
+        let app = &json["services"]["app"];
+        assert!(app.get("secret").is_some(), "legacy shape preserved: {app}");
+        assert!(
+            app.get("volumes").is_none(),
+            "an empty kind must not be emitted: {app}"
+        );
+
+        let _: ConfigContract = serde_json::from_value(json).expect("still parses");
+    }
+
+    /// A service can declare only volumes — no fields at all. It must survive
+    /// the round trip rather than collapsing into an empty block, which is
+    /// exactly how the serialization defect showed up in production.
+    #[test]
+    fn a_service_with_only_volumes_survives_serialization() {
+        let yaml = r#"
+name: s
+config_contract:
+  services:
+    ollama:
+      volumes:
+        app_ollama: { mutability: fixed }
+"#;
+        let parsed = StackerConfig::from_str(yaml).unwrap();
+        let json = serde_json::to_value(&parsed.config_contract).unwrap();
+
+        assert!(
+            !json["services"]["ollama"]
+                .as_object()
+                .expect("service block is an object")
+                .is_empty(),
+            "the service block must not serialize to {{}}: {json}"
+        );
+    }
+
     #[test]
     fn volume_policy_rejects_mutabilities_that_make_no_sense_for_state() {
         for mutability in ["provided", "editable"] {
