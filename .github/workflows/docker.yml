@@ -19,6 +19,14 @@ jobs:
     name: Cargo and npm build
     runs-on: ubuntu-latest
     #runs-on: [self-hosted, linux]
+    # Build inside the same image the Dockerfile builds in, so the binaries
+    # produced here can be copied into the runtime image instead of being
+    # compiled a second time. They are dynamically linked against glibc, and
+    # glibc is forward- but not backward-compatible: a binary built on the
+    # runner (Ubuntu 24.04, glibc 2.39) would not start on debian:bookworm-slim
+    # (glibc 2.36). Building in rust:bookworm makes the two match exactly.
+    container:
+      image: rust:bookworm
     services:
       postgres:
         image: postgres:16
@@ -42,16 +50,18 @@ jobs:
           ref: ${{ github.ref }}
       - name: Export PostgreSQL connection env
         run: |
-          echo "PGHOST=127.0.0.1" >> "$GITHUB_ENV"
+          # Inside a job container, services resolve by name on the shared
+          # network — 127.0.0.1 is the container itself.
+          echo "PGHOST=postgres" >> "$GITHUB_ENV"
           echo "PGPORT=5432" >> "$GITHUB_ENV"
           echo "PGUSER=postgres" >> "$GITHUB_ENV"
           echo "PGPASSWORD=postgres" >> "$GITHUB_ENV"
 
-      - name: Install OpenSSL and protoc build deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev protobuf-compiler
+      # No apt step here: `rust:bookworm` already carries pkg-config, libssl-dev
+      # and a C toolchain, and protoc never comes from the system — `build.rs`
+      # points PROTOC at a vendored binary unless one is already set. The step
+      # that used to be here called `sudo`, which the image does not have, and
+      # does not need: the job runs as root.
 
       - name: Verify .sqlx cache exists
         run: |
@@ -108,12 +118,16 @@ jobs:
       # env vars no longer race and the suite runs in parallel (no more
       # RUST_TEST_THREADS=1 serialization, no 25-minute timeout). The `bdd`
       # target uses a custom harness nextest cannot run, so it runs separately.
+      # Both suites run even if one of them fails, so a single broken test does
+      # not hide the state of the other. Not `always()`: that also runs them
+      # after an earlier *setup* step fails, and then reports something
+      # unrelated — a missing apt package once surfaced as "no such command:
+      # nextest", because the install step had been skipped.
       - name: Cargo test
-        if: ${{ always() }}
         run: cargo nextest run --tests -E 'not binary(bdd)'
 
       - name: Cargo test (bdd suite)
-        if: ${{ always() }}
+        if: success() || failure()
         run: cargo test --test bdd
 
       - name: Rustfmt
@@ -136,17 +150,21 @@ jobs:
           command: clippy
           args: -- -D warnings
 
-      - name: Build server (release)
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release --bin server
-
-      - name: Build cleanup-notify (release)
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release --bin cleanup-notify
+      # One invocation, so the four binaries share a single compilation of the
+      # workspace instead of four sequential ones. These are the binaries the
+      # runtime image needs; the Docker job copies them rather than rebuilding.
+      # Two invocations, not one: `--features` applies to the whole command, not
+      # to the `--bin` it follows. Listing them together builds `server` with
+      # `explain` too — a differently configured binary from the one the image
+      # has always shipped. The second call is nearly free; only `console` and
+      # the re-featured casbin dependency recompile.
+      - name: Build release binaries
+        run: |
+          cargo build --release \
+            --bin server \
+            --bin cleanup-notify \
+            --bin backfill_field_policy
+          cargo build --release --bin console --features explain
 
       - name: Set up Node.js
         if: ${{ hashFiles('web/package.json') != '' }}
@@ -181,7 +199,9 @@ jobs:
         run: |
           mkdir -p app/stacker/dist
           cp target/release/server app/stacker/server
+          cp target/release/console app/stacker/console
           cp target/release/cleanup-notify app/stacker/cleanup-notify
+          cp target/release/backfill_field_policy app/stacker/backfill_field_policy
           if [ -d web/dist ]; then cp -a web/dist/. app/stacker; fi
           cp Dockerfile app/Dockerfile
           cp access_control.conf.dist app/access_control.conf.dist
@@ -210,6 +230,28 @@ jobs:
         run: |
           test -d "${GITHUB_WORKSPACE}/tests/fixtures/pipe-contract"
 
+      # The test job already compiled these, in the same rust:bookworm image the
+      # runtime stage is based on. Without this the Dockerfile compiles the whole
+      # workspace a second time — around fourteen minutes of the run.
+      - name: Download binaries built by the test job
+        uses: actions/download-artifact@v4
+        with:
+          name: artifact-linux-docker
+
+      # Unpacked outside the workspace: `.dockerignore` is empty, so anything
+      # left here is sent to buildkit as part of `context: .` — hundreds of
+      # megabytes of release binaries, twice, eating back the time this change
+      # exists to save.
+      - name: Unpack binaries
+        run: |
+          mkdir -p "${{ runner.temp }}/prebuilt"
+          tar -xzf app.tar.gz -C "${{ runner.temp }}/prebuilt"
+          cd "${{ runner.temp }}/prebuilt"
+          mv stacker/server stacker/console stacker/cleanup-notify \
+             stacker/backfill_field_policy .
+          chmod +x server console cleanup-notify backfill_field_policy
+          rm -f "${GITHUB_WORKSPACE}/app.tar.gz"
+
       -
         name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -235,8 +277,11 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          build-args: |
+            BINARIES=prebuilt
           build-contexts: |
             shared_fixtures=${{ github.workspace }}/tests/fixtures
+            prebuilt_binaries=${{ runner.temp }}/prebuilt
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.docker_tags.outputs.tags }}
 
