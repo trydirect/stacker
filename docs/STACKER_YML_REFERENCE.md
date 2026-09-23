@@ -23,7 +23,6 @@
 - [install — Marketplace Install Inputs](#install)
 - [environments — Named Environments](#environments)
 - [volumes — Named Volumes](#volumes)
-- [config_contract — Service Config Contracts](#config_contract)
 - [ai — AI Assistant](#ai)
 - [monitoring — Health & Metrics](#monitoring)
   - [status_panel](#monitoringstatus_panel) · [healthcheck](#monitoringhealthcheck) · [metrics](#monitoringmetrics) · [alerts](#monitoringalerts)
@@ -847,6 +846,62 @@ environments:
 
 ---
 
+## `config_contract`
+
+Declares who controls each of a service's inputs when somebody else installs the
+stack. Read at publish time and on the marketplace install path; ignored by a
+plain local deploy.
+
+Without it, the literal values that are correct for *your* deployment — a
+`JWT_SECRET`, a database password — are copied verbatim into every buyer's
+install, so every buyer and you share one set of credentials.
+
+```yaml
+config_contract:
+  services:
+    my-service:                 # must match a service name, or `app`
+      fields:
+        DATABASE_URL:
+          mutability: fixed     # your value ships as-is
+        LOG_LEVEL:
+          mutability: editable  # your value is a default the buyer may override
+        LICENSE_KEY:
+          mutability: provided  # the buyer must supply it; yours is never shipped
+        SECRET_KEY:
+          mutability: generated # a fresh value per install; the buyer never types it
+          type: alphanumeric
+          length: 32
+          display: password
+```
+
+| Key | Applies to | Meaning |
+|---|---|---|
+| `mutability` | every field | `fixed`, `editable`, `provided` or `generated` — see above |
+| `required` | every field | whether a value must resolve at all. Default `true` |
+| `type` | `generated` | `hex`, `base64`, `alphanumeric`, `uuid`, `enum`, `derived_jwt` |
+| `length` / `min_length` | `generated` | exact or minimum length |
+| `values` | `enum` | the allowed set |
+| `signing_key`, `claims`, `alg` | `derived_jwt` | `"service.FIELD"` to sign with, the claims, and one of `HS256`/`HS384`/`HS512` |
+| `display` | any field | UI hint — `boolean`, `string`, `number`, `password`. Independent of `type` |
+
+Publishing to the marketplace is refused until every secret-shaped field carries
+a `generated` or `provided` policy.
+
+**Shorthand.** Three plain lists are still accepted and mean
+`fixed`+required, `fixed`+optional, and `generated` respectively:
+
+```yaml
+config_contract:
+  services:
+    my-service:
+      required: [DATABASE_URL]
+      optional: [LOG_LEVEL]
+      secret:   [SECRET_KEY]
+```
+
+Mixing is fine; an explicit `fields:` entry wins over a list mentioning the same
+name.
+
 ### Volume policy in `config_contract`
 
 A baked marketplace image is cloned for every buyer, and a volume that travels
@@ -902,25 +957,6 @@ volumes:
 ```
 
 Named volumes referenced in `app.volumes` or `services[].volumes` but not listed here are created implicitly by Docker Compose. Use this section when you need to configure the volume driver or share a volume name explicitly across services.
-
----
-
-## `config_contract`
-
-*Optional* · `object` · Default: none
-
-Declares service-level configuration contracts — metadata consumed by the TryDirect Install Service and marketplace pipeline to validate and pre-populate service inputs. Not used during local deploys.
-
-```yaml
-config_contract:
-  services:
-    my-service:
-      required_env:
-        - DATABASE_URL
-        - SECRET_KEY
-```
-
-> This section is primarily written by `stacker install` and the marketplace generator. You rarely need to set it by hand.
 
 ---
 
