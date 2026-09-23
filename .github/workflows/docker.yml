@@ -19,6 +19,14 @@ jobs:
     name: Cargo and npm build
     runs-on: ubuntu-latest
     #runs-on: [self-hosted, linux]
+    # Build inside the same image the Dockerfile builds in, so the binaries
+    # produced here can be copied into the runtime image instead of being
+    # compiled a second time. They are dynamically linked against glibc, and
+    # glibc is forward- but not backward-compatible: a binary built on the
+    # runner (Ubuntu 24.04, glibc 2.39) would not start on debian:bookworm-slim
+    # (glibc 2.36). Building in rust:bookworm makes the two match exactly.
+    container:
+      image: rust:bookworm
     services:
       postgres:
         image: postgres:16
@@ -42,7 +50,9 @@ jobs:
           ref: ${{ github.ref }}
       - name: Export PostgreSQL connection env
         run: |
-          echo "PGHOST=127.0.0.1" >> "$GITHUB_ENV"
+          # Inside a job container, services resolve by name on the shared
+          # network — 127.0.0.1 is the container itself.
+          echo "PGHOST=postgres" >> "$GITHUB_ENV"
           echo "PGPORT=5432" >> "$GITHUB_ENV"
           echo "PGUSER=postgres" >> "$GITHUB_ENV"
           echo "PGPASSWORD=postgres" >> "$GITHUB_ENV"
@@ -136,17 +146,16 @@ jobs:
           command: clippy
           args: -- -D warnings
 
-      - name: Build server (release)
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release --bin server
-
-      - name: Build cleanup-notify (release)
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release --bin cleanup-notify
+      # One invocation, so the four binaries share a single compilation of the
+      # workspace instead of four sequential ones. These are the binaries the
+      # runtime image needs; the Docker job copies them rather than rebuilding.
+      - name: Build release binaries
+        run: |
+          cargo build --release \
+            --bin server \
+            --bin console --features explain \
+            --bin cleanup-notify \
+            --bin backfill_field_policy
 
       - name: Set up Node.js
         if: ${{ hashFiles('web/package.json') != '' }}
@@ -181,7 +190,9 @@ jobs:
         run: |
           mkdir -p app/stacker/dist
           cp target/release/server app/stacker/server
+          cp target/release/console app/stacker/console
           cp target/release/cleanup-notify app/stacker/cleanup-notify
+          cp target/release/backfill_field_policy app/stacker/backfill_field_policy
           if [ -d web/dist ]; then cp -a web/dist/. app/stacker; fi
           cp Dockerfile app/Dockerfile
           cp access_control.conf.dist app/access_control.conf.dist
@@ -210,6 +221,25 @@ jobs:
         run: |
           test -d "${GITHUB_WORKSPACE}/tests/fixtures/pipe-contract"
 
+      # The test job already compiled these, in the same rust:bookworm image the
+      # runtime stage is based on. Without this the Dockerfile compiles the whole
+      # workspace a second time — around fourteen minutes of the run.
+      - name: Download binaries built by the test job
+        uses: actions/download-artifact@v4
+        with:
+          name: artifact-linux-docker
+
+      - name: Unpack binaries
+        run: |
+          mkdir -p prebuilt
+          tar -xzf app.tar.gz -C prebuilt
+          # The build context expects them at its root.
+          mv prebuilt/stacker/server prebuilt/stacker/console \
+             prebuilt/stacker/cleanup-notify prebuilt/stacker/backfill_field_policy \
+             prebuilt/
+          chmod +x prebuilt/server prebuilt/console \
+                   prebuilt/cleanup-notify prebuilt/backfill_field_policy
+
       -
         name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -235,8 +265,11 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          build-args: |
+            BINARIES=prebuilt
           build-contexts: |
             shared_fixtures=${{ github.workspace }}/tests/fixtures
+            prebuilt_binaries=${{ github.workspace }}/prebuilt
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.docker_tags.outputs.tags }}
 
