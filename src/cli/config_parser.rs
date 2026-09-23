@@ -1312,6 +1312,9 @@ struct SerializedTargetConfigContract {
     secret: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     fields: BTreeMap<String, FieldPolicy>,
+    /// Sorted, so a submitted contract is byte-stable across runs.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    volumes: BTreeMap<String, VolumePolicy>,
 }
 
 impl Serialize for TargetConfigContract {
@@ -1346,6 +1349,11 @@ impl Serialize for TargetConfigContract {
             optional,
             secret,
             fields,
+            volumes: self
+                .volumes
+                .iter()
+                .map(|(name, policy)| (name.clone(), *policy))
+                .collect(),
         }
         .serialize(serializer)
     }
@@ -2750,6 +2758,39 @@ config_contract:
 
     /// `provided` and `editable` describe who types a *value*; a volume has no
     /// value to type. Accepting them would leave the bake guessing.
+    /// Parsing is only half of it: the contract is serialized back out when
+    /// `stacker submit` sends it to the marketplace. A declaration that parses
+    /// but does not survive serialization never reaches the registry, and the
+    /// bake then resets the volume it was meant to keep — silently, because
+    /// everything else about the submit looks fine.
+    #[test]
+    fn volume_policy_survives_a_round_trip() {
+        let yaml = r#"
+name: stackpilot
+config_contract:
+  services:
+    stackpilot-ollama:
+      volumes:
+        stackpilot_ollama:
+          mutability: fixed
+"#;
+        let parsed = StackerConfig::from_str(yaml).unwrap();
+        let json = serde_json::to_value(&parsed.config_contract).unwrap();
+
+        assert_eq!(
+            json["services"]["stackpilot-ollama"]["volumes"]["stackpilot_ollama"]["mutability"],
+            "fixed",
+            "the declaration must still be there after serializing: {json}"
+        );
+
+        // And it must come back identically on the far side.
+        let round_tripped: ConfigContract = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            round_tripped.services["stackpilot-ollama"].fixed_volumes(),
+            vec!["stackpilot_ollama".to_string()]
+        );
+    }
+
     #[test]
     fn volume_policy_rejects_mutabilities_that_make_no_sense_for_state() {
         for mutability in ["provided", "editable"] {
