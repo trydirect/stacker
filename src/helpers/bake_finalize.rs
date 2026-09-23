@@ -37,11 +37,15 @@ use std::collections::BTreeSet;
 /// does not, and a hardcoded list needed a code change and a rebuilt binary for
 /// every new stack.
 pub fn volumes_to_keep(contract: &crate::cli::config_parser::ConfigContract) -> Vec<String> {
-    contract
+    // Compose volumes are global, so two services may declare the same one.
+    // Deduplicated; a disagreement is refused by `check_volume_declarations`
+    // before this is used.
+    let unique: BTreeSet<String> = contract
         .services
         .values()
         .flat_map(|service| service.fixed_volumes())
-        .collect()
+        .collect();
+    unique.into_iter().collect()
 }
 
 /// Validate the author's volume declarations.
@@ -68,6 +72,30 @@ pub fn volumes_to_keep(contract: &crate::cli::config_parser::ConfigContract) -> 
 pub fn check_volume_declarations(
     contract: &crate::cli::config_parser::ConfigContract,
 ) -> Result<(), crate::helpers::bake::BakeError> {
+    // A volume named by two services with different policies: taking either one
+    // silently would mean an explicit `generated` loses to another block's
+    // `fixed`, shipping state that was meant to reset.
+    let mut declared: std::collections::BTreeMap<
+        String,
+        (&str, crate::cli::config_parser::Mutability),
+    > = std::collections::BTreeMap::new();
+    for (service_name, service) in &contract.services {
+        for (volume, policy) in &service.volumes {
+            if let Some((other_service, other)) = declared.get(volume) {
+                if *other != policy.mutability {
+                    return Err(crate::helpers::bake::BakeError::Finalize(format!(
+                        "volume `{volume}` is declared by both `{other_service}` and \
+                         `{service_name}` with different policies. Compose volumes are \
+                         global, so the two declarations describe one volume and cannot \
+                         both hold. Decide whether its content ships in the image."
+                    )));
+                }
+            } else {
+                declared.insert(volume.clone(), (service_name, policy.mutability));
+            }
+        }
+    }
+
     for (service_name, service) in &contract.services {
         for volume in service.fixed_volumes() {
             if !is_plain_volume_name(&volume) {
@@ -243,24 +271,18 @@ pub fn volume_reset_commands(
         )));
     }
 
-    // Match whole `_`/`-` separated segments rather than a bare substring, so
-    // keeping `ollama` keeps `stackpilot_ollama` without also keeping
-    // `not-ollama-backup`.
+    // Exact names. The list now comes from the author's contract, which names
+    // the compose volumes directly, so there is nothing to match loosely.
+    //
+    // An earlier revision generated `*[-_]{name}`, `{name}[-_]*` and
+    // `*[-_]{name}[-_]*` alongside the exact name, from when the list held
+    // platform-side fragments like `ollama`. Those also matched
+    // `not-ollama-backup` — keeping a volume that should have been reset, which
+    // is the leak this module exists to prevent.
     let skip_kept = if keep.is_empty() {
         String::new()
     } else {
-        let patterns = keep
-            .iter()
-            .flat_map(|name| {
-                [
-                    name.to_string(),
-                    format!("*[-_]{name}"),
-                    format!("{name}[-_]*"),
-                    format!("*[-_]{name}[-_]*"),
-                ]
-            })
-            .collect::<Vec<_>>()
-            .join("|");
+        let patterns = keep.join("|");
         format!("case \"$v\" in {patterns}) continue;; esac; ")
     };
 
@@ -350,10 +372,18 @@ pub struct FinalizeContext {
     pub project_dir: String,
     /// Stack slug — selects the volume keep-list.
     pub stack: String,
-    /// The author's field policy, parsed. Kept whole rather than flattened: the
-    /// volume check needs to know *which service* declares a protected field,
-    /// and flattening loses exactly that.
+    /// The author's field policy, parsed — used for the volume declarations,
+    /// which are per-service.
     pub contract: crate::cli::config_parser::ConfigContract,
+    /// The protected field names, derived from the contract **as stored**.
+    ///
+    /// Passed in rather than re-derived here. `Serialize` moves a
+    /// default-shaped generated secret out of `fields` into the legacy
+    /// `secret:` list, which `protected_keys_from_contract` does not read — so
+    /// deriving this from the parsed contract yields an empty set for the most
+    /// ordinary contract there is, and the whole sanitize step then does
+    /// nothing while reporting success.
+    pub protected_keys: BTreeSet<String>,
 }
 
 /// What the finalize step learned about the image it just sanitized.
@@ -405,11 +435,6 @@ pub async fn finalize_build_box(
         }
     };
 
-    // The flat set is still what the scrub and the parameterizer want.
-    let protected_keys = protected_keys_from_contract(
-        &serde_json::to_value(&ctx.contract).unwrap_or(serde_json::Value::Null),
-    );
-
     let compose_path = format!("{}/docker-compose.yml", ctx.project_dir);
     let env_path = format!("{}/.env", ctx.project_dir);
 
@@ -436,7 +461,7 @@ pub async fn finalize_build_box(
         done.push(FinalizeStage::Read);
         let env_values = parse_env_pairs(&env_raw);
 
-        let lost = env_file_values_lost_on_clone(&compose, &env_values, &protected_keys);
+        let lost = env_file_values_lost_on_clone(&compose, &env_values, &ctx.protected_keys);
         if !lost.is_empty() {
             return Err(BakeError::Finalize(format!(
                 "this compose reads values through `env_file:`, and {} of them are not \
@@ -448,7 +473,7 @@ pub async fn finalize_build_box(
                 lost.join(", ")
             )));
         }
-        if let Some(warning) = env_scan_warning(&env_values, &protected_keys) {
+        if let Some(warning) = env_scan_warning(&env_values, &ctx.protected_keys) {
             eprintln!("WARNING: {warning}");
         }
 
@@ -471,7 +496,7 @@ pub async fn finalize_build_box(
         let sanitized = crate::cli::generator::compose::parameterize_embedded_secret_values(
             &compose,
             &env_values,
-            &protected_keys,
+            &ctx.protected_keys,
         )
         .map_err(|conflict| BakeError::Finalize(conflict.to_string()))?;
 
@@ -484,7 +509,7 @@ pub async fn finalize_build_box(
             crate::cli::generator::compose::resolve_non_contract_references(
                 &sanitized,
                 &env_values,
-                &protected_keys,
+                &ctx.protected_keys,
             );
         if !unresolved.is_empty() {
             let names: Vec<&str> = unresolved.iter().map(|r| r.name.as_str()).collect();
@@ -509,13 +534,13 @@ pub async fn finalize_build_box(
         //    the contract, not from the text of the file. A reference only counts
         //    as required when something is expected to supply it.
         let required_env_keys =
-            crate::cli::generator::compose::required_env_keys(&sanitized, &protected_keys);
+            crate::cli::generator::compose::required_env_keys(&sanitized, &ctx.protected_keys);
 
         // 6. Clear the author's secrets in the co-located .env. The buyer's box
         //    overwrites this file wholesale from /etc/stacker/env at boot, so
         //    the blanked values are never read.
         if !env_raw.trim().is_empty() {
-            let scrubbed = scrub_env_file(&env_raw, &protected_keys);
+            let scrubbed = scrub_env_file(&env_raw, &ctx.protected_keys);
             write_remote_file(&run, &env_path, &scrubbed)
                 .await
                 .map_err(|e| fail("write .env", e))?;
@@ -716,17 +741,31 @@ pub fn protected_keys_from_contract(contract: &serde_json::Value) -> BTreeSet<St
     };
 
     for service in services.values() {
-        let Some(fields) = service.get("fields").and_then(|v| v.as_object()) else {
-            continue;
-        };
-        for (name, policy) in fields {
-            let protected = matches!(
-                policy.get("mutability").and_then(|v| v.as_str()),
-                Some("generated") | Some("provided")
-            );
-            if protected {
-                keys.insert(name.clone());
+        if let Some(fields) = service.get("fields").and_then(|v| v.as_object()) {
+            for (name, policy) in fields {
+                let protected = matches!(
+                    policy.get("mutability").and_then(|v| v.as_str()),
+                    Some("generated") | Some("provided")
+                );
+                if protected {
+                    keys.insert(name.clone());
+                }
             }
+        }
+
+        // The legacy `secret:` list means the same thing as a `generated` field,
+        // and a contract can arrive in that shape two ways: written by hand, or
+        // round-tripped through `Serialize`, which moves a default-shaped
+        // generated secret out of `fields` and into this list. Reading only
+        // `fields` made the most ordinary contract look like it protected
+        // nothing.
+        if let Some(secret) = service.get("secret").and_then(|v| v.as_array()) {
+            keys.extend(
+                secret
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string),
+            );
         }
     }
 
@@ -739,6 +778,76 @@ mod tests {
 
     fn protected(keys: &[&str]) -> BTreeSet<String> {
         keys.iter().map(|k| k.to_string()).collect()
+    }
+
+    /// Compose volumes are global, so two services can legitimately mount the
+    /// same one. If they disagree about its fate, the flattened keep-list would
+    /// silently take `fixed` — an explicit `generated` overridden by another
+    /// block, in the unsafe direction and with no diagnostic.
+    #[test]
+    fn two_services_disagreeing_about_one_volume_is_refused() {
+        let c = contract(serde_json::json!({
+            "services": {
+                "writer": { "volumes": { "shared_data": { "mutability": "fixed" } } },
+                "reader": { "volumes": { "shared_data": { "mutability": "generated" } } }
+            }
+        }));
+        let err = check_volume_declarations(&c).expect_err("conflict must be refused");
+        assert!(err.to_string().contains("shared_data"), "{err}");
+    }
+
+    /// Agreeing is fine, however many services declare it.
+    #[test]
+    fn two_services_agreeing_about_one_volume_is_accepted() {
+        let c = contract(serde_json::json!({
+            "services": {
+                "writer": { "volumes": { "shared_models": { "mutability": "fixed" } } },
+                "reader": { "volumes": { "shared_models": { "mutability": "fixed" } } }
+            }
+        }));
+        assert!(check_volume_declarations(&c).is_ok());
+        assert_eq!(volumes_to_keep(&c), vec!["shared_models".to_string()]);
+    }
+
+    /// The set finalize sanitizes against must equal the set derived from the
+    /// stored contract. They diverged once: `FinalizeContext` began carrying the
+    /// parsed contract, and the flat set was re-derived by serializing it back —
+    /// but `Serialize` moves a default-shaped generated secret out of `fields`
+    /// and into the legacy `secret:` list, which `protected_keys_from_contract`
+    /// does not read. The set came out empty.
+    ///
+    /// Empty is worse than useless here: `resolve_non_contract_references` then
+    /// treats every `${VAR}` as unmanaged and restores its literal value,
+    /// undoing the deploy-time parameterization and writing the author's
+    /// passwords back into the compose — while the bake reports "Sanitized".
+    #[test]
+    fn the_protected_set_survives_a_serialization_round_trip() {
+        let raw = serde_json::json!({
+            "services": {
+                "db": {
+                    "fields": {
+                        "POSTGRES_PASSWORD": {
+                            "mutability": "generated",
+                            "required": true,
+                            "type": "alphanumeric",
+                            "min_length": 32
+                        }
+                    }
+                }
+            }
+        });
+        let parsed: crate::cli::config_parser::ConfigContract =
+            serde_json::from_value(raw.clone()).expect("contract parses");
+
+        assert_eq!(
+            protected_keys_from_contract(&raw),
+            protected_keys_from_contract(&serde_json::to_value(&parsed).unwrap()),
+            "a round trip must not change which keys are protected"
+        );
+        assert!(
+            protected_keys_from_contract(&raw).contains("POSTGRES_PASSWORD"),
+            "and the key must actually be in there"
+        );
     }
 
     fn contract(yaml: serde_json::Value) -> crate::cli::config_parser::ConfigContract {
@@ -1217,9 +1326,29 @@ mod tests {
             "stack stopped: {cmds}"
         );
         assert!(
-            cmds.contains(r#"case "$v" in ollama|*[-_]ollama|"#),
+            cmds.contains(r#"case "$v" in ollama)"#),
             "kept volume skipped: {cmds}"
         );
+    }
+
+    /// The comment used to promise that keeping `ollama` would not also keep
+    /// `not-ollama-backup`. It did keep it: one of the generated patterns was
+    /// `*[-_]ollama[-_]*`, which that name matches. The test only checked that
+    /// the literal `*ollama*` was absent, so it passed against the bug.
+    #[test]
+    fn a_kept_name_does_not_match_a_longer_one() {
+        let cmds = volume_reset_commands("/home/trydirect/project", &["ollama"])
+            .expect("valid")
+            .join(" ; ");
+
+        // Exactly the declared name, nothing wider.
+        assert!(cmds.contains(r#"case "$v" in ollama)"#), "{cmds}");
+        for wider in ["*ollama*", "*[-_]ollama", "ollama[-_]*", "*[-_]ollama[-_]*"] {
+            assert!(
+                !cmds.contains(wider),
+                "`{wider}` would also keep `not-ollama-backup`: {cmds}"
+            );
+        }
     }
 
     /// Regression: enumerating the host would delete the nginx-proxy-manager

@@ -134,13 +134,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(stacker::helpers::bake_finalize::protected_keys_from_contract)
         .unwrap_or_default();
 
-    // Parsed form: the finalize step needs the service a field belongs to, which
-    // the flat key set above has thrown away. An unparseable contract is treated
-    // as absent — `check_contract_usable` below then refuses the bake.
-    let parsed_contract: stacker::cli::config_parser::ConfigContract = config_contract
-        .clone()
-        .and_then(|c| serde_json::from_value(c).ok())
-        .unwrap_or_default();
+    // Parsed form: the volume declarations are per-service, which the flat key
+    // set above has thrown away.
+    //
+    // A contract that fails to parse aborts. Treating it as absent would be
+    // worse than it sounds: `protected_keys` above is derived from the raw JSON
+    // and would still be non-empty, so `check_contract_usable` passes while
+    // finalize sanitizes against an empty contract — an unsanitized image,
+    // published with "Sanitized" in the log. Reachable in practice: every
+    // contract type denies unknown fields, so a template using a newer kind
+    // fails wholesale on an older bake binary.
+    let parsed_contract: stacker::cli::config_parser::ConfigContract = match &config_contract {
+        Some(value) => serde_json::from_value(value.clone()).map_err(|e| {
+            format!(
+                "the config_contract stored for '{stack}' could not be parsed: {e}. \
+                 Refusing rather than baking an image nothing was sanitized against. \
+                 If the template uses a newer contract feature, rebuild this binary."
+            )
+        })?,
+        None => Default::default(),
+    };
 
     // Refuse before touching the box: with no contract there is nothing to
     // sanitize, and publishing anyway is how the author's credentials reach
@@ -166,6 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 project_dir: project_dir.clone(),
                 stack: stack.clone(),
                 contract: parsed_contract.clone(),
+                protected_keys: protected_keys.clone(),
             };
             let outcome = stacker::helpers::bake_finalize::finalize_build_box(&ctx).await?;
             eprintln!(

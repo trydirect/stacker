@@ -1097,6 +1097,10 @@ impl FieldPolicy {
             && self.signing_key.is_none()
             && self.claims.is_none()
             && self.alg.is_none()
+            // The legacy `secret:` list cannot carry a display hint, so a field
+            // that has one must stay in `fields:` or the hint is dropped — and
+            // the buyer's form renders a text input for a password.
+            && self.display.is_none()
     }
 }
 
@@ -1136,22 +1140,28 @@ impl<'de> Deserialize<'de> for VolumePolicy {
         }
 
         let raw = Raw::deserialize(deserializer)?;
-        match raw.mutability {
-            Mutability::Fixed | Mutability::Generated => Ok(VolumePolicy {
-                mutability: raw.mutability,
-            }),
-            other => Err(serde::de::Error::custom(format!(
-                "`mutability: {}` is not meaningful for a volume — a volume holds \
-                 state, not a value somebody types. Use `fixed` to ship the \
-                 author's content in the image, or `generated` to have the buyer's \
-                 machine create it from scratch.",
-                match other {
-                    Mutability::Provided => "provided",
-                    Mutability::Editable => "editable",
-                    _ => unreachable!("fixed and generated are handled above"),
-                }
-            ))),
-        }
+
+        // Matched exhaustively on purpose: a fifth `Mutability` variant must be
+        // a compile error here, forcing a decision about what it means for a
+        // volume. A catch-all arm would compile and then panic inside a
+        // deserializer — aborting the CLI on a config file instead of reporting
+        // an error.
+        let rejected = match raw.mutability {
+            Mutability::Fixed | Mutability::Generated => {
+                return Ok(VolumePolicy {
+                    mutability: raw.mutability,
+                })
+            }
+            Mutability::Provided => "provided",
+            Mutability::Editable => "editable",
+        };
+
+        Err(serde::de::Error::custom(format!(
+            "`mutability: {rejected}` is not meaningful for a volume — a volume \
+             holds state, not a value somebody types. Use `fixed` to ship the \
+             author's content in the image, or `generated` to have the buyer's \
+             machine create it from scratch."
+        )))
     }
 }
 
@@ -2763,6 +2773,35 @@ config_contract:
     /// but does not survive serialization never reaches the registry, and the
     /// bake then resets the volume it was meant to keep — silently, because
     /// everything else about the submit looks fine.
+    /// `display` is a UI hint with no legacy equivalent: the `secret:` shorthand
+    /// cannot express it. Collapsing a field into that list therefore loses it,
+    /// and the buyer's form renders a plain text input for a password.
+    ///
+    /// This travels further than the marketplace — `stacker sync` serializes the
+    /// contract onto every app of a project through the same code.
+    #[test]
+    fn a_display_hint_is_not_lost_to_the_legacy_shorthand() {
+        let yaml = r#"
+name: s
+config_contract:
+  services:
+    app:
+      fields:
+        ADMIN_PASSWORD:
+          mutability: generated
+          type: alphanumeric
+          min_length: 32
+          display: password
+"#;
+        let parsed = StackerConfig::from_str(yaml).unwrap();
+        let json = serde_json::to_value(&parsed.config_contract).unwrap();
+
+        assert_eq!(
+            json["services"]["app"]["fields"]["ADMIN_PASSWORD"]["display"], "password",
+            "the hint must survive: {json}"
+        );
+    }
+
     #[test]
     fn volume_policy_survives_a_round_trip() {
         let yaml = r#"
