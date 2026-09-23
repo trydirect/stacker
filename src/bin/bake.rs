@@ -134,6 +134,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(stacker::helpers::bake_finalize::protected_keys_from_contract)
         .unwrap_or_default();
 
+    // Parsed form: the finalize step needs the service a field belongs to, which
+    // the flat key set above has thrown away. An unparseable contract is treated
+    // as absent — `check_contract_usable` below then refuses the bake.
+    let parsed_contract: stacker::cli::config_parser::ConfigContract = config_contract
+        .clone()
+        .and_then(|c| serde_json::from_value(c).ok())
+        .unwrap_or_default();
+
     // Refuse before touching the box: with no contract there is nothing to
     // sanitize, and publishing anyway is how the author's credentials reach
     // every buyer.
@@ -157,7 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 private_key_pem,
                 project_dir: project_dir.clone(),
                 stack: stack.clone(),
-                protected_keys: protected_keys.clone(),
+                contract: parsed_contract.clone(),
             };
             let outcome = stacker::helpers::bake_finalize::finalize_build_box(&ctx).await?;
             eprintln!(

@@ -329,3 +329,38 @@ Feature: Bake-time sanitization of a build box
       When whole-value keys are parameterized
       Then the parameterized compose contains "- POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
       And the parameterized compose contains "- POSTGRES_USER=stackpilot"
+
+  Rule: the author declares which volumes survive, and the platform checks it
+
+    Scenario: A volume declared fixed survives the bake
+      Given the contract declares volume "app_ollama" on service "ollama" as fixed
+      When the kept volumes are collected
+      Then "app_ollama" is kept
+
+    Scenario: An undeclared volume is reset
+      Given the contract declares nothing
+      When the kept volumes are collected
+      Then nothing is kept
+
+    # Measured on real containers: Postgres stores the password as a SCRAM hash,
+    # n8n keeps its encryption key inside database.sqlite, and a Qdrant volume
+    # holds only collections because the API key is read from the environment at
+    # every start. The secret is absent from all three, so no automated check can
+    # separate the volume that must be reset from the one that must be kept. The
+    # author knows; the platform does not.
+    Scenario: Keeping a volume of a service that regenerates a secret is the author's call
+      Given the contract declares volume "kb_qdrant_data" on service "qdrant" as fixed
+      And service "qdrant" regenerates "QDRANT__SERVICE__API_KEY"
+      When the declaration is checked
+      Then the declaration is accepted
+
+    Scenario: A volume of a service without per-buyer secrets is allowed
+      Given the contract declares volume "app_ollama" on service "ollama" as fixed
+      When the declaration is checked
+      Then the declaration is accepted
+
+    Scenario: A name carrying shell syntax is refused
+      Given the contract declares volume "oll*ama" on service "ollama" as fixed
+      When the declaration is checked
+      Then the declaration is refused
+      And the refusal names "oll*ama"

@@ -1100,6 +1100,61 @@ impl FieldPolicy {
     }
 }
 
+/// Declared policy for one `config_contract.services.<service>.volumes.<NAME>`
+/// entry — the second kind a service block can carry, after `fields`.
+///
+/// A volume holds *state*, not a value, so only two of the four mutabilities
+/// mean anything:
+///
+/// * `fixed` — the author's content ships inside the image and is identical for
+///   every buyer. Correct for expensive, credential-free content: model weights,
+///   embeddings.
+/// * `generated` — the volume is dropped before the snapshot, so the buyer's
+///   machine initialises it from scratch with the buyer's own values.
+///
+/// `provided` and `editable` describe who *types* a value; there is nothing to
+/// type here, and accepting them would leave the bake guessing. They are
+/// rejected at parse time.
+///
+/// An undeclared volume behaves as `generated`. The error direction is
+/// deliberate: forgetting a declaration costs a rebuild, while the opposite
+/// default would hand the author's credentials to every buyer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct VolumePolicy {
+    pub mutability: Mutability,
+}
+
+impl<'de> Deserialize<'de> for VolumePolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            mutability: Mutability,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+        match raw.mutability {
+            Mutability::Fixed | Mutability::Generated => Ok(VolumePolicy {
+                mutability: raw.mutability,
+            }),
+            other => Err(serde::de::Error::custom(format!(
+                "`mutability: {}` is not meaningful for a volume — a volume holds \
+                 state, not a value somebody types. Use `fixed` to ship the \
+                 author's content in the image, or `generated` to have the buyer's \
+                 machine create it from scratch.",
+                match other {
+                    Mutability::Provided => "provided",
+                    Mutability::Editable => "editable",
+                    _ => unreachable!("fixed and generated are handled above"),
+                }
+            ))),
+        }
+    }
+}
+
 /// Per-service field policy declarations.
 ///
 /// Backed by a single `fields: HashMap<String, FieldPolicy>`. Accepts and
@@ -1110,6 +1165,9 @@ impl FieldPolicy {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TargetConfigContract {
     pub fields: HashMap<String, FieldPolicy>,
+    /// Volumes this service owns, and whether each survives the bake.
+    /// Absent means every volume resets — see [`VolumePolicy`].
+    pub volumes: HashMap<String, VolumePolicy>,
 }
 
 impl TargetConfigContract {
@@ -1139,7 +1197,11 @@ impl TargetConfigContract {
                 .entry(key)
                 .or_insert_with(|| FieldPolicy::fixed(false));
         }
-        TargetConfigContract { fields }
+        // The legacy three-list shape predates volumes and never declared any.
+        TargetConfigContract {
+            fields,
+            volumes: HashMap::new(),
+        }
     }
 
     fn keys_where(&self, predicate: impl Fn(&FieldPolicy) -> bool) -> Vec<String> {
@@ -1183,6 +1245,17 @@ impl TargetConfigContract {
     pub fn editable_keys(&self) -> Vec<String> {
         self.keys_where(|p| p.mutability == Mutability::Editable)
     }
+
+    /// Volumes declared `mutability: fixed` — the ones whose content survives
+    /// into the image. Everything else, declared or not, is dropped before the
+    /// snapshot so the buyer's machine starts it clean.
+    pub fn fixed_volumes(&self) -> Vec<String> {
+        self.volumes
+            .iter()
+            .filter(|(_, policy)| policy.mutability == Mutability::Fixed)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -1192,6 +1265,7 @@ struct RawTargetConfigContract {
     optional: Vec<String>,
     secret: Vec<String>,
     fields: HashMap<String, FieldPolicy>,
+    volumes: HashMap<String, VolumePolicy>,
 }
 
 impl<'de> Deserialize<'de> for TargetConfigContract {
@@ -1221,7 +1295,10 @@ impl<'de> Deserialize<'de> for TargetConfigContract {
                 .or_insert_with(|| FieldPolicy::fixed(false));
         }
 
-        Ok(TargetConfigContract { fields })
+        Ok(TargetConfigContract {
+            fields,
+            volumes: raw.volumes,
+        })
     }
 }
 
@@ -2607,6 +2684,123 @@ config_contract:
 "#;
         let err = StackerConfig::from_str(yaml).unwrap_err();
         assert!(format!("{err}").contains("derived_jwt"));
+    }
+
+    // ── volume policy ──────────────────────────────────────────────────────
+
+    /// A volume is the second kind a service block can declare, after `fields`.
+    /// `fixed` means the author's content ships in the image as-is; `generated`
+    /// means the buyer's machine creates it from scratch.
+    #[test]
+    fn volume_policy_parses_fixed_and_generated() {
+        let yaml = r#"
+name: stackpilot
+config_contract:
+  services:
+    stackpilot-ollama:
+      volumes:
+        stackpilot_ollama:
+          mutability: fixed
+    stackpilot-db:
+      fields:
+        POSTGRES_PASSWORD:
+          mutability: generated
+          type: alphanumeric
+      volumes:
+        stackpilot_pgdata:
+          mutability: generated
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let ollama = &config.config_contract.services["stackpilot-ollama"];
+        assert_eq!(
+            ollama.volumes["stackpilot_ollama"].mutability,
+            Mutability::Fixed
+        );
+
+        let db = &config.config_contract.services["stackpilot-db"];
+        assert_eq!(
+            db.volumes["stackpilot_pgdata"].mutability,
+            Mutability::Generated
+        );
+        // Fields and volumes coexist in one service block.
+        assert_eq!(
+            db.fields["POSTGRES_PASSWORD"].mutability,
+            Mutability::Generated
+        );
+    }
+
+    /// `fixed_volumes()` is what the bake asks for: the volumes that survive.
+    #[test]
+    fn fixed_volumes_lists_only_the_ones_that_survive() {
+        let yaml = r#"
+name: kb
+config_contract:
+  services:
+    worker:
+      volumes:
+        kb_ollama: { mutability: fixed }
+        kb_qdrant: { mutability: fixed }
+        kb_pgdata: { mutability: generated }
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let mut kept = config.config_contract.services["worker"].fixed_volumes();
+        kept.sort();
+        assert_eq!(kept, vec!["kb_ollama".to_string(), "kb_qdrant".to_string()]);
+    }
+
+    /// `provided` and `editable` describe who types a *value*; a volume has no
+    /// value to type. Accepting them would leave the bake guessing.
+    #[test]
+    fn volume_policy_rejects_mutabilities_that_make_no_sense_for_state() {
+        for mutability in ["provided", "editable"] {
+            let yaml = format!(
+                r#"
+name: s
+config_contract:
+  services:
+    app:
+      volumes:
+        app_data:
+          mutability: {mutability}
+"#
+            );
+            assert!(
+                StackerConfig::from_str(&yaml).is_err(),
+                "`mutability: {mutability}` is meaningless for a volume and must be rejected"
+            );
+        }
+    }
+
+    /// An undeclared volume resets. Losing rebuildable content costs time;
+    /// keeping a credential-bearing one leaks the author's secrets.
+    #[test]
+    fn a_service_with_no_volume_block_keeps_nothing() {
+        let yaml = r#"
+name: s
+config_contract:
+  services:
+    app:
+      fields:
+        SECRET_KEY: { mutability: generated, type: hex }
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert!(config.config_contract.services["app"]
+            .fixed_volumes()
+            .is_empty());
+    }
+
+    /// The service block is a closed set of kinds — a typo must not be ignored.
+    #[test]
+    fn an_unknown_kind_in_a_service_block_is_rejected() {
+        let yaml = r#"
+name: s
+config_contract:
+  services:
+    app:
+      volumez:
+        app_data: { mutability: fixed }
+"#;
+        assert!(StackerConfig::from_str(yaml).is_err());
     }
 
     #[test]

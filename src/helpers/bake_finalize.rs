@@ -25,21 +25,64 @@
 
 use std::collections::BTreeSet;
 
-/// Volumes whose content must survive the bake, keyed by stack slug.
+/// Volumes the author declared `mutability: fixed` — the ones whose content
+/// travels into the image.
 ///
-/// Defaulting to *reset* is deliberate: wrongly resetting a volume costs a
-/// rebuild of cheap state, while wrongly keeping one leaks the author's
-/// credentials to every buyer. Only volumes that are expensive to rebuild
-/// **and** carry no credentials belong here.
+/// Everything else resets, declared or not. The error direction is deliberate:
+/// forgetting a declaration costs a rebuild of cheap state, while keeping a
+/// credential-bearing volume hands the author's secrets to every buyer.
 ///
-/// `stackpilot`'s Ollama volume holds the pulled model weights — gigabytes,
-/// with a 600s pull timeout in `scripts/download-model.sh`. Preserving it is
-/// the entire economic point of baking that stack.
-pub fn volumes_to_keep(stack: &str) -> &'static [&'static str] {
-    match stack {
-        "stackpilot" => &["ollama"],
-        _ => &[],
+/// This used to be a `match` on the stack slug in this file. The author knows
+/// which of their volumes are expensive and which hold credentials; the platform
+/// does not, and a hardcoded list needed a code change and a rebuilt binary for
+/// every new stack.
+pub fn volumes_to_keep(contract: &crate::cli::config_parser::ConfigContract) -> Vec<String> {
+    contract
+        .services
+        .values()
+        .flat_map(|service| service.fixed_volumes())
+        .collect()
+}
+
+/// Validate the author's volume declarations.
+///
+/// Only what a machine can actually establish is checked here: that the name is
+/// safe to interpolate into a shell `case` pattern. Whether a volume is *safe to
+/// keep* is the author's call, and deliberately so.
+///
+/// An earlier version refused any volume belonging to a service that declares
+/// `generated` or `provided` fields, on the theory that such a service wrote the
+/// secret into its own data. Measurement killed that rule: a Postgres data
+/// directory holds `SCRAM-SHA-256$4096:…`, a hash — the password appears nowhere,
+/// literally or base64-encoded; n8n keeps its own encryption key in
+/// `database.sqlite`; and a Qdrant volume holds nothing but collections, because
+/// Qdrant reads its API key from the environment on every start. Searching the
+/// volume for the secret finds nothing in any of the three, so that cannot
+/// distinguish them either.
+///
+/// The real difference is behavioural — whether the service derives persistent
+/// state from the secret — and it is not visible in the volume's bytes. The
+/// author knows it; the platform cannot compute it. So the platform checks what
+/// it can and trusts the author with the rest, the same way `config_contract`
+/// trusts the author about which fields are sensitive.
+pub fn check_volume_declarations(
+    contract: &crate::cli::config_parser::ConfigContract,
+) -> Result<(), crate::helpers::bake::BakeError> {
+    for (service_name, service) in &contract.services {
+        for volume in service.fixed_volumes() {
+            if !is_plain_volume_name(&volume) {
+                return Err(crate::helpers::bake::BakeError::Finalize(format!(
+                    "volume `{volume}` on service `{service_name}` contains characters \
+                     that are shell pattern syntax. It would match something other than \
+                     intended, and keeping a volume that should have been reset leaves \
+                     the author's credentials in the image. Use only letters, digits, \
+                     `_`, `-` and `.`."
+                )));
+            }
+        }
     }
+
+    Ok(())
 }
 
 /// Values a service would lose when the buyer's machine replaces the env file.
@@ -307,8 +350,10 @@ pub struct FinalizeContext {
     pub project_dir: String,
     /// Stack slug — selects the volume keep-list.
     pub stack: String,
-    /// Contract fields with `mutability: generated`/`provided`.
-    pub protected_keys: BTreeSet<String>,
+    /// The author's field policy, parsed. Kept whole rather than flattened: the
+    /// volume check needs to know *which service* declares a protected field,
+    /// and flattening loses exactly that.
+    pub contract: crate::cli::config_parser::ConfigContract,
 }
 
 /// What the finalize step learned about the image it just sanitized.
@@ -360,12 +405,24 @@ pub async fn finalize_build_box(
         }
     };
 
+    // The flat set is still what the scrub and the parameterizer want.
+    let protected_keys = protected_keys_from_contract(
+        &serde_json::to_value(&ctx.contract).unwrap_or(serde_json::Value::Null),
+    );
+
     let compose_path = format!("{}/docker-compose.yml", ctx.project_dir);
     let env_path = format!("{}/.env", ctx.project_dir);
 
     // The steps are not transactional, so a failure has to be able to say what
     // already happened — see `recovery_advice`.
     let mut done: Vec<FinalizeStage> = Vec::new();
+
+    // Refuse a declaration that would ship the author's credentials, before
+    // anything on the box is touched.
+    if let Err(err) = check_volume_declarations(&ctx.contract) {
+        disconnect_ssh(session).await;
+        return Err(err);
+    }
 
     let result = async {
         // 1. Read what the deploy left on the box.
@@ -379,7 +436,7 @@ pub async fn finalize_build_box(
         done.push(FinalizeStage::Read);
         let env_values = parse_env_pairs(&env_raw);
 
-        let lost = env_file_values_lost_on_clone(&compose, &env_values, &ctx.protected_keys);
+        let lost = env_file_values_lost_on_clone(&compose, &env_values, &protected_keys);
         if !lost.is_empty() {
             return Err(BakeError::Finalize(format!(
                 "this compose reads values through `env_file:`, and {} of them are not \
@@ -391,7 +448,7 @@ pub async fn finalize_build_box(
                 lost.join(", ")
             )));
         }
-        if let Some(warning) = env_scan_warning(&env_values, &ctx.protected_keys) {
+        if let Some(warning) = env_scan_warning(&env_values, &protected_keys) {
             eprintln!("WARNING: {warning}");
         }
 
@@ -401,7 +458,9 @@ pub async fn finalize_build_box(
         //    a cleared .env, and any `${VAR}` outside an environment block
         //    (`image: ${REGISTRY}/app:${TAG}`) would then resolve empty and fail
         //    the teardown — with the files already modified and no way back.
-        for cmd in volume_reset_commands(&ctx.project_dir, volumes_to_keep(&ctx.stack))? {
+        let keep = volumes_to_keep(&ctx.contract);
+        let keep_refs: Vec<&str> = keep.iter().map(String::as_str).collect();
+        for cmd in volume_reset_commands(&ctx.project_dir, &keep_refs)? {
             run(cmd).await.map_err(|e| fail("volume reset", e))?;
         }
         done.push(FinalizeStage::Teardown);
@@ -412,7 +471,7 @@ pub async fn finalize_build_box(
         let sanitized = crate::cli::generator::compose::parameterize_embedded_secret_values(
             &compose,
             &env_values,
-            &ctx.protected_keys,
+            &protected_keys,
         )
         .map_err(|conflict| BakeError::Finalize(conflict.to_string()))?;
 
@@ -425,7 +484,7 @@ pub async fn finalize_build_box(
             crate::cli::generator::compose::resolve_non_contract_references(
                 &sanitized,
                 &env_values,
-                &ctx.protected_keys,
+                &protected_keys,
             );
         if !unresolved.is_empty() {
             let names: Vec<&str> = unresolved.iter().map(|r| r.name.as_str()).collect();
@@ -450,13 +509,13 @@ pub async fn finalize_build_box(
         //    the contract, not from the text of the file. A reference only counts
         //    as required when something is expected to supply it.
         let required_env_keys =
-            crate::cli::generator::compose::required_env_keys(&sanitized, &ctx.protected_keys);
+            crate::cli::generator::compose::required_env_keys(&sanitized, &protected_keys);
 
         // 6. Clear the author's secrets in the co-located .env. The buyer's box
         //    overwrites this file wholesale from /etc/stacker/env at boot, so
         //    the blanked values are never read.
         if !env_raw.trim().is_empty() {
-            let scrubbed = scrub_env_file(&env_raw, &ctx.protected_keys);
+            let scrubbed = scrub_env_file(&env_raw, &protected_keys);
             write_remote_file(&run, &env_path, &scrubbed)
                 .await
                 .map_err(|e| fail("write .env", e))?;
@@ -680,6 +739,86 @@ mod tests {
 
     fn protected(keys: &[&str]) -> BTreeSet<String> {
         keys.iter().map(|k| k.to_string()).collect()
+    }
+
+    fn contract(yaml: serde_json::Value) -> crate::cli::config_parser::ConfigContract {
+        serde_json::from_value(yaml).expect("contract parses")
+    }
+
+    /// The author declares which volumes survive; the platform stops hardcoding
+    /// a list per stack slug.
+    #[test]
+    fn kept_volumes_come_from_the_contract() {
+        let c = contract(serde_json::json!({
+            "services": {
+                "ollama": { "volumes": { "app_ollama": { "mutability": "fixed" } } },
+                "db": { "volumes": { "app_pgdata": { "mutability": "generated" } } }
+            }
+        }));
+        let mut kept = volumes_to_keep(&c);
+        kept.sort();
+        assert_eq!(kept, vec!["app_ollama".to_string()]);
+    }
+
+    #[test]
+    fn a_contract_declaring_no_volume_keeps_nothing() {
+        let c = contract(serde_json::json!({
+            "services": { "app": { "fields": { "SECRET_KEY": { "mutability": "generated", "type": "hex" } } } }
+        }));
+        assert!(volumes_to_keep(&c).is_empty());
+    }
+
+    /// The author decides which volumes are safe to keep, including on services
+    /// that regenerate secrets — because a machine cannot tell the difference.
+    ///
+    /// Measured on real containers: a Postgres data directory stores
+    /// `SCRAM-SHA-256$4096:...`, so the password is not in the volume in any
+    /// searchable form; n8n keeps its own encryption key inside
+    /// `database.sqlite`; a Qdrant volume holds only collections, because Qdrant
+    /// reads its API key from the environment at every start. All three look
+    /// identical to any automated check — yet the first two must be reset and the
+    /// third must be kept. The difference is behavioural, not observable.
+    ///
+    /// An earlier revision refused a kept volume whenever its service declared a
+    /// protected field. That rule would have forced `ai-knowledge-base` to
+    /// recompute its embeddings on every buyer's machine — precisely the expense
+    /// the snapshot exists to avoid.
+    #[test]
+    fn a_volume_of_a_service_with_generated_fields_is_the_authors_call() {
+        let c = contract(serde_json::json!({
+            "services": {
+                "qdrant": {
+                    "fields": { "QDRANT__SERVICE__API_KEY": { "mutability": "generated", "type": "alphanumeric" } },
+                    "volumes": { "kb_qdrant_data": { "mutability": "fixed" } }
+                }
+            }
+        }));
+        assert!(
+            check_volume_declarations(&c).is_ok(),
+            "Qdrant reads its key from the environment; its volume holds only vectors"
+        );
+        assert_eq!(volumes_to_keep(&c), vec!["kb_qdrant_data".to_string()]);
+    }
+
+    #[test]
+    fn a_service_without_protected_fields_may_keep_its_volume() {
+        let c = contract(serde_json::json!({
+            "services": {
+                "ollama": { "volumes": { "app_ollama": { "mutability": "fixed" } } },
+                "web": { "fields": { "LOG_LEVEL": { "mutability": "editable" } } }
+            }
+        }));
+        assert!(check_volume_declarations(&c).is_ok());
+    }
+
+    /// Names now arrive from an author rather than a constant, so the shell
+    /// pattern gate applies to them.
+    #[test]
+    fn an_author_supplied_name_with_shell_syntax_is_refused() {
+        let c = contract(serde_json::json!({
+            "services": { "app": { "volumes": { "oll*ama": { "mutability": "fixed" } } } }
+        }));
+        assert!(check_volume_declarations(&c).is_err());
     }
 
     /// L1 — a keep entry is interpolated into a shell `case` pattern, where
@@ -1150,11 +1289,13 @@ mod tests {
         assert!(protected_keys_from_contract(&serde_json::Value::Null).is_empty());
     }
 
+    /// A contract that declares nothing keeps nothing — the same default the
+    /// stack-slug `match` used to give an unlisted stack, now without needing
+    /// the platform to know the stack at all.
     #[test]
-    fn stackpilot_keeps_only_its_model_volume() {
-        assert_eq!(volumes_to_keep("stackpilot"), &["ollama"]);
-        // An unknown stack defaults to resetting everything — leaking is worse
-        // than rebuilding.
-        assert!(volumes_to_keep("something-else").is_empty());
+    fn a_contract_that_declares_nothing_keeps_nothing() {
+        let empty = crate::cli::config_parser::ConfigContract::default();
+        assert!(volumes_to_keep(&empty).is_empty());
+        assert!(check_volume_declarations(&empty).is_ok());
     }
 }
