@@ -1305,6 +1305,20 @@ impl<'de> Deserialize<'de> for TargetConfigContract {
                 .or_insert_with(|| FieldPolicy::fixed(false));
         }
 
+        // A block that declares nothing is meaningless — a service with no
+        // policy is simply left out. In practice it means a declaration was
+        // dropped somewhere between the file and here, which is what an older
+        // CLI did with `volumes:` before that kind reached `Serialize`: the
+        // submit succeeded, the stored contract held `"my-service": {}`, and
+        // the bake reset a volume the author had asked to keep.
+        if fields.is_empty() && raw.volumes.is_empty() {
+            return Err(serde::de::Error::custom(
+                "declares neither `fields:` nor `volumes:`. A service with no policy \
+                 does not need a block at all — an empty one usually means a \
+                 declaration was lost, so it is refused rather than silently ignored.",
+            ));
+        }
+
         Ok(TargetConfigContract {
             fields,
             volumes: raw.volumes,
@@ -2799,6 +2813,29 @@ config_contract:
         assert_eq!(
             json["services"]["app"]["fields"]["ADMIN_PASSWORD"]["display"], "password",
             "the hint must survive: {json}"
+        );
+    }
+
+    /// A service block that declares nothing is almost always a declaration
+    /// that got lost on the way out — which is exactly what an older CLI did
+    /// with `volumes:` before it was added to `Serialize`. The submit
+    /// succeeded, the stored contract had `"my-service": {}`, and the bake
+    /// then reset a volume the author had asked to keep. Nothing complained.
+    ///
+    /// An empty block is also meaningless on its own: a service with no policy
+    /// simply goes unmentioned.
+    #[test]
+    fn an_empty_service_block_is_rejected() {
+        let yaml = r#"
+name: s
+config_contract:
+  services:
+    my-service: {}
+"#;
+        let err = StackerConfig::from_str(yaml).expect_err("an empty block means nothing");
+        assert!(
+            err.to_string().contains("my-service"),
+            "the error should name the service: {err}"
         );
     }
 
