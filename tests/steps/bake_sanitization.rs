@@ -224,6 +224,9 @@ pub struct BakeWorld {
     pub stages: Vec<stacker::helpers::bake_finalize::FinalizeStage>,
     pub advice: String,
     pub lost: Vec<String>,
+    pub declared_volumes: Vec<(String, String)>,
+    pub declared_fields: Vec<(String, String)>,
+    pub kept: Vec<String>,
 }
 
 // ─── references that survive into the baked image ────────────────
@@ -599,5 +602,97 @@ async fn then_not_bare_substring(world: &mut StepWorld, name: String) {
         !world.bake.volume_commands.contains(&bare),
         "a bare substring match would also keep `not-{name}-backup`: {}",
         world.bake.volume_commands
+    );
+}
+
+// ─── author-declared volume policy ───────────────────────────────
+
+#[given(regex = r#"^the contract declares volume "([^"]*)" on service "([^"]*)" as fixed$"#)]
+async fn given_fixed_volume(world: &mut StepWorld, volume: String, service: String) {
+    world.bake.declared_volumes.push((service, volume));
+}
+
+#[given(regex = r#"^service "([^"]*)" regenerates "([^"]*)"$"#)]
+async fn given_service_regenerates(world: &mut StepWorld, service: String, field: String) {
+    world.bake.declared_fields.push((service, field));
+}
+
+fn build_contract(world: &StepWorld) -> stacker::cli::config_parser::ConfigContract {
+    let mut services = serde_json::Map::new();
+    for (service, volume) in &world.bake.declared_volumes {
+        let entry = services
+            .entry(service.clone())
+            .or_insert_with(|| serde_json::json!({}));
+        entry["volumes"][volume] = serde_json::json!({ "mutability": "fixed" });
+    }
+    for (service, field) in &world.bake.declared_fields {
+        let entry = services
+            .entry(service.clone())
+            .or_insert_with(|| serde_json::json!({}));
+        entry["fields"][field] =
+            serde_json::json!({ "mutability": "generated", "type": "alphanumeric" });
+    }
+    serde_json::from_value(serde_json::json!({ "services": services })).expect("contract parses")
+}
+
+#[when(regex = r#"^the kept volumes are collected$"#)]
+async fn when_collect_kept(world: &mut StepWorld) {
+    let contract = build_contract(world);
+    world.bake.kept = stacker::helpers::bake_finalize::volumes_to_keep(&contract);
+}
+
+#[when(regex = r#"^the declaration is checked$"#)]
+async fn when_check_declaration(world: &mut StepWorld) {
+    let contract = build_contract(world);
+    world.bake.refusal = stacker::helpers::bake_finalize::check_volume_declarations(&contract)
+        .err()
+        .map(|e| e.to_string());
+}
+
+#[then(regex = r#"^"([^"]*)" is kept$"#)]
+async fn then_volume_kept(world: &mut StepWorld, name: String) {
+    assert!(
+        world.bake.kept.contains(&name),
+        "expected `{name}` among {:?}",
+        world.bake.kept
+    );
+}
+
+#[then(regex = r#"^nothing is kept$"#)]
+async fn then_nothing_kept(world: &mut StepWorld) {
+    assert!(
+        world.bake.kept.is_empty(),
+        "unexpected: {:?}",
+        world.bake.kept
+    );
+}
+
+#[then(regex = r#"^the declaration is refused$"#)]
+async fn then_declaration_refused(world: &mut StepWorld) {
+    assert!(
+        world.bake.refusal.is_some(),
+        "a volume holding the author's credentials must not be shipped"
+    );
+}
+
+#[then(regex = r#"^the declaration is accepted$"#)]
+async fn then_declaration_accepted(world: &mut StepWorld) {
+    assert!(
+        world.bake.refusal.is_none(),
+        "unexpected refusal: {:?}",
+        world.bake.refusal
+    );
+}
+
+#[then(regex = r#"^the refusal names "([^"]*)"$"#)]
+async fn then_refusal_names(world: &mut StepWorld, needle: String) {
+    let message = world
+        .bake
+        .refusal
+        .as_ref()
+        .expect("there should be a refusal");
+    assert!(
+        message.contains(&needle),
+        "expected `{needle}` in: {message}"
     );
 }

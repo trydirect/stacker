@@ -847,6 +847,46 @@ environments:
 
 ---
 
+### Volume policy in `config_contract`
+
+A baked marketplace image is cloned for every buyer, and a volume that travels
+inside it arrives identical for all of them. Declare which ones should:
+
+```yaml
+config_contract:
+  services:
+    stackpilot-ollama:
+      volumes:
+        stackpilot_ollama: { mutability: fixed }
+```
+
+`fixed` — the content ships inside the image. `generated` — the volume is dropped
+before the snapshot so the buyer's machine initialises it from scratch. **An
+undeclared volume behaves as `generated`**: forgetting a declaration costs a
+rebuild, whereas the opposite default would hand the author's credentials to
+every buyer.
+
+`provided` and `editable` describe who types a *value*; a volume holds state and
+has no value to type, so both are rejected.
+
+**Declare `fixed` only for volumes holding data the service does not derive from
+a secret** — model weights, embeddings, a content cache. The distinction is not
+whether the service *has* a secret but whether it *persists* something built from
+one:
+
+| Service | Volume holds | Declare |
+|---|---|---|
+| Ollama | model weights | `fixed` |
+| Qdrant | collections; the API key is read from the environment at every start | `fixed` |
+| Postgres | the role password as `SCRAM-SHA-256$4096:…` | `generated` |
+| n8n | its own encryption key inside `database.sqlite` | `generated` |
+
+Nothing distinguishes these automatically: the secret is not present verbatim in
+any of the four volumes, so searching for it finds nothing in the safe and the
+unsafe case alike. The author knows how their service treats the secret; the
+platform cannot compute it. Get this wrong in the unsafe direction and every
+buyer inherits the author's credential.
+
 ## `volumes`
 
 *Optional* · `map<string, object>` · Default: `{}`
