@@ -121,6 +121,17 @@ pub trait HetznerCloudConnector: Send + Sync {
         rules: Vec<HetznerFirewallRule>,
         server_id: i64,
     ) -> Result<HetznerFirewallResult, ConnectorError>;
+
+    /// Resolve a snapshot target to the provider's server id without acting on
+    /// it. Exposed so a caller that is about to modify the machine can confirm
+    /// the provider actually knows it first — a wrong id discovered after the
+    /// build box has been sanitized costs the whole box, since sanitizing
+    /// removes the operator's own SSH access.
+    async fn resolve_snapshot_target(
+        &self,
+        token: &str,
+        target: &HetznerSnapshotTarget,
+    ) -> Result<i64, ConnectorError>;
 }
 
 #[derive(Clone)]
@@ -186,6 +197,14 @@ impl HetznerCloudClient {
 
 #[async_trait]
 impl HetznerCloudConnector for HetznerCloudClient {
+    async fn resolve_snapshot_target(
+        &self,
+        token: &str,
+        target: &HetznerSnapshotTarget,
+    ) -> Result<i64, ConnectorError> {
+        self.resolve_server_id(token, target).await
+    }
+
     async fn create_server_snapshot(
         &self,
         token: &str,

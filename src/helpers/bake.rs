@@ -122,6 +122,13 @@ mod tests {
     struct MockOk;
     #[async_trait::async_trait]
     impl HetznerCloudConnector for MockOk {
+        async fn resolve_snapshot_target(
+            &self,
+            _t: &str,
+            _target: &HetznerSnapshotTarget,
+        ) -> Result<i64, crate::connectors::ConnectorError> {
+            Ok(123)
+        }
         async fn create_server_snapshot(
             &self,
             _t: &str,
@@ -178,6 +185,89 @@ mod tests {
                 name: "mock".into(),
             })
         }
+    }
+
+    /// A connector that cannot match the target — the shape of a wrong
+    /// `--server-id`, which Hetzner answers with "server not found".
+    struct MockUnknownTarget;
+    #[async_trait::async_trait]
+    impl HetznerCloudConnector for MockUnknownTarget {
+        async fn resolve_snapshot_target(
+            &self,
+            _t: &str,
+            _target: &HetznerSnapshotTarget,
+        ) -> Result<i64, crate::connectors::ConnectorError> {
+            Err(crate::connectors::ConnectorError::NotFound(
+                "server not found".to_string(),
+            ))
+        }
+        async fn create_server_snapshot(
+            &self,
+            _t: &str,
+            _target: HetznerSnapshotTarget,
+            _d: &str,
+        ) -> Result<crate::connectors::hetzner::HetznerSnapshot, crate::connectors::ConnectorError>
+        {
+            unreachable!("must not be reached when the target does not resolve")
+        }
+        async fn create_server_from_image(
+            &self,
+            _t: &str,
+            _r: crate::connectors::hetzner::HetznerCreateServerRequest,
+        ) -> Result<
+            crate::connectors::hetzner::HetznerProvisionedServer,
+            crate::connectors::ConnectorError,
+        > {
+            unreachable!()
+        }
+        async fn list_server_types(
+            &self,
+            _t: &str,
+        ) -> Result<Vec<String>, crate::connectors::ConnectorError> {
+            Ok(vec![])
+        }
+        async fn add_ssh_key(
+            &self,
+            _t: &str,
+            _n: &str,
+            _k: &str,
+        ) -> Result<crate::connectors::hetzner::HetznerSshKey, crate::connectors::ConnectorError>
+        {
+            unreachable!()
+        }
+        async fn create_firewall(
+            &self,
+            _t: &str,
+            _n: &str,
+            _r: Vec<crate::connectors::hetzner::HetznerFirewallRule>,
+            _s: i64,
+        ) -> Result<
+            crate::connectors::hetzner::HetznerFirewallResult,
+            crate::connectors::ConnectorError,
+        > {
+            unreachable!()
+        }
+    }
+
+    /// The bake binary resolves the target before it sanitizes the box, because
+    /// sanitizing removes the operator's own SSH key. Getting this order wrong
+    /// leaves a cleaned, unreachable box and no snapshot — which is what a
+    /// Stacker server id passed to `--server-id` produced in practice.
+    #[tokio::test]
+    async fn an_unmatched_target_is_refused_before_anything_is_snapshotted() {
+        let target = HetznerSnapshotTarget {
+            provider_server_id: Some(702),
+            server_name: None,
+            public_ip: Some("203.0.113.10".to_string()),
+        };
+        let err = MockUnknownTarget
+            .resolve_snapshot_target("tok", &target)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("server not found"),
+            "the provider's reason should survive to the caller: {err}"
+        );
     }
 
     #[tokio::test]
