@@ -19,6 +19,15 @@ pub struct BakedSnapshot {
     /// single value baked into the snapshot. `None` for snapshots baked before
     /// this column existed.
     pub config_contract: Option<serde_json::Value>,
+    /// The `${VAR}` names the baked compose file references, captured at bake
+    /// time. The clone path checks the buyer's env against this before creating
+    /// a server: an unsatisfied reference resolves to an empty string at boot
+    /// with nothing but a Compose warning to show for it.
+    ///
+    /// `None` for snapshots baked before this column existed — those skip the
+    /// check rather than becoming undeployable.
+    #[sqlx(default)]
+    pub required_env_keys: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
 }
 

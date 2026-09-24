@@ -276,12 +276,22 @@ fn upsert_compose_service(
 /// shell syntax cannot run in exec form, so it degrades to `CMD-SHELL` rather
 /// than being split into nonsense argv. Unprefixed strings are already valid
 /// and are left alone.
-fn healthcheck_test_value(test: &str) -> serde_yaml::Value {
+pub(crate) fn healthcheck_test_value(test: &str) -> serde_yaml::Value {
     fn list(parts: impl IntoIterator<Item = String>) -> serde_yaml::Value {
         serde_yaml::Value::Sequence(parts.into_iter().map(serde_yaml::Value::String).collect())
     }
 
     let trimmed = test.trim();
+
+    // An author who already wrote the list form knows what they are doing;
+    // re-quoting it as a string would break the very thing they got right.
+    if trimmed.starts_with('[') {
+        if let Ok(serde_yaml::Value::Sequence(parts)) =
+            serde_yaml::from_str::<serde_yaml::Value>(trimmed)
+        {
+            return serde_yaml::Value::Sequence(parts);
+        }
+    }
 
     if let Some(rest) = trimmed.strip_prefix("CMD-SHELL ") {
         return list(["CMD-SHELL".to_string(), rest.trim().to_string()]);

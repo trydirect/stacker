@@ -223,3 +223,83 @@ async fn sync_project_updates_apps_without_creating_a_deployment() {
     .expect("deployments should load");
     assert_eq!(deployment_count, 0, "sync must not create a deployment");
 }
+
+#[tokio::test]
+async fn sync_project_persists_config_contract_on_apps() {
+    let Some(app) = common::spawn_app().await else {
+        return;
+    };
+
+    let client = reqwest::Client::new();
+    let create_response = client
+        .post(format!("{}/project", app.address))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .json(&json!({
+            "custom": {
+                "custom_stack_code": "sync-contract-project",
+                "project_name": "Sync contract project",
+                "networks": [{
+                    "id": "default-network",
+                    "name": "default_network"
+                }],
+                "web": [{
+                    "_id": "web-1",
+                    "name": "Website",
+                    "code": "website",
+                    "type": "web",
+                    "custom": true,
+                    "dockerhub_image": "nginx:1.27",
+                    "domain": "example.com",
+                    "restart": "always",
+                    "network": ["default-network"],
+                    "environment": [{"key": "JWT_SECRET", "value": "auto"}],
+                    "shared_ports": [{"host_port": "80", "container_port": "8080"}],
+                    "volumes": [],
+                    "config_contract": {
+                        "services": {
+                            "web": {
+                                "fields": {
+                                    "JWT_SECRET": { "mutability": "generated" }
+                                }
+                            }
+                        }
+                    }
+                }],
+                "service": [],
+                "feature": []
+            }
+        }))
+        .send()
+        .await
+        .expect("project create request should succeed");
+    assert_eq!(create_response.status(), StatusCode::OK);
+
+    let project_id = create_response
+        .json::<Value>()
+        .await
+        .expect("create response should be json")["item"]["id"]
+        .as_i64()
+        .expect("project id should be present") as i32;
+
+    let apps = db::project_app::fetch_by_project(&app.db_pool, project_id)
+        .await
+        .expect("project apps should load");
+    let website = apps
+        .iter()
+        .find(|app| app.code == "website")
+        .expect("website app should exist");
+
+    assert_eq!(
+        website.config_contract,
+        Some(json!({
+            "services": {
+                "web": {
+                    "fields": {
+                        "JWT_SECRET": { "mutability": "generated" }
+                    }
+                }
+            }
+        })),
+        "config_contract should be persisted on the project app during sync"
+    );
+}

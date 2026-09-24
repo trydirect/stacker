@@ -122,6 +122,11 @@ pub async fn run(
     // it touches nothing the dashboard shows, and skipping it costs a slowly
     // growing table rather than correctness.
     crate::services::deployment_container_sweeper::spawn(api_pool.get_ref().clone());
+    // Removes dead agent rows (no live deployment, no recent activity) and
+    // rows with structurally invalid deployment_hash. Runs daily; skipping it
+    // means the agents table slowly accumulates noise that obscures real
+    // problems.
+    crate::services::agent_sweeper::spawn(api_pool.get_ref().clone());
 
     let payout_provider = crate::services::init_payout_provider(&settings.payouts)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;

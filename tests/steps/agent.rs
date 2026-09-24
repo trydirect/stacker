@@ -328,12 +328,59 @@ async fn enqueue_command(world: &mut StepWorld, deployment_hash: String, cmd_typ
 
 // ─── Audit steps ─────────────────────────────────────────────────
 
+async fn register_audit_agent(world: &StepWorld, installation_hash: &str) -> (String, String) {
+    let response = world
+        .client
+        .post(format!("{}/api/v1/agent/register", world.base_url))
+        .header("X-Internal-Key", crate::steps::common::BDD_INTERNAL_KEY)
+        .json(&json!({
+            "deployment_hash": installation_hash,
+            "agent_version": "1.0.0-bdd",
+            "capabilities": ["audit"],
+            "system_info": { "os": "linux", "arch": "x86_64" }
+        }))
+        .send()
+        .await
+        .expect("Audit agent registration request failed");
+
+    let status = response.status();
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .expect("Audit agent registration response should be JSON");
+    assert!(
+        status.is_success(),
+        "Audit agent registration failed: {status} {body}"
+    );
+
+    let item = body
+        .pointer("/data/item")
+        .or_else(|| body.pointer("/item"))
+        .expect("Audit agent registration response should contain an item");
+    let agent_id = item["agent_id"]
+        .as_str()
+        .expect("Audit agent registration should return agent_id")
+        .to_string();
+    let agent_token = item["agent_token"]
+        .as_str()
+        .expect("Audit agent registration should return agent_token")
+        .to_string();
+
+    (agent_id, agent_token)
+}
+
 async fn do_ingest(
     world: &mut StepWorld,
     installation_hash: &str,
-    key: &str,
+    token: &str,
     events: serde_json::Value,
 ) {
+    let (agent_id, agent_token) = register_audit_agent(world, installation_hash).await;
+    let auth_token = if token == "wrong-key" {
+        token.to_string()
+    } else {
+        agent_token
+    };
     let url = format!("{}/api/v1/agent/audit", world.base_url);
     let body = json!({
         "installation_hash": installation_hash,
@@ -342,8 +389,8 @@ async fn do_ingest(
     let resp = world
         .client
         .post(&url)
-        .header("Authorization", format!("Bearer {}", world.auth_token))
-        .header("x-internal-key", key)
+        .header("X-Agent-Id", agent_id)
+        .header("Authorization", format!("Bearer {}", auth_token))
         .json(&body)
         .send()
         .await
@@ -364,7 +411,7 @@ async fn ingest_audit(world: &mut StepWorld, installation_hash: String) {
     do_ingest(world, &installation_hash, "bdd-internal-key", events).await;
 }
 
-#[when("I ingest audit events with invalid internal key")]
+#[when("I ingest audit events with invalid agent token")]
 async fn ingest_audit_invalid_key(world: &mut StepWorld) {
     let events = json!([
         {"id": 1, "event_type": "test", "payload": {}, "created_at": 1711000000}

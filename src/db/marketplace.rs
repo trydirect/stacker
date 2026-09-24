@@ -686,6 +686,10 @@ pub async fn set_source_project_id(
 }
 
 /// Read back the source project linked via [`set_source_project_id`].
+/// Checks the latest version first, then falls back to any version —
+/// `source_project_id` is semantically tied to the template, not a
+/// specific version, and `resubmit_with_new_version` may create a new
+/// latest row before the caller has a chance to re-set it.
 pub async fn get_source_project_id(
     pool: &PgPool,
     template_id: uuid::Uuid,
@@ -696,7 +700,9 @@ pub async fn get_source_project_id(
     sqlx::query_scalar::<_, Option<i32>>(
         r#"SELECT source_project_id
            FROM stack_template_version
-           WHERE template_id = $1 AND is_latest = true
+           WHERE template_id = $1
+             AND source_project_id IS NOT NULL
+           ORDER BY is_latest DESC, created_at DESC
            LIMIT 1"#,
     )
     .bind(template_id)

@@ -3609,6 +3609,41 @@ impl StackerClient {
 
         Ok(())
     }
+
+    /// Resubmit an approved/rejected/needs_changes template with a new version.
+    pub async fn marketplace_resubmit(
+        &self,
+        template_id: &str,
+        body: serde_json::Value,
+    ) -> Result<(), CliError> {
+        let url = format!("{}/api/templates/{}/resubmit", self.base_url, template_id);
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                CliError::MarketplaceFailed(format!("Stacker server unreachable: {}", e))
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::MarketplaceFailed(
+                stacker_api_failure_with_message(
+                    "Resubmit failed",
+                    &format!("POST /api/templates/{template_id}/resubmit"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -4061,6 +4096,21 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
         service_apps.push(service_to_app_json(svc, &network_ids));
     }
 
+    // `project_app.config_contract` is persisted by a separate server-side
+    // accessor. Include the full contract on each generated app so `stacker
+    // sync` does not silently discard the policy from stacker.yml.
+    if let Ok(config_contract) = serde_json::to_value(&config.config_contract) {
+        let has_services = config_contract
+            .get("services")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|services| !services.is_empty());
+        if has_services {
+            for app in web_apps.iter_mut().chain(service_apps.iter_mut()) {
+                app["config_contract"] = config_contract.clone();
+            }
+        }
+    }
+
     serde_json::json!({
         "custom": {
             "custom_stack_code": stack_code,
@@ -4346,10 +4396,18 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     // to the Install Service, which passes them to the proxy role as the
     // `stacker_proxy_domains` extra var. (Traefik routes via container labels
     // generated into the compose, so it does not need this.)
-    if !config.proxy.domains.is_empty() {
-        let domains: Vec<serde_json::Value> = config
-            .proxy
-            .domains
+    // A domain that resolved to nothing (an unset `${commonDomain}`, say) cannot
+    // become a routing entry: the proxy has no name to match on, and NPM refuses
+    // the request outright, failing the whole deploy over a route nobody asked
+    // for. Drop the blanks and route whatever is left.
+    let routed_domains: Vec<&crate::cli::config_parser::DomainConfig> = config
+        .proxy
+        .domains
+        .iter()
+        .filter(|d| !d.domain.trim().is_empty())
+        .collect();
+    if !routed_domains.is_empty() {
+        let domains: Vec<serde_json::Value> = routed_domains
             .iter()
             .map(|d| {
                 let ssl = match d.ssl {
@@ -5060,6 +5118,75 @@ mod tests {
     }
 
     #[test]
+    fn test_build_deploy_form_drops_blank_proxy_domains() {
+        // `${commonDomain}` that resolved to nothing leaves an entry whose domain
+        // is empty. It reached the NPM role, which answered with a censored 4xx
+        // and took the whole deploy down (install 4068). A route with no name is
+        // not a route — it must never leave the CLI.
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::NginxProxyManager,
+                auto_detect: true,
+                domains: vec![
+                    crate::cli::config_parser::DomainConfig {
+                        domain: String::new(),
+                        ssl: crate::cli::config_parser::SslMode::Auto,
+                        upstream: "app:8080".to_string(),
+                    },
+                    crate::cli::config_parser::DomainConfig {
+                        domain: "   ".to_string(),
+                        ssl: crate::cli::config_parser::SslMode::Auto,
+                        upstream: "app:8080".to_string(),
+                    },
+                    crate::cli::config_parser::DomainConfig {
+                        domain: "app.example.com".to_string(),
+                        ssl: crate::cli::config_parser::SslMode::Auto,
+                        upstream: "app:8080".to_string(),
+                    },
+                ],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let form = build_deploy_form(&config);
+        let domains = form["proxy_domains"]
+            .as_array()
+            .expect("the one named domain should still be routed");
+        assert_eq!(domains.len(), 1);
+        assert_eq!(domains[0]["domain"], "app.example.com");
+    }
+
+    #[test]
+    fn test_build_deploy_form_omits_proxy_domains_when_every_domain_is_blank() {
+        // Nothing left to route: the key must be absent rather than an empty
+        // array, so the Install Service treats it as "no proxy domains".
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::NginxProxyManager,
+                auto_detect: true,
+                domains: vec![crate::cli::config_parser::DomainConfig {
+                    domain: String::new(),
+                    ssl: crate::cli::config_parser::SslMode::Auto,
+                    upstream: "app:8080".to_string(),
+                }],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let form = build_deploy_form(&config);
+        assert!(
+            form.get("proxy_domains").is_none(),
+            "an all-blank domain list must not produce a proxy_domains key"
+        );
+    }
+
+    #[test]
     fn test_build_deploy_form_omits_proxy_domains_when_none() {
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
@@ -5091,6 +5218,68 @@ mod tests {
             features.iter().all(|f| f["code"] != "nginx_proxy_manager"),
             "feature array should not contain nginx_proxy_manager project app: {:?}",
             features
+        );
+    }
+
+    /// Regression for the same defect the submit path had: the contract is
+    /// serialized here too, so a kind missing from `Serialize` silently drops
+    /// out of `project_app.config_contract` on every `stacker sync`.
+    #[test]
+    fn build_project_body_carries_volume_declarations() {
+        let mut config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("volume-project")
+            .app_image("nginx:1.27")
+            .build()
+            .expect("config should build");
+        config.config_contract = serde_json::from_value(serde_json::json!({
+            "services": {
+                "ollama": {
+                    "volumes": { "app_ollama": { "mutability": "fixed" } }
+                }
+            }
+        }))
+        .expect("config contract should deserialize");
+
+        let body = build_project_body(&config);
+        assert_eq!(
+            body["custom"]["web"][0]["config_contract"]["services"]["ollama"]["volumes"]
+                ["app_ollama"]["mutability"],
+            "fixed",
+            "the volume declaration must survive into the synced app"
+        );
+    }
+
+    #[test]
+    fn build_project_body_includes_config_contract_on_apps() {
+        let mut config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("contract-project")
+            .app_image("nginx:1.27")
+            .build()
+            .expect("config should build");
+        config.config_contract = serde_json::from_value(serde_json::json!({
+            "services": {
+                "app": {
+                    "fields": {
+                        "JWT_SECRET": {
+                            "mutability": "generated",
+                            "type": "hex",
+                            "length": 32
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("config contract should deserialize");
+
+        let body = build_project_body(&config);
+        let contract = &body["custom"]["web"][0]["config_contract"];
+        assert_eq!(
+            contract["services"]["app"]["fields"]["JWT_SECRET"]["mutability"],
+            "generated"
+        );
+        assert_eq!(
+            contract["services"]["app"]["fields"]["JWT_SECRET"]["type"],
+            "hex"
         );
     }
 

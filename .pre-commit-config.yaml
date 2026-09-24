@@ -7,6 +7,12 @@ repos:
         stages: [commit]
   - repo: local
     hooks:
+      - id: check-staged-secrets
+        name: no concrete secret values in the commit
+        entry: scripts/check-staged-secrets.sh
+        language: script
+        pass_filenames: false
+        stages: [commit]
       - id: cargo-fmt
         name: cargo fmt --all
         entry: cargo fmt --all

@@ -23,7 +23,6 @@
 - [install — Marketplace Install Inputs](#install)
 - [environments — Named Environments](#environments)
 - [volumes — Named Volumes](#volumes)
-- [config_contract — Service Config Contracts](#config_contract)
 - [ai — AI Assistant](#ai)
 - [monitoring — Health & Metrics](#monitoring)
   - [status_panel](#monitoringstatus_panel) · [healthcheck](#monitoringhealthcheck) · [metrics](#monitoringmetrics) · [alerts](#monitoringalerts)
@@ -431,10 +430,28 @@ Docker health check configuration. Mapped directly to the compose `healthcheck:`
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `test` | `string` | — | Health check command (e.g. `"CMD pg_isready -U postgres"`) |
+| `test` | `string` | — | Health check command. See the forms below. |
 | `interval` | `string` | `30s` | Time between checks |
 | `timeout` | `string` | `30s` | Maximum time per check |
 | `retries` | `string \| integer` | `3` | Number of failures before unhealthy |
+
+**Forms of `test`.** Three spellings, all accepted:
+
+| What you write | What runs |
+|----------------|-----------|
+| `pg_isready -U postgres` | the command, through a shell |
+| `CMD-SHELL pg_isready -U postgres` | the same — the prefix is stripped and the list form emitted |
+| `CMD pg_isready -U postgres` | the command directly, without a shell |
+
+`CMD` executes the arguments as-is, so it cannot use `&&`, `|`, `$` or
+redirection; a `CMD` command containing any of those is emitted as `CMD-SHELL`
+instead, which is what the author meant.
+
+Write the prefix or leave it out, whichever reads better — stacker converts to
+the list form Docker expects either way. Writing the prefix inside a plain
+compose file would not work: Docker wraps a bare string in `CMD-SHELL` itself,
+so the prefix would be wrapped a second time and the container would try to run
+a program named `CMD-SHELL`.
 
 ```yaml
 services:
@@ -829,6 +846,102 @@ environments:
 
 ---
 
+## `config_contract`
+
+Declares who controls each of a service's inputs when somebody else installs the
+stack. Read at publish time and on the marketplace install path; ignored by a
+plain local deploy.
+
+Without it, the literal values that are correct for *your* deployment — a
+`JWT_SECRET`, a database password — are copied verbatim into every buyer's
+install, so every buyer and you share one set of credentials.
+
+```yaml
+config_contract:
+  services:
+    my-service:                 # must match a service name, or `app`
+      fields:
+        DATABASE_URL:
+          mutability: fixed     # your value ships as-is
+        LOG_LEVEL:
+          mutability: editable  # your value is a default the buyer may override
+        LICENSE_KEY:
+          mutability: provided  # the buyer must supply it; yours is never shipped
+        SECRET_KEY:
+          mutability: generated # a fresh value per install; the buyer never types it
+          type: alphanumeric
+          length: 32
+          display: password
+```
+
+| Key | Applies to | Meaning |
+|---|---|---|
+| `mutability` | every field | `fixed`, `editable`, `provided` or `generated` — see above |
+| `required` | every field | whether a value must resolve at all. Default `true` |
+| `type` | `generated` | `hex`, `base64`, `alphanumeric`, `uuid`, `enum`, `derived_jwt` |
+| `length` / `min_length` | `generated` | exact or minimum length |
+| `values` | `enum` | the allowed set |
+| `signing_key`, `claims`, `alg` | `derived_jwt` | `"service.FIELD"` to sign with, the claims, and one of `HS256`/`HS384`/`HS512` |
+| `display` | any field | UI hint — `boolean`, `string`, `number`, `password`. Independent of `type` |
+
+Publishing to the marketplace is refused until every secret-shaped field carries
+a `generated` or `provided` policy.
+
+**Shorthand.** Three plain lists are still accepted and mean
+`fixed`+required, `fixed`+optional, and `generated` respectively:
+
+```yaml
+config_contract:
+  services:
+    my-service:
+      required: [DATABASE_URL]
+      optional: [LOG_LEVEL]
+      secret:   [SECRET_KEY]
+```
+
+Mixing is fine; an explicit `fields:` entry wins over a list mentioning the same
+name.
+
+### Volume policy in `config_contract`
+
+A baked marketplace image is cloned for every buyer, and a volume that travels
+inside it arrives identical for all of them. Declare which ones should:
+
+```yaml
+config_contract:
+  services:
+    stackpilot-ollama:
+      volumes:
+        stackpilot_ollama: { mutability: fixed }
+```
+
+`fixed` — the content ships inside the image. `generated` — the volume is dropped
+before the snapshot so the buyer's machine initialises it from scratch. **An
+undeclared volume behaves as `generated`**: forgetting a declaration costs a
+rebuild, whereas the opposite default would hand the author's credentials to
+every buyer.
+
+`provided` and `editable` describe who types a *value*; a volume holds state and
+has no value to type, so both are rejected.
+
+**Declare `fixed` only for volumes holding data the service does not derive from
+a secret** — model weights, embeddings, a content cache. The distinction is not
+whether the service *has* a secret but whether it *persists* something built from
+one:
+
+| Service | Volume holds | Declare |
+|---|---|---|
+| Ollama | model weights | `fixed` |
+| Qdrant | collections; the API key is read from the environment at every start | `fixed` |
+| Postgres | the role password as `SCRAM-SHA-256$4096:…` | `generated` |
+| n8n | its own encryption key inside `database.sqlite` | `generated` |
+
+Nothing distinguishes these automatically: the secret is not present verbatim in
+any of the four volumes, so searching for it finds nothing in the safe and the
+unsafe case alike. The author knows how their service treats the secret; the
+platform cannot compute it. Get this wrong in the unsafe direction and every
+buyer inherits the author's credential.
+
 ## `volumes`
 
 *Optional* · `map<string, object>` · Default: `{}`
@@ -844,25 +957,6 @@ volumes:
 ```
 
 Named volumes referenced in `app.volumes` or `services[].volumes` but not listed here are created implicitly by Docker Compose. Use this section when you need to configure the volume driver or share a volume name explicitly across services.
-
----
-
-## `config_contract`
-
-*Optional* · `object` · Default: none
-
-Declares service-level configuration contracts — metadata consumed by the TryDirect Install Service and marketplace pipeline to validate and pre-populate service inputs. Not used during local deploys.
-
-```yaml
-config_contract:
-  services:
-    my-service:
-      required_env:
-        - DATABASE_URL
-        - SECRET_KEY
-```
-
-> This section is primarily written by `stacker install` and the marketplace generator. You rarely need to set it by hand.
 
 ---
 
@@ -1446,6 +1540,10 @@ Stacker validates your configuration both syntactically (YAML structure) and sem
 | `E002` | Server deployment requires `deploy.server.host` | `deploy.server.host` |
 | `E003` | Custom app type requires `app.image` or `app.dockerfile` | `app` |
 | `E004` | `deploy.environment` references an undefined environment key | `deploy.environment` / `environments` |
+| `E005` | `deploy.default_target` missing or naming an undefined target; invalid `deploy.cloud.public_ports` entry | `deploy.default_target` / `deploy.cloud.public_ports` |
+| `E006` | A `deploy.targets` profile defines both `server` and `cloud` | `deploy.targets.<name>` |
+| `E007` | Invalid port mapping in `app.ports` or `services.*.ports` | `app.ports` / `services.ports` |
+| `E008` | A proxy is enabled but a `proxy.domains` entry is incomplete — empty domain, or an empty/malformed upstream *(added in 0.3.3)* | `proxy.domains[N]` |
 
 ### Warnings (deployment may have issues)
 

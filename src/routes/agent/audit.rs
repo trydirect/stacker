@@ -1,10 +1,10 @@
 use crate::db::agent_audit_log as audit_db;
-use crate::helpers::JsonResponse;
+use crate::{helpers, models};
 use crate::models::agent_audit_log::{AgentAuditLog, AuditBatchRequest};
-use actix_web::error::ErrorUnauthorized;
-use actix_web::{get, post, web, HttpRequest, HttpResponse, Result};
+use actix_web::{get, post, web, HttpResponse, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::sync::Arc;
 
 // ── POST /api/v1/agent/audit ───────────────────────────────────────────────
 
@@ -13,20 +13,22 @@ pub struct IngestResponse {
     pub accepted: usize,
 }
 
-/// Receive a batch of audit events from the Status Panel.
+/// Receive a batch of audit events from the Status Panel agent.
 ///
-/// Auth: `X-Internal-Key` header must match the `INTERNAL_SERVICES_ACCESS_KEY`
-/// environment variable.
+/// Auth: agent token via `X-Agent-Id` and `Bearer` headers (handled by
+/// middleware). The installation hash must belong to the authenticated agent.
 #[tracing::instrument(name = "Agent audit ingest", skip_all)]
 #[post("/audit")]
 pub async fn agent_audit_ingest_handler(
-    req: HttpRequest,
+    agent: web::ReqData<Arc<models::Agent>>,
     body: web::Json<AuditBatchRequest>,
     pool: web::Data<PgPool>,
 ) -> Result<HttpResponse> {
-    // Shared with the other service-to-service endpoints; the comparison is
-    // now constant-time.
-    crate::helpers::internal_key::require_internal_key(&req)?;
+    if agent.deployment_hash != body.installation_hash {
+        return Err(helpers::JsonResponse::forbidden(
+            "Not authorized for this installation",
+        ));
+    }
 
     // Short-circuit on empty batch
     if body.events.is_empty() {
@@ -36,7 +38,7 @@ pub async fn agent_audit_ingest_handler(
     let accepted = audit_db::insert_batch(&pool, &body.installation_hash, &body.events)
         .await
         .map_err(|err| {
-            JsonResponse::<()>::build()
+            helpers::JsonResponse::<()>::build()
                 .internal_server_error(format!("Failed to store audit events: {}", err))
         })?;
 
@@ -72,7 +74,7 @@ pub async fn agent_audit_query_handler(
     // installation and prove they own it.
     let user = caller_user
         .as_deref()
-        .ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
+        .ok_or_else(|| helpers::JsonResponse::<String>::forbidden("Authentication required"))?;
 
     let is_admin = matches!(user.role.as_str(), "admin_service" | "group_admin" | "root");
 
@@ -80,7 +82,7 @@ pub async fn agent_audit_query_handler(
         let installation_hash = params
             .installation_hash
             .as_deref()
-            .ok_or_else(|| JsonResponse::<String>::bad_request("installation_hash is required"))?;
+            .ok_or_else(|| helpers::JsonResponse::<String>::bad_request("installation_hash is required"))?;
 
         crate::routes::agent::guard::authorize_deployment_access(
             &pool,
@@ -100,7 +102,7 @@ pub async fn agent_audit_query_handler(
     )
     .await
     .map_err(|err| {
-        JsonResponse::<()>::build()
+        helpers::JsonResponse::<()>::build()
             .internal_server_error(format!("Failed to fetch audit log: {}", err))
     })?;
 

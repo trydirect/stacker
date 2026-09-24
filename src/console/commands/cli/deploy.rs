@@ -686,6 +686,32 @@ fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError
     Ok(())
 }
 
+fn compose_env_keys(config: &StackerConfig) -> std::collections::HashSet<String> {
+    let mut keys: std::collections::HashSet<String> = config.env.keys().cloned().collect();
+
+    // Include policy-declared fields even when they are defined only in
+    // app.environment or services[].environment rather than top-level env.
+    if let Ok(contract) = serde_json::to_value(&config.config_contract) {
+        if let Some(services) = contract.get("services").and_then(|v| v.as_object()) {
+            for service in services.values() {
+                if let Some(fields) = service.get("fields").and_then(|v| v.as_object()) {
+                    for (name, policy) in fields {
+                        let protected = matches!(
+                            policy.get("mutability").and_then(|v| v.as_str()),
+                            Some("generated") | Some("provided")
+                        );
+                        if protected {
+                            keys.insert(name.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    keys
+}
+
 /// A compose service that declares a `build:` section.
 struct ComposeBuildService {
     name: String,
@@ -3521,59 +3547,85 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     }
 
     // 5b. docker-compose.yml
-    let (compose_path, compose_is_user_supplied) =
-        if let Some(ref existing) = config.deploy.compose_file {
-            let configured_path = project_dir.join(existing);
-            if configured_path.exists() {
-                (configured_path, true)
-            } else {
-                let generated_fallback = output_dir.join("docker-compose.yml");
-                if generated_fallback.exists() {
-                    eprintln!(
-                        "  Configured compose file not found: {}. Falling back to {}",
-                        configured_path.display(),
-                        generated_fallback.display()
-                    );
-                    (generated_fallback, false)
-                } else {
-                    return Err(CliError::ConfigValidation(format!(
-                        "Compose file not found: {}",
-                        configured_path.display()
-                    )));
-                }
-            }
+    let (compose_path, compose_is_user_supplied) = if let Some(ref existing) =
+        config.deploy.compose_file
+    {
+        let configured_path = project_dir.join(existing);
+        if configured_path.exists() {
+            (configured_path, true)
         } else {
-            let compose_out = output_dir.join("docker-compose.yml");
-            let compose_is_stale = generated_compose_is_stale(&config_path, &compose_out);
-            if compose_is_stale && !force_rebuild {
+            let generated_fallback = output_dir.join("docker-compose.yml");
+            if generated_fallback.exists() {
                 eprintln!(
-                    "  {} changed since {}/docker-compose.yml was generated — regenerating",
-                    config_path.display(),
-                    OUTPUT_DIR
+                    "  Configured compose file not found: {}. Falling back to {}",
+                    configured_path.display(),
+                    generated_fallback.display()
                 );
-            }
-            if force_rebuild || !compose_out.exists() || compose_is_stale {
-                let compose = ComposeDefinition::try_from(&config)?;
-                // `write_to` refuses to clobber an existing file unless told to,
-                // so a staleness-driven regeneration must opt in explicitly.
-                compose.write_to(&compose_out, force_rebuild || compose_is_stale)?;
-                // The synthesized caddy/nginx proxy service mounts a config file
-                // (./Caddyfile, ./nginx/conf.d) from the compose directory. For
-                // local/server deploys the tfa proxy role does NOT run, so the
-                // CLI must render that file itself — otherwise Docker bind-mounts
-                // a nonexistent path (creating an empty directory) and the proxy
-                // serves nothing. Cloud deploys strip this service and let the
-                // role render it remotely, so the generated file is simply unused
-                // there. Idempotent-friendly: regenerated alongside the compose.
-                write_local_proxy_config(&config, &output_dir)?;
+                (generated_fallback, false)
             } else {
-                eprintln!(
-                    "  Using existing {}/docker-compose.yml (use --force-rebuild to regenerate)",
-                    OUTPUT_DIR
-                );
+                return Err(CliError::ConfigValidation(format!(
+                    "Compose file not found: {}",
+                    configured_path.display()
+                )));
             }
-            (compose_out, false)
-        };
+        }
+    } else {
+        let compose_out = output_dir.join("docker-compose.yml");
+        let compose_is_stale = generated_compose_is_stale(&config_path, &compose_out);
+        if compose_is_stale && !force_rebuild {
+            eprintln!(
+                "  {} changed since {}/docker-compose.yml was generated — regenerating",
+                config_path.display(),
+                OUTPUT_DIR
+            );
+        }
+        if force_rebuild || !compose_out.exists() || compose_is_stale {
+            let compose = ComposeDefinition::try_from(&config)?;
+            // `write_to` refuses to clobber an existing file unless told to,
+            // so a staleness-driven regeneration must opt in explicitly.
+            // Parameterize secret env vars: replace literal values with
+            // `${VAR}` references so the compose file never contains the
+            // author's secrets.  Docker Compose resolves them from the
+            // co-located `.env` file at runtime.
+            let rendered = compose.render();
+            let env_keys = compose_env_keys(&config);
+            let parameterized =
+                crate::cli::generator::compose::parameterize_compose_env_vars(&rendered, &env_keys);
+            if force_rebuild || compose_is_stale || !compose_out.exists() {
+                std::fs::write(&compose_out, &parameterized)?;
+            }
+            // The synthesized caddy/nginx proxy service mounts a config file
+            // (./Caddyfile, ./nginx/conf.d) from the compose directory. For
+            // local/server deploys the tfa proxy role does NOT run, so the
+            // CLI must render that file itself — otherwise Docker bind-mounts
+            // a nonexistent path (creating an empty directory) and the proxy
+            // serves nothing. Cloud deploys strip this service and let the
+            // role render it remotely, so the generated file is simply unused
+            // there. Idempotent-friendly: regenerated alongside the compose.
+            write_local_proxy_config(&config, &output_dir)?;
+        } else {
+            eprintln!(
+                "  Using existing {}/docker-compose.yml (use --force-rebuild to regenerate)",
+                OUTPUT_DIR
+            );
+        }
+        (compose_out, false)
+    };
+
+    // Parameterize an existing generated compose file as well. This prevents
+    // a previously rendered file with literal secrets from bypassing the
+    // protection merely because it was considered up to date.
+    if !compose_is_user_supplied {
+        let env_keys = compose_env_keys(&config);
+        if !env_keys.is_empty() {
+            let content = std::fs::read_to_string(&compose_path)?;
+            let parameterized =
+                crate::cli::generator::compose::parameterize_compose_env_vars(&content, &env_keys);
+            if parameterized != content {
+                std::fs::write(&compose_path, parameterized)?;
+            }
+        }
+    }
 
     normalize_generated_compose_paths(&compose_path)?;
     validate_compose_for_deploy(&compose_path)?;
@@ -5015,6 +5067,45 @@ mod tests {
     use crate::cli::install_runner::CommandOutput;
     use std::sync::Mutex;
     use tempfile::TempDir;
+
+    // ── compose_env_keys ───────────────────────────────────────────────────
+
+    /// The contract now carries a second kind. This reads it, so it must take
+    /// the fields and ignore everything else: a volume name is not an
+    /// environment variable, and turning one into a `${...}` reference would
+    /// leave the compose asking for a value nothing supplies.
+    #[test]
+    fn compose_env_keys_takes_fields_and_ignores_volumes() {
+        let mut config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("mixed")
+            .app_image("nginx:1.27")
+            .build()
+            .expect("config builds");
+        config.config_contract = serde_json::from_value(serde_json::json!({
+            "services": {
+                "db": {
+                    "fields": { "POSTGRES_PASSWORD": { "mutability": "generated", "type": "alphanumeric" } },
+                    "volumes": { "app_pgdata": { "mutability": "generated" } }
+                },
+                "ollama": {
+                    "volumes": { "app_ollama": { "mutability": "fixed" } }
+                }
+            }
+        }))
+        .expect("contract deserializes");
+
+        let keys = compose_env_keys(&config);
+
+        assert!(keys.contains("POSTGRES_PASSWORD"), "the field is protected");
+        assert!(
+            !keys.contains("app_pgdata"),
+            "a volume is not an env key: {keys:?}"
+        );
+        assert!(
+            !keys.contains("app_ollama"),
+            "a volume is not an env key: {keys:?}"
+        );
+    }
 
     // ── configured_user_public_key ─────────────────────────────────────────
     //

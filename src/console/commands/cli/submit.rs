@@ -153,11 +153,22 @@ impl CallableTrait for SubmitCommand {
 
             // Create or update the template on the server
             eprintln!("Creating/updating template '{}'...", name);
-            let template = client.marketplace_create_or_update(body).await?;
+            let template = client.marketplace_create_or_update(body.clone()).await?;
 
-            // Submit for review
-            eprintln!("Submitting for marketplace review...");
-            client.marketplace_submit(&template.id).await?;
+            // Submit for review — use resubmit endpoint for templates that
+            // are already approved (submit_for_review only allows
+            // draft/rejected/needs_changes).
+            if template.status == "approved" {
+                eprintln!("Resubmitting approved template for marketplace review...");
+                let mut resubmit_body = body.clone();
+                resubmit_body["confirm_no_secrets"] = serde_json::json!(true);
+                client
+                    .marketplace_resubmit(&template.id, resubmit_body)
+                    .await?;
+            } else {
+                eprintln!("Submitting for marketplace review...");
+                client.marketplace_submit(&template.id).await?;
+            }
 
             // Success message
             println!();

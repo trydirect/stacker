@@ -204,6 +204,44 @@ pub async fn clone_server(
         None => (Vec::new(), Vec::new()),
     };
 
+    // ── fail closed on an env the image cannot boot with ─────────────────
+    // The bake pinned the `${VAR}` references its compose file actually needs.
+    // Compose resolves an unsatisfied reference to an *empty string* and only
+    // warns, and the unit's ExecStartPre ends in `|| true`, so a missing key
+    // produces a running-but-broken stack rather than a visible failure. Check
+    // before a server exists, so the buyer gets a refusal instead of a bill.
+    //
+    // Snapshots baked before `required_env_keys` carry NULL and skip this.
+    let provided: std::collections::BTreeSet<String> = form
+        .env
+        .iter()
+        .filter(|(_, value)| !value.trim().is_empty())
+        .map(|(key, _)| key.clone())
+        .chain(regen.iter().map(|(key, _)| key.clone()))
+        .chain(regen_jwt.iter().map(|spec| spec.target_key.clone()))
+        .collect();
+
+    let missing = missing_required_env_keys(&snapshot.required_env_keys, &provided);
+    if !missing.is_empty() {
+        tracing::error!(
+            stack = %form.stack,
+            version = %snapshot.version,
+            missing = ?missing,
+            "refusing clone: baked compose references env keys the deploy would not supply"
+        );
+        return HttpResponse::UnprocessableEntity().json(json!({
+            "error": "Incomplete environment for this snapshot",
+            "details": format!(
+                "the baked image for '{}' v{} references {} environment variable(s) that this \
+                 deploy would not set ({}). They would resolve to empty strings at boot.",
+                form.stack,
+                snapshot.version,
+                missing.len(),
+                missing.join(", ")
+            ),
+        }));
+    }
+
     // Render cloud-init with per-user env + domain. Secrets are pre-resolved (by
     // the user service) into `form.env`; `regen` mints fresh values for
     // `mutability: generated` fields on the box at first boot, reusing the same
@@ -333,12 +371,11 @@ pub async fn clone_server(
     // template fallback stores a stack_definition blob that is not a
     // ProjectForm — parsing fails and the panel stays empty (the user can
     // add apps manually).
-    if let Ok(form) = serde_json::from_value::<crate::forms::project::ProjectForm>(
-        project.request_json.clone(),
-    ) {
+    if let Ok(form) =
+        serde_json::from_value::<crate::forms::project::ProjectForm>(project.request_json.clone())
+    {
         if let Err(err) =
-            crate::project_app::sync_project_level_apps_from_form(&pg_pool, project.id, &form)
-                .await
+            crate::project_app::sync_project_level_apps_from_form(&pg_pool, project.id, &form).await
         {
             tracing::warn!(
                 error = %err,
@@ -652,6 +689,26 @@ pub async fn clone_server(
     })
 }
 
+/// The pinned `${VAR}` references the buyer's environment would leave unset.
+///
+/// `required` is `baked_snapshots.required_env_keys` — a JSON array recorded at
+/// bake time. `None` (a snapshot baked before that column) yields no misses, so
+/// existing images keep deploying unchanged rather than becoming undeployable.
+fn missing_required_env_keys(
+    required: &Option<serde_json::Value>,
+    provided: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    let Some(serde_json::Value::Array(keys)) = required else {
+        return Vec::new();
+    };
+
+    keys.iter()
+        .filter_map(serde_json::Value::as_str)
+        .filter(|key| !provided.contains(*key))
+        .map(str::to_string)
+        .collect()
+}
+
 /// The generated fields whose fresh value must be minted on the cloned box,
 /// paired with the canonical shell generator for each. Reuses the *single*
 /// source of truth for the type→generator mapping
@@ -744,13 +801,41 @@ fn derived_jwt_commands(
 
 #[cfg(test)]
 mod regen_tests {
-    use super::{derived_jwt_commands, regen_commands};
+    use super::{derived_jwt_commands, missing_required_env_keys, regen_commands};
     use serde_json::json;
     use std::collections::BTreeMap;
 
     /// A `generated` field with no installer-supplied value gets a regen command
     /// reusing the canonical shell generator; a `fixed` field and an
     /// already-supplied value are left alone.
+    #[test]
+    fn missing_required_env_keys_reports_only_unsatisfied_ones() {
+        let required = Some(json!(["ALPHA", "BETA", "GAMMA"]));
+        let provided: std::collections::BTreeSet<String> =
+            ["ALPHA".to_string(), "GAMMA".to_string()]
+                .into_iter()
+                .collect();
+
+        assert_eq!(
+            missing_required_env_keys(&required, &provided),
+            vec!["BETA".to_string()]
+        );
+    }
+
+    /// Snapshots baked before the column must stay deployable.
+    #[test]
+    fn missing_required_env_keys_is_empty_for_legacy_snapshots() {
+        assert!(missing_required_env_keys(&None, &std::collections::BTreeSet::new()).is_empty());
+    }
+
+    #[test]
+    fn missing_required_env_keys_is_empty_when_all_supplied() {
+        let required = Some(json!(["POSTGRES_PASSWORD"]));
+        let provided: std::collections::BTreeSet<String> =
+            ["POSTGRES_PASSWORD".to_string()].into_iter().collect();
+        assert!(missing_required_env_keys(&required, &provided).is_empty());
+    }
+
     #[test]
     fn regen_commands_only_for_unset_generated_fields() {
         let contract: crate::cli::config_parser::ConfigContract = serde_json::from_value(json!({

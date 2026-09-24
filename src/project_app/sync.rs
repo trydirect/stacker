@@ -86,6 +86,7 @@ fn build_project_app(
     project_app.networks = app_networks_json(app, all_networks);
     project_app.enabled = Some(true);
     project_app.deploy_order = Some(deploy_order);
+    project_app.config_contract = app.config_contract.clone();
 
     project_app
 }
@@ -160,13 +161,24 @@ pub(crate) async fn sync_project_level_apps_from_form(
         .map(|app| (app.code.clone(), app.id))
         .collect::<HashMap<_, _>>();
 
-    for mut desired_app in desired_apps {
+    for desired_app in desired_apps {
         if let Some(existing_id) = existing_by_code.remove(&desired_app.code) {
-            desired_app.id = existing_id;
-            desired_app.deployment_id = None;
-            db::project_app::update(pool, &desired_app).await?;
+            let mut app = desired_app;
+            app.id = existing_id;
+            app.deployment_id = None;
+            db::project_app::update(pool, &app).await?;
+            if let Some(contract) = app.config_contract.clone() {
+                db::project_app::set_config_contract(pool, project_id, &app.code, contract)
+                    .await?;
+            }
         } else {
+            let code = desired_app.code.clone();
+            let contract = desired_app.config_contract.clone();
             db::project_app::insert(pool, &desired_app).await?;
+            if let Some(contract) = contract {
+                db::project_app::set_config_contract(pool, project_id, &code, contract)
+                    .await?;
+            }
         }
     }
 
@@ -302,5 +314,77 @@ mod tests {
         let apps = project_level_apps_from_form(42, &form);
 
         assert!(apps.is_empty());
+    }
+
+    #[test]
+    fn project_level_apps_from_form_propagates_config_contract() {
+        let form: ProjectForm = serde_json::from_value(json!({
+            "custom": {
+                "custom_stack_code": "contract-project",
+                "project_name": "Contract project",
+                "networks": [
+                    {"id": "net-1", "name": "default_network"}
+                ],
+                "web": [{
+                    "_id": "web-1",
+                    "name": "Website",
+                    "code": "website",
+                    "type": "web",
+                    "custom": true,
+                    "dockerhub_image": "nginx:1.27",
+                    "domain": "example.com",
+                    "restart": "always",
+                    "network": ["net-1"],
+                    "environment": [{"key": "JWT_SECRET", "value": "auto"}],
+                    "shared_ports": [{"host_port": "80", "container_port": "8080"}],
+                    "volumes": [],
+                    "config_contract": {
+                        "services": {
+                            "web": {
+                                "fields": {
+                                    "JWT_SECRET": { "mutability": "generated" }
+                                }
+                            }
+                        }
+                    }
+                }],
+                "service": [{
+                    "_id": "svc-1",
+                    "name": "Redis",
+                    "code": "redis",
+                    "type": "service",
+                    "custom": true,
+                    "dockerhub_image": "redis:7-alpine",
+                    "domain": "",
+                    "restart": "unless-stopped",
+                    "network": ["net-1"],
+                    "environment": [],
+                    "shared_ports": [],
+                    "volumes": []
+                }],
+                "feature": []
+            }
+        }))
+        .expect("project form should deserialize");
+
+        let apps = project_level_apps_from_form(42, &form);
+
+        assert_eq!(
+            apps[0].config_contract,
+            Some(json!({
+                "services": {
+                    "web": {
+                        "fields": {
+                            "JWT_SECRET": { "mutability": "generated" }
+                        }
+                    }
+                }
+            })),
+            "config_contract should be propagated from form app to project app"
+        );
+        assert_eq!(
+            apps[1].config_contract, None,
+            "apps without config_contract should remain None"
+        );
     }
 }

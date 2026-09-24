@@ -710,7 +710,7 @@ pub async fn validate_all(
                 };
             }
 
-            let vault_key_path = match &server.vault_key_path {
+            let _vault_key_path = match &server.vault_key_path {
                 Some(p) if !p.is_empty() => p,
                 _ => {
                     return ValidateResponse {

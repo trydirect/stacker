@@ -1097,6 +1097,71 @@ impl FieldPolicy {
             && self.signing_key.is_none()
             && self.claims.is_none()
             && self.alg.is_none()
+            // The legacy `secret:` list cannot carry a display hint, so a field
+            // that has one must stay in `fields:` or the hint is dropped — and
+            // the buyer's form renders a text input for a password.
+            && self.display.is_none()
+    }
+}
+
+/// Declared policy for one `config_contract.services.<service>.volumes.<NAME>`
+/// entry — the second kind a service block can carry, after `fields`.
+///
+/// A volume holds *state*, not a value, so only two of the four mutabilities
+/// mean anything:
+///
+/// * `fixed` — the author's content ships inside the image and is identical for
+///   every buyer. Correct for expensive, credential-free content: model weights,
+///   embeddings.
+/// * `generated` — the volume is dropped before the snapshot, so the buyer's
+///   machine initialises it from scratch with the buyer's own values.
+///
+/// `provided` and `editable` describe who *types* a value; there is nothing to
+/// type here, and accepting them would leave the bake guessing. They are
+/// rejected at parse time.
+///
+/// An undeclared volume behaves as `generated`. The error direction is
+/// deliberate: forgetting a declaration costs a rebuild, while the opposite
+/// default would hand the author's credentials to every buyer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct VolumePolicy {
+    pub mutability: Mutability,
+}
+
+impl<'de> Deserialize<'de> for VolumePolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            mutability: Mutability,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+
+        // Matched exhaustively on purpose: a fifth `Mutability` variant must be
+        // a compile error here, forcing a decision about what it means for a
+        // volume. A catch-all arm would compile and then panic inside a
+        // deserializer — aborting the CLI on a config file instead of reporting
+        // an error.
+        let rejected = match raw.mutability {
+            Mutability::Fixed | Mutability::Generated => {
+                return Ok(VolumePolicy {
+                    mutability: raw.mutability,
+                })
+            }
+            Mutability::Provided => "provided",
+            Mutability::Editable => "editable",
+        };
+
+        Err(serde::de::Error::custom(format!(
+            "`mutability: {rejected}` is not meaningful for a volume — a volume \
+             holds state, not a value somebody types. Use `fixed` to ship the \
+             author's content in the image, or `generated` to have the buyer's \
+             machine create it from scratch."
+        )))
     }
 }
 
@@ -1110,6 +1175,9 @@ impl FieldPolicy {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TargetConfigContract {
     pub fields: HashMap<String, FieldPolicy>,
+    /// Volumes this service owns, and whether each survives the bake.
+    /// Absent means every volume resets — see [`VolumePolicy`].
+    pub volumes: HashMap<String, VolumePolicy>,
 }
 
 impl TargetConfigContract {
@@ -1139,7 +1207,11 @@ impl TargetConfigContract {
                 .entry(key)
                 .or_insert_with(|| FieldPolicy::fixed(false));
         }
-        TargetConfigContract { fields }
+        // The legacy three-list shape predates volumes and never declared any.
+        TargetConfigContract {
+            fields,
+            volumes: HashMap::new(),
+        }
     }
 
     fn keys_where(&self, predicate: impl Fn(&FieldPolicy) -> bool) -> Vec<String> {
@@ -1183,6 +1255,17 @@ impl TargetConfigContract {
     pub fn editable_keys(&self) -> Vec<String> {
         self.keys_where(|p| p.mutability == Mutability::Editable)
     }
+
+    /// Volumes declared `mutability: fixed` — the ones whose content survives
+    /// into the image. Everything else, declared or not, is dropped before the
+    /// snapshot so the buyer's machine starts it clean.
+    pub fn fixed_volumes(&self) -> Vec<String> {
+        self.volumes
+            .iter()
+            .filter(|(_, policy)| policy.mutability == Mutability::Fixed)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -1192,6 +1275,7 @@ struct RawTargetConfigContract {
     optional: Vec<String>,
     secret: Vec<String>,
     fields: HashMap<String, FieldPolicy>,
+    volumes: HashMap<String, VolumePolicy>,
 }
 
 impl<'de> Deserialize<'de> for TargetConfigContract {
@@ -1221,7 +1305,24 @@ impl<'de> Deserialize<'de> for TargetConfigContract {
                 .or_insert_with(|| FieldPolicy::fixed(false));
         }
 
-        Ok(TargetConfigContract { fields })
+        // A block that declares nothing is meaningless — a service with no
+        // policy is simply left out. In practice it means a declaration was
+        // dropped somewhere between the file and here, which is what an older
+        // CLI did with `volumes:` before that kind reached `Serialize`: the
+        // submit succeeded, the stored contract held `"my-service": {}`, and
+        // the bake reset a volume the author had asked to keep.
+        if fields.is_empty() && raw.volumes.is_empty() {
+            return Err(serde::de::Error::custom(
+                "declares neither `fields:` nor `volumes:`. A service with no policy \
+                 does not need a block at all — an empty one usually means a \
+                 declaration was lost, so it is refused rather than silently ignored.",
+            ));
+        }
+
+        Ok(TargetConfigContract {
+            fields,
+            volumes: raw.volumes,
+        })
     }
 }
 
@@ -1235,6 +1336,9 @@ struct SerializedTargetConfigContract {
     secret: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     fields: BTreeMap<String, FieldPolicy>,
+    /// Sorted, so a submitted contract is byte-stable across runs.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    volumes: BTreeMap<String, VolumePolicy>,
 }
 
 impl Serialize for TargetConfigContract {
@@ -1269,6 +1373,11 @@ impl Serialize for TargetConfigContract {
             optional,
             secret,
             fields,
+            volumes: self
+                .volumes
+                .iter()
+                .map(|(name, policy)| (name.clone(), *policy))
+                .collect(),
         }
         .serialize(serializer)
     }
@@ -1695,6 +1804,78 @@ impl StackerConfig {
                     ),
                     field: Some("services.ports".to_string()),
                 });
+            }
+        }
+
+        // E008 — a proxy that is switched on must be given everything it needs
+        // to route. A routing entry with no domain is not a route: NPM rejects
+        // a proxy host with no name, nginx and caddy have no server_name to
+        // match on, and traefik's Host() rule matches nothing. It used to reach
+        // the target anyway, where the NPM role answered with a censored 4xx
+        // and took the whole deploy with it — after the server was already
+        // provisioned. The usual cause is an unset `${commonDomain}`: an
+        // `env_file` line like `commonDomain=` resolves to the empty string
+        // instead of failing, so the blank travels all the way to Ansible.
+        //
+        // Checked for every proxy type but `none`, since all of them route by
+        // name. An empty `domains:` list is not an error — a proxy can be
+        // deployed to be configured through its own UI later.
+        if self.proxy.proxy_type != ProxyType::None {
+            for (index, domain_config) in self.proxy.domains.iter().enumerate() {
+                let field = format!("proxy.domains[{index}]");
+
+                if domain_config.domain.trim().is_empty() {
+                    issues.push(ValidationIssue {
+                        severity: Severity::Error,
+                        code: "E008".to_string(),
+                        message: format!(
+                            "proxy.domains[{index}] has an empty domain, but proxy.type is \
+                             '{}'. A reverse proxy routes by name, so a blank domain cannot be \
+                             configured and the deploy fails on the target. If the domain comes \
+                             from a variable such as ${{commonDomain}}, set it in the env_file or \
+                             the environment; if this route is not needed yet, remove the entry.",
+                            self.proxy.proxy_type
+                        ),
+                        field: Some(format!("{field}.domain")),
+                    });
+                }
+
+                if domain_config.upstream.trim().is_empty() {
+                    issues.push(ValidationIssue {
+                        severity: Severity::Error,
+                        code: "E008".to_string(),
+                        message: format!(
+                            "proxy.domains[{index}] has an empty upstream. The proxy needs a \
+                             target to forward to, in the form 'service:port' (e.g. 'app:8080')."
+                        ),
+                        field: Some(format!("{field}.upstream")),
+                    });
+                } else if let Some((host, port)) = domain_config.upstream.rsplit_once(':') {
+                    // The port half is only a port when the upstream is written
+                    // `host:port`; a bare hostname is accepted and defaults to 80.
+                    if host.trim().is_empty() {
+                        issues.push(ValidationIssue {
+                            severity: Severity::Error,
+                            code: "E008".to_string(),
+                            message: format!(
+                                "proxy.domains[{index}] upstream '{}' has no host before the \
+                                 port. Expected 'service:port', e.g. 'app:8080'.",
+                                domain_config.upstream
+                            ),
+                            field: Some(format!("{field}.upstream")),
+                        });
+                    } else if let Err(err) = validate_port_number(port) {
+                        issues.push(ValidationIssue {
+                            severity: Severity::Error,
+                            code: "E008".to_string(),
+                            message: format!(
+                                "proxy.domains[{index}] upstream '{}' has an invalid port: {err}.",
+                                domain_config.upstream
+                            ),
+                            field: Some(format!("{field}.upstream")),
+                        });
+                    }
+                }
             }
         }
 
@@ -2609,6 +2790,259 @@ config_contract:
         assert!(format!("{err}").contains("derived_jwt"));
     }
 
+    // ── volume policy ──────────────────────────────────────────────────────
+
+    /// A volume is the second kind a service block can declare, after `fields`.
+    /// `fixed` means the author's content ships in the image as-is; `generated`
+    /// means the buyer's machine creates it from scratch.
+    #[test]
+    fn volume_policy_parses_fixed_and_generated() {
+        let yaml = r#"
+name: stackpilot
+config_contract:
+  services:
+    stackpilot-ollama:
+      volumes:
+        stackpilot_ollama:
+          mutability: fixed
+    stackpilot-db:
+      fields:
+        POSTGRES_PASSWORD:
+          mutability: generated
+          type: alphanumeric
+      volumes:
+        stackpilot_pgdata:
+          mutability: generated
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let ollama = &config.config_contract.services["stackpilot-ollama"];
+        assert_eq!(
+            ollama.volumes["stackpilot_ollama"].mutability,
+            Mutability::Fixed
+        );
+
+        let db = &config.config_contract.services["stackpilot-db"];
+        assert_eq!(
+            db.volumes["stackpilot_pgdata"].mutability,
+            Mutability::Generated
+        );
+        // Fields and volumes coexist in one service block.
+        assert_eq!(
+            db.fields["POSTGRES_PASSWORD"].mutability,
+            Mutability::Generated
+        );
+    }
+
+    /// `fixed_volumes()` is what the bake asks for: the volumes that survive.
+    #[test]
+    fn fixed_volumes_lists_only_the_ones_that_survive() {
+        let yaml = r#"
+name: kb
+config_contract:
+  services:
+    worker:
+      volumes:
+        kb_ollama: { mutability: fixed }
+        kb_qdrant: { mutability: fixed }
+        kb_pgdata: { mutability: generated }
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let mut kept = config.config_contract.services["worker"].fixed_volumes();
+        kept.sort();
+        assert_eq!(kept, vec!["kb_ollama".to_string(), "kb_qdrant".to_string()]);
+    }
+
+    /// `provided` and `editable` describe who types a *value*; a volume has no
+    /// value to type. Accepting them would leave the bake guessing.
+    /// Parsing is only half of it: the contract is serialized back out when
+    /// `stacker submit` sends it to the marketplace. A declaration that parses
+    /// but does not survive serialization never reaches the registry, and the
+    /// bake then resets the volume it was meant to keep — silently, because
+    /// everything else about the submit looks fine.
+    /// `display` is a UI hint with no legacy equivalent: the `secret:` shorthand
+    /// cannot express it. Collapsing a field into that list therefore loses it,
+    /// and the buyer's form renders a plain text input for a password.
+    ///
+    /// This travels further than the marketplace — `stacker sync` serializes the
+    /// contract onto every app of a project through the same code.
+    #[test]
+    fn a_display_hint_is_not_lost_to_the_legacy_shorthand() {
+        let yaml = r#"
+name: s
+config_contract:
+  services:
+    app:
+      fields:
+        ADMIN_PASSWORD:
+          mutability: generated
+          type: alphanumeric
+          min_length: 32
+          display: password
+"#;
+        let parsed = StackerConfig::from_str(yaml).unwrap();
+        let json = serde_json::to_value(&parsed.config_contract).unwrap();
+
+        assert_eq!(
+            json["services"]["app"]["fields"]["ADMIN_PASSWORD"]["display"], "password",
+            "the hint must survive: {json}"
+        );
+    }
+
+    /// A service block that declares nothing is almost always a declaration
+    /// that got lost on the way out — which is exactly what an older CLI did
+    /// with `volumes:` before it was added to `Serialize`. The submit
+    /// succeeded, the stored contract had `"my-service": {}`, and the bake
+    /// then reset a volume the author had asked to keep. Nothing complained.
+    ///
+    /// An empty block is also meaningless on its own: a service with no policy
+    /// simply goes unmentioned.
+    #[test]
+    fn an_empty_service_block_is_rejected() {
+        let yaml = r#"
+name: s
+config_contract:
+  services:
+    my-service: {}
+"#;
+        let err = StackerConfig::from_str(yaml).expect_err("an empty block means nothing");
+        assert!(
+            err.to_string().contains("my-service"),
+            "the error should name the service: {err}"
+        );
+    }
+
+    #[test]
+    fn volume_policy_survives_a_round_trip() {
+        let yaml = r#"
+name: stackpilot
+config_contract:
+  services:
+    stackpilot-ollama:
+      volumes:
+        stackpilot_ollama:
+          mutability: fixed
+"#;
+        let parsed = StackerConfig::from_str(yaml).unwrap();
+        let json = serde_json::to_value(&parsed.config_contract).unwrap();
+
+        assert_eq!(
+            json["services"]["stackpilot-ollama"]["volumes"]["stackpilot_ollama"]["mutability"],
+            "fixed",
+            "the declaration must still be there after serializing: {json}"
+        );
+
+        // And it must come back identically on the far side.
+        let round_tripped: ConfigContract = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            round_tripped.services["stackpilot-ollama"].fixed_volumes(),
+            vec!["stackpilot_ollama".to_string()]
+        );
+    }
+
+    /// The legacy three-list shape predates volumes. It must keep round-tripping
+    /// untouched — a contract written before this kind existed is still valid,
+    /// and must not grow an empty `volumes:` key on the way through.
+    #[test]
+    fn a_legacy_contract_round_trips_without_gaining_a_volumes_key() {
+        let yaml = r#"
+name: old-stack
+config_contract:
+  services:
+    app:
+      secret: [API_KEY]
+      required: [HOST]
+"#;
+        let parsed = StackerConfig::from_str(yaml).unwrap();
+        let json = serde_json::to_value(&parsed.config_contract).unwrap();
+
+        let app = &json["services"]["app"];
+        assert!(app.get("secret").is_some(), "legacy shape preserved: {app}");
+        assert!(
+            app.get("volumes").is_none(),
+            "an empty kind must not be emitted: {app}"
+        );
+
+        let _: ConfigContract = serde_json::from_value(json).expect("still parses");
+    }
+
+    /// A service can declare only volumes — no fields at all. It must survive
+    /// the round trip rather than collapsing into an empty block, which is
+    /// exactly how the serialization defect showed up in production.
+    #[test]
+    fn a_service_with_only_volumes_survives_serialization() {
+        let yaml = r#"
+name: s
+config_contract:
+  services:
+    ollama:
+      volumes:
+        app_ollama: { mutability: fixed }
+"#;
+        let parsed = StackerConfig::from_str(yaml).unwrap();
+        let json = serde_json::to_value(&parsed.config_contract).unwrap();
+
+        assert!(
+            !json["services"]["ollama"]
+                .as_object()
+                .expect("service block is an object")
+                .is_empty(),
+            "the service block must not serialize to {{}}: {json}"
+        );
+    }
+
+    #[test]
+    fn volume_policy_rejects_mutabilities_that_make_no_sense_for_state() {
+        for mutability in ["provided", "editable"] {
+            let yaml = format!(
+                r#"
+name: s
+config_contract:
+  services:
+    app:
+      volumes:
+        app_data:
+          mutability: {mutability}
+"#
+            );
+            assert!(
+                StackerConfig::from_str(&yaml).is_err(),
+                "`mutability: {mutability}` is meaningless for a volume and must be rejected"
+            );
+        }
+    }
+
+    /// An undeclared volume resets. Losing rebuildable content costs time;
+    /// keeping a credential-bearing one leaks the author's secrets.
+    #[test]
+    fn a_service_with_no_volume_block_keeps_nothing() {
+        let yaml = r#"
+name: s
+config_contract:
+  services:
+    app:
+      fields:
+        SECRET_KEY: { mutability: generated, type: hex }
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert!(config.config_contract.services["app"]
+            .fixed_volumes()
+            .is_empty());
+    }
+
+    /// The service block is a closed set of kinds — a typo must not be ignored.
+    #[test]
+    fn an_unknown_kind_in_a_service_block_is_rejected() {
+        let yaml = r#"
+name: s
+config_contract:
+  services:
+    app:
+      volumez:
+        app_data: { mutability: fixed }
+"#;
+        assert!(StackerConfig::from_str(yaml).is_err());
+    }
+
     #[test]
     fn field_policy_unknown_mutability_is_rejected() {
         let yaml = r#"
@@ -3482,6 +3916,113 @@ app:
     // died on the host with `invalid containerPort: 133342`. `app.ports` went
     // into the generated compose verbatim with no range check; a bare
     // out-of-range entry is read by Docker as a container port.
+
+    fn proxy_config_with(proxy_type: ProxyType, domains: Vec<(&str, &str)>) -> StackerConfig {
+        ConfigBuilder::new()
+            .name("proxy-validation")
+            .proxy(ProxyConfig {
+                proxy_type,
+                auto_detect: true,
+                domains: domains
+                    .into_iter()
+                    .map(|(domain, upstream)| DomainConfig {
+                        domain: domain.to_string(),
+                        ssl: SslMode::Auto,
+                        upstream: upstream.to_string(),
+                    })
+                    .collect(),
+                config: None,
+            })
+            .build()
+            .unwrap()
+    }
+
+    fn errors_with_code(config: &StackerConfig, code: &str) -> Vec<ValidationIssue> {
+        config
+            .validate_semantics()
+            .into_iter()
+            .filter(|issue| issue.severity == Severity::Error && issue.code == code)
+            .collect()
+    }
+
+    #[test]
+    fn e008_rejects_a_blank_domain_when_a_proxy_is_enabled() {
+        // The failure this guards: `${commonDomain}` resolved to "" (an
+        // `env_file` line `commonDomain=`), the blank reached the NPM role, and
+        // the deploy died with a censored error after the server existed.
+        for proxy_type in [
+            ProxyType::NginxProxyManager,
+            ProxyType::Nginx,
+            ProxyType::Caddy,
+            ProxyType::Traefik,
+        ] {
+            let config = proxy_config_with(proxy_type, vec![("", "app:8080")]);
+            let errors = errors_with_code(&config, "E008");
+            assert_eq!(
+                errors.len(),
+                1,
+                "{proxy_type} should reject a blank domain: {:?}",
+                config.validate_semantics()
+            );
+            assert_eq!(errors[0].field.as_deref(), Some("proxy.domains[0].domain"));
+        }
+    }
+
+    #[test]
+    fn e008_rejects_a_whitespace_only_domain() {
+        let config = proxy_config_with(ProxyType::NginxProxyManager, vec![("   ", "app:8080")]);
+        assert_eq!(errors_with_code(&config, "E008").len(), 1);
+    }
+
+    #[test]
+    fn e008_reports_the_index_of_each_bad_entry() {
+        let config = proxy_config_with(
+            ProxyType::NginxProxyManager,
+            vec![("app.example.com", "app:8080"), ("", "api:9000")],
+        );
+        let errors = errors_with_code(&config, "E008");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].field.as_deref(), Some("proxy.domains[1].domain"));
+    }
+
+    #[test]
+    fn e008_rejects_a_blank_or_malformed_upstream() {
+        let blank = proxy_config_with(ProxyType::Nginx, vec![("app.example.com", "")]);
+        assert_eq!(errors_with_code(&blank, "E008").len(), 1);
+
+        let no_host = proxy_config_with(ProxyType::Nginx, vec![("app.example.com", ":8080")]);
+        assert_eq!(errors_with_code(&no_host, "E008").len(), 1);
+
+        let bad_port = proxy_config_with(ProxyType::Nginx, vec![("app.example.com", "app:99999")]);
+        assert_eq!(errors_with_code(&bad_port, "E008").len(), 1);
+    }
+
+    #[test]
+    fn e008_accepts_a_complete_routing_entry() {
+        let with_port = proxy_config_with(
+            ProxyType::NginxProxyManager,
+            vec![("app.example.com", "app:8080")],
+        );
+        assert!(errors_with_code(&with_port, "E008").is_empty());
+
+        // A bare hostname is legal — the proxy defaults the port to 80.
+        let no_port = proxy_config_with(ProxyType::Nginx, vec![("app.example.com", "app")]);
+        assert!(errors_with_code(&no_port, "E008").is_empty());
+    }
+
+    #[test]
+    fn e008_ignores_domains_when_no_proxy_is_enabled() {
+        // Without a proxy nothing reads these entries, so a blank is inert.
+        let config = proxy_config_with(ProxyType::None, vec![("", "")]);
+        assert!(errors_with_code(&config, "E008").is_empty());
+    }
+
+    #[test]
+    fn e008_allows_a_proxy_with_no_routing_entries() {
+        // A proxy can be deployed to be configured through its own UI later.
+        let config = proxy_config_with(ProxyType::NginxProxyManager, vec![]);
+        assert!(errors_with_code(&config, "E008").is_empty());
+    }
 
     #[test]
     fn validate_port_mapping_accepts_every_compose_shape() {

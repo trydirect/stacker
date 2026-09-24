@@ -151,6 +151,11 @@ pub fn redact_yaml_string(yaml: &str) -> String {
 
 use std::collections::BTreeSet;
 
+/// The author-declared field policy block. Its leaf values describe *how* a
+/// field is produced (`mutability`/`type`/`length`), never a secret value, so
+/// value-stripping must skip this subtree entirely.
+const CONFIG_CONTRACT_KEY: &str = "config_contract";
+
 /// Replace, in place, the values of env entries whose key is in `keys`.
 /// Handles the same shapes as [`redact_sensitive_json_values`] plus `KEY=value`
 /// strings in environment arrays.
@@ -173,6 +178,14 @@ pub fn strip_json_values_for_keys(
                 }
             }
             for (key, val) in map.iter_mut() {
+                // The contract declares the *policy* for a field, not its value:
+                // inside it, a key named e.g. SECRET_KEY maps to
+                // {mutability, type, length}, which is not a secret and must
+                // survive. Blanking it there destroys the very policy that
+                // drives per-buyer regeneration.
+                if key == CONFIG_CONTRACT_KEY {
+                    continue;
+                }
                 if keys.contains(key) && !val.is_null() {
                     *val = serde_json::Value::String(replacement.to_string());
                 } else {
@@ -206,6 +219,11 @@ fn strip_yaml_values_for_keys(
         serde_yaml::Value::Mapping(map) => {
             for (key, val) in map.iter_mut() {
                 if let serde_yaml::Value::String(k) = key {
+                    // See the note in `strip_json_values_for_keys`: field
+                    // policies are not secrets and must not be blanked.
+                    if k == CONFIG_CONTRACT_KEY {
+                        continue;
+                    }
                     if keys.contains(k) && !val.is_null() {
                         *val = serde_yaml::Value::String(replacement.to_string());
                         continue;
@@ -251,8 +269,12 @@ pub fn strip_yaml_string_for_keys(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_sensitive_env_key, redact_sensitive_json_values, redact_yaml_string};
+    use super::{
+        is_sensitive_env_key, redact_sensitive_json_values, redact_yaml_string,
+        strip_json_values_for_keys, strip_yaml_string_for_keys,
+    };
     use serde_json::json;
+    use std::collections::BTreeSet;
 
     // JSON tests
 
@@ -406,5 +428,77 @@ mod tests {
         let result = redact_yaml_string(bad);
         // Either returned as-is (parse failed) or survived round-trip without panicking
         assert!(!result.contains("PANIC"));
+    }
+
+    // config_contract must survive value-stripping
+
+    fn generated_keys() -> BTreeSet<String> {
+        ["SECRET_KEY".to_string(), "POSTGRES_PASSWORD".to_string()]
+            .into_iter()
+            .collect()
+    }
+
+    #[test]
+    fn strip_json_blanks_values_but_not_contract_policies() {
+        let mut v = json!({
+            "app": { "environment": { "SECRET_KEY": "b838f1f2" } },
+            "config_contract": {
+                "services": {
+                    "app": {
+                        "fields": {
+                            "SECRET_KEY": {
+                                "mutability": "generated",
+                                "type": "alphanumeric",
+                                "length": 32
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        strip_json_values_for_keys(&mut v, &generated_keys(), "");
+
+        assert_eq!(v["app"]["environment"]["SECRET_KEY"], "", "secret blanked");
+        assert_eq!(
+            v["config_contract"]["services"]["app"]["fields"]["SECRET_KEY"]["mutability"],
+            "generated",
+            "the policy that drives regeneration must survive"
+        );
+        assert_eq!(
+            v["config_contract"]["services"]["app"]["fields"]["SECRET_KEY"]["length"],
+            32
+        );
+    }
+
+    #[test]
+    fn strip_yaml_blanks_values_but_not_contract_policies() {
+        let yaml = "\
+app:
+  environment:
+    POSTGRES_PASSWORD: author-value
+config_contract:
+  services:
+    stackpilot-db:
+      fields:
+        POSTGRES_PASSWORD:
+          mutability: generated
+          type: alphanumeric
+";
+        let out = strip_yaml_string_for_keys(yaml, &generated_keys(), "");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+
+        assert_eq!(
+            parsed["app"]["environment"]["POSTGRES_PASSWORD"].as_str(),
+            Some(""),
+            "secret blanked:\n{out}"
+        );
+        assert_eq!(
+            parsed["config_contract"]["services"]["stackpilot-db"]["fields"]["POSTGRES_PASSWORD"]
+                ["mutability"]
+                .as_str(),
+            Some("generated"),
+            "policy survives:\n{out}"
+        );
     }
 }

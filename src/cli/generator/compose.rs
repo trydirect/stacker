@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt;
@@ -702,7 +703,10 @@ impl ComposeDefinition {
 
             if let Some(ref hc) = svc.healthcheck {
                 out.push_str("    healthcheck:\n");
-                out.push_str(&format!("      test: {}\n", yaml_quote(&hc.test)));
+                out.push_str(&format!(
+                    "      test: {}\n",
+                    render_healthcheck_test(&hc.test)
+                ));
                 out.push_str(&format!("      interval: {}\n", hc.interval));
                 out.push_str(&format!("      timeout: {}\n", hc.timeout));
                 out.push_str(&format!("      retries: {}\n", hc.retries));
@@ -771,6 +775,466 @@ impl fmt::Display for ComposeDefinition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.render())
     }
+}
+
+/// Replace literal environment values with `${VAR}` references for a set of
+/// env var names.  This is used during **bake** so the snapshot's compose file
+/// never contains the author's secrets — Docker Compose resolves `${VAR}` from
+/// the env file (`/etc/stacker/env`) at runtime.
+///
+/// Only environment blocks inside service definitions are touched; other parts
+/// of the compose file (labels, volumes, etc.) are left alone.
+///
+/// `env_keys` is the set of env var names whose values should be
+/// parameterized.  Typically this is every key declared in the author's
+/// `config_contract` with `mutability: generated` plus any `provided` fields.
+pub fn parameterize_compose_env_vars(
+    compose_content: &str,
+    env_keys: &std::collections::HashSet<String>,
+) -> String {
+    if env_keys.is_empty() {
+        return compose_content.to_string();
+    }
+
+    let mut in_environment = false;
+    let mut env_indent = 0usize;
+    let mut result = String::with_capacity(compose_content.len());
+
+    for line in compose_content.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+
+        // Track whether we're inside an `environment:` block belonging to a
+        // service.  The block ends when we hit a line at the same or shallower
+        // indent that isn't blank.
+        if trimmed == "environment:" {
+            in_environment = true;
+            env_indent = indent;
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+
+        if in_environment {
+            // A blank line or a line at the same / shallower indent ends the block.
+            if trimmed.is_empty() || indent <= env_indent {
+                in_environment = false;
+            }
+        }
+
+        if in_environment {
+            // Compose accepts either form inside `environment:`; a hand-written
+            // compose (`deploy.compose_file`) commonly uses the list one.
+            //
+            //   environment:            environment:
+            //     KEY: value              - KEY=value
+            if let Some(entry) = trimmed.strip_prefix("- ") {
+                if let Some((key, _value)) = entry.split_once('=') {
+                    let key = key.trim();
+                    if is_env_identifier(key) && env_keys.contains(key) {
+                        result.push_str(&line[..indent]);
+                        result.push_str("- ");
+                        result.push_str(key);
+                        result.push_str("=${");
+                        result.push_str(key);
+                        result.push_str("}\n");
+                        continue;
+                    }
+                }
+            } else if let Some((key, _rest)) = trimmed.split_once(':') {
+                // Match "      KEY: value" — the key must be a valid env identifier.
+                let key = key.trim();
+                if is_env_identifier(key) && env_keys.contains(key) {
+                    // Preserve the original indent and replace the value.
+                    let prefix = &line[..indent + key.len()];
+                    // Find where the value starts (after "KEY: ").
+                    result.push_str(prefix);
+                    result.push_str(": ${");
+                    result.push_str(key);
+                    result.push_str("}\n");
+                    continue;
+                }
+            }
+        }
+
+        result.push_str(line);
+        result.push('\n');
+    }
+
+    result
+}
+
+/// Shortest value we will treat as a secret when searching *inside* other
+/// values. Short strings ("admin", "postgres", a port) collide with ordinary
+/// text and would corrupt the compose file.
+const MIN_EMBEDDED_SECRET_LEN: usize = 12;
+
+/// Two protected fields resolved to the same literal value, so the compose
+/// cannot be parameterized unambiguously.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddedSecretConflict {
+    /// The contract field names that share one value, sorted.
+    pub keys: Vec<String>,
+}
+
+impl std::fmt::Display for EmbeddedSecretConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the same secret value is declared under {} protected fields ({}). \
+             Each is regenerated independently per buyer, so they would receive \
+             different values and the stack would fail to authenticate. Declare \
+             one field and reference it from the others.",
+            self.keys.len(),
+            self.keys.join(", ")
+        )
+    }
+}
+
+/// Replace secret values that appear *inside* a larger value with a `${KEY}`
+/// reference — the case [`parameterize_compose_env_vars`] structurally cannot
+/// reach, because it matches whole values by key name.
+///
+/// The motivating case is a DSN: `DATABASE_URL:
+/// postgresql://user:<password>@host/db` carries the database password inside
+/// its value, under a key name (`DATABASE_URL`) that no secret-name heuristic
+/// recognises. Every existing protection layer keys off the *variable name*, so
+/// such a credential is invisible to all of them at once and stays literal in
+/// the baked image.
+///
+/// `env_values` are the build box's resolved `KEY=value` pairs; `protected` are
+/// the contract fields with `mutability: generated`/`provided`, i.e. the ones
+/// that will be regenerated on the buyer's box and therefore can be referenced
+/// safely.
+pub fn parameterize_embedded_secret_values(
+    compose_content: &str,
+    env_values: &std::collections::BTreeMap<String, String>,
+    protected: &std::collections::BTreeSet<String>,
+) -> Result<String, EmbeddedSecretConflict> {
+    // Every place a literal value is known by a name: the build box's .env plus
+    // the compose's own `KEY: value` pairs (a value interpolated into a service
+    // env block has no .env entry of its own).
+    let mut names_by_value: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+
+    for (key, value) in env_values
+        .iter()
+        .chain(compose_literal_env_pairs(compose_content).iter())
+    {
+        if value.len() < MIN_EMBEDDED_SECRET_LEN {
+            continue;
+        }
+        names_by_value
+            .entry(value.clone())
+            .or_default()
+            .insert(key.clone());
+    }
+
+    // A value reachable under two *protected* names diverges at regeneration
+    // time — refuse rather than bake an image that cannot boot.
+    let mut substitutions: Vec<(String, String)> = Vec::new();
+    for (value, names) in &names_by_value {
+        let protected_names: Vec<String> = names
+            .iter()
+            .filter(|name| protected.contains(*name))
+            .cloned()
+            .collect();
+
+        match protected_names.len() {
+            0 => continue, // not a managed secret; nothing regenerates it
+            1 => substitutions.push((value.clone(), protected_names[0].clone())),
+            _ => {
+                return Err(EmbeddedSecretConflict {
+                    keys: protected_names,
+                })
+            }
+        }
+    }
+
+    // Longest first, so a value that contains another is replaced whole.
+    substitutions.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(&b.0)));
+
+    Ok(rewrite_environment_lines(compose_content, |line| {
+        let mut rewritten = line.to_string();
+        for (value, key) in &substitutions {
+            if rewritten.contains(value.as_str()) {
+                rewritten = rewritten.replace(value.as_str(), &format!("${{{key}}}"));
+            }
+        }
+        rewritten
+    }))
+}
+
+/// The literal `KEY: value` pairs declared in service `environment:` blocks.
+fn compose_literal_env_pairs(compose_content: &str) -> std::collections::BTreeMap<String, String> {
+    let mut pairs = std::collections::BTreeMap::new();
+
+    for_each_environment_line(compose_content, |line| {
+        if let Some((key, value)) = line.trim().split_once(':') {
+            let key = key.trim();
+            let value = value.trim().trim_matches('"').trim_matches('\'');
+            if is_env_identifier(key) && !value.is_empty() && !value.starts_with("${") {
+                pairs.insert(key.to_string(), value.to_string());
+            }
+        }
+    });
+
+    pairs
+}
+
+/// Apply `rewrite` to every line inside a service `environment:` block,
+/// leaving the rest of the document untouched.
+fn rewrite_environment_lines(
+    compose_content: &str,
+    mut rewrite: impl FnMut(&str) -> String,
+) -> String {
+    let mut result = String::with_capacity(compose_content.len());
+
+    for (line, in_environment) in environment_lines(compose_content) {
+        if in_environment {
+            result.push_str(&rewrite(line));
+        } else {
+            result.push_str(line);
+        }
+        result.push('\n');
+    }
+
+    result
+}
+
+fn for_each_environment_line(compose_content: &str, mut visit: impl FnMut(&str)) {
+    for (line, in_environment) in environment_lines(compose_content) {
+        if in_environment {
+            visit(line);
+        }
+    }
+}
+
+/// Pair every line with whether it sits inside a service `environment:` block.
+///
+/// Shares the block-tracking rule used by [`parameterize_compose_env_vars`]:
+/// the block ends at the first non-blank line indented at or above the
+/// `environment:` key itself.
+fn environment_lines(compose_content: &str) -> Vec<(&str, bool)> {
+    let mut in_environment = false;
+    let mut env_indent = 0usize;
+    let mut out = Vec::new();
+
+    for line in compose_content.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+
+        if trimmed == "environment:" {
+            in_environment = true;
+            env_indent = indent;
+            out.push((line, false));
+            continue;
+        }
+
+        if in_environment && (trimmed.is_empty() || indent <= env_indent) {
+            in_environment = false;
+        }
+
+        out.push((line, in_environment));
+    }
+
+    out
+}
+
+/// The `${VAR}` names a compose file references, in sorted order.
+///
+/// Captured at bake time and pinned to the snapshot so the clone path can
+/// verify the buyer's environment satisfies the image *before* a server is
+/// created. Compose resolves an unsatisfied reference to an empty string and
+/// only warns, so without this check the failure surfaces as a misconfigured
+/// stack rather than a refused deploy.
+pub fn collect_env_var_references(compose_content: &str) -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    let bytes = compose_content.as_bytes();
+    let mut i = 0usize;
+
+    while i + 1 < bytes.len() {
+        // `$$` is Compose's escape — the text is emitted literally and never
+        // interpolated, so neither `$` may start a reference.
+        if bytes[i] == b'$' && bytes[i + 1] == b'$' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] != b'$' || bytes[i + 1] != b'{' {
+            i += 1;
+            continue;
+        }
+        // A reference never spans lines: bound the search so an unterminated
+        // `${` cannot swallow the next line's reference along with it.
+        let Some(end) = closing_brace_on_line(&compose_content[i + 2..]) else {
+            // Unterminated `${` — skip it and keep scanning. Abandoning the rest
+            // of the document here would silently under-report the references
+            // that follow.
+            i += 2;
+            continue;
+        };
+        let raw = &compose_content[i + 2..i + 2 + end];
+        // Compose allows ${VAR:-default} / ${VAR-default} / ${VAR:?err}.
+        let name = raw.split([':', '-', '?', '+']).next().unwrap_or("").trim();
+        if is_env_identifier(name) {
+            names.insert(name.to_string());
+        }
+        i += 2 + end + 1;
+    }
+
+    names
+}
+
+/// A `${VAR}` in the baked compose that nothing will fill on the buyer's machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnresolvedReference {
+    pub name: String,
+}
+
+/// Put back the literal value of every `${VAR}` the contract does **not** cover,
+/// and report the ones that cannot be resolved.
+///
+/// Stage 4 (`parameterize_compose_env_vars`, in the CLI) turns two different
+/// things into references: contract fields, and plain top-level `env:` keys. For
+/// an ordinary deploy both are fine — the `.env` travels next to the compose and
+/// stays intact. For a baked image they are not: at first boot the buyer's
+/// machine overwrites that `.env` wholesale from `/etc/stacker/env`, which only
+/// ever holds contract fields and the buyer's own values. A reference to
+/// anything else would resolve to an empty string, and Compose only warns.
+///
+/// So the image keeps references *only* for values that have a source on the
+/// buyer's machine, and everything else goes back to being a literal — which is
+/// correct, because those values are the same for every buyer.
+///
+/// Left untouched: `$$`-escaped text (Compose never interpolates it) and
+/// `${VAR:-default}` forms that carry their own fallback.
+pub fn resolve_non_contract_references(
+    compose_content: &str,
+    env_values: &std::collections::BTreeMap<String, String>,
+    protected: &BTreeSet<String>,
+) -> (String, Vec<UnresolvedReference>) {
+    let mut out = String::with_capacity(compose_content.len());
+    let mut unresolved = Vec::new();
+    let bytes = compose_content.as_bytes();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        // `$$` is Compose's escape: it is emitted literally, never interpolated.
+        // Copy both bytes untouched so we do not mistake the second `$` for the
+        // start of a reference.
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'$' {
+            out.push_str("$$");
+            i += 2;
+            continue;
+        }
+
+        if bytes[i] != b'$' || i + 1 >= bytes.len() || bytes[i + 1] != b'{' {
+            out.push(compose_content[i..].chars().next().unwrap_or('\0'));
+            i += compose_content[i..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        }
+
+        let Some(end) = closing_brace_on_line(&compose_content[i + 2..]) else {
+            // Unterminated `${` — copy it and carry on rather than abandoning
+            // the rest of the document.
+            out.push_str("${");
+            i += 2;
+            continue;
+        };
+
+        let raw = &compose_content[i + 2..i + 2 + end];
+        let whole = &compose_content[i..i + 2 + end + 1];
+        let has_default = raw.contains(":-") || raw.contains(":?") || raw.contains('-');
+        let name = raw.split([':', '-', '?', '+']).next().unwrap_or("").trim();
+
+        if !is_env_identifier(name) || protected.contains(name) {
+            // Not a reference we manage, or one the buyer's machine will fill.
+            out.push_str(whole);
+        } else if let Some(value) = env_values.get(name) {
+            out.push_str(value);
+        } else if has_default {
+            // Compose supplies the fallback itself; nothing is missing.
+            out.push_str(whole);
+        } else {
+            out.push_str(whole);
+            unresolved.push(UnresolvedReference {
+                name: name.to_string(),
+            });
+        }
+
+        i += 2 + end + 1;
+    }
+
+    unresolved.sort_by(|a, b| a.name.cmp(&b.name));
+    unresolved.dedup();
+    (out, unresolved)
+}
+
+/// The contract fields the sanitized compose still references — exactly the set
+/// the buyer's machine has to fill.
+///
+/// Derived from the contract rather than from the text of the file: a reference
+/// is only "required" if something is expected to supply it, and the only
+/// suppliers are the regeneration commands and the buyer's own values, both of
+/// which are driven by the contract.
+pub fn required_env_keys(compose_content: &str, protected: &BTreeSet<String>) -> BTreeSet<String> {
+    collect_env_var_references(compose_content)
+        .into_iter()
+        .filter(|name| protected.contains(name))
+        .collect()
+}
+
+/// Offset of the `}` that closes a `${` opened at the start of `rest`, or
+/// `None` when the line ends first — a reference never spans lines, and letting
+/// the search run on would consume the next line's reference too.
+fn closing_brace_on_line(rest: &str) -> Option<usize> {
+    let line_end = rest.find('\n').unwrap_or(rest.len());
+    rest[..line_end].find('}')
+}
+
+/// Render a healthcheck `test` in the form Docker actually expects.
+///
+/// Docker wraps a plain *string* in `CMD-SHELL` on its own, so a string that
+/// already spells the prefix out is wrapped twice and the container ends up
+/// trying to run a program named `CMD-SHELL`:
+///
+/// ```text
+/// /bin/sh: 1: CMD-SHELL: not found
+/// ```
+///
+/// The prefix only means anything in the list form — and the prefix form is
+/// what the stacker.yml reference tells authors to write, so it is converted
+/// rather than rejected.
+///
+/// The decision itself lives in [`crate::cli::compose_service_sync::healthcheck_test_value`],
+/// which the server-side sync path already uses; this only renders its result
+/// as inline YAML. One rule, two call sites.
+fn render_healthcheck_test(test: &str) -> String {
+    match crate::cli::compose_service_sync::healthcheck_test_value(test) {
+        serde_yaml::Value::Sequence(parts) => {
+            let rendered = parts
+                .iter()
+                .filter_map(serde_yaml::Value::as_str)
+                .map(yaml_quote)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[{rendered}]")
+        }
+        serde_yaml::Value::String(plain) => yaml_quote(&plain),
+        other => yaml_quote(other.as_str().unwrap_or_default()),
+    }
+}
+
+/// Returns `true` when `s` looks like a POSIX env-variable name.
+fn is_env_identifier(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .enumerate()
+            .all(|(i, c)| c.is_ascii_alphanumeric() || c == '_' || (i == 0 && c == '.'))
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1860,5 +2324,418 @@ services:
             "No runtime should appear in:\n{}",
             output
         );
+    }
+
+    #[test]
+    fn parameterize_replaces_secret_values_with_env_refs() {
+        let compose = "\
+services:
+  app:
+    image: trydirect/stackpilot:latest
+    ports:
+      - \"8080:8000\"
+    environment:
+      ADMIN_PASSWORD: fedcba9876543210fedcba9876543210
+      ADMIN_USER: admin
+      DATABASE_URL: postgresql://stackpilot:0123456789abcdef0123456789abcdef@db:5432/stackpilot
+      SECRET_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+      OLLAMA_MODEL: llama3.1
+    restart: unless-stopped
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("ADMIN_PASSWORD".to_string());
+        keys.insert("SECRET_KEY".to_string());
+        keys.insert("DATABASE_URL".to_string());
+
+        let result = parameterize_compose_env_vars(compose, &keys);
+
+        assert!(
+            result.contains("ADMIN_PASSWORD: ${ADMIN_PASSWORD}"),
+            "admin pw:\n{result}"
+        );
+        assert!(
+            result.contains("SECRET_KEY: ${SECRET_KEY}"),
+            "secret key:\n{result}"
+        );
+        assert!(
+            result.contains("DATABASE_URL: ${DATABASE_URL}"),
+            "db url:\n{result}"
+        );
+        // Non-secret values stay as-is.
+        assert!(
+            result.contains("ADMIN_USER: admin"),
+            "admin user:\n{result}"
+        );
+        assert!(
+            result.contains("OLLAMA_MODEL: llama3.1"),
+            "model:\n{result}"
+        );
+    }
+
+    #[test]
+    fn parameterize_leaves_non_env_blocks_alone() {
+        let compose = "\
+services:
+  app:
+    image: myapp:latest
+    environment:
+      SECRET_KEY: abc123
+    labels:
+      my.stacker.service: myapp
+    volumes:
+      - app_data:/app/data
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("SECRET_KEY".to_string());
+
+        let result = parameterize_compose_env_vars(compose, &keys);
+
+        assert!(
+            result.contains("SECRET_KEY: ${SECRET_KEY}"),
+            "secret:\n{result}"
+        );
+        assert!(
+            result.contains("my.stacker.service: myapp"),
+            "label:\n{result}"
+        );
+        assert!(result.contains("- app_data:/app/data"), "volume:\n{result}");
+    }
+
+    // ── embedded secret values (secrets inside a larger value) ──────────────
+
+    fn env_map(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn key_set(keys: &[&str]) -> std::collections::BTreeSet<String> {
+        keys.iter().map(|k| k.to_string()).collect()
+    }
+
+    #[test]
+    fn embedded_secret_inside_a_dsn_is_parameterized() {
+        // The case whole-value replacement structurally cannot reach.
+        let compose = "\
+services:
+  app:
+    environment:
+      DATABASE_URL: postgresql://stackpilot:0123456789abcdef0123456789abcdef@db:5432/stackpilot
+";
+        let env = env_map(&[("POSTGRES_PASSWORD", "0123456789abcdef0123456789abcdef")]);
+        let result =
+            parameterize_embedded_secret_values(compose, &env, &key_set(&["POSTGRES_PASSWORD"]))
+                .expect("no conflict");
+
+        assert!(
+            result.contains("postgresql://stackpilot:${POSTGRES_PASSWORD}@db:5432/stackpilot"),
+            "password replaced in place:\n{result}"
+        );
+        assert!(
+            !result.contains("0123456789abcdef0123456789abcdef"),
+            "no literal left:\n{result}"
+        );
+    }
+
+    #[test]
+    fn short_values_are_left_alone() {
+        // "admin" would otherwise corrupt every word containing it.
+        let compose = "services:\n  app:\n    environment:\n      ADMIN_USER: admin\n      GREETING: administrator\n";
+        let env = env_map(&[("ADMIN_USER", "admin")]);
+        let result = parameterize_embedded_secret_values(compose, &env, &key_set(&["ADMIN_USER"]))
+            .expect("no conflict");
+        assert!(
+            result.contains("GREETING: administrator"),
+            "untouched:\n{result}"
+        );
+    }
+
+    #[test]
+    fn undeclared_values_are_left_alone() {
+        // Nothing regenerates it on the buyer's box, so a ${REF} would resolve empty.
+        let compose =
+            "services:\n  app:\n    environment:\n      URL: http://host/aaaaaaaaaaaaaaaa\n";
+        let env = env_map(&[("SOME_KEY", "aaaaaaaaaaaaaaaa")]);
+        let result =
+            parameterize_embedded_secret_values(compose, &env, &std::collections::BTreeSet::new())
+                .expect("no conflict");
+        assert!(
+            result.contains("aaaaaaaaaaaaaaaa"),
+            "left literal:\n{result}"
+        );
+    }
+
+    #[test]
+    fn one_value_under_two_protected_names_is_refused() {
+        // stackpilot's DB_PASSWORD/POSTGRES_PASSWORD duplication: both are
+        // `generated`, so regeneration would hand them different values.
+        let compose = "\
+services:
+  db:
+    environment:
+      POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef
+";
+        let env = env_map(&[("DB_PASSWORD", "0123456789abcdef0123456789abcdef")]);
+        let err = parameterize_embedded_secret_values(
+            compose,
+            &env,
+            &key_set(&["DB_PASSWORD", "POSTGRES_PASSWORD"]),
+        )
+        .expect_err("duplicate must be refused");
+
+        assert_eq!(
+            err.keys,
+            vec!["DB_PASSWORD".to_string(), "POSTGRES_PASSWORD".to_string()]
+        );
+    }
+
+    #[test]
+    fn non_environment_blocks_are_never_rewritten() {
+        let compose = "\
+services:
+  app:
+    image: myapp:0123456789abcdef0123456789abcdef
+    environment:
+      TOKEN: 0123456789abcdef0123456789abcdef
+";
+        let env = env_map(&[("TOKEN", "0123456789abcdef0123456789abcdef")]);
+        let result = parameterize_embedded_secret_values(compose, &env, &key_set(&["TOKEN"]))
+            .expect("no conflict");
+
+        assert!(
+            result.contains("image: myapp:0123456789abcdef0123456789abcdef"),
+            "image digest untouched:\n{result}"
+        );
+        assert!(
+            result.contains("TOKEN: ${TOKEN}"),
+            "env replaced:\n{result}"
+        );
+    }
+
+    #[test]
+    fn collects_env_var_reference_skips_escaped_and_survives_unterminated() {
+        // `$$` is Compose's escape — the container sees literal `${HOME}` and
+        // nothing is interpolated, so it is not a reference.
+        let escaped = "services:\n  app:\n    command: sh -c 'echo $${HOME}'\n";
+        assert!(
+            collect_env_var_references(escaped).is_empty(),
+            "escaped text must not count as a reference"
+        );
+
+        // A stray `${` must not discard everything after it.
+        let broken =
+            "services:\n  app:\n    environment:\n      A: ${BROKEN\n      B: ${REAL_ONE}\n";
+        assert!(
+            collect_env_var_references(broken).contains("REAL_ONE"),
+            "scanning must continue past an unterminated reference"
+        );
+    }
+
+    #[test]
+    fn collects_env_var_references_with_defaults_and_ignores_literals() {
+        let compose = "\
+services:
+  app:
+    image: app:latest
+    environment:
+      A: ${ALPHA}
+      B: ${BETA:-fallback}
+      C: ${GAMMA?required}
+      D: plain-value
+";
+        let refs = collect_env_var_references(compose);
+        let found: Vec<&str> = refs.iter().map(String::as_str).collect();
+        assert_eq!(found, vec!["ALPHA", "BETA", "GAMMA"]);
+    }
+
+    #[test]
+    fn collects_env_var_reference_embedded_in_a_dsn() {
+        let compose =
+            "services:\n  app:\n    environment:\n      DATABASE_URL: postgres://u:${PW}@h/db\n";
+        assert!(collect_env_var_references(compose).contains("PW"));
+    }
+
+    // ── references that survive into the baked image ───────────────────────
+
+    #[test]
+    fn non_contract_reference_goes_back_to_its_literal() {
+        // A top-level `env:` key is turned into a reference at deploy time, but
+        // nothing fills it on the buyer's machine — the .env there is replaced
+        // wholesale from /etc/stacker/env, which only holds contract fields.
+        let compose = "services:\n  app:\n    environment:\n      REGION: ${REGION}\n";
+        let env = env_map(&[("REGION", "fsn1")]);
+
+        let (out, unresolved) =
+            resolve_non_contract_references(compose, &env, &std::collections::BTreeSet::new());
+
+        assert!(
+            out.contains("REGION: fsn1"),
+            "put back as a literal:\n{out}"
+        );
+        assert!(unresolved.is_empty(), "nothing missing: {unresolved:?}");
+    }
+
+    #[test]
+    fn contract_reference_is_kept_as_a_reference() {
+        let compose =
+            "services:\n  db:\n    environment:\n      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}\n";
+        let env = env_map(&[("POSTGRES_PASSWORD", "aaaaaaaaaaaaaaaa")]);
+
+        let (out, _) =
+            resolve_non_contract_references(compose, &env, &key_set(&["POSTGRES_PASSWORD"]));
+
+        assert!(
+            out.contains("POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}"),
+            "the buyer's machine fills this one:\n{out}"
+        );
+        assert!(
+            !out.contains("aaaaaaaaaaaaaaaa"),
+            "the author's value must not come back:\n{out}"
+        );
+    }
+
+    #[test]
+    fn escaped_and_defaulted_references_are_left_untouched() {
+        let compose = "services:\n  app:\n    environment:\n      LOG: ${LOG_LEVEL:-info}\n\
+                       \x20     CMD: echo $${HOME}\n";
+        let (out, unresolved) = resolve_non_contract_references(
+            compose,
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeSet::new(),
+        );
+
+        assert!(out.contains("${LOG_LEVEL:-info}"), "default kept:\n{out}");
+        assert!(out.contains("$${HOME}"), "escape kept:\n{out}");
+        assert!(
+            unresolved.is_empty(),
+            "neither needs a source: {unresolved:?}"
+        );
+    }
+
+    #[test]
+    fn a_reference_with_no_value_and_no_default_is_reported() {
+        let compose = "services:\n  app:\n    environment:\n      TOKEN: ${MISSING}\n";
+        let (_, unresolved) = resolve_non_contract_references(
+            compose,
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeSet::new(),
+        );
+
+        assert_eq!(
+            unresolved,
+            vec![UnresolvedReference {
+                name: "MISSING".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn required_keys_come_from_the_contract_not_the_file_text() {
+        let compose = "services:\n  app:\n    environment:\n\
+                       \x20     SECRET_KEY: ${SECRET_KEY}\n\
+                       \x20     LOG: ${LOG_LEVEL:-info}\n\
+                       \x20     CMD: echo $${HOME}\n\
+                       \x20     REGION: ${REGION}\n";
+
+        let required = required_env_keys(compose, &key_set(&["SECRET_KEY"]));
+        let found: Vec<&str> = required.iter().map(String::as_str).collect();
+
+        assert_eq!(
+            found,
+            vec!["SECRET_KEY"],
+            "only contract fields have a source on the buyer's machine"
+        );
+    }
+
+    /// M5 — Compose accepts `environment:` as a list as well as a mapping, and
+    /// a user-supplied compose (`deploy.compose_file`) often uses the list form.
+    /// Missing it leaves the author's secrets literal in the snapshot.
+    #[test]
+    fn parameterize_handles_the_list_form_of_environment() {
+        let compose = "\
+services:
+  db:
+    environment:
+      - POSTGRES_PASSWORD=aaaaaaaaaaaaaaaa
+      - POSTGRES_USER=stackpilot
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("POSTGRES_PASSWORD".to_string());
+
+        let result = parameterize_compose_env_vars(compose, &keys);
+
+        assert!(
+            result.contains("- POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"),
+            "list entry replaced:\n{result}"
+        );
+        assert!(
+            result.contains("- POSTGRES_USER=stackpilot"),
+            "undeclared entry untouched:\n{result}"
+        );
+    }
+
+    #[test]
+    fn parameterize_list_form_leaves_undeclared_keys_alone() {
+        let compose = "services:\n  app:\n    environment:\n      - LOG_LEVEL=debug\n";
+        let keys = std::collections::HashSet::new();
+        assert_eq!(parameterize_compose_env_vars(compose, &keys), compose);
+    }
+
+    // ── healthcheck test form ──────────────────────────────────────────────
+
+    /// Docker wraps a *string* `test` in `CMD-SHELL` itself, so a string that
+    /// already carries the prefix is wrapped twice and the container tries to
+    /// execute a program literally named `CMD-SHELL`:
+    ///
+    ///     /bin/sh: 1: CMD-SHELL: not found
+    ///
+    /// The prefix is only meaningful in the list form, and the prefix form is
+    /// what `docs/STACKER_YML_REFERENCE.md` tells authors to write.
+    #[test]
+    fn healthcheck_cmd_shell_prefix_becomes_a_list() {
+        let rendered = render_healthcheck_test("CMD-SHELL pg_isready -d app -U app");
+        assert_eq!(rendered, r#"["CMD-SHELL", "pg_isready -d app -U app"]"#);
+    }
+
+    /// `CMD` runs the argv directly, so each word is its own element.
+    #[test]
+    fn healthcheck_cmd_prefix_becomes_an_argv_list() {
+        let rendered = render_healthcheck_test("CMD redis-cli ping");
+        assert_eq!(rendered, r#"["CMD", "redis-cli", "ping"]"#);
+    }
+
+    /// Without a prefix the string form is correct — Docker supplies the shell.
+    #[test]
+    fn healthcheck_without_a_prefix_stays_a_string() {
+        let rendered = render_healthcheck_test("curl -f http://localhost/health");
+        assert_eq!(rendered, r#""curl -f http://localhost/health""#);
+    }
+
+    /// The list form an author wrote by hand must survive untouched.
+    #[test]
+    fn healthcheck_already_a_list_is_left_alone() {
+        let rendered = render_healthcheck_test(r#"["CMD", "true"]"#);
+        assert_eq!(rendered, r#"["CMD", "true"]"#);
+    }
+
+    /// A value that merely starts with the letters CMD is not a prefix.
+    #[test]
+    fn healthcheck_cmdline_is_not_mistaken_for_a_prefix() {
+        let rendered = render_healthcheck_test("cmdline-check --fast");
+        assert_eq!(rendered, r#""cmdline-check --fast""#);
+    }
+
+    #[test]
+    fn healthcheck_quotes_are_escaped_inside_the_list() {
+        let rendered = render_healthcheck_test(r#"CMD-SHELL test "$(id -u)" = 0"#);
+        assert_eq!(rendered, r#"["CMD-SHELL", "test \"$(id -u)\" = 0"]"#);
+    }
+
+    #[test]
+    fn parameterize_no_keys_returns_original() {
+        let compose = "services:\n  app:\n    environment:\n      FOO: bar\n";
+        let keys = std::collections::HashSet::new();
+        assert_eq!(parameterize_compose_env_vars(compose, &keys), compose);
     }
 }
