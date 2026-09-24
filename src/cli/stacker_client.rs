@@ -4396,10 +4396,18 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     // to the Install Service, which passes them to the proxy role as the
     // `stacker_proxy_domains` extra var. (Traefik routes via container labels
     // generated into the compose, so it does not need this.)
-    if !config.proxy.domains.is_empty() {
-        let domains: Vec<serde_json::Value> = config
-            .proxy
-            .domains
+    // A domain that resolved to nothing (an unset `${commonDomain}`, say) cannot
+    // become a routing entry: the proxy has no name to match on, and NPM refuses
+    // the request outright, failing the whole deploy over a route nobody asked
+    // for. Drop the blanks and route whatever is left.
+    let routed_domains: Vec<&crate::cli::config_parser::DomainConfig> = config
+        .proxy
+        .domains
+        .iter()
+        .filter(|d| !d.domain.trim().is_empty())
+        .collect();
+    if !routed_domains.is_empty() {
+        let domains: Vec<serde_json::Value> = routed_domains
             .iter()
             .map(|d| {
                 let ssl = match d.ssl {
@@ -5107,6 +5115,75 @@ mod tests {
         assert_eq!(domains[0]["ssl"], "auto");
         assert_eq!(domains[1]["domain"], "api.example.com");
         assert_eq!(domains[1]["ssl"], "off");
+    }
+
+    #[test]
+    fn test_build_deploy_form_drops_blank_proxy_domains() {
+        // `${commonDomain}` that resolved to nothing leaves an entry whose domain
+        // is empty. It reached the NPM role, which answered with a censored 4xx
+        // and took the whole deploy down (install 4068). A route with no name is
+        // not a route — it must never leave the CLI.
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::NginxProxyManager,
+                auto_detect: true,
+                domains: vec![
+                    crate::cli::config_parser::DomainConfig {
+                        domain: String::new(),
+                        ssl: crate::cli::config_parser::SslMode::Auto,
+                        upstream: "app:8080".to_string(),
+                    },
+                    crate::cli::config_parser::DomainConfig {
+                        domain: "   ".to_string(),
+                        ssl: crate::cli::config_parser::SslMode::Auto,
+                        upstream: "app:8080".to_string(),
+                    },
+                    crate::cli::config_parser::DomainConfig {
+                        domain: "app.example.com".to_string(),
+                        ssl: crate::cli::config_parser::SslMode::Auto,
+                        upstream: "app:8080".to_string(),
+                    },
+                ],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let form = build_deploy_form(&config);
+        let domains = form["proxy_domains"]
+            .as_array()
+            .expect("the one named domain should still be routed");
+        assert_eq!(domains.len(), 1);
+        assert_eq!(domains[0]["domain"], "app.example.com");
+    }
+
+    #[test]
+    fn test_build_deploy_form_omits_proxy_domains_when_every_domain_is_blank() {
+        // Nothing left to route: the key must be absent rather than an empty
+        // array, so the Install Service treats it as "no proxy domains".
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::NginxProxyManager,
+                auto_detect: true,
+                domains: vec![crate::cli::config_parser::DomainConfig {
+                    domain: String::new(),
+                    ssl: crate::cli::config_parser::SslMode::Auto,
+                    upstream: "app:8080".to_string(),
+                }],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let form = build_deploy_form(&config);
+        assert!(
+            form.get("proxy_domains").is_none(),
+            "an all-blank domain list must not produce a proxy_domains key"
+        );
     }
 
     #[test]

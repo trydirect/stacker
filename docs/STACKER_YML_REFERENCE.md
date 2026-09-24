@@ -1540,6 +1540,10 @@ Stacker validates your configuration both syntactically (YAML structure) and sem
 | `E002` | Server deployment requires `deploy.server.host` | `deploy.server.host` |
 | `E003` | Custom app type requires `app.image` or `app.dockerfile` | `app` |
 | `E004` | `deploy.environment` references an undefined environment key | `deploy.environment` / `environments` |
+| `E005` | `deploy.default_target` missing or naming an undefined target; invalid `deploy.cloud.public_ports` entry | `deploy.default_target` / `deploy.cloud.public_ports` |
+| `E006` | A `deploy.targets` profile defines both `server` and `cloud` | `deploy.targets.<name>` |
+| `E007` | Invalid port mapping in `app.ports` or `services.*.ports` | `app.ports` / `services.ports` |
+| `E008` | A proxy is enabled but a `proxy.domains` entry is incomplete — empty domain, or an empty/malformed upstream *(added in 0.3.3)* | `proxy.domains[N]` |
 
 ### Warnings (deployment may have issues)
 
