@@ -18,7 +18,9 @@
 //! `DATABASE_URL` (the stacker Postgres) persists the BakeRecord; without it
 //! the bake still snapshots and prints the record, but it is not registered.
 
-use stacker::connectors::hetzner::{HetznerCloudClient, HetznerSnapshotTarget};
+use stacker::connectors::hetzner::{
+    HetznerCloudClient, HetznerCloudConnector, HetznerSnapshotTarget,
+};
 use stacker::helpers::bake::run_bake;
 
 #[tokio::main]
@@ -161,6 +163,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     stacker::helpers::bake_finalize::check_contract_usable(&protected_keys, allow_unsanitized)
         .map_err(|e| e.to_string())?;
 
+    // Confirm the provider knows this box *before* sanitizing it. Sanitizing
+    // removes the operator's own SSH key — that is the point, since a key left
+    // in the image would grant its holder root on every clone — so a target the
+    // provider cannot match leaves a cleaned box that can no longer be reached
+    // and never got snapshotted. Happens with one wrong flag: `--server-id`
+    // takes the *provider's* id, and passing Stacker's own server id instead
+    // matches nothing.
+    let connector = HetznerCloudClient::from_env().map_err(|e| e.to_string())?;
+    let resolved_server_id = connector
+        .resolve_snapshot_target(&token, &target)
+        .await
+        .map_err(|e| {
+            format!(
+                "refusing to touch the build box: the Hetzner server could not be \
+                 identified ({e}). --server-id must be the Hetzner server id, not \
+                 Stacker's; --ip must be the box's current public address."
+            )
+        })?;
+    eprintln!("==> Build box resolved to Hetzner server {resolved_server_id}.");
+
     // Sanitize the build box before the snapshot is taken.
     let finalize_outcome = match (&ssh_key, allow_unsanitized) {
         (Some(key_path), _) => {
@@ -211,7 +233,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let connector = HetznerCloudClient::from_env().map_err(|e| e.to_string())?;
     let record = run_bake(
         &connector, &token, target, &stack, &version, healthy, &detail,
     )
