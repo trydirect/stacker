@@ -98,8 +98,15 @@ COPY --from=config /app/.env .
 COPY --from=config /app/configuration.yaml .
 COPY --from=config /usr/local/cargo/bin/sqlx /usr/local/bin/sqlx
 COPY ./access_control.conf.dist ./access_control.conf
+# Migrations ship in the image so a fresh environment can bring its own schema
+# up. See docker/entrypoint.sh: without 20260828121000 the server cannot
+# resolve a template at all.
+COPY ./migrations ./migrations
+COPY ./docker/entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
 
 EXPOSE 8000
 
-# run the binary
-ENTRYPOINT ["/app/server"]
+# apply migrations, then run the binary
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["/app/server"]
