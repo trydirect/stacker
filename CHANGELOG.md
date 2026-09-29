@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-09-24
+
+### Added — Marketplace config contracts
+
+- Added volume policy declarations to `config_contract` and preserved them through serialization and baking.
+- Kept config contracts intact during project synchronization and marketplace template updates.
+
+### Fixed — Build and configuration safety
+
+- Prevented secrets from being embedded in baked snapshots by parameterizing protected environment values.
+- Hardened build-box sanitization and rejected empty service and proxy routing declarations.
+- Corrected healthcheck command serialization and preserved configuration structure during updates.
+
+### Improved — Release builds
+
+- Reused CI-built binaries for release images to avoid redundant builds.
+
 ## [0.3.3] — 2026-09-18
 
 ### Added — Chat session management
