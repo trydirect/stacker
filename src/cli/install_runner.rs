@@ -3196,6 +3196,7 @@ mod tests {
 
     #[test]
     fn test_validate_remote_deploy_payload_accepts_generated_payload() {
+        let _env = crate::cli::test_support::ENV_LOCK.lock().unwrap();
         std::env::set_var("STACKER_CLOUD_TOKEN", "test-token-value");
         let cfg = sample_cloud_config();
         let payload = build_remote_deploy_payload(&cfg);
@@ -3206,6 +3207,7 @@ mod tests {
 
     #[test]
     fn test_resolve_remote_cloud_credentials_accepts_digitalocean_token() {
+        let _env = crate::cli::test_support::ENV_LOCK.lock().unwrap();
         std::env::remove_var("STACKER_CLOUD_TOKEN");
         std::env::remove_var("STACKER_DIGITALOCEAN_TOKEN");
         std::env::set_var("DIGITALOCEAN_TOKEN", "do-token-value");
@@ -4099,28 +4101,41 @@ services:
 
     #[test]
     fn test_check_local_host_port_conflicts_free_port() {
-        use std::io::Write;
-        // Use a high ephemeral port unlikely to be occupied by another process
-        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
-        let free_port = listener.local_addr().unwrap().port();
-        drop(listener); // release it
-
+        use std::io::{Seek, Write};
+        // Use a high ephemeral port unlikely to be occupied by another process.
+        // The bind→drop→re-check sequence is inherently racy in a parallel test
+        // suite (another test can grab the released ephemeral port in between),
+        // so retry with a fresh port before declaring failure.
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        write!(
-            tmp,
-            "services:\n  web:\n    image: nginx\n    ports:\n      - \"{}:80\"\n",
-            free_port
-        )
-        .unwrap();
+        for attempt in 0..5 {
+            let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+            let free_port = listener.local_addr().unwrap().port();
+            drop(listener); // release it
 
-        let executor = MockExecutor::success();
-        let conflicts = check_local_host_port_conflicts(tmp.path(), "myproject", &executor);
-        assert!(
-            conflicts.is_empty(),
-            "expected no conflicts for free port {}: {:?}",
-            free_port,
-            conflicts
-        );
+            tmp.as_file_mut()
+                .set_len(0)
+                .and_then(|_| tmp.as_file_mut().seek(std::io::SeekFrom::Start(0)))
+                .unwrap();
+            write!(
+                tmp,
+                "services:\n  web:\n    image: nginx\n    ports:\n      - \"{}:80\"\n",
+                free_port
+            )
+            .unwrap();
+
+            let executor = MockExecutor::success();
+            let conflicts = check_local_host_port_conflicts(tmp.path(), "myproject", &executor);
+            if conflicts.is_empty() {
+                return;
+            }
+            assert!(
+                attempt < 4,
+                "expected no conflicts for free port {} after {} attempts: {:?}",
+                free_port,
+                attempt + 1,
+                conflicts
+            );
+        }
     }
 
     #[test]

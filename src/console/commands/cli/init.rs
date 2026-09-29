@@ -2264,6 +2264,20 @@ impl CallableTrait for InitCommand {
             eprintln!("  stacker deploy --target local   # Deploy locally");
         }
 
+        // Default the active target to `local` so observability commands
+        // (`stacker logs`, `stacker status`) never hit the "No active target
+        // set" ambiguity error on a fresh project. `stacker deploy` rewrites
+        // this to the target it actually deployed to. `stacker init --target`
+        // has already set it — leave that untouched. Best-effort: a read-only
+        // checkout must not fail the whole init.
+        match crate::cli::deployment_lock::DeploymentLock::ensure_active_target_default(
+            &project_dir,
+        ) {
+            Ok(true) => eprintln!("✓ Active target set to: local"),
+            Ok(false) => {}
+            Err(e) => eprintln!("  ⚠ Could not set active target: {}", e),
+        }
+
         Ok(())
     }
 }

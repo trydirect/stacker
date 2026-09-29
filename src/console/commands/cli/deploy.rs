@@ -4040,7 +4040,16 @@ impl CallableTrait for DeployCommand {
         let should_fetch_remote_details = !matches!(watch_outcome, DeploymentWatchOutcome::Failed);
 
         // ── Deployment lock: persist deployment context ──
-        self.save_deployment_lock(&project_dir, &result, should_fetch_remote_details)?;
+        // Only a deployment that didn't fail claims the active target — a
+        // failed watch must not redirect `logs`/`status` away from a working
+        // deployment.
+        let mark_active = !matches!(watch_outcome, DeploymentWatchOutcome::Failed);
+        self.save_deployment_lock(
+            &project_dir,
+            &result,
+            should_fetch_remote_details,
+            mark_active,
+        )?;
         // Authorize the local backup key whenever the server was created, even if
         // the deployment watch reported failure (e.g. nginx_proxy_manager port
         // conflict). A failed post-create step is exactly when the user needs SSH
@@ -4364,18 +4373,22 @@ impl DeployCommand {
         }
     }
 
-    /// Save deployment context to `.stacker/deployment.lock` after a successful deploy.
+    /// Save deployment context to `.stacker/deployment.lock` after a deploy.
     ///
     /// For cloud deploys, tries to fetch the provisioned server's details from the
     /// Stacker API (IP, SSH user/port, server name) so that subsequent deploys can
     /// target the same server via the smart pre-check.
     ///
     /// When `--lock` is set, also writes the server details into `stacker.yml`.
+    ///
+    /// `mark_active` records this target in `.stacker/active-target`; it must
+    /// be `false` when the deployment watch reported failure.
     fn save_deployment_lock(
         &self,
         project_dir: &Path,
         result: &DeployResult,
         fetch_remote_details: bool,
+        mark_active: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Build the initial lock from the deploy result
         let mut lock = match result.target {
@@ -4542,6 +4555,14 @@ impl DeployCommand {
         match lock.save(project_dir) {
             Ok(path) => {
                 eprintln!("  Deployment context saved to {}", path.display());
+                // The lock is per-target and always saved (needed for SSH
+                // recovery), but only a non-failed deployment claims the
+                // active target.
+                if mark_active {
+                    if let Err(e) = DeploymentLock::write_active_target(project_dir, &lock.target) {
+                        eprintln!("  ⚠ Failed to record active target: {}", e);
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("  ⚠ Failed to save deployment lock: {}", e);
@@ -5924,7 +5945,7 @@ deploy:\n  target: server\n  server:\n    host: 203.0.113.5\n    user: deploy\n 
             server_name: None,
         };
 
-        cmd.save_deployment_lock(dir.path(), &result, false)
+        cmd.save_deployment_lock(dir.path(), &result, false, true)
             .unwrap();
 
         let lock = DeploymentLock::load_for_target(dir.path(), "server")
@@ -5934,6 +5955,64 @@ deploy:\n  target: server\n  server:\n    host: 203.0.113.5\n    user: deploy\n 
             lock.ssh_key,
             Some(PathBuf::from("/home/me/.ssh/stacker-project-test")),
             "ssh_key from stacker.yml's deploy.server must survive into the lock"
+        );
+        assert_eq!(
+            DeploymentLock::read_active_target(dir.path()).unwrap(),
+            Some("server".to_string()),
+            "successful deploy must claim the active target"
+        );
+    }
+
+    #[test]
+    fn test_save_deployment_lock_skips_active_target_when_failed() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\n\
+deploy:\n  target: server\n  server:\n    host: 203.0.113.5\n    user: deploy\n    ssh_key: /home/me/.ssh/stacker-project-test\n";
+        let dir = setup_local_project(&[("stacker.yml", config)]);
+        DeploymentLock::write_active_target(dir.path(), "local").unwrap();
+
+        let cmd = DeployCommand {
+            service: None,
+            target: Some("server".to_string()),
+            environment: None,
+            file: None,
+            dry_run: false,
+            force_rebuild: false,
+            project_name: None,
+            key_name: None,
+            key_id: None,
+            server_name: None,
+            server_host: None,
+            server_user: None,
+            server_ssh_key: None,
+            watch: None,
+            lock: false,
+            force_new: false,
+            runtime: "runc".to_string(),
+            plan: false,
+            apply_plan: None,
+            no_hooks: false,
+            allow_untrusted_hooks: false,
+            notify: false,
+        };
+        let result = DeployResult {
+            target: DeployTarget::Server,
+            message: "ok".to_string(),
+            server_ip: None,
+            deployment_id: None,
+            project_id: None,
+            server_name: None,
+        };
+
+        cmd.save_deployment_lock(dir.path(), &result, false, false)
+            .unwrap();
+
+        // The lock is written (SSH recovery), but a failed deployment must not
+        // steal the active target from the working local deployment.
+        assert!(DeploymentLock::exists_for_target(dir.path(), "server"));
+        assert_eq!(
+            DeploymentLock::read_active_target(dir.path()).unwrap(),
+            Some("local".to_string()),
+            "failed deploy must not flip the active target"
         );
     }
 

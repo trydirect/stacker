@@ -3,10 +3,8 @@ use std::path::Path;
 
 use crate::cli::error::CliError;
 use crate::cli::install_runner::{CommandExecutor, CommandOutput, ShellExecutor};
-use crate::cli::local_compose::resolve_local_compose_path;
+use crate::cli::local_compose::{resolve_local_compose_path, resolve_local_compose_project_name};
 use crate::console::commands::CallableTrait;
-
-const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 
 /// `stacker logs [--service <name>] [--follow] [--tail <n>] [--since <duration>]`
 ///
@@ -39,8 +37,14 @@ impl LogsCommand {
 }
 
 /// Build the `docker compose logs` argument list.
+///
+/// `project_name` must be passed via `-p` — without it Compose falls back to
+/// the compose file's directory basename (`.stacker` for generated files), so
+/// logs would be looked up in the wrong compose project scope. Same rationale
+/// as `status::build_status_args`. See GH #235.
 pub fn build_logs_args(
     compose_path: &str,
+    project_name: &str,
     service: Option<&str>,
     follow: bool,
     tail: Option<u32>,
@@ -48,6 +52,8 @@ pub fn build_logs_args(
 ) -> Vec<String> {
     let mut args = vec![
         "compose".to_string(),
+        "-p".to_string(),
+        project_name.to_string(),
         "-f".to_string(),
         compose_path.to_string(),
         "logs".to_string(),
@@ -86,7 +92,8 @@ pub fn run_logs(
     let compose_path = resolve_local_compose_path(project_dir)?;
 
     let compose_str = compose_path.to_string_lossy().to_string();
-    let args = build_logs_args(&compose_str, service, follow, tail, since);
+    let project_name = resolve_local_compose_project_name(project_dir);
+    let args = build_logs_args(&compose_str, &project_name, service, follow, tail, since);
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
     let output = executor.execute("docker", &args_refs)?;
@@ -96,43 +103,47 @@ pub fn run_logs(
 impl CallableTrait for LogsCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let project_dir = std::env::current_dir()?;
-
-        // Try local first — use the same compose resolution logic as local deploy/status.
-        if resolve_local_compose_path(&project_dir).is_ok() {
-            let executor = ShellExecutor;
-            let output = run_logs(
-                &project_dir,
-                self.service.as_deref(),
-                self.follow,
-                self.tail,
-                self.since.as_deref(),
-                &executor,
-            )?;
-
-            print!("{}", output.stdout);
-            if !output.stderr.is_empty() {
-                eprint!("{}", output.stderr);
-            }
-            return Ok(());
-        }
-
-        // No local compose — try remote agent logs
-        if is_remote_deployment(&project_dir) {
-            return run_remote_logs(self.service.as_deref(), self.tail);
-        }
-
-        // Neither local nor remote
-        Err(Box::new(CliError::ConfigValidation(
-            "No deployment found. Run 'stacker deploy' first.".to_string(),
-        )))
+        dispatch_logs(
+            &project_dir,
+            self.service.as_deref(),
+            self.follow,
+            self.tail,
+            self.since.as_deref(),
+        )
     }
+}
+
+/// Route `stacker logs` by deployment placement. Extracted for testability.
+pub fn dispatch_logs(
+    project_dir: &Path,
+    service: Option<&str>,
+    follow: bool,
+    tail: Option<u32>,
+    since: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let placement = crate::cli::deployment_context::resolve_deploy_placement(project_dir)?;
+
+    // Remote deployment — fetch logs from the Status Panel agent.
+    if let crate::cli::deployment_context::DeploymentPlacement::Remote { ref target } = placement {
+        return run_remote_logs(project_dir, target, service, tail);
+    }
+
+    // Local deployment (or no evidence yet — run_logs reports
+    // "No deployment found. Run 'stacker deploy' first." in that case).
+    let executor = ShellExecutor;
+    let output = run_logs(project_dir, service, follow, tail, since, &executor)?;
+
+    print!("{}", output.stdout);
+    if !output.stderr.is_empty() {
+        eprint!("{}", output.stderr);
+    }
+    Ok(())
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Remote (agent) logs
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-use crate::cli::config_parser::{CloudOrchestrator, DeployTarget, StackerConfig};
 use crate::cli::fmt;
 use crate::cli::progress;
 use crate::cli::runtime::CliRuntime;
@@ -144,100 +155,19 @@ const REMOTE_TIMEOUT_SECS: u64 = 60;
 /// Default poll interval (seconds).
 const REMOTE_POLL_INTERVAL_SECS: u64 = 2;
 
-/// Detect whether the project has a remote (cloud/server) deployment.
-fn is_remote_deployment(project_dir: &Path) -> bool {
-    // 1. Deployment lock with a deployment_id → remote
-    if let Ok(Some(lock)) = crate::cli::deployment_lock::DeploymentLock::load(project_dir) {
-        if lock.deployment_id.is_some() {
-            return true;
-        }
-        // Lock exists but with target != "local" → server deploy
-        if lock.target != "local" {
-            return true;
-        }
-    }
-
-    // 2. stacker.yml declares cloud/server target
-    let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
-    if let Ok(config) = StackerConfig::from_file(&config_path)
-        .and_then(|config| config.with_resolved_deploy_target(None))
-    {
-        if config.deploy.target == DeployTarget::Cloud {
-            return true;
-        }
-        if let Some(cloud_cfg) = &config.deploy.cloud {
-            if cloud_cfg.orchestrator == CloudOrchestrator::Remote {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-/// Resolve the deployment hash for remote logs, same logic as agent commands.
-fn resolve_deployment_hash(ctx: &CliRuntime) -> Result<String, CliError> {
-    let project_dir = std::env::current_dir().map_err(CliError::Io)?;
-
-    // 1. Deployment lock
-    if let Some(lock) = crate::cli::deployment_lock::DeploymentLock::load(&project_dir)? {
-        if let Some(dep_id) = lock.deployment_id {
-            let info = ctx.block_on(ctx.client.get_deployment_status(dep_id as i32))?;
-            if let Some(info) = info {
-                return Ok(info.deployment_hash);
-            }
-        }
-    }
-
-    // 2. stacker.yml explicit deployment hash
-    let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
-    if config_path.exists() {
-        if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path)
-            .and_then(|config| config.with_resolved_deploy_target(None))
-        {
-            if let Some(hash) = config.deploy.deployment_hash.as_ref() {
-                if !hash.trim().is_empty() {
-                    return Ok(hash.clone());
-                }
-            }
-
-            // 3. stacker.yml project → active agent (most recent heartbeat)
-            if let Some(ref project_name) = config.project.identity {
-                let project = ctx.block_on(ctx.client.find_project_by_name(project_name))?;
-                if let Some(proj) = project {
-                    match ctx.block_on(ctx.client.agent_snapshot_by_project(proj.id)) {
-                        Ok((_, hash)) => {
-                            eprintln!(
-                                "\x1b[2mℹ No --deployment specified — using active agent for project '{}': {}\x1b[0m",
-                                project_name, hash
-                            );
-                            return Ok(hash);
-                        }
-                        Err(_) => {}
-                    }
-                }
-            }
-        }
-    }
-
-    Err(CliError::ConfigValidation(
-        "Cannot determine deployment hash.\n\
-         Use 'stacker agent logs <app>' with --deployment <HASH>, \
-         or run from a directory with a deployment lock or stacker.yml."
-            .to_string(),
-    ))
-}
-
 /// Fetch logs from the remote agent, optionally for a single service.
 ///
 /// If no `--service` is specified, fetches a snapshot to discover running
 /// containers and fetches logs for all of them.
 fn run_remote_logs(
+    project_dir: &Path,
+    target: &str,
     service: Option<&str>,
     tail: Option<u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ctx = CliRuntime::new("remote logs")?;
-    let hash = resolve_deployment_hash(&ctx)?;
+    let hash =
+        crate::cli::deployment_context::resolve_remote_hash(project_dir, Some(target), &ctx)?;
 
     let limit = tail.map(|n| n as i32).unwrap_or(200);
 
@@ -430,37 +360,50 @@ fn print_logs_result(app_code: &str, info: &AgentCommandInfo, multi: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::deployment_context::{resolve_deploy_placement, DeploymentPlacement};
     use crate::cli::deployment_lock::DeploymentLock;
     use chrono::Utc;
 
+    const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
+
     #[test]
     fn test_logs_constructs_compose_command() {
-        let args = build_logs_args("/path/compose.yml", None, false, None, None);
-        assert_eq!(args, vec!["compose", "-f", "/path/compose.yml", "logs"]);
+        let args = build_logs_args("/path/compose.yml", "demo", None, false, None, None);
+        assert_eq!(
+            args,
+            vec!["compose", "-p", "demo", "-f", "/path/compose.yml", "logs"]
+        );
     }
 
     #[test]
     fn test_logs_with_service_filter() {
-        let args = build_logs_args("/path/compose.yml", Some("postgres"), false, None, None);
+        let args = build_logs_args(
+            "/path/compose.yml",
+            "demo",
+            Some("postgres"),
+            false,
+            None,
+            None,
+        );
         assert!(args.contains(&"postgres".to_string()));
     }
 
     #[test]
     fn test_logs_with_follow() {
-        let args = build_logs_args("/path/compose.yml", None, true, None, None);
+        let args = build_logs_args("/path/compose.yml", "demo", None, true, None, None);
         assert!(args.contains(&"-f".to_string()));
     }
 
     #[test]
     fn test_logs_with_tail() {
-        let args = build_logs_args("/path/compose.yml", None, false, Some(100), None);
+        let args = build_logs_args("/path/compose.yml", "demo", None, false, Some(100), None);
         assert!(args.contains(&"--tail".to_string()));
         assert!(args.contains(&"100".to_string()));
     }
 
     #[test]
     fn test_logs_with_since() {
-        let args = build_logs_args("/path/compose.yml", None, false, None, Some("1h"));
+        let args = build_logs_args("/path/compose.yml", "demo", None, false, None, Some("1h"));
         assert!(args.contains(&"--since".to_string()));
         assert!(args.contains(&"1h".to_string()));
     }
@@ -529,7 +472,7 @@ mod tests {
         let calls = executor.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(
-            calls[0][2],
+            calls[0][4],
             dir.path()
                 .join("docker/local/compose.yml")
                 .to_string_lossy()
@@ -547,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_remote_deployment_for_hydrated_handoff_lock() {
+    fn test_placement_for_hydrated_handoff_lock() {
         let dir = tempfile::TempDir::new().unwrap();
         DeploymentLock {
             target: "cloud".to_string(),
@@ -566,11 +509,16 @@ mod tests {
         .save(dir.path())
         .unwrap();
 
-        assert!(is_remote_deployment(dir.path()));
+        assert_eq!(
+            resolve_deploy_placement(dir.path()).unwrap(),
+            DeploymentPlacement::Remote {
+                target: "cloud".to_string()
+            }
+        );
     }
 
     #[test]
-    fn test_is_remote_deployment_for_named_cloud_target_config() {
+    fn test_placement_for_named_cloud_target_config() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(
             dir.path().join(DEFAULT_CONFIG_FILE),
@@ -589,6 +537,36 @@ deploy:
         )
         .unwrap();
 
-        assert!(is_remote_deployment(dir.path()));
+        assert_eq!(
+            resolve_deploy_placement(dir.path()).unwrap(),
+            DeploymentPlacement::Remote {
+                target: "cloud".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_dispatch_logs_two_locks_require_active_target() {
+        // Regression (posthog repro, end-to-end through the command routing):
+        // deployment-local.lock + deployment-server.lock, no active-target —
+        // `stacker logs` must demand `stacker target`, not fall into the
+        // remote path and die on "Cannot determine deployment hash".
+        use crate::cli::deployment_context::AMBIGUOUS_TARGET_MESSAGE;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        DeploymentLock::for_local().save(dir.path()).unwrap();
+        DeploymentLock::for_server(&crate::cli::config_parser::ServerConfig {
+            host: "203.0.113.10".to_string(),
+            user: "root".to_string(),
+            ssh_key: None,
+            port: 22,
+        })
+        .save(dir.path())
+        .unwrap();
+
+        let err = dispatch_logs(dir.path(), None, false, None, None).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains(AMBIGUOUS_TARGET_MESSAGE), "got: {}", msg);
+        assert!(!msg.contains("deployment hash"), "got: {}", msg);
     }
 }

@@ -2164,8 +2164,8 @@ impl CallableTrait for ConfigLockCommand {
         let config_path_str = resolve_config_path(&self.file);
         let config_path = project_dir.join(&config_path_str);
 
-        // 1. Load lockfile (prefer cloud/server)
-        let lock = match DeploymentLock::load(&project_dir)? {
+        // 1. Load lockfile for the active target (falls back to cloud/server)
+        let lock = match DeploymentLock::load_active(&project_dir)? {
             Some(l) => l,
             None => {
                 eprintln!("No deployment lock found in .stacker/.");
@@ -2506,6 +2506,7 @@ app:
 
     #[test]
     fn test_resolve_remote_cloud_credentials_accepts_digitalocean_token() {
+        let _env = crate::cli::test_support::ENV_LOCK.lock().unwrap();
         std::env::remove_var("STACKER_CLOUD_TOKEN");
         std::env::remove_var("STACKER_DIGITALOCEAN_TOKEN");
         std::env::set_var("DIGITALOCEAN_TOKEN", "do-token-value");

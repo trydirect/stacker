@@ -57,6 +57,19 @@ pub fn resolve_local_compose_path(project_dir: &Path) -> Result<PathBuf, CliErro
     }
 
     if selected_non_local_target {
+        // An explicitly selected local target plus a generated compose file are
+        // a stronger signal than the declared deploy target in stacker.yml:
+        // `stacker deploy --target local` generates `.stacker/docker-compose.yml`
+        // without rewriting stacker.yml. When `stacker target local` is active,
+        // the local artifacts win.
+        let active_is_local = DeploymentLock::read_active_target(project_dir)
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some("local");
+        if active_is_local && generated.exists() {
+            return Ok(generated);
+        }
         return Err(CliError::ConfigValidation(
             "The selected deploy target is not local, so no local docker-compose file is available."
                 .to_string(),
@@ -66,12 +79,20 @@ pub fn resolve_local_compose_path(project_dir: &Path) -> Result<PathBuf, CliErro
     if generated.exists() {
         // Even when a generated compose file exists, if the deployment lock
         // says the last deploy was to cloud/server, don't treat it as local.
-        if let Ok(Some(lock)) = DeploymentLock::load_active(project_dir) {
-            if lock.target != "local" {
-                return Err(CliError::ConfigValidation(format!(
-                    "This project was deployed to '{}'. Use 'stacker agent logs' or switch to the local target.",
-                    lock.target
-                )));
+        // An explicit `stacker target local` always wins over the lock.
+        let active_is_local = DeploymentLock::read_active_target(project_dir)
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some("local");
+        if !active_is_local {
+            if let Ok(Some(lock)) = DeploymentLock::load_active(project_dir) {
+                if lock.target != "local" {
+                    return Err(CliError::ConfigValidation(format!(
+                        "This project was deployed to '{}'. Use 'stacker agent logs' or switch to the local target.",
+                        lock.target
+                    )));
+                }
             }
         }
         return Ok(generated);
@@ -141,5 +162,60 @@ mod tests {
         .unwrap();
 
         assert!(resolve_local_compose_path(dir.path()).is_err());
+    }
+
+    #[test]
+    fn test_active_local_target_overrides_remote_config_target() {
+        // Regression: a local deploy generates `.stacker/docker-compose.yml`
+        // without rewriting stacker.yml's declared target; `stacker target
+        // local` must make the local artifacts reachable.
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".stacker")).unwrap();
+        std::fs::write(
+            dir.path().join(".stacker/docker-compose.yml"),
+            "services: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("stacker.yml"),
+            "name: demo\ndeploy:\n  target: server\n  server:\n    host: 10.0.0.8\n",
+        )
+        .unwrap();
+        DeploymentLock::write_active_target(dir.path(), "local").unwrap();
+
+        let resolved = resolve_local_compose_path(dir.path()).unwrap();
+        assert_eq!(resolved, dir.path().join(".stacker/docker-compose.yml"));
+    }
+
+    #[test]
+    fn test_active_local_target_wins_with_two_locks() {
+        // Regression (posthog repro): deployment-local.lock and
+        // deployment-server.lock both present, stacker.yml target: server,
+        // `.stacker/active-target` set to local via `stacker target local`.
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".stacker")).unwrap();
+        std::fs::write(
+            dir.path().join(".stacker/docker-compose.yml"),
+            "services: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("stacker.yml"),
+            "name: posthog\ndeploy:\n  target: server\n",
+        )
+        .unwrap();
+        DeploymentLock::for_local().save(dir.path()).unwrap();
+        DeploymentLock::for_server(&crate::cli::config_parser::ServerConfig {
+            host: "203.0.113.10".to_string(),
+            user: "root".to_string(),
+            ssh_key: None,
+            port: 22,
+        })
+        .save(dir.path())
+        .unwrap();
+        DeploymentLock::write_active_target(dir.path(), "local").unwrap();
+
+        let resolved = resolve_local_compose_path(dir.path()).unwrap();
+        assert_eq!(resolved, dir.path().join(".stacker/docker-compose.yml"));
     }
 }
