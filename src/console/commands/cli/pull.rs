@@ -185,6 +185,11 @@ fn build_stacker_yml_from_deployment(
             depends_on: Vec::new(),
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         });
     }
 

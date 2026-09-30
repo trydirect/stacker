@@ -32,6 +32,11 @@ pub struct ComposeService {
     pub command: Option<String>,
     /// Docker compose healthcheck for this service.
     pub healthcheck: Option<ComposeHealthcheck>,
+    pub cap_add: Vec<String>,
+    pub cap_drop: Vec<String>,
+    pub privileged: bool,
+    pub platform: Option<String>,
+    pub devices: Vec<String>,
 }
 
 impl Default for ComposeService {
@@ -51,6 +56,11 @@ impl Default for ComposeService {
             runtime: None,
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         }
     }
 }
@@ -67,6 +77,11 @@ impl From<&ServiceDefinition> for ComposeService {
             depends_on: svc.depends_on.clone(),
             command: svc.command.clone(),
             healthcheck: svc.healthcheck.clone(),
+            cap_add: svc.cap_add.clone(),
+            cap_drop: svc.cap_drop.clone(),
+            privileged: svc.privileged,
+            platform: svc.platform.clone(),
+            devices: svc.devices.clone(),
             ..Default::default()
         };
         crate::helpers::stacker_labels::insert_runtime_labels(
@@ -344,6 +359,11 @@ fn build_app_service(config: &StackerConfig) -> ComposeService {
 
     // Healthcheck from app section
     svc.healthcheck = config.app.healthcheck.clone();
+    svc.cap_add = config.app.cap_add.clone();
+    svc.cap_drop = config.app.cap_drop.clone();
+    svc.privileged = config.app.privileged;
+    svc.platform = config.app.platform.clone();
+    svc.devices = config.app.devices.clone();
 
     // Merge environment: top-level env first, then app-level (app wins)
     for (k, v) in &config.env {
@@ -664,6 +684,25 @@ impl ComposeDefinition {
             if let Some(ref rt) = svc.runtime {
                 if rt != "runc" {
                     out.push_str(&format!("    runtime: {}\n", rt));
+                }
+            }
+
+            if let Some(ref platform) = svc.platform {
+                out.push_str(&format!("    platform: {}\n", yaml_quote(platform)));
+            }
+            if svc.privileged {
+                out.push_str("    privileged: true\n");
+            }
+            for (key, values) in [
+                ("cap_add", &svc.cap_add),
+                ("cap_drop", &svc.cap_drop),
+                ("devices", &svc.devices),
+            ] {
+                if !values.is_empty() {
+                    out.push_str(&format!("    {key}:\n"));
+                    for value in values {
+                        out.push_str(&format!("      - {}\n", yaml_quote(value)));
+                    }
                 }
             }
 
@@ -1404,6 +1443,11 @@ services:
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         }];
 
         let names = service_names(&config);
@@ -1447,6 +1491,11 @@ services:
             depends_on: Vec::new(),
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = ConfigBuilder::new()
             .name("with-db")
@@ -1774,6 +1823,11 @@ services:
             depends_on: Vec::new(),
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = ConfigBuilder::new()
             .name("with-vol")
@@ -1854,6 +1908,11 @@ services:
             depends_on: Vec::new(),
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
 
         let compose_svc = ComposeService::from(&svc_def);
@@ -1880,6 +1939,11 @@ services:
             depends_on: Vec::new(),
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
 
         let compose_svc = ComposeService::from(&svc_def);
@@ -2137,6 +2201,11 @@ services:
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = ConfigBuilder::new()
             .name("npm-proxied")
@@ -2186,6 +2255,11 @@ services:
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = ConfigBuilder::new()
             .name("partial-proxy")
@@ -2268,6 +2342,11 @@ services:
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = ConfigBuilder::new()
             .name("traefik-app")

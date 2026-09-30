@@ -5375,6 +5375,11 @@ mod tests {
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let redis_service = ServiceDefinition {
             name: "redis".to_string(),
@@ -5385,6 +5390,11 @@ mod tests {
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
@@ -5423,6 +5433,11 @@ mod tests {
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let statuspanel_service = ServiceDefinition {
             name: "statuspanel".to_string(),
@@ -5433,6 +5448,11 @@ mod tests {
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let smtp_service = ServiceDefinition {
             name: "smtp".to_string(),
@@ -5443,6 +5463,11 @@ mod tests {
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
@@ -5498,6 +5523,11 @@ mod tests {
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("Device API")

@@ -1138,6 +1138,11 @@ fn compose_service_to_definition(
         depends_on: service.depends_on.clone(),
         command: None,
         healthcheck,
+        cap_add: Vec::new(),
+        cap_drop: Vec::new(),
+        privileged: false,
+        platform: None,
+        devices: Vec::new(),
     })
 }
 
@@ -1612,6 +1617,11 @@ fn convert_compose_to_stacker(ai_output: &str, repo_name: &str) -> Option<Stacke
                     depends_on: extract_yaml_strings(svc.get("depends_on")),
                     command: None,
                     healthcheck: crate::cli::github_fetcher::default_healthcheck(img),
+                    cap_add: Vec::new(),
+                    cap_drop: Vec::new(),
+                    privileged: false,
+                    platform: None,
+                    devices: Vec::new(),
                 });
             } else {
                 app_image = Some(img.clone());
@@ -1642,6 +1652,11 @@ fn convert_compose_to_stacker(ai_output: &str, repo_name: &str) -> Option<Stacke
             environment: app_env,
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         },
         services: infra_services,
         proxy: crate::cli::config_parser::ProxyConfig::default(),
@@ -3185,6 +3200,11 @@ mod tests {
                 depends_on: vec![],
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             }],
             ..Default::default()
         };
@@ -3225,6 +3245,11 @@ mod tests {
                 depends_on: vec![],
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             }],
             ..Default::default()
         };

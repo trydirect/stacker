@@ -231,6 +231,18 @@ pub struct AppSource {
     /// Docker compose healthcheck for this service.
     #[serde(default)]
     pub healthcheck: Option<ComposeHealthcheck>,
+
+    /// Docker runtime permissions and host integration for the app container.
+    #[serde(default)]
+    pub cap_add: Vec<String>,
+    #[serde(default)]
+    pub cap_drop: Vec<String>,
+    #[serde(default)]
+    pub privileged: bool,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub devices: Vec<String>,
 }
 
 fn default_app_path() -> PathBuf {
@@ -299,6 +311,17 @@ pub struct ServiceDefinition {
     /// Docker compose healthcheck for this service.
     #[serde(default)]
     pub healthcheck: Option<ComposeHealthcheck>,
+
+    #[serde(default)]
+    pub cap_add: Vec<String>,
+    #[serde(default)]
+    pub cap_drop: Vec<String>,
+    #[serde(default)]
+    pub privileged: bool,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub devices: Vec<String>,
 }
 
 fn deserialize_services<'de, D>(deserializer: D) -> Result<Vec<ServiceDefinition>, D::Error>
@@ -2604,6 +2627,11 @@ impl ConfigBuilder {
                 environment: HashMap::new(),
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             },
             services: self.services,
             proxy: self.proxy.unwrap_or_default(),
@@ -4096,6 +4124,11 @@ app:
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
 
         let config = ConfigBuilder::new()
@@ -4602,6 +4635,11 @@ deploy:
                 depends_on: vec![],
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             })
             .deploy_target(DeployTarget::Cloud)
             .cloud(CloudConfig {
@@ -4676,6 +4714,11 @@ deploy:
                 depends_on: vec![],
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             })
             .add_service(ServiceDefinition {
                 name: "redis".to_string(),
@@ -4686,6 +4729,11 @@ deploy:
                 depends_on: vec![],
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             })
             .add_service(ServiceDefinition {
                 name: "minio".to_string(),
@@ -4696,6 +4744,11 @@ deploy:
                 depends_on: vec![],
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             })
             .build()
             .unwrap();
