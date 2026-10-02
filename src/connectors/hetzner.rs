@@ -423,8 +423,10 @@ impl HetznerCloudConnector for HetznerCloudClient {
 //
 // Shared by the deploy route handler AND the CLI local-orchestrator path so the
 // pre-flight guard is identical in both. `/server_types` is global and does NOT
-// honor a `?location=` filter — per-region availability comes from `/datacenters`
-// (`server_types.available` lists the type ids creatable in each datacenter).
+// honor a `?location=` filter — per-region availability comes from each entry's
+// `locations[].available`. Hetzner removed `/datacenters` (HTTP 410
+// `deprecated_api_endpoint`) and moved the signal there in the 2025-09-24
+// "per location server types" change.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Resolve the Hetzner API base URL, honoring `STACKER_HETZNER_API_URL` (used by
@@ -530,19 +532,9 @@ pub async fn validate_server_type_availability(
         None => return Ok(()),
     };
 
-    // Datacenters are best-effort: without them we skip the region check but
-    // still enforce existence + deprecation.
-    let datacenters = fetch_hetzner_json::<HetznerDatacentersResponse>(
-        &client,
-        &format!("{}/datacenters", base_url),
-        token,
-        "datacenters",
-    )
-    .await
-    .map(|body| body.datacenters)
-    .unwrap_or_default();
-
-    evaluate_server_type_availability(&server_types, &datacenters, server_type, region)
+    // Per-location availability rides on the same payload, so no second call:
+    // /datacenters (the old source) was removed by Hetzner.
+    evaluate_server_type_availability(&server_types, server_type, region)
 }
 
 /// GET a Hetzner JSON endpoint, returning `None` (and logging a warning) on any
@@ -591,14 +583,15 @@ async fn fetch_hetzner_json<T: serde::de::DeserializeOwned>(
 ///
 /// - Unknown type name → error (not offered by Hetzner at all).
 /// - Deprecated type → error (cannot create new servers).
-/// - `region` given and known to `/datacenters` but not offering the type →
-///   error naming the region. This is the case region-blind validation missed:
+/// - `region` given, known to Hetzner (advertised in some type's `locations`),
+///   and the type is not offered there or is flagged out of stock → error
+///   naming the region. This is the case region-blind validation missed:
 ///   `/server_types?location=…` is ignored by Hetzner, so a globally-existing
 ///   type like `cpx21` falsely passed even when unavailable in e.g. `nbg1`.
-/// - `region` unknown to `/datacenters` (or datacenters unavailable) → fail open.
+/// - `region` unknown to Hetzner, or the payload carried no per-location
+///   `locations` data → fail open.
 fn evaluate_server_type_availability(
     server_types: &[HetznerServerTypeEntry],
-    datacenters: &[HetznerDatacenterEntry],
     server_type: &str,
     region: Option<&str>,
 ) -> Result<(), String> {
@@ -641,35 +634,55 @@ fn evaluate_server_type_availability(
         ));
     }
 
-    // Per-region availability check — only meaningful when we know the region
-    // AND `/datacenters` actually lists it. Otherwise fail open.
-    if let Some(region) = region.map(str::trim).filter(|r| !r.is_empty()) {
-        let region_dcs: Vec<&HetznerDatacenterEntry> = datacenters
-            .iter()
-            .filter(|dc| dc.location.name.eq_ignore_ascii_case(region))
-            .collect();
+    let Some(region) = region.map(str::trim).filter(|r| !r.is_empty()) else {
+        return Ok(());
+    };
 
-        if !region_dcs.is_empty() {
-            let available_ids: HashSet<i64> = region_dcs
-                .iter()
-                .flat_map(|dc| dc.server_types.available.iter().copied())
-                .collect();
+    // Known regions = every location advertised across all server types. This
+    // tells "Hetzner doesn't know this region" (fail open) apart from "this
+    // type isn't offered there" (reject) — the role `/datacenters` used to play
+    // before Hetzner removed that endpoint.
+    let known_regions: HashSet<&str> = server_types
+        .iter()
+        .flat_map(|t| t.locations.iter())
+        .filter_map(HetznerServerTypeLocation::name)
+        .collect();
 
-            if !available_ids.contains(&entry.id) {
-                return Err(format!(
-                    "Server type '{}' is not available in Hetzner location '{}'. \
-                     Set `deploy.cloud.region` or `deploy.cloud.size` in stacker.yml. \
-                     Types available in '{}': {}",
-                    server_type,
-                    region,
-                    region,
-                    active_type_names(Some(&available_ids))
-                ));
-            }
-        }
+    // No per-location data at all, none for this type, or a region no type
+    // advertises: we cannot prove unavailability, so never block.
+    if known_regions.is_empty() || entry.locations.is_empty() || !known_regions.contains(region) {
+        return Ok(());
     }
 
-    Ok(())
+    match entry.locations.iter().find(|loc| loc.supports(region)) {
+        // Offered here and not flagged out of stock. A missing `available`
+        // flag is unknown, so it fails open rather than blocking a deploy.
+        Some(loc) if loc.available != Some(false) => Ok(()),
+        // Known location, but the type is not offered there or is temporarily
+        // out of stock — reject, listing what IS placeable instead.
+        _ => {
+            let available_ids: HashSet<i64> = server_types
+                .iter()
+                .filter(|t| t.deprecated.is_none())
+                .filter(|t| {
+                    t.locations
+                        .iter()
+                        .any(|loc| loc.supports(region) && loc.available != Some(false))
+                })
+                .map(|t| t.id)
+                .collect();
+
+            Err(format!(
+                "Server type '{}' is not available in Hetzner location '{}'. \
+                 Set `deploy.cloud.region` or `deploy.cloud.size` in stacker.yml. \
+                 Types available in '{}': {}",
+                server_type,
+                region,
+                region,
+                active_type_names(Some(&available_ids))
+            ))
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -680,37 +693,43 @@ struct HetznerServerTypesResponse {
 
 #[derive(Debug, Deserialize)]
 struct HetznerServerTypeEntry {
-    /// Numeric id — what `/datacenters` lists under `server_types.available`.
+    /// Numeric id — used when listing what is placeable in a location.
     id: i64,
     name: String,
     /// Non-null when Hetzner has deprecated this type (ISO-8601 timestamp).
     #[serde(default)]
     deprecated: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HetznerDatacentersResponse {
+    /// Locations this type is offered in, each carrying the live `available`
+    /// flag. This replaced the removed `/datacenters` endpoint (HTTP 410) in
+    /// Hetzner's 2025-09-24 "per location server types" change.
     #[serde(default)]
-    datacenters: Vec<HetznerDatacenterEntry>,
+    locations: Vec<HetznerServerTypeLocation>,
 }
 
+/// One entry of `server_types[].locations`. The wire format is FLAT —
+/// `{"id": 1, "name": "nbg1", "deprecation": null, "recommended": true,
+/// "available": true}` — confirmed by Hetzner's OpenAPI spec and hcloud-go's
+/// `schema.ServerTypeLocation`; hcloud-python's nested `location` wrapper is
+/// constructed client-side and never appears on the wire.
 #[derive(Debug, Deserialize)]
-struct HetznerDatacenterEntry {
-    location: HetznerDatacenterLocation,
+struct HetznerServerTypeLocation {
     #[serde(default)]
-    server_types: HetznerDatacenterServerTypes,
-}
-
-#[derive(Debug, Deserialize)]
-struct HetznerDatacenterLocation {
     name: String,
+    /// `false` = supported but currently not orderable. Missing/null is
+    /// treated as unknown and never blocks a deploy.
+    #[serde(default)]
+    available: Option<bool>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct HetznerDatacenterServerTypes {
-    /// Server-type ids creatable in this datacenter.
-    #[serde(default)]
-    available: Vec<i64>,
+impl HetznerServerTypeLocation {
+    fn name(&self) -> Option<&str> {
+        (!self.name.is_empty()).then_some(self.name.as_str())
+    }
+
+    fn supports(&self, region: &str) -> bool {
+        self.name()
+            .is_some_and(|name| name.eq_ignore_ascii_case(region))
+    }
 }
 
 fn status_to_error(status: reqwest::StatusCode, message: &str) -> ConnectorError {
@@ -829,32 +848,42 @@ mod tests {
             id,
             name: name.to_string(),
             deprecated: deprecated.map(ToOwned::to_owned),
+            locations: Vec::new(),
         }
     }
 
-    fn datacenter(location: &str, available: &[i64]) -> HetznerDatacenterEntry {
-        HetznerDatacenterEntry {
-            location: HetznerDatacenterLocation {
-                name: location.to_string(),
-            },
-            server_types: HetznerDatacenterServerTypes {
-                available: available.to_vec(),
-            },
-        }
+    /// Attach Hetzner's per-location availability to a server type: offered
+    /// (available) in `available`, supported-but-out-of-stock in `out_of_stock`
+    /// — the `server_types[].locations` payload shape.
+    fn offered_in(
+        mut entry: HetznerServerTypeEntry,
+        available: &[&str],
+        out_of_stock: &[&str],
+    ) -> HetznerServerTypeEntry {
+        entry.locations = available
+            .iter()
+            .map(|name| (*name, true))
+            .chain(out_of_stock.iter().map(|name| (*name, false)))
+            .map(|(name, available)| HetznerServerTypeLocation {
+                name: name.to_string(),
+                available: Some(available),
+            })
+            .collect();
+        entry
     }
 
-    // The regression from the bug report: `cpx21` exists globally, so the old
-    // `/server_types?location=…` check falsely passed, but Hetzner does not
+    // The regression from the bug report: `cpx21` exists globally, so a
+    // region-blind `/server_types` check falsely passes, but Hetzner does not
     // offer it in `nbg1`, so Terraform later died with "unsupported location".
     #[test]
     fn server_type_unavailable_in_region_is_rejected() {
-        let types = vec![stype(22, "cpx11", None), stype(23, "cpx21", None)];
-        let dcs = vec![
-            datacenter("fsn1", &[22, 23]),
-            datacenter("nbg1", &[22]), // cpx21 (id 23) NOT available here
+        let types = vec![
+            offered_in(stype(22, "cpx11", None), &["fsn1", "nbg1"], &[]),
+            // cpx21 (id 23) is NOT offered in nbg1
+            offered_in(stype(23, "cpx21", None), &["fsn1"], &[]),
         ];
 
-        let err = evaluate_server_type_availability(&types, &dcs, "cpx21", Some("nbg1"))
+        let err = evaluate_server_type_availability(&types, "cpx21", Some("nbg1"))
             .expect_err("cpx21 must be rejected in nbg1");
         assert!(err.contains("cpx21"), "error should name the type: {err}");
         assert!(err.contains("nbg1"), "error should name the region: {err}");
@@ -866,26 +895,58 @@ mod tests {
 
     #[test]
     fn server_type_available_in_region_passes() {
-        let types = vec![stype(22, "cpx11", None), stype(23, "cpx21", None)];
-        let dcs = vec![datacenter("fsn1", &[22, 23])];
-        assert!(evaluate_server_type_availability(&types, &dcs, "cpx21", Some("fsn1")).is_ok());
+        let types = vec![
+            offered_in(stype(22, "cpx11", None), &["fsn1"], &[]),
+            offered_in(stype(23, "cpx21", None), &["fsn1"], &[]),
+        ];
+        assert!(evaluate_server_type_availability(&types, "cpx21", Some("fsn1")).is_ok());
     }
 
     #[test]
     fn region_matching_is_case_insensitive() {
-        let types = vec![stype(23, "cpx21", None)];
-        let dcs = vec![datacenter("fsn1", &[23])];
-        assert!(evaluate_server_type_availability(&types, &dcs, "CPX21", Some("FSN1")).is_ok());
+        let types = vec![offered_in(stype(23, "cpx21", None), &["fsn1"], &[])];
+        assert!(evaluate_server_type_availability(&types, "CPX21", Some("FSN1")).is_ok());
+    }
+
+    // Supported in the location but flagged `available: false` (temporarily
+    // out of stock) — the live signal that used to come from /datacenters.
+    #[test]
+    fn out_of_stock_in_known_region_is_rejected() {
+        let types = vec![
+            offered_in(stype(22, "cpx11", None), &["nbg1"], &[]),
+            offered_in(stype(23, "cpx21", None), &[], &["nbg1"]),
+        ];
+
+        let err = evaluate_server_type_availability(&types, "cpx21", Some("nbg1"))
+            .expect_err("out-of-stock type must be rejected in nbg1");
+        assert!(err.contains("cpx21"), "error should name the type: {err}");
+        assert!(err.contains("nbg1"), "error should name the region: {err}");
+    }
+
+    // A location entry without the `available` flag is unknown data — it must
+    // never be the reason a deploy is blocked.
+    #[test]
+    fn missing_available_flag_fails_open() {
+        let mut entry = stype(23, "cpx21", None);
+        entry.locations = vec![HetznerServerTypeLocation {
+            name: "fsn1".to_string(),
+            available: None,
+        }];
+
+        assert!(evaluate_server_type_availability(&[entry], "cpx21", Some("fsn1")).is_ok());
     }
 
     #[test]
     fn deprecated_server_type_is_rejected() {
         let types = vec![
-            stype(1, "cx11", Some("2024-01-01T00:00:00+00:00")),
-            stype(22, "cpx11", None),
+            offered_in(
+                stype(1, "cx11", Some("2024-01-01T00:00:00+00:00")),
+                &["fsn1"],
+                &[],
+            ),
+            offered_in(stype(22, "cpx11", None), &["fsn1"], &[]),
         ];
-        let dcs = vec![datacenter("fsn1", &[1, 22])];
-        let err = evaluate_server_type_availability(&types, &dcs, "cx11", Some("fsn1"))
+        let err = evaluate_server_type_availability(&types, "cx11", Some("fsn1"))
             .expect_err("deprecated type must be rejected");
         assert!(err.contains("deprecated"), "err: {err}");
         assert!(err.contains("cpx11"), "should suggest active type: {err}");
@@ -893,38 +954,38 @@ mod tests {
 
     #[test]
     fn unknown_server_type_is_rejected() {
-        let types = vec![stype(22, "cpx11", None)];
-        let dcs = vec![datacenter("fsn1", &[22])];
-        let err = evaluate_server_type_availability(&types, &dcs, "does-not-exist", Some("fsn1"))
+        let types = vec![offered_in(stype(22, "cpx11", None), &["fsn1"], &[])];
+        let err = evaluate_server_type_availability(&types, "does-not-exist", Some("fsn1"))
             .expect_err("unknown type must be rejected");
         assert!(err.contains("does-not-exist"), "err: {err}");
     }
 
-    // Fail-open guarantees: no region, unknown region, and missing datacenter
-    // data must never block a deploy on the region dimension.
+    // Fail-open guarantees: no region, unknown region, and missing
+    // per-location data must never block a deploy on the region dimension.
     #[test]
     fn no_region_skips_region_check() {
         let types = vec![stype(23, "cpx21", None)];
-        assert!(evaluate_server_type_availability(&types, &[], "cpx21", None).is_ok());
+        assert!(evaluate_server_type_availability(&types, "cpx21", None).is_ok());
     }
 
     #[test]
     fn unknown_region_fails_open() {
-        let types = vec![stype(23, "cpx21", None)];
-        let dcs = vec![datacenter("fsn1", &[23])];
-        // Region not present in /datacenters — we cannot prove unavailability.
-        assert!(evaluate_server_type_availability(&types, &dcs, "cpx21", Some("ash")).is_ok());
+        let types = vec![offered_in(stype(23, "cpx21", None), &["fsn1"], &[])];
+        // Region not advertised by any type — we cannot prove unavailability.
+        assert!(evaluate_server_type_availability(&types, "cpx21", Some("ash")).is_ok());
     }
 
     #[test]
-    fn empty_datacenters_fails_open_on_region() {
+    fn missing_location_data_fails_open_on_region() {
         let types = vec![stype(23, "cpx21", None)];
-        // Simulates /datacenters fetch failure: existence still checked, region skipped.
-        assert!(evaluate_server_type_availability(&types, &[], "cpx21", Some("nbg1")).is_ok());
+        // Simulates a payload without per-location data: existence still
+        // checked, region skipped.
+        assert!(evaluate_server_type_availability(&types, "cpx21", Some("nbg1")).is_ok());
     }
 
-    // End-to-end through the HTTP layer against a mock Hetzner, exercising the
-    // /server_types + /datacenters fetch and fail-open on the datacenters call.
+    // End-to-end through the HTTP layer against a mock Hetzner: the
+    // /server_types payload itself carries the per-location availability that
+    // used to live on the now-removed /datacenters endpoint.
     #[tokio::test]
     async fn validate_rejects_type_missing_in_region_via_http() {
         let api = MockServer::start().await;
@@ -932,17 +993,13 @@ mod tests {
             .and(path("/server_types"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "server_types": [
-                    {"id": 22, "name": "cpx11"},
-                    {"id": 23, "name": "cpx21"}
-                ]
-            })))
-            .mount(&api)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/datacenters"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "datacenters": [
-                    {"location": {"name": "nbg1"}, "server_types": {"available": [22]}}
+                    {"id": 22, "name": "cpx11", "locations": [
+                        {"id": 1, "name": "fsn1", "available": true},
+                        {"id": 2, "name": "nbg1", "available": true}
+                    ]},
+                    {"id": 23, "name": "cpx21", "locations": [
+                        {"id": 1, "name": "fsn1", "available": true}
+                    ]}
                 ]
             })))
             .mount(&api)
@@ -993,7 +1050,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validate_fails_open_when_datacenters_unavailable() {
+    async fn validate_fails_open_when_server_types_unavailable() {
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/server_types"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&api)
+            .await;
+
+        // Existence unknown too → everything fails open.
+        assert!(
+            validate_server_type_availability(&api.uri(), "tok", "cpx21", Some("nbg1"))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_fails_open_when_location_data_missing() {
         let api = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/server_types"))
@@ -1002,13 +1076,8 @@ mod tests {
             })))
             .mount(&api)
             .await;
-        Mock::given(method("GET"))
-            .and(path("/datacenters"))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&api)
-            .await;
 
-        // Existence passes, region check skipped → Ok.
+        // Existence passes, no per-location data → region check skipped → Ok.
         assert!(
             validate_server_type_availability(&api.uri(), "tok", "cpx21", Some("nbg1"))
                 .await
