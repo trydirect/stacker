@@ -719,6 +719,51 @@ fn normalize_service_bind_sources(
     changed
 }
 
+/// Re-root a `build.context` that was authored relative to the project root
+/// (`app.path`, default `.`) so it resolves correctly from a compose file
+/// living in `.stacker/`.
+///
+/// Returns `(compose_context, context_relative_to_project_root)`, or `None`
+/// for absolute paths that need no rewriting. A context of `..` is returned
+/// unchanged (it already points at the project root from `.stacker/`).
+fn reroot_relative_context(context: &str) -> Option<(String, String)> {
+    if Path::new(context).is_absolute() {
+        return None;
+    }
+    let normalized = context.trim_start_matches("./");
+    if normalized.starts_with("..") {
+        // Already expressed relative to `.stacker/` (a previous normalization).
+        return (context == "..").then(|| ("..".to_string(), ".".to_string()));
+    }
+    let root_rel = if normalized.is_empty() || normalized == "." {
+        ".".to_string()
+    } else {
+        normalized.to_string()
+    };
+    let compose_context = if root_rel == "." {
+        "..".to_string()
+    } else {
+        format!("../{root_rel}")
+    };
+    Some((compose_context, root_rel))
+}
+
+/// Compose resolves `build.dockerfile` relative to `build.context`. Given a
+/// context path relative to the project root (`.` = the root itself), return
+/// the value pointing at the generated `<root>/.stacker/Dockerfile`.
+fn generated_dockerfile_ref(context_relative_to_root: &str) -> String {
+    let depth = context_relative_to_root
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .count();
+    let mut reference = String::new();
+    for _ in 0..depth {
+        reference.push_str("../");
+    }
+    reference.push_str(".stacker/Dockerfile");
+    reference
+}
+
 /// Normalize the generated `.stacker/docker-compose.yml` in place.
 ///
 /// Besides the obsolete `version:` key and `build.context`/`dockerfile`
@@ -726,9 +771,14 @@ fn normalize_service_bind_sources(
 /// root, because the compose file lives in `.stacker/` while every path in it
 /// was authored in `stacker.yml` relative to the project root. See
 /// [`restage_relative_path`] for the per-target direction of that rewrite.
+///
+/// `app_dockerfile` is `app.dockerfile` from `stacker.yml`: when it is set, the
+/// generator never writes `.stacker/Dockerfile` (the user's own file is the
+/// build input), so the `dockerfile:` rewrite must be skipped for it.
 fn normalize_generated_compose_paths(
     compose_path: &Path,
     deploy_target: DeployTarget,
+    app_dockerfile: Option<&Path>,
 ) -> Result<(), CliError> {
     let is_stacker_compose = compose_path
         .components()
@@ -817,23 +867,49 @@ fn normalize_generated_compose_paths(
                     changed = true;
                 }
 
-                if service_name == "app" && (current_context == "." || current_context == "./") {
-                    build_map.insert(context_key, serde_yaml::Value::String("..".to_string()));
+                if service_name == "app" {
+                    // Build contexts are authored relative to the project root
+                    // (`app.path`, default `.`) while the compose file lives in
+                    // `.stacker/` — re-root them (`.` → `..`, `./backend` →
+                    // `../backend`).
+                    if let Some((compose_context, root_rel)) =
+                        reroot_relative_context(&current_context)
+                    {
+                        if compose_context != current_context {
+                            build_map.insert(
+                                context_key.clone(),
+                                serde_yaml::Value::String(compose_context),
+                            );
+                            changed = true;
+                        }
 
-                    let dockerfile_needs_rewrite = match dockerfile.as_deref() {
-                        None => true,
-                        Some("Dockerfile") | Some("./Dockerfile") => true,
-                        _ => false,
-                    };
+                        // `.stacker/Dockerfile` only exists when `app.dockerfile`
+                        // is unset (the generator skips it otherwise), and Compose
+                        // resolves `dockerfile:` relative to `context`:
+                        // - no `app.dockerfile` → point the build at the file
+                        //   Stacker generates;
+                        // - an explicit `app.dockerfile` → keep/restore the
+                        //   configured path (it is relative to the project root
+                        //   the context now points at), repairing a compose a
+                        //   previous version rewrote to `.stacker/Dockerfile`.
+                        let rewritten_dockerfile = match (app_dockerfile, dockerfile.as_deref()) {
+                            (None, None | Some("Dockerfile") | Some("./Dockerfile")) => {
+                                Some(generated_dockerfile_ref(&root_rel))
+                            }
+                            (Some(configured), Some(".stacker/Dockerfile")) => {
+                                Some(configured.to_string_lossy().into_owned())
+                            }
+                            _ => None,
+                        };
 
-                    if dockerfile_needs_rewrite {
-                        build_map.insert(
-                            dockerfile_key,
-                            serde_yaml::Value::String(".stacker/Dockerfile".to_string()),
-                        );
+                        if let Some(rewritten) = rewritten_dockerfile {
+                            build_map.insert(
+                                dockerfile_key.clone(),
+                                serde_yaml::Value::String(rewritten),
+                            );
+                            changed = true;
+                        }
                     }
-
-                    changed = true;
                 }
             }
         }
@@ -3791,7 +3867,11 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         }
     }
 
-    normalize_generated_compose_paths(&compose_path, deploy_target)?;
+    normalize_generated_compose_paths(
+        &compose_path,
+        deploy_target,
+        config.app.dockerfile.as_deref(),
+    )?;
     validate_compose_for_deploy(&compose_path)?;
     reject_build_sections_for_cloud(
         &compose_path,
@@ -6706,7 +6786,7 @@ services:
 "#;
         std::fs::write(&compose_path, compose).unwrap();
 
-        normalize_generated_compose_paths(&compose_path, DeployTarget::Local).unwrap();
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local, None).unwrap();
 
         let normalized = std::fs::read_to_string(&compose_path).unwrap();
         assert!(!normalized.contains("version:"));
@@ -6729,7 +6809,7 @@ services:
 "#;
         std::fs::write(&compose_path, compose).unwrap();
 
-        normalize_generated_compose_paths(&compose_path, DeployTarget::Local).unwrap();
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local, None).unwrap();
 
         let normalized = std::fs::read_to_string(&compose_path).unwrap();
         assert!(normalized.contains("context: .."));
@@ -6773,7 +6853,7 @@ services:
 "#;
         std::fs::write(&compose_path, compose).unwrap();
 
-        normalize_generated_compose_paths(&compose_path, DeployTarget::Local).unwrap();
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local, None).unwrap();
 
         assert_eq!(
             normalized_volumes(&compose_path, "app"),
@@ -6805,7 +6885,7 @@ services:
 "#;
         std::fs::write(&compose_path, compose).unwrap();
 
-        normalize_generated_compose_paths(&compose_path, DeployTarget::Local).unwrap();
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local, None).unwrap();
 
         assert_eq!(
             normalized_volumes(&compose_path, "nginx"),
@@ -6834,7 +6914,7 @@ services:
 "#;
         std::fs::write(&compose_path, compose).unwrap();
 
-        normalize_generated_compose_paths(&compose_path, DeployTarget::Local).unwrap();
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local, None).unwrap();
 
         let doc: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&compose_path).unwrap()).unwrap();
@@ -6864,7 +6944,7 @@ services:
 "#;
         std::fs::write(&compose_path, compose).unwrap();
 
-        normalize_generated_compose_paths(&compose_path, DeployTarget::Local).unwrap();
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local, None).unwrap();
 
         let doc: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&compose_path).unwrap()).unwrap();
@@ -6890,7 +6970,7 @@ services:
 "#;
             std::fs::write(&compose_path, compose).unwrap();
 
-            normalize_generated_compose_paths(&compose_path, target).unwrap();
+            normalize_generated_compose_paths(&compose_path, target, None).unwrap();
 
             assert_eq!(
                 normalized_volumes(&compose_path, "app"),
@@ -6916,15 +6996,165 @@ services:
 "#;
         std::fs::write(&compose_path, compose).unwrap();
 
-        normalize_generated_compose_paths(&compose_path, DeployTarget::Local).unwrap();
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local, None).unwrap();
         let first = std::fs::read_to_string(&compose_path).unwrap();
-        normalize_generated_compose_paths(&compose_path, DeployTarget::Local).unwrap();
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local, None).unwrap();
         let second = std::fs::read_to_string(&compose_path).unwrap();
 
         assert_eq!(first, second);
         assert_eq!(
             normalized_volumes(&compose_path, "app"),
             vec!["../config.yml:/etc/conf.yml:ro"]
+        );
+    }
+
+    /// Read `services.<name>.build` back out of a normalized compose file.
+    fn normalized_build(compose_path: &Path, service: &str) -> (String, Option<String>) {
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(compose_path).unwrap()).unwrap();
+        let build = &doc["services"][service]["build"];
+        let context = build["context"].as_str().unwrap_or_default().to_string();
+        let dockerfile = build["dockerfile"].as_str().map(str::to_string);
+        (context, dockerfile)
+    }
+
+    #[test]
+    fn test_normalize_local_keeps_explicit_app_dockerfile() {
+        // `app.dockerfile: Dockerfile` used to be rewritten to
+        // `.stacker/Dockerfile`, which the generator never writes when
+        // `app.dockerfile` is set — the local build then failed with
+        // `open .stacker/Dockerfile: no such file or directory`.
+        let dir = TempDir::new().unwrap();
+        let stacker_dir = dir.path().join(".stacker");
+        std::fs::create_dir_all(&stacker_dir).unwrap();
+        std::fs::write(dir.path().join("Dockerfile"), "FROM nginx:alpine\n").unwrap();
+
+        let compose_path = stacker_dir.join("docker-compose.yml");
+        let compose = r#"
+services:
+    app:
+        build:
+            context: .
+            dockerfile: Dockerfile
+"#;
+        std::fs::write(&compose_path, compose).unwrap();
+
+        normalize_generated_compose_paths(
+            &compose_path,
+            DeployTarget::Local,
+            Some(Path::new("Dockerfile")),
+        )
+        .unwrap();
+
+        assert_eq!(
+            normalized_build(&compose_path, "app"),
+            ("..".to_string(), Some("Dockerfile".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_normalize_local_repairs_stacker_dockerfile_pointing_at_missing_file() {
+        // A compose normalized by an earlier version keeps pointing at
+        // `.stacker/Dockerfile` even after `app.dockerfile` is set — the
+        // rewrite heals it back to the configured path.
+        let dir = TempDir::new().unwrap();
+        let stacker_dir = dir.path().join(".stacker");
+        std::fs::create_dir_all(&stacker_dir).unwrap();
+        std::fs::write(dir.path().join("Dockerfile"), "FROM nginx:alpine\n").unwrap();
+
+        let compose_path = stacker_dir.join("docker-compose.yml");
+        let compose = r#"
+services:
+    app:
+        build:
+            context: ..
+            dockerfile: .stacker/Dockerfile
+"#;
+        std::fs::write(&compose_path, compose).unwrap();
+
+        normalize_generated_compose_paths(
+            &compose_path,
+            DeployTarget::Local,
+            Some(Path::new("Dockerfile")),
+        )
+        .unwrap();
+
+        assert_eq!(
+            normalized_build(&compose_path, "app"),
+            ("..".to_string(), Some("Dockerfile".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_normalize_local_points_build_at_generated_stacker_dockerfile() {
+        let dir = TempDir::new().unwrap();
+        let stacker_dir = dir.path().join(".stacker");
+        std::fs::create_dir_all(&stacker_dir).unwrap();
+
+        let compose_path = stacker_dir.join("docker-compose.yml");
+
+        // Root context (the default `app.path: .`).
+        std::fs::write(
+            &compose_path,
+            "services:\n  app:\n    build:\n      context: .\n",
+        )
+        .unwrap();
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local, None).unwrap();
+        assert_eq!(
+            normalized_build(&compose_path, "app"),
+            ("..".to_string(), Some(".stacker/Dockerfile".to_string()))
+        );
+
+        // Nested `app.path`: Compose resolves `dockerfile:` against the
+        // context, so the generated file needs one `../` per path segment.
+        std::fs::write(
+            &compose_path,
+            "services:\n  app:\n    build:\n      context: ./backend\n",
+        )
+        .unwrap();
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local, None).unwrap();
+        assert_eq!(
+            normalized_build(&compose_path, "app"),
+            (
+                "../backend".to_string(),
+                Some("../.stacker/Dockerfile".to_string())
+            )
+        );
+
+        // Already normalized by a previous run: only the missing dockerfile
+        // reference is completed, the context stays as-is.
+        std::fs::write(
+            &compose_path,
+            "services:\n  app:\n    build:\n      context: ..\n",
+        )
+        .unwrap();
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local, None).unwrap();
+        assert_eq!(
+            normalized_build(&compose_path, "app"),
+            ("..".to_string(), Some(".stacker/Dockerfile".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_normalize_leaves_absolute_build_context_alone() {
+        let dir = TempDir::new().unwrap();
+        let stacker_dir = dir.path().join(".stacker");
+        std::fs::create_dir_all(&stacker_dir).unwrap();
+
+        let compose_path = stacker_dir.join("docker-compose.yml");
+        let compose = r#"
+services:
+    app:
+        build:
+            context: /srv/app
+"#;
+        std::fs::write(&compose_path, compose).unwrap();
+
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local, None).unwrap();
+
+        assert_eq!(
+            normalized_build(&compose_path, "app"),
+            ("/srv/app".to_string(), None)
         );
     }
 
