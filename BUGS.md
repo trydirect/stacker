@@ -257,11 +257,12 @@ helper with §5: `normalize_host_port_spec(raw, env) -> Vec<u16>` used by both
 false positives fire there: a `${...}` port simply never matches the remote
 `occupied` set and silently disables the check).
 
-## 7. 🔴 OPEN — `--target server` reports success while the remote container never starts
+## 7. 🟡 FIXED IN CODE — `--target server` reports success while the remote container never starts
 
 **Severity:** High — silent deploy failure, poisons QA records
-(`*_DEPLOY_SUCCESS.md` written for dead stacks). **File:**
-`src/cli/install_runner.rs`, platform deploy path ~`:2739` (`client.deploy()`).
+(`*_DEPLOY_SUCCESS.md` written for dead stacks).
+**Status:** fixed in code (stacker + install + contract repos), pending a live
+e2e re-run of the repro below.
 
 ### Repro (verified on `ea01dbb`, 2026-10-02)
 
@@ -278,38 +279,67 @@ $ ssh root@46.224.127.228 'docker inspect project-app-1 --format "{{.State.Statu
 created failed to set up container networking: ... Bind for :::8082 failed: port is already allocated
 ```
 
-### Root cause — two deploy paths, only one guarded
+### Root cause (corrected 2026-10-03)
 
-There are two server-deploy code paths:
+The original analysis below this heading said the platform path "never waits
+for the install job". That was wrong — it **does** wait. Three separate
+defects, not one:
 
-1. **Direct-SSH path** — has a remote port preflight
-   (`check_remote_host_port_conflicts`, `install_runner.rs:516`, called at
-   `:2487`) and surfaces `docker compose` failure output (`:2516-2533`).
-2. **Platform path** (the one actually taken when a Stacker project/server
-   exists — prints `Deploying project '...' via Stacker server...`): posts the
-   form to the API via `client.deploy()` and returns `DeployResult` as soon as
-   the HTTP response arrives (`:2766-2781`). It never:
-   - runs the remote preflight,
-   - waits for the install job,
-   - inspects the resulting container state.
+1. **The watch verdict was computed and then thrown away.**
+   `watch_cloud_deployment` (`deploy.rs`) polls deployment status to a
+   terminal state and *correctly* returned `DeploymentWatchOutcome::Failed`.
+   The consumer read that value only to decide whether to skip lock claiming
+   (`matches!(watch_outcome, DeploymentWatchOutcome::Failed(_))` at
+   `:4040` / `:4046`) and then fell through to an unconditional
+   `deploy_notify(true)` + `Ok(())` at `:4069-4074`. Exit code 0.
+2. **Non-TTY runs had no verdict at all.** The spinner is hidden when stderr
+   is a pipe (the QA harness), so even a correct failure message would have
+   been invisible.
+3. **The Install Service classified already-truncated text.** The producer
+   ran `classify_error` on the *first* 1500 bytes of the Ansible/docker
+   report. The docker bind signature (`Bind for ... failed: port is already
+   allocated`) sits at the *tail* of the report, so dashy was classified as a
+   generic `internal_error` before the CLI ever saw it — and the typed
+   `available_options` record the API already carried was dropped by serde
+   because `ProgressMessage` never declared the field.
 
-The API `deploy` is *request-accepted*, not *deploy-succeeded* — but the CLI
-prints `Deployment context saved` and exits 0 regardless of what Ansible/docker
-does afterwards.
+### Fix
 
-### Fix direction
+**stacker** (this commit):
 
-- In the platform path, after `client.deploy()`, poll deployment status until
-  terminal (`completed`/`failed`) with a timeout, OR at minimum post-start
-  verify via SSH: `docker inspect <project>-app-1` must be `running`
-  (or `healthy` when a healthcheck exists).
-- Surface the Docker bind error text (`Bind for ... failed`,
-  `port ... is already allocated`) in the CLI on failure —
-  `detect_port_conflicts_in_output` (`:560`) already parses exactly these
-  patterns; reuse it on the post-start check output.
-- Note the remote preflight's own soft-spot: it returns `vec![]` on any SSH
-  failure (`:535`) — fine as best-effort, but it means the post-start check
-  (hard failure) is the real safety net.
+- `DeploymentWatchOutcome` is now `Completed | Failed(Box<DeploymentFailure>) | TimedOut | Unknown`
+  (non-`Copy`, so a `Failed` verdict cannot be silently matched-and-dropped).
+  `DeploymentFailure` carries `deployment_id`, `status`, `status_message`,
+  `error_kind`, `err_description` and renders `summary()` / `reason()`.
+- The consumer returns `Err(CliError::DeployFailed { target, reason })` →
+  **exit 1** for `Failed` *and* `TimedOut`, and calls `deploy_notify(false)`.
+  `Completed` and `Unknown` keep the old success behaviour (an unobservable
+  deploy must not be failed).
+- `progress::finish_*` echo through `echo_fallback()` when the spinner is
+  hidden and stderr is not a TTY, so CI/QA sees the `✗` verdict.
+- `ProgressMessage.available_options` (`#[serde(default)]`) plus
+  `DeploymentStatusResponse` / `DeploymentStatusInfo` `error_kind` and
+  `err_description`, extracted from deployment metadata.
+- `DeploymentFailure::from_status_info` prefers `error_kind` and falls back to
+  `detect_port_conflicts_in_output` over the status message, so pre-contract
+  payloads still classify `port_conflict`.
+
+**install** (commit `de2e64b`): `classify_report` reads `raw_error` (the
+untouched report) instead of the head-truncated `out`, and the failure payload
+is truncated with `truncate_keeping_ends` so the tail survives.
+8 `error_kind` values, `report_on_fail` / `report_on_fail_nostd` both publish
+`available_options`.
+
+**config** (commit `b0ea15e`, branch `feature/deploy-failure-contract`):
+`shared-fixtures/deploy-failure-payload.json` is the canonical contract;
+mirrored to `tests/contracts/deploy-failure-payload.contract.json` here and
+enforced by `tests/deploy_failure_payload_contract.rs` (6 tests).
+
+### Remaining soft-spot
+
+The remote preflight returns `vec![]` on any SSH failure
+(`install_runner.rs`) — best-effort only. The watch verdict is now the hard
+safety net.
 
 ## 8. 🟠 OPEN — `./file` bind mounts resolve against `.stacker/`, silently becoming directories
 

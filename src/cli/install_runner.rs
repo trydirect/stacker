@@ -465,15 +465,16 @@ fn resolve_port_spec_vars(
     dotenv: &std::collections::HashMap<String, String>,
 ) -> Option<String> {
     use std::sync::LazyLock;
-    static PORT_VAR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)").unwrap()
-    });
+    static PORT_VAR_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)").unwrap());
 
     if !spec.contains('$') {
         return Some(spec.to_string());
     }
     let lookup = |name: &str| -> Option<String> {
-        std::env::var(name).ok().or_else(|| dotenv.get(name).cloned())
+        std::env::var(name)
+            .ok()
+            .or_else(|| dotenv.get(name).cloned())
     };
 
     let mut unresolved = false;
@@ -747,7 +748,10 @@ fn check_remote_host_port_conflicts(
 
 /// Detect port-conflict error patterns in install-container output and return
 /// human-readable hints to help the user diagnose and fix them.
-fn detect_port_conflicts_in_output(stderr: &str, stdout: &str) -> Vec<String> {
+///
+/// `pub(crate)` so the deploy watch can reuse it as a text fallback when the
+/// status API predates `available_options.error_kind`.
+pub(crate) fn detect_port_conflicts_in_output(stderr: &str, stdout: &str) -> Vec<String> {
     use std::sync::LazyLock;
 
     static BIND_RE: LazyLock<regex::Regex> =
@@ -4217,13 +4221,19 @@ mod tests {
     #[test]
     fn test_parse_compose_host_port_string_host_container() {
         let v = serde_yaml::Value::String("3000:3000".to_string());
-        assert_eq!(parse_compose_host_port(&v, &std::collections::HashMap::new()), Some("3000".to_string()));
+        assert_eq!(
+            parse_compose_host_port(&v, &std::collections::HashMap::new()),
+            Some("3000".to_string())
+        );
     }
 
     #[test]
     fn test_parse_compose_host_port_string_ip_host_container() {
         let v = serde_yaml::Value::String("127.0.0.1:8080:80".to_string());
-        assert_eq!(parse_compose_host_port(&v, &std::collections::HashMap::new()), Some("8080".to_string()));
+        assert_eq!(
+            parse_compose_host_port(&v, &std::collections::HashMap::new()),
+            Some("8080".to_string())
+        );
     }
 
     #[test]
@@ -4238,14 +4248,20 @@ mod tests {
             serde_yaml::Value::Number(serde_yaml::Number::from(3000u64)),
         );
         let v = serde_yaml::Value::Mapping(m);
-        assert_eq!(parse_compose_host_port(&v, &std::collections::HashMap::new()), Some("3000".to_string()));
+        assert_eq!(
+            parse_compose_host_port(&v, &std::collections::HashMap::new()),
+            Some("3000".to_string())
+        );
     }
 
     #[test]
     fn test_parse_compose_host_port_container_only() {
         // Port without host binding: "3000" → no host port to parse
         let v = serde_yaml::Value::String("3000".to_string());
-        assert_eq!(parse_compose_host_port(&v, &std::collections::HashMap::new()), None);
+        assert_eq!(
+            parse_compose_host_port(&v, &std::collections::HashMap::new()),
+            None
+        );
     }
 
     // ── Port-spec normalization: ranges & ${VAR} expansion ─────────
@@ -4299,7 +4315,10 @@ mod tests {
             Some("7131".to_string())
         );
         // plain text untouched
-        assert_eq!(resolve_port_spec_vars("8080:80", &env), Some("8080:80".to_string()));
+        assert_eq!(
+            resolve_port_spec_vars("8080:80", &env),
+            Some("8080:80".to_string())
+        );
     }
 
     #[test]
@@ -4320,8 +4339,14 @@ mod tests {
     fn test_resolve_port_spec_vars_unresolvable_is_none() {
         let env = std::collections::HashMap::new();
         // No default, not set anywhere → None (caller skips the port).
-        assert_eq!(resolve_port_spec_vars("${STACKER_TEST_UNSET_XYZ}:80", &env), None);
-        assert_eq!(resolve_port_spec_vars("$STACKER_TEST_UNSET_XYZ:80", &env), None);
+        assert_eq!(
+            resolve_port_spec_vars("${STACKER_TEST_UNSET_XYZ}:80", &env),
+            None
+        );
+        assert_eq!(
+            resolve_port_spec_vars("$STACKER_TEST_UNSET_XYZ:80", &env),
+            None
+        );
         // ${VAR:?err} with unset var → None (compose would abort; we skip).
         assert_eq!(
             resolve_port_spec_vars("${STACKER_TEST_UNSET_XYZ:?required}:80", &env),
@@ -4412,7 +4437,12 @@ services:
         let executor = MockExecutor::success_with_stdout("");
         let conflicts = check_local_host_port_conflicts(tmp.path(), "myproject", &executor);
         drop(listener);
-        assert_eq!(conflicts.len(), 1, "exactly the occupied port: {:?}", conflicts);
+        assert_eq!(
+            conflicts.len(),
+            1,
+            "exactly the occupied port: {:?}",
+            conflicts
+        );
         assert!(
             conflicts[0].contains("59103"),
             "conflict must name 59103: {:?}",

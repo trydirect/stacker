@@ -4037,13 +4037,14 @@ impl CallableTrait for DeployCommand {
             _ => {}
         }
 
-        let should_fetch_remote_details = !matches!(watch_outcome, DeploymentWatchOutcome::Failed);
+        let should_fetch_remote_details =
+            !matches!(watch_outcome, DeploymentWatchOutcome::Failed(_));
 
         // ── Deployment lock: persist deployment context ──
         // Only a deployment that didn't fail claims the active target — a
         // failed watch must not redirect `logs`/`status` away from a working
         // deployment.
-        let mark_active = !matches!(watch_outcome, DeploymentWatchOutcome::Failed);
+        let mark_active = !matches!(watch_outcome, DeploymentWatchOutcome::Failed(_));
         self.save_deployment_lock(
             &project_dir,
             &result,
@@ -4059,15 +4060,63 @@ impl CallableTrait for DeployCommand {
             self.install_cloud_backup_key(&result, &project_dir)?;
         }
 
-        if should_notify {
-            let name = self.project_name.clone().unwrap_or_else(|| {
-                project_dir
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string()
-            });
-            notify::deploy_notify(true, &name);
+        // ── Verdict: exit code and notification follow the real outcome ──
+        // Previously this was an unconditional `deploy_notify(true)` + `Ok(())`,
+        // so a deployment the watch had just seen end `paused`/`failed` still
+        // exited 0 and reported success (BUGS.md §7). A watch that could not
+        // determine an outcome stays `Unknown` and keeps the old behaviour —
+        // we must not fail a deploy we simply couldn't observe.
+        let project_name = self.project_name.clone().unwrap_or_else(|| {
+            project_dir
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        });
+
+        match &watch_outcome {
+            DeploymentWatchOutcome::Failed(failure) => {
+                let verdict = failure.summary();
+                // stderr may be a pipe (CI/QA): the spinner is hidden there, so
+                // print the verdict explicitly instead of relying on it.
+                if progress::non_tty() {
+                    eprintln!("\n  ✗ {}", verdict.replace('\n', "\n  "));
+                }
+                if should_notify {
+                    notify::deploy_notify(false, &project_name);
+                }
+                return Err(Box::new(CliError::DeployFailed {
+                    target: result.target.clone(),
+                    reason: failure.reason(),
+                }));
+            }
+            DeploymentWatchOutcome::Completed => {
+                if should_notify {
+                    notify::deploy_notify(true, &project_name);
+                }
+            }
+            DeploymentWatchOutcome::TimedOut => {
+                if progress::non_tty() {
+                    eprintln!(
+                        "\n  ✗ Deploy request accepted, but the watch timed out before an \
+                         outcome was reported — the deployment may still be running.\n  \
+                         Run `stacker status --watch` to continue watching."
+                    );
+                }
+                if should_notify {
+                    notify::deploy_notify(false, &project_name);
+                }
+                return Err(Box::new(CliError::DeployFailed {
+                    target: result.target.clone(),
+                    reason: "watch timed out before a terminal status — run `stacker status --watch` to continue"
+                        .to_string(),
+                }));
+            }
+            DeploymentWatchOutcome::Unknown => {
+                if should_notify {
+                    notify::deploy_notify(true, &project_name);
+                }
+            }
         }
 
         Ok(())
@@ -4925,11 +4974,87 @@ fn is_terminal(status: &str) -> bool {
     TERMINAL_STATUSES.iter().any(|s| *s == status)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum DeploymentWatchOutcome {
     Completed,
-    Failed,
+    Failed(Box<DeploymentFailure>),
+    /// Watch hit its own timeout while the deployment was still running —
+    /// we don't know the outcome, so the CLI must not claim success.
+    TimedOut,
+    /// Watch could not determine an outcome (no credentials, no project id,
+    /// polling unavailable). Not a failure: the deploy may well succeed.
     Unknown,
+}
+
+/// Everything the CLI needs to report *why* a remote deploy failed.
+///
+/// Carried out of `watch_cloud_deployment` so the exit code, the desktop
+/// notification and the terminal verdict all reflect the real outcome —
+/// previously the `Failed` verdict was read only to skip lock claiming and
+/// the command still returned `Ok(())` (exit 0), which is the `--target
+/// server` false-success bug.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeploymentFailure {
+    deployment_id: i32,
+    status: String,
+    status_message: Option<String>,
+    /// Stable machine-readable class from `available_options.error_kind`
+    /// (shared contract `config/shared-fixtures/deploy-failure-payload.json`).
+    /// `None` when the producer predates the contract — then we fall back to
+    /// text-parsing `status_message` for known signatures.
+    error_kind: Option<String>,
+    err_description: Option<String>,
+}
+
+impl DeploymentFailure {
+    /// Classify from a status API response, falling back to text parsing of
+    /// the message for producers that predate `error_kind`.
+    fn from_status_info(info: &stacker_client::DeploymentStatusInfo) -> Self {
+        let error_kind = info.error_kind.clone().or_else(|| {
+            // Legacy fallback: the install service didn't send available_options,
+            // but the message still carries the docker bind signature.
+            let message = info.status_message.as_deref().unwrap_or_default();
+            let hints = crate::cli::install_runner::detect_port_conflicts_in_output(message, "");
+            if hints.is_empty() {
+                None
+            } else {
+                Some("port_conflict".to_string())
+            }
+        });
+
+        Self {
+            deployment_id: info.id,
+            status: info.status.clone(),
+            status_message: info.status_message.clone(),
+            error_kind,
+            err_description: info.err_description.clone(),
+        }
+    }
+
+    /// One-line verdict for the terminal — shown even when the spinner's
+    /// draw target is hidden (piped/CI runs).
+    fn summary(&self) -> String {
+        let mut line = format!(
+            "Deployment #{} ended as '{}'",
+            self.deployment_id, self.status
+        );
+        if let Some(kind) = &self.error_kind {
+            line.push_str(&format!(" [{}]", kind));
+        }
+        if let Some(text) = &self.err_description {
+            line.push_str(&format!("\n  {}", text));
+        } else if let Some(message) = &self.status_message {
+            // Fall back to the raw pipeline message (already truncated upstream).
+            let short: String = message.chars().take(300).collect();
+            line.push_str(&format!("\n  {}", short));
+        }
+        line
+    }
+
+    /// Reason string for `CliError::DeployFailed`.
+    fn reason(&self) -> String {
+        self.summary().replace('\n', " ")
+    }
 }
 
 /// Watch remote deployment status until it reaches a terminal state.
@@ -5039,12 +5164,9 @@ fn watch_cloud_deployment(
                             );
                             return Ok(DeploymentWatchOutcome::Completed);
                         } else {
-                            let msg = info.status_message.as_deref().unwrap_or(&info.status);
-                            progress::finish_error(
-                                &spin,
-                                &format!("Deployment #{} — {}", info.id, msg),
-                            );
-                            return Ok(DeploymentWatchOutcome::Failed);
+                            let failure = DeploymentFailure::from_status_info(&info);
+                            progress::finish_error(&spin, &failure.summary());
+                            return Ok(DeploymentWatchOutcome::Failed(Box::new(failure)));
                         }
                     }
                 }
@@ -5069,7 +5191,7 @@ fn watch_cloud_deployment(
             if start.elapsed() > timeout {
                 progress::finish_error(&spin, "Watch timeout (10m) — deployment still in progress");
                 eprintln!("  Run `stacker status --watch` to continue watching.");
-                return Ok(DeploymentWatchOutcome::Unknown);
+                return Ok(DeploymentWatchOutcome::TimedOut);
             }
 
             tokio::time::sleep(poll_interval).await;
@@ -8596,5 +8718,95 @@ monitoring:
             "Clean build.sh must reach the executor, got args: {:?}",
             sh_args
         );
+    }
+
+    // ── DeploymentFailure ─────────────────────────────────────────────────
+    //
+    // The watch verdict must carry enough to fail the command: exit code,
+    // notification and terminal output all read from this. (BUGS.md §7 —
+    // `--target server` reported success while the deployment was paused.)
+
+    fn status_info(
+        status: &str,
+        message: Option<&str>,
+        error_kind: Option<&str>,
+        err_description: Option<&str>,
+    ) -> stacker_client::DeploymentStatusInfo {
+        stacker_client::DeploymentStatusInfo {
+            id: 1020,
+            project_id: 495,
+            deployment_hash: "deployment_95d98614".to_string(),
+            status: status.to_string(),
+            status_message: message.map(str::to_string),
+            error_kind: error_kind.map(str::to_string),
+            err_description: err_description.map(str::to_string),
+            created_at: "2026-10-02".to_string(),
+            updated_at: "2026-10-02".to_string(),
+        }
+    }
+
+    #[test]
+    fn failure_keeps_error_kind_from_status_api() {
+        let info = status_info(
+            "paused",
+            Some("Deployment has been paused. Error: ..."),
+            Some("port_conflict"),
+            Some("A port this stack needs is already in use on the target host."),
+        );
+        let failure = DeploymentFailure::from_status_info(&info);
+
+        assert_eq!(failure.error_kind.as_deref(), Some("port_conflict"));
+        assert_eq!(failure.status, "paused");
+        assert_eq!(failure.deployment_id, 1020);
+        let summary = failure.summary();
+        assert!(summary.contains("[port_conflict]"), "{summary}");
+        assert!(summary.contains("already in use"), "{summary}");
+    }
+
+    #[test]
+    fn failure_falls_back_to_text_when_error_kind_is_absent() {
+        // Payloads from before the shared contract carry no available_options:
+        // the docker bind signature in the message is the only signal.
+        let info = status_info(
+            "paused",
+            Some(
+                "Deployment has been paused. Error: failed to set up container networking: \
+                 Bind for 0.0.0.0:8082 failed: port is already allocated",
+            ),
+            None,
+            None,
+        );
+        let failure = DeploymentFailure::from_status_info(&info);
+
+        assert_eq!(
+            failure.error_kind.as_deref(),
+            Some("port_conflict"),
+            "legacy payloads must still be classified from the message text"
+        );
+    }
+
+    #[test]
+    fn failure_without_any_signal_is_unclassified() {
+        let info = status_info("failed", Some("something novel"), None, None);
+        let failure = DeploymentFailure::from_status_info(&info);
+
+        assert_eq!(failure.error_kind, None);
+        // Still reports status and message so the CLI never goes silent.
+        let summary = failure.summary();
+        assert!(summary.contains("Deployment #1020"), "{summary}");
+        assert!(summary.contains("something novel"), "{summary}");
+    }
+
+    #[test]
+    fn failed_outcome_is_not_copy_so_it_cannot_be_silently_dropped() {
+        // Regression guard for the §7 consumer bug: the Failed verdict used to
+        // be read only to skip lock claiming and the command still returned
+        // Ok(()). Assert the type makes an explicit match necessary.
+        let outcome =
+            DeploymentWatchOutcome::Failed(Box::new(DeploymentFailure::from_status_info(
+                &status_info("paused", None, Some("port_conflict"), None),
+            )));
+        let matched = matches!(outcome, DeploymentWatchOutcome::Failed(_));
+        assert!(matched);
     }
 }

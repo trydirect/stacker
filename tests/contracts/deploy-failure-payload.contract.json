@@ -1,0 +1,67 @@
+{
+  "_description": "Canonical failure status payload published to the install MQ by report_on_fail (install/app/tfa/watchers.py) and consumed by the stacker MQ listener (stacker/src/console/commands/mq/listener.rs). Mirrored to install/tests/fixtures/deploy-failure-payload.json and stacker/tests/contracts/deploy-failure-payload.contract.json for CI.",
+  "_owner": "stacker",
+  "_producers": ["install"],
+  "_consumers": ["stacker"],
+  "routing_key_prefix": "install.status",
+  "example": {
+    "alert": 1,
+    "id": "installation-495",
+    "deploy_id": "1020",
+    "deployment_hash": "deployment_95d98614-3e5f-4a54-9307-ed6ed21885bd",
+    "progress": 0,
+    "message": "Deployment has been paused. Error: fatal: [203.0.113.10]: FAILED! => {\"msg\": \"non-zero return code\", \"rc\": 1, \"stderr\": \"...Bind for :::8082 failed: port is already allocated\"}\nA port this stack needs is already in use on the target host (often by another already-deployed stack, e.g. statuspanel). Free the port or change it in stacker.yml, then redeploy.",
+    "level": "warning",
+    "status": "paused",
+    "srv_ip": null,
+    "ssh_port": 22,
+    "available_options": {
+      "err_description": "A port this stack needs is already in use on the target host (often by another already-deployed stack, e.g. statuspanel). Free the port or change it in stacker.yml, then redeploy.",
+      "error_kind": "port_conflict",
+      "can_redeploy": true,
+      "client_side": true,
+      "send_docs": false,
+      "decrease_counter": false
+    }
+  },
+  "fields": {
+    "required": [
+      "alert",
+      "id",
+      "progress",
+      "message",
+      "status",
+      "available_options"
+    ],
+    "optional": [
+      "deploy_id",
+      "deployment_hash",
+      "level",
+      "srv_ip",
+      "ssh_port"
+    ],
+    "status_values_terminal_failure": ["paused", "failed", "cancelled", "error"]
+  },
+  "available_options": {
+    "required": [
+      "err_description",
+      "error_kind",
+      "can_redeploy",
+      "client_side",
+      "send_docs",
+      "decrease_counter"
+    ],
+    "error_kind_values": [
+      "port_conflict",
+      "provider_bad_credentials",
+      "ansible_limit_exceeded",
+      "variables_not_allowed",
+      "internal_error",
+      "local_exec_provisioner_error",
+      "ssh_unreachable",
+      "database_uninitialized"
+    ],
+    "_notes": "error_kind is the stable machine-readable id of the class selected by classify_error() (install/app/tfa/exceptions_mappings.py). err_description is human remediation text and may change freely; consumers must switch on error_kind, never on err_description text."
+  },
+  "_compat": "Stacker versions before error_kind ignore unknown fields in available_options. Payloads before this contract omit available_options entirely — consumers must treat its absence as 'unclassified' (error_kind: internal_error) and may fall back to text parsing of message."
+}

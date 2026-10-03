@@ -42,7 +42,11 @@ pub fn finish_success(pb: &ProgressBar, msg: &str) {
             .template("  {msg}")
             .expect("invalid template"),
     );
-    pb.finish_with_message(format!("✓ {}", msg));
+    let text = format!("✓ {}", msg);
+    pb.finish_with_message(text.clone());
+    // indicatif hides its draw target when stderr is not a TTY, so a piped
+    // run (`stacker deploy | tee log`) saw neither spinner nor verdict.
+    echo_fallback(pb, &text);
 }
 
 /// Finish a spinner with a red cross.
@@ -52,7 +56,9 @@ pub fn finish_error(pb: &ProgressBar, msg: &str) {
             .template("  {msg}")
             .expect("invalid template"),
     );
-    pb.finish_with_message(format!("✗ {}", msg));
+    let text = format!("✗ {}", msg);
+    pb.finish_with_message(text.clone());
+    echo_fallback(pb, &text);
 }
 
 /// Finish a spinner with a warning marker.
@@ -62,7 +68,31 @@ pub fn finish_warning(pb: &ProgressBar, msg: &str) {
             .template("  {msg}")
             .expect("invalid template"),
     );
-    pb.finish_with_message(format!("⚠ {}", msg));
+    let text = format!("⚠ {}", msg);
+    pb.finish_with_message(text.clone());
+    echo_fallback(pb, &text);
+}
+
+/// Reprint a final spinner line on stderr when the draw target was hidden.
+///
+/// Without this, CI/QA runs that pipe stderr saw the deploy fail with no
+/// visible verdict — the outcome only existed as an exit code.
+fn echo_fallback(pb: &ProgressBar, text: &str) {
+    if !pb.is_hidden() {
+        return;
+    }
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        return;
+    }
+    eprintln!("  {}", text);
+}
+
+/// True when the terminal cannot render spinners — callers that want their
+/// progress visible in a pipe must print a line of their own.
+pub fn non_tty() -> bool {
+    use std::io::IsTerminal;
+    !std::io::stderr().is_terminal()
 }
 
 /// Update the spinner message without stopping it.

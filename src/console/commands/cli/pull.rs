@@ -386,6 +386,8 @@ mod tests {
             deployment_hash: "deployment_abc123".to_string(),
             status: "completed".to_string(),
             status_message: None,
+            error_kind: None,
+            err_description: None,
             created_at: "2026-01-01".to_string(),
             updated_at: "2026-01-01".to_string(),
         };
