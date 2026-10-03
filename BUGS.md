@@ -152,13 +152,16 @@ listing rather than a delisted one.
 Re-verification sweep from the template QA campaign. Full log in
 `stacker-project-examples/BUGS.md`. Builds before `ea01dbb6` also had the
 `cap_add`/`logs`/`destroy`/stale-lock bugs — those four are fixed and are NOT
-repeated here; this file tracks what is still open.
+repeated here. Each entry below carries its own status; fixed entries keep
+their root cause and repro for history.
 
-## 5. 🔴 OPEN — Port preflight false-positives on EVERY range mapping
+## 5. ✅ FIXED — Port preflight false-positives on EVERY range mapping
 
 **Severity:** High — blocks `stacker deploy --target local` for any template
 using a port range. **File:** `src/cli/install_runner.rs:642-682`
 (`check_local_host_port_conflicts`), probe at `:655-660`.
+**Status:** fixed in `0083b56e` (10 unit tests) and verified end-to-end
+2026-10-03 — see e2e note below.
 
 ### Repro (minimal, verified on `ea01dbb`)
 
@@ -196,19 +199,24 @@ substring — the literal string `8100-8105`. The conflict probe then does:
 An unparseable address is indistinguishable from an occupied port: `is_err()`
 is treated as "someone holds this port", so **every** range reports a conflict.
 
-### Fix direction
+### Fix (`0083b56e`)
 
 Expand `start-end` host specs into individual ports before probing (both the
 `8100-8105` and mixed `8100-8105:8100-8105` forms), or skip the TCP probe for
 specs the parser does not understand and let Docker's own bind error surface
 (prefer expansion — the preflight exists to beat Docker's opaque error).
-Unit-test territory: `install_runner.rs:4051` already covers a range string
-for `parse_compose_host_port` itself, but nothing covers the probe.
+Unit-test territory: `install_runner.rs:4051` already covered a range string
+for `parse_compose_host_port` itself — the probe itself now has coverage too
+(range expansion, variable resolution, and false-positive regressions for
+both repros here, plus a real occupant inside a range still being reported
+by name).
 
-## 6. 🔴 OPEN — Port preflight cannot parse `${VAR:-default}` — same false conflict
+## 6. ✅ FIXED — Port preflight cannot parse `${VAR:-default}` — same false conflict
 
 **Severity:** High — blocks every `deploy.compose_file:` stack whose third-party
 compose uses default-expansion ports. **File:** same probe as §5.
+**Status:** fixed in `0083b56e` (same normalization as §5) and verified
+end-to-end 2026-10-03 — see e2e note below.
 
 ### Repro (minimal, verified on `ea01dbb`)
 
@@ -245,7 +253,7 @@ on `:` and takes the second-to-last segment → `-7130}`. The probe binds
 `0.0.0.0:-7130}` → always errors → reported occupied. The port is free; the
 string was never a port.
 
-### Fix direction
+### Fix (`0083b56e`)
 
 Resolve `${VAR}` / `${VAR:-default}` / `${VAR-default}` in the host-port string
 before probing — mirror compose's own substitution (env file + process env).
@@ -256,6 +264,22 @@ helper with §5: `normalize_host_port_spec(raw, env) -> Vec<u16>` used by both
 (`install_runner.rs:516` — the remote probe has the same parser, so the same
 false positives fire there: a `${...}` port simply never matches the remote
 `occupied` set and silently disables the check).
+
+### e2e verification (2026-10-03, `23735658`)
+
+Both repros re-run as throwaway local projects (not in `stacker-projects/`),
+ports free beforehand (`lsof` empty):
+
+```console
+$ stacker-cli deploy --target local          # t2: ports ["8100-8105:8100-8105"]
+EXIT=0   # no "Host port conflict detected"; t2-app-1 Up, range published
+
+$ stacker-cli deploy --target local          # t5: "${APP_PORT:-7130}:7130"
+EXIT=0   # no conflict; t5-app-1 Up, 0.0.0.0:7130->7130/tcp
+```
+
+Both stacks were destroyed afterwards (`stacker destroy --confirm --volumes`),
+no containers left behind.
 
 ## 7. ✅ FIXED — `--target server` reports success while the remote container never starts
 
