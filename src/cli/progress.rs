@@ -61,6 +61,20 @@ pub fn finish_error(pb: &ProgressBar, msg: &str) {
     echo_fallback(pb, &text);
 }
 
+/// Finish a spinner with a red cross, without re-emitting the line on a
+/// hidden draw target.
+///
+/// Use this when the caller owns the final verdict and prints it itself: the
+/// echo in [`finish_error`] would otherwise duplicate it in a piped run.
+pub fn finish_error_no_echo(pb: &ProgressBar, msg: &str) {
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("  {msg}")
+            .expect("invalid template"),
+    );
+    pb.finish_with_message(format!("✗ {}", msg));
+}
+
 /// Finish a spinner with a warning marker.
 pub fn finish_warning(pb: &ProgressBar, msg: &str) {
     pb.set_style(

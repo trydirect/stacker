@@ -257,12 +257,12 @@ helper with §5: `normalize_host_port_spec(raw, env) -> Vec<u16>` used by both
 false positives fire there: a `${...}` port simply never matches the remote
 `occupied` set and silently disables the check).
 
-## 7. 🟡 FIXED IN CODE — `--target server` reports success while the remote container never starts
+## 7. ✅ FIXED — `--target server` reports success while the remote container never starts
 
 **Severity:** High — silent deploy failure, poisons QA records
 (`*_DEPLOY_SUCCESS.md` written for dead stacks).
-**Status:** fixed in code (stacker + install + contract repos), pending a live
-e2e re-run of the repro below.
+**Status:** fixed in code (stacker `23735658` + install `de2e64b` + contract
+`b0ea15e`) and verified end-to-end on 2026-10-03.
 
 ### Repro (verified on `ea01dbb`, 2026-10-02)
 
@@ -278,6 +278,31 @@ $ echo $?
 $ ssh root@46.224.127.228 'docker inspect project-app-1 --format "{{.State.Status}} {{.State.Error}}"'
 created failed to set up container networking: ... Bind for :::8082 failed: port is already allocated
 ```
+
+### e2e verification (2026-10-03, `23735658`, backend dev.try.direct)
+
+Same box, same conflict (`gitlab-app-1` still holds 8082), non-TTY stderr
+(piped to a file — the exact case that used to print nothing):
+
+```console
+$ stacker-cli deploy --target server --server-host 46.224.127.228 \
+    --server-user root --server-ssh-key .../stacker-project-test
+  ✓ Server deployment requested via Stacker server (project='dashy', project_id=305, deployment_id=416); server='dashy-server'
+  Deployment context saved to .stacker/deployment-server.lock
+
+  ✗ Deployment #416 ended as 'paused' [port_conflict]
+    A port this stack needs is already in use on the target host (often by another already-deployed stack, e.g. statuspanel). Free the port or change it in stacker.yml, then redeploy.
+Error: Deployment to server failed: Deployment #416 ended as 'paused' [port_conflict] ...
+$ echo $?
+1
+$ ssh root@46.224.127.228 'docker inspect project-app-1 --format "{{.State.Status}}|{{.State.Error}}"'
+created|failed to set up container networking: ... Bind for 0.0.0.0:8082 failed: port is already allocated
+```
+
+All four behaviours are observable: **exit 1**, one verdict line (not two),
+the typed `error_kind` surfaced with its remediation text, and the container
+state matching the verdict. The platform path is the one taken
+(`project_id=305`), so this is the code path the bug lived in.
 
 ### Root cause (corrected 2026-10-03)
 

@@ -5165,7 +5165,9 @@ fn watch_cloud_deployment(
                             return Ok(DeploymentWatchOutcome::Completed);
                         } else {
                             let failure = DeploymentFailure::from_status_info(&info);
-                            progress::finish_error(&spin, &failure.summary());
+                            // No echo here: the consumer below prints this
+                            // summary once, right before the error.
+                            progress::finish_error_no_echo(&spin, &failure.summary());
                             return Ok(DeploymentWatchOutcome::Failed(Box::new(failure)));
                         }
                     }
