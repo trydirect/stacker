@@ -580,7 +580,156 @@ fn write_local_proxy_config(config: &StackerConfig, output_dir: &Path) -> Result
     Ok(())
 }
 
-fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError> {
+/// Split a compose short-syntax bind spec (`source:target[:mode]`) into its
+/// source and the remainder. Returns `None` for anonymous volumes (`- /data`)
+/// and for specs without a separator.
+fn split_bind_spec(spec: &str) -> Option<(&str, &str)> {
+    let (source, rest) = spec.split_once(':')?;
+    if source.is_empty() || rest.is_empty() {
+        return None;
+    }
+    Some((source, rest))
+}
+
+/// Rewrite one relative path reference so it resolves against the project root
+/// from the compose file's own directory.
+///
+/// * `local == true` (compose runs directly from `.stacker/`): project-authored
+///   sources become `../path`, the same `..` convention already used for
+///   `build.context`. Without this, Docker resolves `./config.yml` against
+///   `.stacker/` and silently creates an **empty directory** where the file was
+///   meant to be (BUGS: `./file` bind mounts break LOCAL deploys).
+/// * `local == false` (cloud/server): the `../path` a previous local deploy may
+///   have left behind is reverted to `./path` — the config bundle resolves
+///   generated-compose references against the project root and the remote
+///   compose runs from the project root, so `./` already means "project root"
+///   there.
+///
+/// References that exist under `.stacker/` but not at the project root (the
+/// rendered proxy config) always stay `./`-relative. Absolute paths, `~` paths
+/// and named volumes are left untouched (`None` = no rewrite).
+fn restage_relative_path(
+    source: &str,
+    compose_dir: &Path,
+    project_root: &Path,
+    local: bool,
+) -> Option<String> {
+    let rel = source
+        .strip_prefix("./")
+        .or_else(|| source.strip_prefix("../"))?;
+    if rel.is_empty() || rel.starts_with("../") {
+        // Escapes the project directory (e.g. `../../etc`) — leave alone.
+        return None;
+    }
+
+    let stacked_only = compose_dir.join(rel).exists() && !project_root.join(rel).exists();
+    let desired = if stacked_only || !local {
+        format!("./{rel}")
+    } else {
+        format!("../{rel}")
+    };
+    (desired != source).then_some(desired)
+}
+
+/// Normalize relative bind-mount sources and `env_file` entries of one service
+/// in a generated compose. Returns `true` when the document changed.
+fn normalize_service_bind_sources(
+    service_map: &mut serde_yaml::Mapping,
+    compose_dir: &Path,
+    project_root: &Path,
+    local: bool,
+) -> bool {
+    // Platform-generated services (the synthesized proxy) mount files that live
+    // in `.stacker/` and are intentionally compose-directory-relative.
+    let scope = service_map
+        .get(serde_yaml::Value::String("labels".to_string()))
+        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(|labels| {
+            labels.get(serde_yaml::Value::String(
+                crate::helpers::stacker_labels::SCOPE.to_string(),
+            ))
+        })
+        .and_then(serde_yaml::Value::as_str);
+    if scope == Some(crate::helpers::stacker_labels::SCOPE_PLATFORM) {
+        return false;
+    }
+
+    let mut changed = false;
+
+    let volumes_key = serde_yaml::Value::String("volumes".to_string());
+    if let Some(serde_yaml::Value::Sequence(volumes)) = service_map.get_mut(&volumes_key) {
+        for volume in volumes.iter_mut() {
+            match volume {
+                serde_yaml::Value::String(spec) => {
+                    let Some((source, rest)) = split_bind_spec(spec) else {
+                        continue;
+                    };
+                    let Some(rewritten) =
+                        restage_relative_path(source, compose_dir, project_root, local)
+                    else {
+                        continue;
+                    };
+                    *spec = format!("{rewritten}:{rest}");
+                    changed = true;
+                }
+                serde_yaml::Value::Mapping(map) => {
+                    let type_key = serde_yaml::Value::String("type".to_string());
+                    if map.get(&type_key).and_then(|v| v.as_str()) != Some("bind") {
+                        continue;
+                    }
+                    let source_key = serde_yaml::Value::String("source".to_string());
+                    let rewritten = map
+                        .get(&source_key)
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| restage_relative_path(s, compose_dir, project_root, local));
+                    let Some(rewritten) = rewritten else {
+                        continue;
+                    };
+                    map.insert(source_key, serde_yaml::Value::String(rewritten));
+                    changed = true;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let env_file_key = serde_yaml::Value::String("env_file".to_string());
+    if let Some(value) = service_map.get_mut(&env_file_key) {
+        let paths: Vec<&mut String> = match value {
+            serde_yaml::Value::String(path) => vec![path],
+            serde_yaml::Value::Sequence(items) => items
+                .iter_mut()
+                .filter_map(|item| match item {
+                    serde_yaml::Value::String(path) => Some(path),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        for path in paths {
+            let Some(rewritten) = restage_relative_path(path, compose_dir, project_root, local)
+            else {
+                continue;
+            };
+            *path = rewritten;
+            changed = true;
+        }
+    }
+
+    changed
+}
+
+/// Normalize the generated `.stacker/docker-compose.yml` in place.
+///
+/// Besides the obsolete `version:` key and `build.context`/`dockerfile`
+/// rewrites, relative bind-mount sources are expressed relative to the project
+/// root, because the compose file lives in `.stacker/` while every path in it
+/// was authored in `stacker.yml` relative to the project root. See
+/// [`restage_relative_path`] for the per-target direction of that rewrite.
+fn normalize_generated_compose_paths(
+    compose_path: &Path,
+    deploy_target: DeployTarget,
+) -> Result<(), CliError> {
     let is_stacker_compose = compose_path
         .components()
         .any(|c| c.as_os_str() == OUTPUT_DIR);
@@ -594,6 +743,17 @@ fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError
         .map_err(|e| CliError::ConfigValidation(format!("Failed to parse compose file: {e}")))?;
 
     let mut changed = false;
+    let compose_dir = compose_path.parent().unwrap_or_else(|| Path::new("."));
+    // Canonicalize so an invocation from outside the project directory still
+    // resolves the project root correctly.
+    let compose_dir = compose_dir
+        .canonicalize()
+        .unwrap_or_else(|_| compose_dir.to_path_buf());
+    let project_root = compose_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| compose_dir.clone());
+    let local = matches!(deploy_target, DeployTarget::Local);
 
     if let serde_yaml::Value::Mapping(ref mut root) = doc {
         // Remove obsolete compose version key.
@@ -612,6 +772,10 @@ fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError
                     serde_yaml::Value::Mapping(m) => m,
                     _ => continue,
                 };
+
+                if normalize_service_bind_sources(service_map, &compose_dir, &project_root, local) {
+                    changed = true;
+                }
 
                 let build_key = serde_yaml::Value::String("build".to_string());
                 let build_val = match service_map.get_mut(&build_key) {
@@ -3627,7 +3791,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         }
     }
 
-    normalize_generated_compose_paths(&compose_path)?;
+    normalize_generated_compose_paths(&compose_path, deploy_target)?;
     validate_compose_for_deploy(&compose_path)?;
     reject_build_sections_for_cloud(
         &compose_path,
@@ -6542,7 +6706,7 @@ services:
 "#;
         std::fs::write(&compose_path, compose).unwrap();
 
-        normalize_generated_compose_paths(&compose_path).unwrap();
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local).unwrap();
 
         let normalized = std::fs::read_to_string(&compose_path).unwrap();
         assert!(!normalized.contains("version:"));
@@ -6565,11 +6729,203 @@ services:
 "#;
         std::fs::write(&compose_path, compose).unwrap();
 
-        normalize_generated_compose_paths(&compose_path).unwrap();
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local).unwrap();
 
         let normalized = std::fs::read_to_string(&compose_path).unwrap();
         assert!(normalized.contains("context: .."));
         assert!(normalized.contains("dockerfile: .stacker/Dockerfile"));
+    }
+
+    /// Read `services.<name>.volumes` back out of a normalized compose file.
+    fn normalized_volumes(compose_path: &Path, service: &str) -> Vec<String> {
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(compose_path).unwrap()).unwrap();
+        doc["services"][service]["volumes"]
+            .as_sequence()
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| item.as_str().unwrap_or_default().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn test_normalize_local_rewrites_relative_bind_sources_against_project_root() {
+        let dir = TempDir::new().unwrap();
+        let stacker_dir = dir.path().join(".stacker");
+        std::fs::create_dir_all(&stacker_dir).unwrap();
+        std::fs::write(dir.path().join("config.yml"), "hello: world\n").unwrap();
+
+        let compose_path = stacker_dir.join("docker-compose.yml");
+        let compose = r#"
+services:
+    app:
+        image: nginx:alpine
+        labels:
+            my.stacker.scope: project
+        volumes:
+            - "./config.yml:/etc/nginx/conf.d/conf.yml:ro"
+            - "./data:/data"
+            - "pgdata:/var/lib/postgresql/data"
+            - "/var/run/docker.sock:/var/run/docker.sock"
+"#;
+        std::fs::write(&compose_path, compose).unwrap();
+
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local).unwrap();
+
+        assert_eq!(
+            normalized_volumes(&compose_path, "app"),
+            vec![
+                "../config.yml:/etc/nginx/conf.d/conf.yml:ro",
+                "../data:/data",
+                "pgdata:/var/lib/postgresql/data",
+                "/var/run/docker.sock:/var/run/docker.sock",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_normalize_local_keeps_platform_scope_mounts_stacker_relative() {
+        let dir = TempDir::new().unwrap();
+        let stacker_dir = dir.path().join(".stacker");
+        std::fs::create_dir_all(stacker_dir.join("nginx/conf.d")).unwrap();
+        std::fs::write(stacker_dir.join("nginx/conf.d/stacker.conf"), "server {}\n").unwrap();
+
+        let compose_path = stacker_dir.join("docker-compose.yml");
+        let compose = r#"
+services:
+    nginx:
+        image: nginx:alpine
+        labels:
+            my.stacker.scope: platform
+        volumes:
+            - "./nginx/conf.d:/etc/nginx/conf.d:ro"
+"#;
+        std::fs::write(&compose_path, compose).unwrap();
+
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local).unwrap();
+
+        assert_eq!(
+            normalized_volumes(&compose_path, "nginx"),
+            vec!["./nginx/conf.d:/etc/nginx/conf.d:ro"]
+        );
+    }
+
+    #[test]
+    fn test_normalize_local_uses_project_root_for_unlabeled_service_mounts() {
+        let dir = TempDir::new().unwrap();
+        let stacker_dir = dir.path().join(".stacker");
+        std::fs::create_dir_all(&stacker_dir).unwrap();
+        std::fs::write(dir.path().join("config.yaml"), "key: value\n").unwrap();
+
+        let compose_path = stacker_dir.join("docker-compose.yml");
+        let compose = r#"
+services:
+    app:
+        image: nginx:alpine
+        volumes:
+            - "./config.yaml:/etc/config.yaml:ro"
+            - type: bind
+              source: ./config.yaml
+              target: /etc/config.yaml
+              read_only: true
+"#;
+        std::fs::write(&compose_path, compose).unwrap();
+
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local).unwrap();
+
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&compose_path).unwrap()).unwrap();
+        let volumes = doc["services"]["app"]["volumes"].as_sequence().unwrap();
+        assert_eq!(
+            volumes[0].as_str().unwrap(),
+            "../config.yaml:/etc/config.yaml:ro"
+        );
+        assert_eq!(volumes[1]["source"].as_str().unwrap(), "../config.yaml");
+        assert_eq!(volumes[1]["target"].as_str().unwrap(), "/etc/config.yaml");
+    }
+
+    #[test]
+    fn test_normalize_local_rewrites_env_file_against_project_root() {
+        let dir = TempDir::new().unwrap();
+        let stacker_dir = dir.path().join(".stacker");
+        std::fs::create_dir_all(&stacker_dir).unwrap();
+        std::fs::write(dir.path().join("secrets.env"), "TOKEN=1\n").unwrap();
+
+        let compose_path = stacker_dir.join("docker-compose.yml");
+        let compose = r#"
+services:
+    app:
+        image: nginx:alpine
+        env_file:
+            - "./secrets.env"
+"#;
+        std::fs::write(&compose_path, compose).unwrap();
+
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local).unwrap();
+
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&compose_path).unwrap()).unwrap();
+        let env_files = doc["services"]["app"]["env_file"].as_sequence().unwrap();
+        assert_eq!(env_files[0].as_str().unwrap(), "../secrets.env");
+    }
+
+    #[test]
+    fn test_normalize_cloud_and_server_revert_local_bind_rewrite() {
+        let dir = TempDir::new().unwrap();
+        let stacker_dir = dir.path().join(".stacker");
+        std::fs::create_dir_all(&stacker_dir).unwrap();
+        std::fs::write(dir.path().join("config.yml"), "hello: world\n").unwrap();
+
+        for target in [DeployTarget::Server, DeployTarget::Cloud] {
+            let compose_path = stacker_dir.join("docker-compose.yml");
+            let compose = r#"
+services:
+    app:
+        image: nginx:alpine
+        volumes:
+            - "../config.yml:/etc/nginx/conf.d/conf.yml:ro"
+"#;
+            std::fs::write(&compose_path, compose).unwrap();
+
+            normalize_generated_compose_paths(&compose_path, target).unwrap();
+
+            assert_eq!(
+                normalized_volumes(&compose_path, "app"),
+                vec!["./config.yml:/etc/nginx/conf.d/conf.yml:ro"]
+            );
+        }
+    }
+
+    #[test]
+    fn test_normalize_local_bind_rewrite_is_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let stacker_dir = dir.path().join(".stacker");
+        std::fs::create_dir_all(&stacker_dir).unwrap();
+        std::fs::write(dir.path().join("config.yml"), "hello: world\n").unwrap();
+
+        let compose_path = stacker_dir.join("docker-compose.yml");
+        let compose = r#"
+services:
+    app:
+        image: nginx:alpine
+        volumes:
+            - "./config.yml:/etc/conf.yml:ro"
+"#;
+        std::fs::write(&compose_path, compose).unwrap();
+
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local).unwrap();
+        let first = std::fs::read_to_string(&compose_path).unwrap();
+        normalize_generated_compose_paths(&compose_path, DeployTarget::Local).unwrap();
+        let second = std::fs::read_to_string(&compose_path).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(
+            normalized_volumes(&compose_path, "app"),
+            vec!["../config.yml:/etc/conf.yml:ro"]
+        );
     }
 
     #[test]
