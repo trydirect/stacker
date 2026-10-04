@@ -144,6 +144,93 @@ deploy:
 }
 
 #[test]
+fn test_deploy_cloud_without_cloud_section_defers_e001_past_hydration() {
+    let dir = TempDir::new().unwrap();
+    let empty_config_home = TempDir::new().unwrap();
+    // target: cloud with NO deploy.cloud block → E001. With the E001 gate
+    // deferred past hydration, login (step 3) is reached first, so the
+    // failure must be the login prompt — not the early E001 "blocking issue"
+    // gate that used to make the credential-prompt path unreachable.
+    let config = r#"
+name: cloud-no-cloud
+version: "1.0"
+app:
+  type: static
+  path: "."
+deploy:
+  target: cloud
+"#;
+    fs::write(dir.path().join("stacker.yml"), config).unwrap();
+
+    stacker_cmd()
+        .current_dir(dir.path())
+        .env("XDG_CONFIG_HOME", empty_config_home.path())
+        .env("HOME", empty_config_home.path())
+        .env_remove("STACKER_TOKEN")
+        .args(["deploy", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Login required").or(predicate::str::contains("login")))
+        .stderr(predicate::str::contains("blocking issue").not());
+}
+
+#[test]
+fn test_deploy_local_target_preserves_e001_verdict() {
+    let dir = TempDir::new().unwrap();
+    let config = r#"
+name: cloud-no-cloud
+version: "1.0"
+app:
+  type: static
+  path: "."
+deploy:
+  target: cloud
+"#;
+    fs::write(dir.path().join("stacker.yml"), config).unwrap();
+
+    // No hydration path applies for a local run, so the deferred E001
+    // must still fail the deploy with the same message as before.
+    stacker_cmd()
+        .current_dir(dir.path())
+        .env_remove("STACKER_TOKEN")
+        .args(["deploy", "--target", "local", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("E001"))
+        .stderr(predicate::str::contains("blocking issue"));
+}
+
+#[test]
+fn test_deploy_server_without_server_section_fails_with_e002() {
+    let dir = TempDir::new().unwrap();
+    let empty_config_home = TempDir::new().unwrap();
+    // target: server with NO deploy.server block and no --server-*/lockfile
+    // hydration → deferred E002 must fail before login, same message as
+    // `stacker config validate`.
+    let config = r#"
+name: serverless-app
+version: "1.0"
+app:
+  type: static
+  path: "."
+deploy:
+  target: server
+"#;
+    fs::write(dir.path().join("stacker.yml"), config).unwrap();
+
+    stacker_cmd()
+        .current_dir(dir.path())
+        .env("XDG_CONFIG_HOME", empty_config_home.path())
+        .env("HOME", empty_config_home.path())
+        .env_remove("STACKER_TOKEN")
+        .args(["deploy", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("E002"))
+        .stderr(predicate::str::contains("blocking issue"));
+}
+
+#[test]
 fn test_deploy_invalid_target_fails() {
     let dir = TempDir::new().unwrap();
     setup_project(&dir);

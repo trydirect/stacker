@@ -3473,10 +3473,29 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     // with what `stacker config validate` reports. Resolving the target first
     // can collapse a dual server+cloud `deploy:` block in a way that trips
     // E001 on a config validate calls clean.
-    let blocking: Vec<String> = parsed_config
-        .validate_semantics()
-        .into_iter()
-        .filter(|issue| issue.severity == Severity::Error)
+    //
+    // E001 (cloud section missing) and E002 (server section missing) are
+    // deferred past their hydration steps below: `--key`/saved-credential
+    // selection (step 3b) can supply `deploy.cloud`, and `--server-*`
+    // overrides plus the deployment lock (step 2) can supply
+    // `deploy.server` — gating before them made those paths unreachable
+    // dead code. E002 is checked right after server hydration, before any
+    // SSH check or login; E001 after cloud credential hydration, before any
+    // provisioning. Both fail exactly as `stacker config validate` reports.
+    let semantics = parsed_config.validate_semantics();
+    let find_issue = |code: &str| {
+        semantics
+            .iter()
+            .find(|issue| issue.severity == Severity::Error && issue.code == code)
+            .map(|issue| issue.to_string())
+    };
+    let deferred_cloud_issue = find_issue("E001");
+    let deferred_server_issue = find_issue("E002");
+    let blocking: Vec<String> = semantics
+        .iter()
+        .filter(|issue| {
+            issue.severity == Severity::Error && issue.code != "E001" && issue.code != "E002"
+        })
         .map(|issue| issue.to_string())
         .collect();
     if !blocking.is_empty() {
@@ -3509,6 +3528,19 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     // CLI --server-* flags take precedence, then fall back to the lockfile.
     hydrate_server_deploy_config_from_cli_overrides(&mut config, remote_overrides);
     hydrate_server_deploy_config_from_lock(project_dir, &mut config, deploy_target)?;
+
+    // 2a. Deferred E002: the server section must be present by now.
+    // `--server-*` overrides and the deployment lock have both had their
+    // chance to supply `deploy.server`; if it's still absent, fail exactly
+    // as `stacker config validate` reports — before any SSH check or login.
+    if let Some(issue) = &deferred_server_issue {
+        if config.deploy.server.is_none() {
+            return Err(CliError::ConfigValidation(format!(
+                "stacker.yml has 1 blocking issue(s):\n  - {}\n\nFix these, or run `stacker config validate` for the full report.",
+                issue
+            )));
+        }
+    }
 
     // 2b. Server pre-check: when target is Cloud but deploy.server section
     //     is defined with a host, try SSH connectivity first.
@@ -3759,6 +3791,21 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
                 eprintln!();
                 return Err(CliError::CloudProviderMissing);
             }
+        }
+    }
+
+    // 3c. Deferred E001: the cloud section must be present by now.
+    //
+    // Everything that could legitimately supply `deploy.cloud` has run —
+    // `--key`/`--cloud-key` override (step 3) and the step-3b credential
+    // prompt — so a config still missing it fails exactly as
+    // `stacker config validate` reports, still before any provisioning.
+    if let Some(issue) = &deferred_cloud_issue {
+        if config.deploy.cloud.is_none() {
+            return Err(CliError::ConfigValidation(format!(
+                "stacker.yml has 1 blocking issue(s):\n  - {}\n\nFix these, or run `stacker config validate` for the full report.",
+                issue
+            )));
         }
     }
 
