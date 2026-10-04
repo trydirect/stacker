@@ -703,11 +703,17 @@ fn ensure_contract_declares_generated_secrets(
     if missing.is_empty() {
         Ok(())
     } else {
-        Err(JsonResponse::<serde_json::Value>::build().bad_request(format!(
+        let message = format!(
             "config_contract is missing a `mutability: generated` or `provided` policy for secret-shaped field(s): {}. \
              Declare a generator or buyer-provided field for each in config_contract before publishing.",
             missing.join(", ")
-        )))
+        );
+        Err(JsonResponse::<serde_json::Value>::build()
+            .set_meta(serde_json::json!({
+                "code": "MARKETPLACE_CONFIG_CONTRACT_SECRET_POLICY_REQUIRED",
+                "fields": missing,
+            }))
+            .bad_request(message))
     }
 }
 
