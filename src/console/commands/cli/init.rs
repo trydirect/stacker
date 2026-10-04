@@ -2468,7 +2468,8 @@ mod tests {
             crate::console::commands::cli::config::run_validate(&path.to_string_lossy(), None)
                 .unwrap();
 
-        assert_eq!(issues, Vec::<String>::new());
+        assert_eq!(issues.messages, Vec::<String>::new());
+        assert!(!issues.has_error());
         assert!(rendered.contains("target: local"));
         assert!(rendered.contains("type: none"));
         assert!(rendered.contains("status_panel: false"));

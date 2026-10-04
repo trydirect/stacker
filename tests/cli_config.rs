@@ -43,6 +43,58 @@ fn test_config_validate_missing_file_returns_error() {
 }
 
 #[test]
+fn test_config_validate_error_severity_fails() {
+    let dir = TempDir::new().unwrap();
+    // target: cloud without a deploy.cloud block → E001 (severity: error)
+    let config = r#"
+name: e001-app
+app:
+  type: static
+  path: "."
+deploy:
+  target: cloud
+"#;
+    fs::write(dir.path().join("stacker.yml"), config).unwrap();
+
+    stacker_cmd()
+        .current_dir(dir.path())
+        .args(["config", "validate"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("E001"));
+}
+
+#[test]
+fn test_config_validate_warning_only_stays_success() {
+    let dir = TempDir::new().unwrap();
+    // Two services sharing host port 8080 → W001 (severity: warning)
+    let config = r#"
+name: warn-app
+app:
+  type: static
+  path: "."
+services:
+  - name: a
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+  - name: b
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+deploy:
+  target: local
+"#;
+    fs::write(dir.path().join("stacker.yml"), config).unwrap();
+
+    stacker_cmd()
+        .current_dir(dir.path())
+        .args(["config", "validate"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn test_config_validate_custom_file() {
     let dir = TempDir::new().unwrap();
     let config = r#"

@@ -1049,11 +1049,25 @@ pub fn run_fix_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
     Ok(applied)
 }
 
+/// Result of `run_validate`: every rendered message plus the count of
+/// error-severity issues. Warnings and info messages are reported but do
+/// not fail validation; raw-path advisory notes never do either.
+pub struct ValidateReport {
+    pub messages: Vec<String>,
+    pub error_count: usize,
+}
+
+impl ValidateReport {
+    pub fn has_error(&self) -> bool {
+        self.error_count > 0
+    }
+}
+
 /// Core validate logic — loads config, runs semantic checks, returns issues.
 pub fn run_validate(
     config_path: &str,
     target_override: Option<&str>,
-) -> Result<Vec<String>, CliError> {
+) -> Result<ValidateReport, CliError> {
     let path = Path::new(config_path);
     if !path.exists() {
         return Err(CliError::ConfigNotFound {
@@ -1080,6 +1094,10 @@ pub fn run_validate(
 
     let config = StackerConfig::from_file_for_target(path, target_override)?;
     let issues = config.validate_semantics();
+    let error_count = issues
+        .iter()
+        .filter(|issue| matches!(issue.severity, Severity::Error))
+        .count();
     messages.extend(issues.iter().map(|issue| {
         let severity = match issue.severity {
             Severity::Error => "error",
@@ -1096,7 +1114,10 @@ pub fn run_validate(
             None => format!("[{}] {}: {}", issue.code, severity, issue.message),
         }
     }));
-    Ok(messages)
+    Ok(ValidateReport {
+        messages,
+        error_count,
+    })
 }
 
 /// Core show logic — loads config, serialises to YAML string.
@@ -1179,15 +1200,22 @@ impl ConfigValidateCommand {
 impl CallableTrait for ConfigValidateCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let path = resolve_config_path(&self.file);
-        let issues = run_validate(&path, self.target.as_deref())?;
+        let report = run_validate(&path, self.target.as_deref())?;
 
-        if issues.is_empty() {
+        if report.messages.is_empty() {
             eprintln!("✓ Configuration is valid");
         } else {
             eprintln!("Configuration issues:");
-            for issue in &issues {
+            for issue in &report.messages {
                 eprintln!("  - {}", issue);
             }
+        }
+
+        if report.has_error() {
+            return Err(Box::new(CliError::ConfigValidation(format!(
+                "{} error-severity issue(s) found (listed above)",
+                report.error_count
+            ))));
         }
 
         Ok(())
@@ -2298,7 +2326,8 @@ mod tests {
         let path = write_config(dir.path(), minimal_config_yaml());
         let result = run_validate(&path, None).unwrap();
         // Minimal valid config should have zero or few issues
-        assert!(result.len() < 5);
+        assert!(result.messages.len() < 5);
+        assert!(!result.has_error());
     }
 
     #[test]
@@ -2321,13 +2350,59 @@ app:
         );
 
         let issues = run_validate(&path, None).unwrap();
-        assert!(issues.iter().any(|issue| issue.contains("app.path")));
         assert!(issues
+            .messages
+            .iter()
+            .any(|issue| issue.contains("app.path")));
+        assert!(issues
+            .messages
             .iter()
             .any(|issue| issue.contains("quoted path string")));
         assert!(issues
+            .messages
             .iter()
             .any(|issue| issue.contains("stacker config fix")));
+    }
+
+    #[test]
+    fn test_validate_command_fails_on_error_severity_issue() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = write_config(
+            dir.path(),
+            "name: e001-app\napp:\n  type: static\n  path: \".\"\ndeploy:\n  target: cloud\n",
+        );
+
+        let report = run_validate(&path, None).unwrap();
+        assert!(report.has_error(), "E001 must count as error severity");
+
+        let result = ConfigValidateCommand::new(Some(path.clone()), None).call();
+        assert!(
+            result.is_err(),
+            "config validate must exit non-zero on error-severity issues"
+        );
+    }
+
+    #[test]
+    fn test_validate_command_succeeds_with_warning_only_issues() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = write_config(
+            dir.path(),
+            "name: warn-app\napp:\n  type: static\n  path: \".\"\nservices:\n  - name: a\n    image: nginx:alpine\n    ports:\n      - \"8080:80\"\n  - name: b\n    image: nginx:alpine\n    ports:\n      - \"8080:80\"\ndeploy:\n  target: local\n",
+        );
+
+        let report = run_validate(&path, None).unwrap();
+        assert!(!report.messages.is_empty(), "W001 should be reported");
+        assert!(
+            !report.has_error(),
+            "warnings must not fail validation: {:?}",
+            report.messages
+        );
+
+        let result = ConfigValidateCommand::new(Some(path), None).call();
+        assert!(
+            result.is_ok(),
+            "config validate must stay exit-0 for warning-only configs"
+        );
     }
 
     #[test]
