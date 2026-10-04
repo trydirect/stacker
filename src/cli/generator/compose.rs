@@ -37,6 +37,10 @@ pub struct ComposeService {
     pub privileged: bool,
     pub platform: Option<String>,
     pub devices: Vec<String>,
+    /// Container `/dev/shm` size (compose `shm_size`, e.g. `"256m"`).
+    pub shm_size: Option<String>,
+    /// Container `user:` (e.g. `"0:0"`).
+    pub user: Option<String>,
 }
 
 impl Default for ComposeService {
@@ -61,6 +65,8 @@ impl Default for ComposeService {
             privileged: false,
             platform: None,
             devices: Vec::new(),
+            shm_size: None,
+            user: None,
         }
     }
 }
@@ -364,6 +370,9 @@ fn build_app_service(config: &StackerConfig) -> ComposeService {
     svc.privileged = config.app.privileged;
     svc.platform = config.app.platform.clone();
     svc.devices = config.app.devices.clone();
+    svc.depends_on = config.app.depends_on.clone();
+    svc.shm_size = config.app.shm_size.clone();
+    svc.user = config.app.user.clone();
 
     // Merge environment: top-level env first, then app-level (app wins)
     for (k, v) in &config.env {
@@ -689,6 +698,12 @@ impl ComposeDefinition {
 
             if let Some(ref platform) = svc.platform {
                 out.push_str(&format!("    platform: {}\n", yaml_quote(platform)));
+            }
+            if let Some(ref shm_size) = svc.shm_size {
+                out.push_str(&format!("    shm_size: {}\n", yaml_quote(shm_size)));
+            }
+            if let Some(ref user) = svc.user {
+                out.push_str(&format!("    user: {}\n", yaml_quote(user)));
             }
             if svc.privileged {
                 out.push_str("    privileged: true\n");
@@ -1840,6 +1855,27 @@ services:
         let yaml = compose.render();
         assert!(yaml.contains("volumes:"));
         assert!(yaml.contains("  redis-data:"));
+    }
+
+    /// `app.shm_size`, `app.user` and `app.depends_on` were accepted by the
+    /// parser but never reached the generated compose (silently dropped).
+    /// They must be rendered for the app service.
+    #[test]
+    fn test_compose_app_renders_shm_size_user_depends_on() {
+        let mut config = minimal_config(AppType::Static);
+        config.app.shm_size = Some("256m".to_string());
+        config.app.user = Some("0:0".to_string());
+        config.app.depends_on = vec!["postgres".to_string()];
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let yaml = compose.render();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let app = doc.get("services").and_then(|s| s.get("app")).unwrap();
+        assert_eq!(app.get("shm_size").and_then(|v| v.as_str()), Some("256m"));
+        assert_eq!(app.get("user").and_then(|v| v.as_str()), Some("0:0"));
+        let depends = app.get("depends_on").and_then(|v| v.as_sequence()).unwrap();
+        assert_eq!(depends.len(), 1);
+        assert_eq!(depends[0].as_str(), Some("postgres"));
     }
 
     #[test]

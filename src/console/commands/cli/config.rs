@@ -2282,7 +2282,7 @@ mod tests {
     use std::io::Write;
 
     fn minimal_config_yaml() -> &'static str {
-        "name: test-app\nversion: \"1.0\"\nproject:\n  identity: \"registered-stack-code\"\napp:\n  type: static\n  source: \"./dist\"\ndeploy:\n  target: local\n"
+        "name: test-app\nversion: \"1.0\"\nproject:\n  identity: \"registered-stack-code\"\napp:\n  type: static\n  path: \"./dist\"\ndeploy:\n  target: local\n"
     }
 
     fn write_config(dir: &Path, content: &str) -> String {

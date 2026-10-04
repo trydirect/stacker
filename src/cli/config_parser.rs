@@ -193,7 +193,14 @@ impl fmt::Display for CloudProvider {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Application source configuration.
+///
+/// `deny_unknown_fields`: a typo or an unsupported key under `app:` used to be
+/// dropped silently by serde, so the config validated green and the setting
+/// never reached the compose (the `cap_add`/`privileged`/`platform`/`devices`
+/// family, and typos like `priveleged:` / `porst:`). Unknown keys are now a
+/// hard error naming the offending key and the valid alternatives.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct AppSource {
     #[serde(rename = "type", default)]
     pub app_type: AppType,
@@ -243,6 +250,17 @@ pub struct AppSource {
     pub platform: Option<String>,
     #[serde(default)]
     pub devices: Vec<String>,
+    /// Compose service dependencies (e.g. the database service) — the app
+    /// container starts only after these are up. Previously present in
+    /// templates but silently dropped.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    /// Container `/dev/shm` size (e.g. `"256m"`). Maps to compose `shm_size`.
+    #[serde(default)]
+    pub shm_size: Option<String>,
+    /// Container `user:` (e.g. `"0:0"` or `"1000:1000"`).
+    #[serde(default)]
+    pub user: Option<String>,
 }
 
 fn default_app_path() -> PathBuf {
@@ -2632,6 +2650,9 @@ impl ConfigBuilder {
                 privileged: false,
                 platform: None,
                 devices: Vec::new(),
+                depends_on: Vec::new(),
+                shm_size: None,
+                user: None,
             },
             services: self.services,
             proxy: self.proxy.unwrap_or_default(),
@@ -3165,6 +3186,49 @@ app:
         assert_eq!(config.deploy.target, DeployTarget::Local);
         assert!(!config.ai.enabled);
         assert!(!config.monitoring.status_panel);
+    }
+
+    /// `app.depends_on` / `app.shm_size` / `app.user` used to be accepted by
+    /// templates but silently dropped by serde (unknown-key family). They must
+    /// now parse and reach the config.
+    #[test]
+    fn test_parse_app_runtime_fields() {
+        let yaml = r#"
+name: my-site
+app:
+  type: static
+  shm_size: 256m
+  user: "0:0"
+  depends_on:
+    - postgres
+services:
+  - name: postgres
+    image: postgres:16
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert_eq!(config.app.shm_size.as_deref(), Some("256m"));
+        assert_eq!(config.app.user.as_deref(), Some("0:0"));
+        assert_eq!(config.app.depends_on, vec!["postgres".to_string()]);
+    }
+
+    /// A typo under `app:` (or any unsupported key) must fail validation with
+    /// the offending key named — not validate green with the setting dropped.
+    #[test]
+    fn test_parse_unknown_app_key_is_rejected() {
+        let yaml = r#"
+name: my-site
+app:
+  type: static
+  priveleged: true
+  porst:
+    - "9000:80"
+"#;
+        let err = StackerConfig::from_str(yaml).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unknown field `priveleged`"),
+            "expected unknown-field error, got: {msg}"
+        );
     }
 
     #[test]
