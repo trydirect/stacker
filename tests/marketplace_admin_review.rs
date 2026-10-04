@@ -390,6 +390,72 @@ async fn admin_unapprove_sends_template_unpublished_webhook() {
 }
 
 #[tokio::test]
+async fn admin_vendor_profile_verification_change_notifies_vendor_with_reason() {
+    // Neither the vendor nor the admin got any notification at all when
+    // verification_status changed - update_vendor_profile_handler just
+    // upserted the row and returned, with no webhook of any kind (found
+    // 2026-10-04, same investigation as the unapprove-reason bug above).
+    let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let app = app().await;
+    let mock_user_service = MockServer::start().await;
+    let _url_server_user = EnvGuard::set("URL_SERVER_USER", &mock_user_service.uri());
+    let _user_service_url = EnvGuard::set("USER_SERVICE_URL", &mock_user_service.uri());
+    let _user_service_base_url = EnvGuard::set("USER_SERVICE_BASE_URL", &mock_user_service.uri());
+    let _stacker_service_token = EnvGuard::set("STACKER_SERVICE_TOKEN", "stacker-test-token");
+
+    Mock::given(method("POST"))
+        .and(path("/marketplace/sync"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "message": "ok",
+            "product_id": null
+        })))
+        .mount(&mock_user_service)
+        .await;
+
+    let template_id = insert_template(
+        &app.db_pool,
+        common::USER_A_ID,
+        "verification-change-template",
+        "approved",
+    )
+    .await;
+
+    let admin_response = reqwest::Client::new()
+        .patch(format!(
+            "{}/api/admin/templates/{}/vendor-profile",
+            app.address, template_id
+        ))
+        .header("Authorization", format!("Bearer {}", create_admin_jwt()))
+        .json(&json!({
+            "verification_status": "unverified",
+            "reason": "KYC documents expired - please re-submit."
+        }))
+        .send()
+        .await
+        .expect("Failed to send admin vendor-profile request");
+
+    assert_eq!(StatusCode::OK, admin_response.status());
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let requests = mock_user_service
+        .received_requests()
+        .await
+        .expect("Should capture webhook request");
+    let payload = find_marketplace_sync_payload(&requests, "vendor_verification_changed")
+        .expect("Verification change should send vendor_verification_changed webhook");
+
+    assert_eq!("vendor_verification_changed", payload["action"]);
+    assert_eq!(common::USER_A_ID, payload["vendor_user_id"]);
+    assert_eq!("unverified", payload["verification_status"]);
+    assert_eq!(
+        "KYC documents expired - please re-submit.",
+        payload["review_reason"]
+    );
+}
+
+#[tokio::test]
 async fn admin_detail_lists_extended_version_contract_for_resubmitted_templates() {
     let app = app().await;
     let client = reqwest::Client::new();
