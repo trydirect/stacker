@@ -701,6 +701,7 @@ impl MarketplaceWebhookSender {
         &self,
         template: &models::marketplace::StackTemplate,
         vendor_id: &str,
+        reason: Option<&str>,
     ) -> Result<WebhookResponse, ConnectorError> {
         let span = tracing::info_span!(
             "send_template_unpublished_webhook",
@@ -754,7 +755,7 @@ impl MarketplaceWebhookSender {
             view_count: template.view_count,
             approved_at: template.approved_at.map(|dt| dt.to_rfc3339()),
             required_plan_name: template.required_plan_name.clone(),
-            review_reason: None,
+            review_reason: reason.map(str::to_string),
             next_action_hint: None,
             vendor_email: None,
         };

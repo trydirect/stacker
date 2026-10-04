@@ -378,6 +378,15 @@ async fn admin_unapprove_sends_template_unpublished_webhook() {
 
     assert_eq!("template_unpublished", payload["action"]);
     assert_eq!(template_id, payload["stack_template_id"]);
+    // The admin's reason was collected (and already persisted - see
+    // latest_review["review_reason"] above) but never reached the vendor:
+    // send_template_unpublished() hardcoded review_reason: None regardless
+    // of what the admin typed (found 2026-10-04 - a real vendor had no idea
+    // why their stack was taken down).
+    assert_eq!(
+        "Temporarily hidden from the marketplace.",
+        payload["review_reason"]
+    );
 }
 
 #[tokio::test]

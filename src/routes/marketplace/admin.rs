@@ -366,6 +366,7 @@ pub async fn unapprove_handler(
 
     // Send webhook to unpublish from marketplace while preserving subscription state
     let template_clone = template.clone();
+    let unapprove_reason = req.reason.clone();
     tokio::spawn(async move {
         match WebhookSenderConfig::from_env() {
             Ok(config) => {
@@ -376,7 +377,11 @@ pub async fn unapprove_handler(
                 );
 
                 if let Err(e) = sender
-                    .send_template_unpublished(&template_clone, &template_clone.creator_user_id)
+                    .send_template_unpublished(
+                        &template_clone,
+                        &template_clone.creator_user_id,
+                        unapprove_reason.as_deref(),
+                    )
                     .instrument(span)
                     .await
                 {
