@@ -472,6 +472,14 @@ pub async fn run(
                              .service(
                                  web::scope("/marketplace")
                                      .service(crate::routes::marketplace::admin::list_plans_handler),
+                             )
+                             .service(
+                                 web::scope("/notifications")
+                                     .service(crate::routes::admin_notifications::list_handler)
+                                     .service(
+                                         crate::routes::admin_notifications::unread_count_handler,
+                                     )
+                                     .service(crate::routes::admin_notifications::update_handler),
                              ),
                     )
                     .service(
