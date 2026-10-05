@@ -18,16 +18,82 @@ const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 /// that shared scope from one project's directory can recreate, remove, or
 /// misreport another, unrelated project's containers. See GH issue #235.
 ///
-/// Falls back to the literal "stacker" only when `stacker.yml` is
-/// missing/unparseable (e.g. deleted after a deploy) — there's no project
-/// identity left to recover in that case, so this is a best-effort
-/// default, not a guarantee of isolation.
-pub fn resolve_local_compose_project_name(project_dir: &Path) -> String {
+/// Fails rather than guessing. The old behaviour — fall back to the literal
+/// "stacker" whenever the config could not be read — reintroduced exactly the
+/// defect #235 set out to remove, and worsened it: `stacker destroy` ran
+/// `docker compose -p stacker down`, which matches no containers, exits 0 on
+/// the empty project, and reported "✓ Stack destroyed successfully" while the
+/// stack kept running.
+///
+/// Parsing is deliberately target-aware, matching deploy. Strict `from_file`
+/// fails on an unresolved `${VAR}` *anywhere* in the file, including sections
+/// this operation never touches: AstrBot's `deploy.cloud.ssh_key` references
+/// `${BASE_PATH}`, and that alone made every local destroy a no-op. Resolving
+/// as "local" skips the inactive `deploy.server`/`deploy.cloud` blocks the way
+/// `stacker deploy` already does (GH #239).
+pub fn resolve_local_compose_project_name(project_dir: &Path) -> Result<String, CliError> {
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
-    StackerConfig::from_file(&config_path)
-        .ok()
-        .map(|config| crate::cli::install_runner::local_compose_project_name(&config))
-        .unwrap_or_else(|| "stacker".to_string())
+
+    if !config_path.exists() {
+        return Err(CliError::ConfigValidation(format!(
+            "Cannot determine the compose project name: {} is missing. \
+             Docker Compose groups containers by project name, and guessing one \
+             would operate on the wrong set of containers — or silently on none.",
+            config_path.display()
+        )));
+    }
+
+    let config =
+        StackerConfig::from_file_for_target(&config_path, Some("local")).map_err(|err| {
+            CliError::ConfigValidation(format!(
+                "Cannot determine the compose project name from {}: {err}",
+                config_path.display()
+            ))
+        })?;
+
+    Ok(crate::cli::install_runner::local_compose_project_name(
+        &config,
+    ))
+}
+
+/// Recover the compose project name from Docker itself, by matching the
+/// compose file a running project was started from.
+///
+/// The configuration is the primary source, but it can be gone: a project
+/// deleted or edited after a deploy still has containers running, and those
+/// must remain removable. Docker records the compose file each project was
+/// started with, so the project that owns this file can be identified without
+/// guessing. Returns `None` when Docker reports no project for the file, which
+/// is the honest answer — nothing to tear down under a name we invented.
+pub fn project_name_from_running_compose(
+    compose_path: &Path,
+    executor: &dyn crate::cli::install_runner::CommandExecutor,
+) -> Option<String> {
+    let output = executor
+        .execute("docker", &["compose", "ls", "--all", "--format", "json"])
+        .ok()?;
+    if !output.success() {
+        return None;
+    }
+
+    let projects: Vec<serde_json::Value> = serde_json::from_str(&output.stdout).ok()?;
+    let wanted = compose_path.to_string_lossy();
+
+    projects.into_iter().find_map(|project| {
+        let files = project.get("ConfigFiles")?.as_str()?;
+        // ConfigFiles is a comma-separated list when a project was started
+        // from several files.
+        let matches = files.split(',').any(|f| f.trim() == wanted);
+        if matches {
+            project
+                .get("Name")?
+                .as_str()
+                .map(str::to_string)
+                .filter(|name| !name.is_empty())
+        } else {
+            None
+        }
+    })
 }
 
 pub fn resolve_local_compose_path(project_dir: &Path) -> Result<PathBuf, CliError> {

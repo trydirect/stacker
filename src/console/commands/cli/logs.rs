@@ -92,7 +92,7 @@ pub fn run_logs(
     let compose_path = resolve_local_compose_path(project_dir)?;
 
     let compose_str = compose_path.to_string_lossy().to_string();
-    let project_name = resolve_local_compose_project_name(project_dir);
+    let project_name = resolve_local_compose_project_name(project_dir)?;
     let args = build_logs_args(&compose_str, &project_name, service, follow, tail, since);
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 

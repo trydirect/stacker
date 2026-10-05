@@ -71,7 +71,24 @@ pub fn run_destroy(
     })?;
 
     let compose_str = compose_path.to_string_lossy().to_string();
-    let project_name = resolve_local_compose_project_name(project_dir);
+    // The config names the project; Docker is the fallback when the config is
+    // gone or unreadable. Guessing a name is not an option here — a wrong `-p`
+    // matches nothing, `docker compose down` exits 0 on the empty project, and
+    // destroy would report success over a stack that is still running.
+    let project_name = match resolve_local_compose_project_name(project_dir) {
+        Ok(name) => name,
+        Err(config_err) => {
+            crate::cli::local_compose::project_name_from_running_compose(&compose_path, executor)
+                .ok_or_else(|| {
+                    CliError::ConfigValidation(format!(
+                        "{config_err}\n\nDocker also reports no running project started from {}. \
+                 If the stack is still up, tear it down with the project name shown by \
+                 `docker compose ls`.",
+                        compose_path.display()
+                    ))
+                })?
+        }
+    };
     let args = build_destroy_args(&compose_str, &project_name, volumes);
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
@@ -148,6 +165,7 @@ mod tests {
     #[test]
     fn test_destroy_constructs_down_command() {
         let dir = setup_with_compose();
+        std::fs::write(dir.path().join("stacker.yml"), "name: demo\n").unwrap();
         let executor = MockExecutor::new();
 
         run_destroy(dir.path(), false, true, &executor).unwrap();
@@ -156,6 +174,66 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "docker");
         assert!(calls[0].1.contains(&"down".to_string()));
+        assert!(
+            calls[0]
+                .1
+                .windows(2)
+                .any(|w| w[0] == "-p" && w[1] == "demo"),
+            "down must be scoped to the project: {:?}",
+            calls[0].1
+        );
+    }
+
+    /// The failure this guards: AstrBot's `deploy.cloud.ssh_key` referenced an
+    /// undefined `${BASE_PATH}`, strict parsing failed, and the name fell back
+    /// to the literal "stacker". `docker compose -p stacker down` matched
+    /// nothing, exited 0, and destroy printed "✓ Stack destroyed successfully"
+    /// three times in a row while the stack stayed up.
+    #[test]
+    fn an_unresolved_variable_in_an_inactive_target_does_not_derail_destroy() {
+        let dir = setup_with_compose();
+        std::fs::write(
+            dir.path().join("stacker.yml"),
+            "name: astrbot\nproject:\n  identity: astrbot\ndeploy:\n  target: local\n  \
+             cloud:\n    provider: hetzner\n    ssh_key: ${BASE_PATH}/key\n",
+        )
+        .unwrap();
+        let executor = MockExecutor::new();
+
+        run_destroy(dir.path(), false, true, &executor).expect("destroy should run");
+
+        let calls = executor.recorded_calls();
+        assert!(
+            calls[0]
+                .1
+                .windows(2)
+                .any(|w| w[0] == "-p" && w[1] == "astrbot"),
+            "the project's own name must be used, never a shared fallback: {:?}",
+            calls[0].1
+        );
+    }
+
+    /// With no config and nothing running, destroy must say so rather than
+    /// run `down` against an invented project and report success.
+    #[test]
+    fn destroy_refuses_when_the_project_name_cannot_be_established() {
+        let dir = setup_with_compose();
+        let executor = MockExecutor::new();
+
+        let err = run_destroy(dir.path(), false, true, &executor)
+            .expect_err("a name that cannot be established must stop the teardown");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("project name"),
+            "the error should say what could not be determined: {msg}"
+        );
+        assert!(
+            executor
+                .recorded_calls()
+                .iter()
+                .all(|(_, args)| !args.contains(&"down".to_string())),
+            "nothing may be torn down under a guessed name"
+        );
     }
 
     #[test]
