@@ -952,6 +952,19 @@ fn compose_env_keys(config: &StackerConfig) -> std::collections::HashSet<String>
     keys
 }
 
+/// The author's own `${VAR}` references, read from the unresolved `stacker.yml`.
+///
+/// Best-effort: an unreadable file simply yields no aliases, and the
+/// parameteriser falls back to the compose key — the behaviour before aliases
+/// existed. A deploy must not fail because this lookup could not be made.
+fn env_reference_aliases_for(
+    config_path: &std::path::Path,
+) -> std::collections::HashMap<String, String> {
+    std::fs::read_to_string(config_path)
+        .map(|raw| crate::cli::generator::compose::env_reference_aliases(&raw))
+        .unwrap_or_default()
+}
+
 /// A compose service that declares a `build:` section.
 struct ComposeBuildService {
     name: String,
@@ -3834,70 +3847,72 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     }
 
     // 5b. docker-compose.yml
-    let (compose_path, compose_is_user_supplied) = if let Some(ref existing) =
-        config.deploy.compose_file
-    {
-        let configured_path = project_dir.join(existing);
-        if configured_path.exists() {
-            (configured_path, true)
-        } else {
-            let generated_fallback = output_dir.join("docker-compose.yml");
-            if generated_fallback.exists() {
-                eprintln!(
-                    "  Configured compose file not found: {}. Falling back to {}",
-                    configured_path.display(),
-                    generated_fallback.display()
-                );
-                (generated_fallback, false)
+    let (compose_path, compose_is_user_supplied) =
+        if let Some(ref existing) = config.deploy.compose_file {
+            let configured_path = project_dir.join(existing);
+            if configured_path.exists() {
+                (configured_path, true)
             } else {
-                return Err(CliError::ConfigValidation(format!(
-                    "Compose file not found: {}",
-                    configured_path.display()
-                )));
+                let generated_fallback = output_dir.join("docker-compose.yml");
+                if generated_fallback.exists() {
+                    eprintln!(
+                        "  Configured compose file not found: {}. Falling back to {}",
+                        configured_path.display(),
+                        generated_fallback.display()
+                    );
+                    (generated_fallback, false)
+                } else {
+                    return Err(CliError::ConfigValidation(format!(
+                        "Compose file not found: {}",
+                        configured_path.display()
+                    )));
+                }
             }
-        }
-    } else {
-        let compose_out = output_dir.join("docker-compose.yml");
-        let compose_is_stale = generated_compose_is_stale(&config_path, &compose_out);
-        if compose_is_stale && !force_rebuild {
-            eprintln!(
-                "  {} changed since {}/docker-compose.yml was generated — regenerating",
-                config_path.display(),
-                OUTPUT_DIR
-            );
-        }
-        if force_rebuild || !compose_out.exists() || compose_is_stale {
-            let compose = ComposeDefinition::try_from(&config)?;
-            // `write_to` refuses to clobber an existing file unless told to,
-            // so a staleness-driven regeneration must opt in explicitly.
-            // Parameterize secret env vars: replace literal values with
-            // `${VAR}` references so the compose file never contains the
-            // author's secrets.  Docker Compose resolves them from the
-            // co-located `.env` file at runtime.
-            let rendered = compose.render();
-            let env_keys = compose_env_keys(&config);
-            let parameterized =
-                crate::cli::generator::compose::parameterize_compose_env_vars(&rendered, &env_keys);
-            if force_rebuild || compose_is_stale || !compose_out.exists() {
-                std::fs::write(&compose_out, &parameterized)?;
-            }
-            // The synthesized caddy/nginx proxy service mounts a config file
-            // (./Caddyfile, ./nginx/conf.d) from the compose directory. For
-            // local/server deploys the tfa proxy role does NOT run, so the
-            // CLI must render that file itself — otherwise Docker bind-mounts
-            // a nonexistent path (creating an empty directory) and the proxy
-            // serves nothing. Cloud deploys strip this service and let the
-            // role render it remotely, so the generated file is simply unused
-            // there. Idempotent-friendly: regenerated alongside the compose.
-            write_local_proxy_config(&config, &output_dir)?;
         } else {
-            eprintln!(
-                "  Using existing {}/docker-compose.yml (use --force-rebuild to regenerate)",
-                OUTPUT_DIR
-            );
-        }
-        (compose_out, false)
-    };
+            let compose_out = output_dir.join("docker-compose.yml");
+            let compose_is_stale = generated_compose_is_stale(&config_path, &compose_out);
+            if compose_is_stale && !force_rebuild {
+                eprintln!(
+                    "  {} changed since {}/docker-compose.yml was generated — regenerating",
+                    config_path.display(),
+                    OUTPUT_DIR
+                );
+            }
+            if force_rebuild || !compose_out.exists() || compose_is_stale {
+                let compose = ComposeDefinition::try_from(&config)?;
+                // `write_to` refuses to clobber an existing file unless told to,
+                // so a staleness-driven regeneration must opt in explicitly.
+                // Parameterize secret env vars: replace literal values with
+                // `${VAR}` references so the compose file never contains the
+                // author's secrets.  Docker Compose resolves them from the
+                // co-located `.env` file at runtime.
+                let rendered = compose.render();
+                let env_keys = compose_env_keys(&config);
+                let aliases = env_reference_aliases_for(&config_path);
+                let parameterized =
+                    crate::cli::generator::compose::parameterize_compose_env_vars_with_aliases(
+                        &rendered, &env_keys, &aliases,
+                    );
+                if force_rebuild || compose_is_stale || !compose_out.exists() {
+                    std::fs::write(&compose_out, &parameterized)?;
+                }
+                // The synthesized caddy/nginx proxy service mounts a config file
+                // (./Caddyfile, ./nginx/conf.d) from the compose directory. For
+                // local/server deploys the tfa proxy role does NOT run, so the
+                // CLI must render that file itself — otherwise Docker bind-mounts
+                // a nonexistent path (creating an empty directory) and the proxy
+                // serves nothing. Cloud deploys strip this service and let the
+                // role render it remotely, so the generated file is simply unused
+                // there. Idempotent-friendly: regenerated alongside the compose.
+                write_local_proxy_config(&config, &output_dir)?;
+            } else {
+                eprintln!(
+                    "  Using existing {}/docker-compose.yml (use --force-rebuild to regenerate)",
+                    OUTPUT_DIR
+                );
+            }
+            (compose_out, false)
+        };
 
     // Parameterize an existing generated compose file as well. This prevents
     // a previously rendered file with literal secrets from bypassing the
@@ -3905,9 +3920,12 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     if !compose_is_user_supplied {
         let env_keys = compose_env_keys(&config);
         if !env_keys.is_empty() {
+            let aliases = env_reference_aliases_for(&config_path);
             let content = std::fs::read_to_string(&compose_path)?;
             let parameterized =
-                crate::cli::generator::compose::parameterize_compose_env_vars(&content, &env_keys);
+                crate::cli::generator::compose::parameterize_compose_env_vars_with_aliases(
+                    &content, &env_keys, &aliases,
+                );
             if parameterized != content {
                 std::fs::write(&compose_path, parameterized)?;
             }

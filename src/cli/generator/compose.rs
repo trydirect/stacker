@@ -842,9 +842,60 @@ impl fmt::Display for ComposeDefinition {
 /// `env_keys` is the set of env var names whose values should be
 /// parameterized.  Typically this is every key declared in the author's
 /// `config_contract` with `mutability: generated` plus any `provided` fields.
+///
+/// `aliases` maps a compose key to the variable the author actually referenced
+/// in `stacker.yml`. A service's env key need not be the name the value is
+/// stored under — `MYSQL_PASSWORD: "${DB_PASSWORD}"` feeds one secret to a
+/// container that insists on its own name. Emitting `${MYSQL_PASSWORD}` there
+/// produces a reference nothing defines: compose resolves an unknown variable
+/// to the empty string with only a warning, so the container starts with a
+/// blank password and crash-loops. Pass [`env_reference_aliases`] so the
+/// reference keeps the name the env file really carries.
 pub fn parameterize_compose_env_vars(
     compose_content: &str,
     env_keys: &std::collections::HashSet<String>,
+) -> String {
+    parameterize_compose_env_vars_with_aliases(
+        compose_content,
+        env_keys,
+        &std::collections::HashMap::new(),
+    )
+}
+
+/// Collect `KEY -> VAR` for every `KEY: "${VAR}"` in the *unresolved*
+/// `stacker.yml`, where VAR differs from KEY.
+///
+/// The parsed config cannot answer this: `${VAR}` is resolved to its literal at
+/// load time, so by the time a compose file is rendered the author's reference
+/// is gone. Read the raw YAML text instead — only the exact whole-value form
+/// `${VAR}` counts, since a value that merely embeds a variable (a DSN, a URL)
+/// cannot be replaced by a single reference.
+pub fn env_reference_aliases(raw_stacker_yml: &str) -> std::collections::HashMap<String, String> {
+    let mut aliases = std::collections::HashMap::new();
+    let re = regex::Regex::new(
+        r#"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*"?\$\{([A-Za-z_][A-Za-z0-9_]*)\}"?\s*$"#,
+    )
+    .expect("valid regex");
+
+    for line in raw_stacker_yml.lines() {
+        if let Some(caps) = re.captures(line) {
+            let key = caps[1].to_string();
+            let var = caps[2].to_string();
+            if key != var {
+                aliases.insert(key, var);
+            }
+        }
+    }
+
+    aliases
+}
+
+/// [`parameterize_compose_env_vars`], but emitting the author's own variable
+/// name where one differs from the compose key.
+pub fn parameterize_compose_env_vars_with_aliases(
+    compose_content: &str,
+    env_keys: &std::collections::HashSet<String>,
+    aliases: &std::collections::HashMap<String, String>,
 ) -> String {
     if env_keys.is_empty() {
         return compose_content.to_string();
@@ -886,11 +937,12 @@ pub fn parameterize_compose_env_vars(
                 if let Some((key, _value)) = entry.split_once('=') {
                     let key = key.trim();
                     if is_env_identifier(key) && env_keys.contains(key) {
+                        let reference = aliases.get(key).map(String::as_str).unwrap_or(key);
                         result.push_str(&line[..indent]);
                         result.push_str("- ");
                         result.push_str(key);
                         result.push_str("=${");
-                        result.push_str(key);
+                        result.push_str(reference);
                         result.push_str("}\n");
                         continue;
                     }
@@ -899,12 +951,13 @@ pub fn parameterize_compose_env_vars(
                 // Match "      KEY: value" — the key must be a valid env identifier.
                 let key = key.trim();
                 if is_env_identifier(key) && env_keys.contains(key) {
+                    let reference = aliases.get(key).map(String::as_str).unwrap_or(key);
                     // Preserve the original indent and replace the value.
                     let prefix = &line[..indent + key.len()];
                     // Find where the value starts (after "KEY: ").
                     result.push_str(prefix);
                     result.push_str(": ${");
-                    result.push_str(key);
+                    result.push_str(reference);
                     result.push_str("}\n");
                     continue;
                 }
@@ -2442,6 +2495,115 @@ services:
     }
 
     #[test]
+    /// A container that insists on its own variable name is fed from one the
+    /// author defined: `MYSQL_PASSWORD: "${DB_PASSWORD}"`. Emitting
+    /// `${MYSQL_PASSWORD}` there names something no `.env` defines — compose
+    /// resolves it to the empty string with a warning, and mysql crash-loops
+    /// on "Database is uninitialized and password option is not specified".
+    #[test]
+    fn an_alias_keeps_the_name_the_env_file_actually_defines() {
+        let compose = "\
+services:
+  db:
+    image: mysql:8
+    environment:
+      MYSQL_PASSWORD: placeholder-value # pragma: allowlist secret
+      MYSQL_ROOT_PASSWORD: placeholder-value # pragma: allowlist secret
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("MYSQL_PASSWORD".to_string());
+        keys.insert("MYSQL_ROOT_PASSWORD".to_string());
+
+        let mut aliases = std::collections::HashMap::new();
+        aliases.insert("MYSQL_PASSWORD".to_string(), "DB_PASSWORD".to_string());
+        aliases.insert(
+            "MYSQL_ROOT_PASSWORD".to_string(),
+            "DB_ROOT_PASSWORD".to_string(),
+        );
+
+        let result = parameterize_compose_env_vars_with_aliases(compose, &keys, &aliases);
+        assert!(
+            result.contains("MYSQL_PASSWORD: ${DB_PASSWORD}"),
+            "the reference must name the variable the env file carries:\n{result}"
+        );
+        assert!(
+            result.contains("MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}"),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn a_key_without_an_alias_still_references_itself() {
+        let compose = "\
+services:
+  app:
+    environment:
+      SECRET_KEY: placeholder-value # pragma: allowlist secret
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("SECRET_KEY".to_string());
+
+        let result = parameterize_compose_env_vars_with_aliases(
+            compose,
+            &keys,
+            &std::collections::HashMap::new(),
+        );
+        assert!(result.contains("SECRET_KEY: ${SECRET_KEY}"), "{result}");
+    }
+
+    #[test]
+    fn the_list_form_of_an_environment_block_honours_aliases() {
+        let compose = "\
+services:
+  db:
+    environment:
+      - MYSQL_PASSWORD=placeholder-value # pragma: allowlist secret
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("MYSQL_PASSWORD".to_string());
+        let mut aliases = std::collections::HashMap::new();
+        aliases.insert("MYSQL_PASSWORD".to_string(), "DB_PASSWORD".to_string());
+
+        let result = parameterize_compose_env_vars_with_aliases(compose, &keys, &aliases);
+        assert!(
+            result.contains("- MYSQL_PASSWORD=${DB_PASSWORD}"),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn aliases_are_read_from_the_unresolved_stacker_yml() {
+        let raw = r#"
+app:
+  environment:
+    DB_PASSWORD: "${DB_PASSWORD}"
+    WEBUI_URL: "https://${commonDomain}"
+services:
+  - name: db
+    environment:
+      MYSQL_PASSWORD: "${DB_PASSWORD}"
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MYSQL_DATABASE: ampache
+"#;
+        let aliases = env_reference_aliases(raw);
+
+        assert_eq!(
+            aliases.get("MYSQL_PASSWORD").map(String::as_str),
+            Some("DB_PASSWORD")
+        );
+        // Quoting is the author's choice, not a signal.
+        assert_eq!(
+            aliases.get("MYSQL_ROOT_PASSWORD").map(String::as_str),
+            Some("DB_ROOT_PASSWORD")
+        );
+        // A key that references its own name needs no alias.
+        assert!(!aliases.contains_key("DB_PASSWORD"));
+        // A value that merely embeds a variable cannot become one reference.
+        assert!(!aliases.contains_key("WEBUI_URL"));
+        // A plain literal is not a reference at all.
+        assert!(!aliases.contains_key("MYSQL_DATABASE"));
+    }
+
     fn parameterize_replaces_secret_values_with_env_refs() {
         let compose = "\
 services:
