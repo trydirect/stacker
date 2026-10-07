@@ -758,6 +758,9 @@ pub(crate) fn detect_port_conflicts_in_output(stderr: &str, stdout: &str) -> Vec
         LazyLock::new(|| regex::Regex::new(r"Bind for [\d.]+:(\d+) failed").unwrap());
     static ALLOCATED_RE: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"port (\d+) is already allocated").unwrap());
+    static PRECHECK_PORTS_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?i)ingress ports ([\d,\s]+or\s+\d+|\d+)").unwrap()
+    });
 
     let combined = format!("{}\n{}", stderr, stdout);
     let lower = combined.to_lowercase();
@@ -765,6 +768,8 @@ pub(crate) fn detect_port_conflicts_in_output(stderr: &str, stdout: &str) -> Vec
     if !lower.contains("is already allocated")
         && !lower.contains("bind for 0.0.0.0")
         && !lower.contains("failed programming external connectivity")
+        && !lower.contains("precheck_port_conflict")
+        && !lower.contains("already occupied")
     {
         return vec![];
     }
@@ -773,6 +778,15 @@ pub(crate) fn detect_port_conflicts_in_output(stderr: &str, stdout: &str) -> Vec
         "Port conflict detected on the deployment target.".to_string(),
         "A process or container on the remote server is already using a port that this deploy requires.".to_string(),
     ];
+
+    if let Some(caps) = PRECHECK_PORTS_RE.captures(&combined) {
+        if let Some(ports) = caps.get(1) {
+            hints.push(format!(
+                "Required ingress ports {} are already occupied — free them or move the conflicting container (e.g. another reverse proxy).",
+                ports.as_str()
+            ));
+        }
+    }
 
     let port: Option<String> = {
         let full = format!("{} {}", stderr, stdout);
@@ -4686,6 +4700,30 @@ services:
         let stderr = "Build failed: could not resolve dependency";
         let hints = detect_port_conflicts_in_output(stderr, "");
         assert!(hints.is_empty(), "should not flag non-port errors");
+    }
+
+    /// Exact Ansible preflight_port_conflicts.yml failure (exit 42): the
+    /// PRECHECK_PORT_CONFLICT marker when ingress ports 80/443/81 are taken
+    /// on the target host (here by a caddy container).
+    const PRECHECK_PORT_CONFLICT_ANSIBLE_ERROR: &str = r#"fatal: [46.224.127.228]: FAILED! => {"changed": false, "cmd": "...", "failed_when_result": true, "msg": "non-zero return code", "rc": 42, "stderr": "", "stdout": "PRECHECK_PORT_CONFLICT\nRequired ingress ports 80, 443, or 81 are already occupied.\nlisteners:\nLISTEN 0      4096   0.0.0.0:80  0.0.0.0:* users:((\"docker-proxy\",pid=3651988,fd=8))\ndocker_ps:\ncaddy\t0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp"}"#;
+
+    #[test]
+    fn test_detect_port_conflicts_in_output_precheck_marker() {
+        // Regression: the ingress-port precheck marker returned no hints, so
+        // legacy payloads without error_kind were left unclassified and the
+        // CLI printed "An unclassified internal error occurred".
+        let hints = detect_port_conflicts_in_output("", PRECHECK_PORT_CONFLICT_ANSIBLE_ERROR);
+        assert!(!hints.is_empty(), "should detect port conflict from precheck marker");
+    }
+
+    #[test]
+    fn test_detect_port_conflicts_in_output_precheck_marker_lists_ingress_ports() {
+        let hints = detect_port_conflicts_in_output("", PRECHECK_PORT_CONFLICT_ANSIBLE_ERROR);
+        let joined = hints.join("\n");
+        assert!(
+            joined.contains("80") && joined.contains("443"),
+            "should list the occupied ingress ports: {joined}"
+        );
     }
 
     #[test]

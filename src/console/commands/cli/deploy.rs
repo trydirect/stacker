@@ -209,6 +209,8 @@ fn fallback_troubleshooting_hints(reason: &str) -> Vec<String> {
     if lower.contains("port is already allocated")
         || lower.contains("bind for 0.0.0.0")
         || lower.contains("failed programming external connectivity")
+        || lower.contains("precheck_port_conflict")
+        || lower.contains("already occupied")
     {
         hints.push("Port conflict: another process/container already uses this host port (for example 3000).".to_string());
         hints.push("Find the owner with: lsof -nP -iTCP:3000 -sTCP:LISTEN".to_string());
@@ -8159,6 +8161,20 @@ monitoring:
     }
 
     #[test]
+    fn test_fallback_hints_for_precheck_port_conflict() {
+        // Regression: the ingress-port precheck marker (exit 42) produced no
+        // hints, so the failure fell through to the unclassified internal
+        // error path in the CLI verdict.
+        let hints = fallback_troubleshooting_hints(
+            "PRECHECK_PORT_CONFLICT\nRequired ingress ports 80, 443, or 81 are already occupied.",
+        );
+        assert!(
+            hints.iter().any(|h| h.contains("Port conflict")),
+            "precheck marker should yield port-conflict hints: {hints:?}"
+        );
+    }
+
+    #[test]
     fn test_fallback_hints_for_orphan_containers() {
         let hints = fallback_troubleshooting_hints(
             "Found orphan containers ([stackerdb]) for this project",
@@ -9435,6 +9451,29 @@ monitoring:
             failure.error_kind.as_deref(),
             Some("port_conflict"),
             "legacy payloads must still be classified from the message text"
+        );
+    }
+
+    #[test]
+    fn failure_falls_back_to_text_for_precheck_port_conflict() {
+        // Regression: the ingress-port precheck marker (exit 42) in a legacy
+        // payload was left unclassified ([internal_error] / "An unclassified
+        // internal error occurred") instead of [port_conflict].
+        let info = status_info(
+            "paused",
+            Some(
+                "Deployment has been paused. Error: PRECHECK_PORT_CONFLICT\n\
+                 Required ingress ports 80, 443, or 81 are already occupied.",
+            ),
+            None,
+            None,
+        );
+        let failure = DeploymentFailure::from_status_info(&info);
+
+        assert_eq!(
+            failure.error_kind.as_deref(),
+            Some("port_conflict"),
+            "precheck marker payloads must be classified from the message text"
         );
     }
 
