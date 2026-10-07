@@ -60,7 +60,10 @@ pub use explain::{
 };
 pub use handoff::InMemoryHandoffStore;
 pub use log_cache::LogCacheService;
-pub use marketplace_access::{validate_marketplace_template_access, MarketplaceAccessError};
+pub use marketplace_access::{
+    map_access_error, validate_marketplace_template_access,
+    validate_marketplace_template_access_with_mode, AccessMode, MarketplaceAccessError,
+};
 pub use marketplace_assets::{
     build_asset_key, presign_asset_download, presign_asset_upload, MarketplaceAssetStorageError,
     MarketplaceAssetUploadRequest, PresignedMarketplaceAssetResponse,

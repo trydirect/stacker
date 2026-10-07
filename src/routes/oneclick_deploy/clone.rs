@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use actix_web::web::Data;
-use actix_web::{post, web, HttpResponse, Responder};
+use actix_web::{post, web, HttpResponse, Responder, ResponseError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgPool;
@@ -26,6 +26,7 @@ use crate::helpers::cloud_init::{render_user_data, BootConfig, DerivedJwtSpec};
 use crate::helpers::VaultClient;
 use crate::models;
 use crate::models::User;
+use crate::services;
 
 #[derive(Debug, Deserialize)]
 pub struct CloneRequest {
@@ -341,6 +342,42 @@ pub async fn clone_server(
                 stack = %form.stack,
                 "could not resolve composition for one-click project; \
                  request_json will be empty (Applications panel may show 0 services)"
+            );
+        }
+    }
+
+    // Marketplace access gate. Without it a priced template cloned by slug
+    // deployed with neither a purchase nor a card (incident 2026-10-07).
+    // AllowCardOnFile because this path settles the charge after a successful
+    // deploy (the install service's completion hook). Runs before any records
+    // are created so a rejected clone leaves nothing behind. A slug that is
+    // not an approved marketplace template passes through unchanged.
+    match crate::db::marketplace::get_approved_by_slug(&pg_pool, &form.stack).await {
+        Ok(Some(gate_template)) => {
+            if let Err(err) = services::validate_marketplace_template_access_with_mode(
+                user_service.get_ref(),
+                &user,
+                &gate_template,
+                services::AccessMode::AllowCardOnFile,
+            )
+            .await
+            {
+                tracing::warn!(
+                    stack = %form.stack,
+                    error = %err,
+                    "one-click clone rejected by the marketplace access gate"
+                );
+                return crate::services::map_access_error(err).error_response();
+            }
+        }
+        Ok(None) => {}
+        Err(err) => {
+            // Same tolerance as the billing block below: a catalog blip must
+            // not hard-block unrelated repo-based clones.
+            tracing::warn!(
+                error = ?err,
+                stack = %form.stack,
+                "marketplace access gate could not resolve the template; continuing"
             );
         }
     }
