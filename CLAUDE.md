@@ -84,6 +84,12 @@ cargo run --bin stacker-cli -- <command>
 ```
 
 ## Critical Rules
+- **PRODUCTION SURGICAL FIX RULE (2026-10-08, applies to every AI agent):** this is a live
+  production system with real users and real payments. Every change touches only the lines
+  strictly required for the fix — no adjacent refactors, no renaming "while I'm here", no
+  unrelated cleanup, no scope creep. Every bug fix ships with a regression test in the same
+  diff — if no test covers the bug, write one that fails against current code first, then
+  fix, then confirm it passes. Propose broader refactors as a separate task, never bundled.
 - NEVER modify migration .up.sql/.down.sql files that have been applied to production
 - ALWAYS create new migration files for schema changes: `sqlx migrate add <name>`
 - ALWAYS run `cargo sqlx prepare` after changing any sqlx queries
