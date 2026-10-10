@@ -847,6 +847,34 @@ pub async fn get_or_init_vault_app(
         .ok()
 }
 
+/// Serialises tests that share one mock Vault server.
+///
+/// `TestAppWithVaultFresh::vault_server` is a single wiremock instance for the
+/// whole test binary: the app's Vault address is baked into the running server
+/// when it is spawned, so every test in the file talks to the same mock. Tests
+/// then call `reset()` and mount their own stubs, which means two running at
+/// once clear each other's expectations. The symptom is a different handful of
+/// tests failing on each run, which is worse than a consistent failure because
+/// it reads as noise.
+///
+/// Hold this guard for the length of any test that resets or mounts on the
+/// shared mock:
+///
+/// ```ignore
+/// let _vault = common::lock_vault_mock().await;
+/// let app = app().await;
+/// app.vault_server.reset().await;
+/// ```
+///
+/// A panicking test does not poison it (tokio mutexes do not poison), so one
+/// failure does not cascade into the rest of the file.
+pub async fn lock_vault_mock() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}
+
 pub struct TestAppWithVault {
     pub address: String,
     pub db_pool: PgPool,

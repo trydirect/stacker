@@ -12,10 +12,23 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use tokio::sync::OnceCell;
 
-static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+// A fresh `PgPool` per test, bound to that test's own runtime.
+//
+// This suite shared one `&'static TestApp` (and so one pool) across every test
+// in the file. Each `#[tokio::test]` runs on its own runtime, and a pool's
+// connections and background tasks belong to whichever runtime first
+// established them; once that test returns and its runtime is dropped, those
+// connections are dead TCP that the pool still hands out. A later test's
+// `acquire()` then blocks for the full 120s `acquire_timeout` and fails with
+// `PoolTimedOut`, which looked like database exhaustion but was not: only 12
+// connections were open server-side against a limit of 100.
+//
+// The server itself still starts once, on the persistent runtime; only the pool
+// is per test. Same pattern as the other suites in this directory.
+static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
 
-async fn app() -> &'static common::TestApp {
-    common::get_or_init_app(&APP)
+async fn app() -> common::TestApp {
+    common::get_or_init_app_fresh(&APP_CONFIG)
         .await
         .expect("Failed to start test app")
 }
