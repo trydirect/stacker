@@ -224,13 +224,21 @@ pub async fn create_handler(
         // Update existing template
         tracing::info!("Updating existing template with slug: {}", req.slug);
 
-        // Use the resubmit-aware update for templates that are already
-        // submitted, under review, or approved — `update_metadata` only
-        // allows draft/rejected/needs_changes.
-        let updated = if matches!(
+        // A template in the review queue is frozen until an admin approves,
+        // rejects or asks for changes; letting the author write here would
+        // swap the stack definition under the reviewer.
+        if matches!(
             existing_template.status.as_str(),
-            "submitted" | "under_review" | "approved"
+            "submitted" | "under_review"
         ) {
+            return Err(JsonResponse::<models::StackTemplate>::build().conflict(
+                "Template is under review and cannot be updated until the review is complete",
+            ));
+        }
+
+        // Use the resubmit-aware update for approved templates —
+        // `update_metadata` only allows draft/rejected/needs_changes.
+        let updated = if existing_template.status == "approved" {
             db::marketplace::update_metadata_for_resubmit(
                 pg_pool.get_ref(),
                 &existing_template.id,
