@@ -127,6 +127,15 @@ fn scan_roles_from_filesystem() -> Result<Vec<String>, String> {
 
 /// Get detailed information about a specific role from filesystem
 fn get_role_details_from_fs(role_name: &str) -> Result<AnsibleRole, String> {
+    // A role name is one directory under ROLES_BASE_PATH. An absolute path
+    // would replace the base in join(), and ".." would climb out of it.
+    let mut components = std::path::Path::new(role_name).components();
+    if !matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    ) {
+        return Err(format!("Role '{}' not found in filesystem", role_name));
+    }
     let role_path = PathBuf::from(ROLES_BASE_PATH).join(role_name);
 
     if !role_path.exists() {
