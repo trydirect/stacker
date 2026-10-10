@@ -1844,8 +1844,8 @@ pub async fn item(
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
         .and_then(|project| match project {
-            Some(project) => Ok(project),
-            None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
+            Some(project) if project.user_id == user.id => Ok(project),
+            _ => Err(JsonResponse::<models::Project>::build().not_found("not found")),
         })?;
 
     let (project_id, deployment_id) = deploy_project(
@@ -1894,8 +1894,8 @@ pub async fn saved_item(
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
         .and_then(|project| match project {
-            Some(project) => Ok(project),
-            None => Err(JsonResponse::<models::Project>::build().not_found("Project not found")),
+            Some(project) if project.user_id == user.id => Ok(project),
+            _ => Err(JsonResponse::<models::Project>::build().not_found("Project not found")),
         })?;
 
     let marketplace_template = if let Some(template_id) = project.source_template_id {
@@ -1924,8 +1924,8 @@ pub async fn saved_item(
 
     let cloud = match db::cloud::fetch(pg_pool.get_ref(), cloud_id).await {
         Ok(cloud) => match cloud {
-            Some(cloud) => cloud,
-            None => {
+            Some(cloud) if cloud.user_id == user.id => cloud,
+            _ => {
                 return Err(
                     JsonResponse::<models::Project>::build().not_found("No cloud configured")
                 );
