@@ -472,12 +472,17 @@ fn try_ssh_server_check(server: &ServerConfig) -> Option<ssh_client::SystemCheck
         }
     };
 
+    // CLI preflight against a server described in stacker.yml. There is no
+    // database here to hold a pin, but there is a real user with a real
+    // `~/.ssh/known_hosts`, so verify against that: `stacker` and `ssh` then
+    // agree, and a rebuilt server is forgotten with `ssh-keygen -R <host>`.
     let result = rt.block_on(ssh_client::check_server(
         &server.host,
         server.port,
         &server.user,
         &key_content,
         Duration::from_secs(SSH_CHECK_TIMEOUT_SECS),
+        &ssh_client::HostKeyPolicy::user_known_hosts(&server.host, server.port),
     ));
 
     Some(result)

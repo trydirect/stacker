@@ -483,19 +483,38 @@ async fn inject_key_via_ssh(
     local_private_key: &str,
     vault_public_key: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::helpers::ssh_client::HostKeyPolicy;
     use russh::client::{Config, Handle};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    struct AcceptAllKeys;
+    /// Verifies the server's host key against the user's `~/.ssh/known_hosts`,
+    /// recording it on first use.
+    ///
+    /// This used to accept whatever key the far end presented, which meant
+    /// anything answering on the server's address could receive the public key
+    /// this function writes into `~/.ssh/authorized_keys`. russh does not
+    /// verify host keys on its own, so the check has to be here.
+    struct VerifyHostKey {
+        policy: HostKeyPolicy,
+        refusal: Arc<Mutex<Option<String>>>,
+    }
 
-    impl russh::client::Handler for AcceptAllKeys {
+    impl russh::client::Handler for VerifyHostKey {
         type Error = russh::Error;
         async fn check_server_key(
             &mut self,
-            _server_public_key: &russh::keys::PublicKey,
+            server_public_key: &russh::keys::PublicKey,
         ) -> Result<bool, Self::Error> {
-            Ok(true)
+            match self.policy.verify(server_public_key) {
+                Ok(()) => Ok(true),
+                Err(reason) => {
+                    if let Ok(mut slot) = self.refusal.lock() {
+                        *slot = Some(reason);
+                    }
+                    Ok(false)
+                }
+            }
         }
     }
 
@@ -506,14 +525,34 @@ async fn inject_key_via_ssh(
         ..Default::default()
     });
 
+    let refusal = Arc::new(Mutex::new(None));
+    let handler = VerifyHostKey {
+        policy: HostKeyPolicy::user_known_hosts(host, port),
+        refusal: Arc::clone(&refusal),
+    };
+
     let addr = format!("{}:{}", host, port);
-    let mut handle: Handle<AcceptAllKeys> = tokio::time::timeout(
+    let connected = tokio::time::timeout(
         Duration::from_secs(15),
-        russh::client::connect(config, addr, AcceptAllKeys),
+        russh::client::connect(config, addr, handler),
     )
     .await
-    .map_err(|_| CliError::ConfigValidation(format!("Connection to {}:{} timed out", host, port)))?
-    .map_err(|e| CliError::ConfigValidation(format!("Connection failed: {}", e)))?;
+    .map_err(|_| {
+        CliError::ConfigValidation(format!("Connection to {}:{} timed out", host, port))
+    })?;
+
+    // Report a refused host key as itself. russh calls it "Unknown server key",
+    // which says nothing about which key was expected or how to recover.
+    let mut handle: Handle<VerifyHostKey> = match connected {
+        Ok(handle) => handle,
+        Err(e) => {
+            let reason = refusal.lock().ok().and_then(|slot| slot.clone());
+            return Err(Box::new(CliError::ConfigValidation(match reason {
+                Some(reason) => reason,
+                None => format!("Connection failed: {}", e),
+            })));
+        }
+    };
 
     let auth_res = handle
         .authenticate_publickey(

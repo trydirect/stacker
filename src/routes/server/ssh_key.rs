@@ -2,11 +2,11 @@ use crate::db;
 use crate::helpers::{JsonResponse, VaultClient};
 use crate::models;
 use actix_web::{delete, get, post, web, Responder, Result};
+use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
-use futures::future::join_all;
 
 /// Request body for uploading an existing SSH key pair
 #[derive(Debug, Deserialize)]
@@ -75,6 +75,36 @@ async fn verify_server_ownership(
             Some(s) => Ok(s),
             None => Err(JsonResponse::<models::Server>::build().not_found("Server not found")),
         })
+}
+
+/// Pin the host key the server just presented, when it had none stored yet.
+///
+/// Best effort on purpose: a concurrent request may pin the same key first,
+/// which makes the guarded UPDATE match no row. Nothing the caller returns
+/// depends on this write, so a failure is logged and the request continues.
+/// An existing pin is never overwritten; a key that changed is refused at
+/// connect time instead.
+async fn pin_host_key_if_unset(pg_pool: &PgPool, server: &models::Server, observed: Option<&str>) {
+    if server.host_key_fingerprint.is_some() {
+        return;
+    }
+    let fingerprint = match observed {
+        Some(fingerprint) => fingerprint,
+        None => return,
+    };
+    match db::server::update_host_key_fingerprint(pg_pool, server.id, fingerprint).await {
+        Ok(_) => tracing::info!(
+            "Pinned SSH host key {} for server {}",
+            fingerprint,
+            server.id
+        ),
+        Err(e) => tracing::warn!(
+            "Could not pin SSH host key {} for server {}: {}",
+            fingerprint,
+            server.id,
+            e
+        ),
+    }
 }
 
 /// Generate a new SSH key pair for a server
@@ -404,11 +434,12 @@ pub async fn authorize_public_key(
             &private_key,
             public_key,
             Duration::from_secs(15),
+            &ssh_client::HostKeyPolicy::Pin(server.host_key_fingerprint.clone()),
         )
         .await;
 
         let error = match outcome {
-            Ok(()) => break Ok(()),
+            Ok(observed) => break Ok(observed),
             Err(error) => error,
         };
 
@@ -428,7 +459,7 @@ pub async fn authorize_public_key(
         }
     };
 
-    authorized.map_err(|e| {
+    let observed_host_key = authorized.map_err(|e| {
         tracing::warn!(
             "Failed to authorize backup public key for server {} after {} attempt(s): {}",
             server_id,
@@ -438,6 +469,8 @@ pub async fn authorize_public_key(
         JsonResponse::<AuthorizePublicKeyResponse>::build()
             .bad_request(format!("Failed to authorize public key on server: {}", e))
     })?;
+
+    pin_host_key_if_unset(pg_pool.get_ref(), &server, observed_host_key.as_deref()).await;
 
     let response = AuthorizePublicKeyResponse {
         server_id,
@@ -611,11 +644,20 @@ pub async fn validate_key(
         &ssh_user,
         &private_key,
         Duration::from_secs(30),
+        &ssh_client::HostKeyPolicy::Pin(server.host_key_fingerprint.clone()),
     )
     .await;
 
     // Build response from check result
     let valid = check_result.connected && check_result.authenticated;
+    if valid {
+        pin_host_key_if_unset(
+            pg_pool.get_ref(),
+            &server,
+            check_result.host_key_fingerprint.as_deref(),
+        )
+        .await;
+    }
     let message = if valid {
         check_result.summary()
     } else {
@@ -696,6 +738,7 @@ pub async fn validate_all(
         let server = server.clone();
         let user_id = user.id.clone();
         let vault_client = vault_client.clone();
+        let pg_pool = pg_pool.clone();
 
         futures.push(async move {
             let vault = vault_client.get_ref();
@@ -749,10 +792,7 @@ pub async fn validate_all(
                 }
             };
 
-            let vault_public_key = vault
-                .fetch_ssh_public_key(&user_id, server.id)
-                .await
-                .ok();
+            let vault_public_key = vault.fetch_ssh_public_key(&user_id, server.id).await.ok();
 
             let ssh_port = server.ssh_port.unwrap_or(22) as u16;
             let ssh_user = server
@@ -766,10 +806,19 @@ pub async fn validate_all(
                 &ssh_user,
                 &private_key,
                 Duration::from_secs(30),
+                &ssh_client::HostKeyPolicy::Pin(server.host_key_fingerprint.clone()),
             )
             .await;
 
             let valid = check_result.connected && check_result.authenticated;
+            if valid {
+                pin_host_key_if_unset(
+                    pg_pool.get_ref(),
+                    &server,
+                    check_result.host_key_fingerprint.as_deref(),
+                )
+                .await;
+            }
             let message = if valid {
                 check_result.summary()
             } else {

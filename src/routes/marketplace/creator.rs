@@ -725,6 +725,20 @@ fn ensure_contract_declares_generated_secrets(
     }
 }
 
+/// The answer for a template the caller is not allowed to see.
+///
+/// Deliberately identical to the answer for a template that does not exist. A
+/// different status or wording tells a caller holding a guessed id that the
+/// template is real and belongs to someone else. Template ids are random
+/// UUIDs, so knowing one is the hard part and the leak was thin, but keeping
+/// the two answers identical costs nothing and removes the question.
+///
+/// Use this for every ownership refusal on a template, and for the
+/// template-missing case too, so the two cannot drift apart again.
+fn template_not_visible() -> actix_web::Error {
+    JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+}
+
 fn ensure_template_owner(
     template: &models::StackTemplate,
     user_id: &str,
@@ -732,7 +746,7 @@ fn ensure_template_owner(
     if template.creator_user_id == user_id {
         Ok(())
     } else {
-        Err(JsonResponse::<serde_json::Value>::build().forbidden("Forbidden"))
+        Err(template_not_visible())
     }
 }
 
@@ -826,10 +840,10 @@ pub async fn update_handler(
     )
     .fetch_one(pg_pool.get_ref())
     .await
-    .map_err(|_| JsonResponse::<serde_json::Value>::build().not_found("Not Found"))?;
+    .map_err(|_| template_not_visible())?;
 
     if owner_id != user.id {
-        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Forbidden"));
+        return Err(template_not_visible());
     }
 
     let req = body.into_inner();
@@ -978,9 +992,7 @@ pub async fn presign_asset_upload_handler(
     let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
-        })?;
+        .ok_or_else(template_not_visible)?;
 
     ensure_template_owner(&template, &user.id)?;
     ensure_template_assets_editable(&template)?;
@@ -1035,9 +1047,7 @@ pub async fn finalize_asset_upload_handler(
     let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
-        })?;
+        .ok_or_else(template_not_visible)?;
 
     ensure_template_owner(&template, &user.id)?;
     ensure_template_assets_editable(&template)?;
@@ -1096,9 +1106,7 @@ pub async fn presign_asset_download_handler(
     let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
-        })?;
+        .ok_or_else(template_not_visible)?;
 
     ensure_template_owner(&template, &user.id)?;
 
@@ -1143,10 +1151,10 @@ pub async fn submit_handler(
     )
     .fetch_one(pg_pool.get_ref())
     .await
-    .map_err(|_| JsonResponse::<serde_json::Value>::build().not_found("Not Found"))?;
+    .map_err(|_| template_not_visible())?;
 
     if owner_id != user.id {
-        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Forbidden"));
+        return Err(template_not_visible());
     }
 
     ensure_no_secrets_confirmation(body.into_inner().confirm_no_secrets)?;
@@ -1282,10 +1290,10 @@ pub async fn resubmit_handler(
     )
     .fetch_one(pg_pool.get_ref())
     .await
-    .map_err(|_| JsonResponse::<serde_json::Value>::build().not_found("Not Found"))?;
+    .map_err(|_| template_not_visible())?;
 
     if owner_id != user.id {
-        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Forbidden"));
+        return Err(template_not_visible());
     }
 
     let req = body.into_inner();
@@ -1410,9 +1418,7 @@ pub async fn resubmit_handler(
     let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
-        })?;
+        .ok_or_else(template_not_visible)?;
 
     let template_clone = template.clone();
     tokio::spawn(async move {
@@ -1499,12 +1505,10 @@ async fn validate_optional_template_scope(
     let template = db::marketplace::get_by_id(pool, template_id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
-        })?;
+        .ok_or_else(template_not_visible)?;
 
     if template.creator_user_id != user_id {
-        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Access denied"));
+        return Err(template_not_visible());
     }
 
     Ok(())
@@ -1539,12 +1543,10 @@ pub async fn my_reviews_handler(
     let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
-        })?;
+        .ok_or_else(template_not_visible)?;
 
     if template.creator_user_id != user.id {
-        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Access denied"));
+        return Err(template_not_visible());
     }
 
     db::marketplace::list_reviews_by_template(pg_pool.get_ref(), id)
@@ -1567,12 +1569,10 @@ pub async fn vendor_profile_status_handler(
     let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
-        })?;
+        .ok_or_else(template_not_visible)?;
 
     if template.creator_user_id != user.id {
-        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Access denied"));
+        return Err(template_not_visible());
     }
 
     let vendor_profile = db::marketplace::get_vendor_profile_by_creator(

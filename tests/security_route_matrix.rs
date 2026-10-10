@@ -1376,96 +1376,21 @@ fn sweep_requests() -> BTreeMap<(&'static str, &'static str), (&'static str, &'s
     map
 }
 
-/// Routes whose answer for another user's resource differs from the answer
-/// for a missing one, accepted because the id is a random UUID: telling
-/// "exists" from "missing" needs the id, which is the secret.
-const LEAK_ALLOWED: &[(&str, &str, &str)] = &[
-    (
-        "PUT",
-        "/api/templates/{id}",
-        "creator routes answer 403 for another creator's template",
-    ),
-    (
-        "POST",
-        "/api/templates/{id}/resubmit",
-        "creator routes answer 403",
-    ),
-    (
-        "GET",
-        "/api/templates/{id}/reviews",
-        "creator routes answer 403",
-    ),
-    (
-        "GET",
-        "/api/templates/{id}/vendor-profile-status",
-        "creator routes answer 403",
-    ),
-    (
-        "POST",
-        "/api/templates/{id}/assets/presign",
-        "creator routes answer 403",
-    ),
-    (
-        "POST",
-        "/api/templates/{id}/assets/finalize",
-        "creator routes answer 403",
-    ),
-    (
-        "POST",
-        "/api/templates/{id}/assets/presign-download",
-        "creator routes answer 403",
-    ),
-    (
-        "POST",
-        "/api/v1/templates/{id}/assets/presign",
-        "creator routes answer 403",
-    ),
-    (
-        "POST",
-        "/api/v1/templates/{id}/assets/finalize",
-        "creator routes answer 403",
-    ),
-    (
-        "POST",
-        "/api/v1/templates/{id}/assets/presign-download",
-        "creator routes answer 403",
-    ),
-    (
-        "POST",
-        "/api/templates/{id}/submit",
-        "creator routes answer 403",
-    ),
-    (
-        "GET",
-        "/api/v1/pipes/dlq/{entry_id}",
-        "names the parent instance when the entry exists",
-    ),
-    (
-        "POST",
-        "/api/v1/pipes/dlq/{entry_id}/retry",
-        "names the parent instance",
-    ),
-    (
-        "DELETE",
-        "/api/v1/pipes/dlq/{entry_id}",
-        "names the parent instance",
-    ),
-    (
-        "GET",
-        "/api/v1/pipes/executions/{execution_id}",
-        "names the parent instance",
-    ),
-    (
-        "POST",
-        "/api/v1/pipes/executions/{execution_id}/replay",
-        "names the parent instance",
-    ),
-    (
-        "GET",
-        "/api/v1/pipes/instances/{instance_id}/stream",
-        "answers 403 for another user's instance",
-    ),
-];
+/// Routes whose answer for another user's resource differs from the answer for
+/// a missing one.
+///
+/// Empty, and meant to stay that way. The creator template routes and the
+/// UUID-keyed pipe routes used to be listed here: they answered 403, or named
+/// the parent instance, where a missing record got a 404 with different
+/// wording, which tells a caller holding a guessed id that the record is real
+/// and someone else's. They now answer identically in both cases, via
+/// `template_not_visible` in `routes::marketplace::creator` and
+/// `mask_refusal_as` in `routes::pipe`.
+///
+/// Before adding an entry here, check whether the two answers can simply be
+/// made the same; "the id is a random UUID" is a reason it is a thin leak, not
+/// a reason to keep it.
+const LEAK_ALLOWED: &[(&str, &str, &str)] = &[];
 
 #[test]
 fn every_sweep_route_has_a_request() {
@@ -1766,12 +1691,12 @@ async fn agent_routes_refuse_a_user_session() {
             common::USER_B_TOKEN,
         )
         .await;
-        // 500 "Missing expected request extension data": the handler needs an
-        // agent identity and a user session does not provide one. Not a
-        // proper refusal, but nothing runs.
-        let refused = status == 401
-            || status == 403
-            || (status == 500 && answer.contains("Missing expected request extension data"));
+        // A user session is not an agent identity, and saying so is the
+        // handler's job: these routes take `helpers::AuthenticatedAgent`, which
+        // answers 401. They used to answer 500 "Missing expected request
+        // extension data" from a failed `ReqData` extraction, which is a server
+        // error for what is really a refusal. 500 is no longer accepted here.
+        let refused = status == 401 || status == 403;
         if !refused {
             failures.push(format!(
                 "{method} {path}: a user session got {status} {}",

@@ -73,3 +73,48 @@ async fn role_tools_refuse_paths_outside_the_roles_directory() {
     std::fs::remove_dir_all(&outside).ok();
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// `deploy_role` must refuse rather than report a deployment it did not do.
+///
+/// It used to validate the role and answer `{"status":"queued"}` with a note
+/// that Install Service integration was pending. An AI client cannot tell that
+/// apart from a real deployment, so it would report the role as deployed. If
+/// this tool is ever wired up, replace this test with one that asserts the
+/// deployment actually reaches the Install Service.
+#[tokio::test]
+async fn deploy_role_refuses_instead_of_reporting_a_fake_success() {
+    let registry = ToolRegistry::new();
+    let ctx = context();
+    let handler = registry
+        .get("deploy_role")
+        .expect("deploy_role not registered");
+
+    // A valid-looking call: a plain role name, an IP and no variables.
+    let result = handler
+        .execute(
+            json!({
+                "role_name": "firewall",
+                "server_ip": "127.0.0.1",
+                "variables": {},
+            }),
+            &ctx,
+        )
+        .await;
+
+    let error = match result {
+        Err(error) => error,
+        Ok(content) => panic!("deploy_role answered success: {content:?}"),
+    };
+    assert!(
+        error.to_lowercase().contains("not implemented"),
+        "the refusal must say it is not implemented, got: {error}"
+    );
+
+    // And the tool list must not advertise a deployment either, since that is
+    // what an AI client picks a tool from.
+    let description = handler.schema().description.to_lowercase();
+    assert!(
+        description.contains("not implemented"),
+        "deploy_role's description still promises a deployment: {description}"
+    );
+}

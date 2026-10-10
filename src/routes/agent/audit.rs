@@ -1,6 +1,6 @@
 use crate::db::agent_audit_log as audit_db;
-use crate::{helpers, models};
 use crate::models::agent_audit_log::{AgentAuditLog, AuditBatchRequest};
+use crate::{helpers, models};
 use actix_web::{get, post, web, HttpResponse, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -20,7 +20,7 @@ pub struct IngestResponse {
 #[tracing::instrument(name = "Agent audit ingest", skip_all)]
 #[post("/audit")]
 pub async fn agent_audit_ingest_handler(
-    agent: web::ReqData<Arc<models::Agent>>,
+    agent: helpers::AuthenticatedAgent,
     body: web::Json<AuditBatchRequest>,
     pool: web::Data<PgPool>,
 ) -> Result<HttpResponse> {
@@ -79,10 +79,9 @@ pub async fn agent_audit_query_handler(
     let is_admin = matches!(user.role.as_str(), "admin_service" | "group_admin" | "root");
 
     if !is_admin {
-        let installation_hash = params
-            .installation_hash
-            .as_deref()
-            .ok_or_else(|| helpers::JsonResponse::<String>::bad_request("installation_hash is required"))?;
+        let installation_hash = params.installation_hash.as_deref().ok_or_else(|| {
+            helpers::JsonResponse::<String>::bad_request("installation_hash is required")
+        })?;
 
         crate::routes::agent::guard::authorize_deployment_access(
             &pool,

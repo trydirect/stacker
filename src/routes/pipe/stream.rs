@@ -29,9 +29,12 @@ pub async fn execution_stream_handler(
         JsonResponse::<String>::not_found(String::from("Pipe instance not found"))
     })?;
 
+    // Answer exactly as for an instance that does not exist. A distinct 403
+    // would tell a caller holding a guessed instance id that it is real and
+    // belongs to someone else.
     if instance.created_by != user.id {
-        return Err(JsonResponse::<String>::forbidden(String::from(
-            "Access denied: not your pipe instance",
+        return Err(JsonResponse::<String>::not_found(String::from(
+            "Pipe instance not found",
         )));
     }
 
