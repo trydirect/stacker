@@ -1,10 +1,10 @@
 use crate::cli::config_parser::StackerConfig;
 use crate::cli::credentials::CredentialsManager;
+use crate::cli::deployment_context::resolve_deploy_placement;
 use crate::cli::error::CliError;
 use crate::cli::stacker_client::StackerClient;
 use crate::console::commands::cli::status::{
-    is_remote_deployment, missing_remote_project_reason, resolve_project_name,
-    resolve_stacker_base_url,
+    missing_remote_project_reason, resolve_project_name, resolve_stacker_base_url,
 };
 use crate::console::commands::CallableTrait;
 use crate::services::{
@@ -398,7 +398,7 @@ pub(crate) fn run_remote_deployment_plan(
 impl CallableTrait for DeploymentStateCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let project_dir = std::env::current_dir()?;
-        if !is_remote_deployment(&project_dir) {
+        if !resolve_deploy_placement(&project_dir)?.is_remote() {
             return Err(Box::new(CliError::ConfigValidation(
                 "Deployment state is only available for cloud or server targets.".to_string(),
             )));
@@ -411,7 +411,7 @@ impl CallableTrait for DeploymentStateCommand {
 impl CallableTrait for DeploymentEventsCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let project_dir = std::env::current_dir()?;
-        if !is_remote_deployment(&project_dir) {
+        if !resolve_deploy_placement(&project_dir)?.is_remote() {
             return Err(Box::new(CliError::ConfigValidation(
                 "Deployment events are only available for cloud or server targets.".to_string(),
             )));
@@ -424,7 +424,7 @@ impl CallableTrait for DeploymentEventsCommand {
 impl CallableTrait for DeploymentRollbackCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let project_dir = std::env::current_dir()?;
-        if !is_remote_deployment(&project_dir) {
+        if !resolve_deploy_placement(&project_dir)?.is_remote() {
             return Err(Box::new(CliError::ConfigValidation(
                 "Deployment rollback is only available for cloud or server targets.".to_string(),
             )));

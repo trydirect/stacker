@@ -1138,6 +1138,11 @@ fn compose_service_to_definition(
         depends_on: service.depends_on.clone(),
         command: None,
         healthcheck,
+        cap_add: Vec::new(),
+        cap_drop: Vec::new(),
+        privileged: false,
+        platform: None,
+        devices: Vec::new(),
     })
 }
 
@@ -1612,6 +1617,11 @@ fn convert_compose_to_stacker(ai_output: &str, repo_name: &str) -> Option<Stacke
                     depends_on: extract_yaml_strings(svc.get("depends_on")),
                     command: None,
                     healthcheck: crate::cli::github_fetcher::default_healthcheck(img),
+                    cap_add: Vec::new(),
+                    cap_drop: Vec::new(),
+                    privileged: false,
+                    platform: None,
+                    devices: Vec::new(),
                 });
             } else {
                 app_image = Some(img.clone());
@@ -1642,6 +1652,14 @@ fn convert_compose_to_stacker(ai_output: &str, repo_name: &str) -> Option<Stacke
             environment: app_env,
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
+            depends_on: Vec::new(),
+            shm_size: None,
+            user: None,
         },
         services: infra_services,
         proxy: crate::cli::config_parser::ProxyConfig::default(),
@@ -2264,6 +2282,20 @@ impl CallableTrait for InitCommand {
             eprintln!("  stacker deploy --target local   # Deploy locally");
         }
 
+        // Default the active target to `local` so observability commands
+        // (`stacker logs`, `stacker status`) never hit the "No active target
+        // set" ambiguity error on a fresh project. `stacker deploy` rewrites
+        // this to the target it actually deployed to. `stacker init --target`
+        // has already set it — leave that untouched. Best-effort: a read-only
+        // checkout must not fail the whole init.
+        match crate::cli::deployment_lock::DeploymentLock::ensure_active_target_default(
+            &project_dir,
+        ) {
+            Ok(true) => eprintln!("✓ Active target set to: local"),
+            Ok(false) => {}
+            Err(e) => eprintln!("  ⚠ Could not set active target: {}", e),
+        }
+
         Ok(())
     }
 }
@@ -2436,7 +2468,8 @@ mod tests {
             crate::console::commands::cli::config::run_validate(&path.to_string_lossy(), None)
                 .unwrap();
 
-        assert_eq!(issues, Vec::<String>::new());
+        assert_eq!(issues.messages, Vec::<String>::new());
+        assert!(!issues.has_error());
         assert!(rendered.contains("target: local"));
         assert!(rendered.contains("type: none"));
         assert!(rendered.contains("status_panel: false"));
@@ -3171,6 +3204,11 @@ mod tests {
                 depends_on: vec![],
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             }],
             ..Default::default()
         };
@@ -3211,6 +3249,11 @@ mod tests {
                 depends_on: vec![],
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             }],
             ..Default::default()
         };

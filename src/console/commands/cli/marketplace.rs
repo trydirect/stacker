@@ -1301,6 +1301,29 @@ mod tests {
         assert!(!inputs.contains_key("base_domain"));
     }
 
+    /// Mirrors the dual-key shape of the migrated templates (e.g.
+    /// stacker-projects/huly/stacker.yml): `install.inputs` carries both the
+    /// pre-existing `commonDomain` and a `domain` entry moved over from the
+    /// removed `config_contract.inputs` block. The existing `commonDomain`
+    /// must win, `domain` is folded away, and empty-string secret defaults
+    /// survive verbatim.
+    #[test]
+    fn install_inputs_existing_common_domain_wins_over_migrated_domain() {
+        let mut config_inputs = Map::new();
+        config_inputs.insert("commonDomain".to_string(), json!("huly.example.com"));
+        config_inputs.insert("domain".to_string(), json!("huly.try.direct"));
+        config_inputs.insert("huly-database-password".to_string(), json!(""));
+        config_inputs.insert("huly-auth-secret".to_string(), json!(""));
+
+        let inputs =
+            resolve_install_inputs(config_inputs, None, &[]).expect("inputs should resolve");
+
+        assert_eq!(inputs.get("commonDomain"), Some(&json!("huly.example.com")));
+        assert!(!inputs.contains_key("domain"));
+        assert_eq!(inputs.get("huly-database-password"), Some(&json!("")));
+        assert_eq!(inputs.get("huly-auth-secret"), Some(&json!("")));
+    }
+
     #[test]
     fn apply_install_inputs_replaces_existing_vars() {
         let mut inputs = Map::new();

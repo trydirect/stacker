@@ -48,7 +48,8 @@ services:
     depends_on:
       stackerdb:
         condition: service_healthy
-    entrypoint: ["/app/server"]
+    # No entrypoint override: the image boots through /app/entrypoint.sh so
+    # pending sqlx migrations are applied before /app/server starts.
 
   # MQ Listener - Consumes deployment progress messages from Install Service
   # and updates deployment status in Stacker database

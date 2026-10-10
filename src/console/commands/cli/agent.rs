@@ -33,90 +33,13 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// Default poll interval (seconds).
 const DEFAULT_POLL_INTERVAL_SECS: u64 = 2;
 
-/// Resolve a deployment hash from explicit flag, active project agent, or deployment lock.
+/// Resolve a deployment hash for agent commands.
 ///
-/// Resolution order:
-/// 1. Explicit `--deployment` flag value
-/// 2. `stacker.yml` project name → API project lookup → active agent hash (most reliable)
-/// 3. `.stacker/deployment.lock` → `deployment_id` → API lookup for hash (fallback)
-pub(crate) fn resolve_deployment_hash(
-    explicit: &Option<String>,
-    ctx: &CliRuntime,
-) -> Result<String, CliError> {
-    // 1. Explicit flag
-    if let Some(hash) = explicit {
-        if !hash.is_empty() {
-            return Ok(hash.clone());
-        }
-    }
-
-    let project_dir = std::env::current_dir().map_err(CliError::Io)?;
-    let config_path = project_dir.join("stacker.yml");
-
-    // 2. stacker.yml deploy.deployment_hash — written by `stacker agent install`
-    // and `stacker deploy` after a successful remote deploy.
-    if config_path.exists() {
-        if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path)
-            .and_then(|c| c.with_resolved_deploy_target(None))
-        {
-            if let Some(ref hash) = config.deploy.deployment_hash {
-                if !hash.trim().is_empty() {
-                    return Ok(hash.clone());
-                }
-            }
-
-            // 3. stacker.yml project identity → active agent
-            // Falls back to config.name when project.identity is null.
-            let project_name = config
-                .project
-                .identity
-                .clone()
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| config.name.clone());
-
-            if !project_name.trim().is_empty() {
-                if let Ok(Some(proj)) = ctx.block_on(ctx.client.find_project_by_name(&project_name))
-                {
-                    match ctx.block_on(ctx.client.agent_snapshot_by_project(proj.id)) {
-                        Ok((_, hash)) => {
-                            eprintln!(
-                                "\x1b[2mℹ No --deployment specified — using active agent for project '{}': {}\x1b[0m",
-                                project_name, hash
-                            );
-                            return Ok(hash);
-                        }
-                        Err(_) => {}
-                    }
-
-                    // No active agent yet; try most recent deployment for the project
-                    if let Ok(deployments) =
-                        ctx.block_on(ctx.client.list_deployments(Some(proj.id), Some(1)))
-                    {
-                        if let Some(dep) = deployments.into_iter().next() {
-                            return Ok(dep.deployment_hash);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // 4. Deployment lock → integer ID → API lookup
-    if let Some(lock) = crate::cli::deployment_lock::DeploymentLock::load(&project_dir)? {
-        if let Some(dep_id) = lock.deployment_id {
-            let info = ctx.block_on(ctx.client.get_deployment_status(dep_id as i32))?;
-            if let Some(info) = info {
-                return Ok(info.deployment_hash);
-            }
-        }
-    }
-
-    Err(CliError::ConfigValidation(
-        "Cannot determine deployment hash.\n\
-         Use --deployment <HASH>, or run from a directory with a deployment lock or stacker.yml."
-            .to_string(),
-    ))
-}
+/// Agent commands always talk to a remote agent, so a local placement never
+/// blocks them: the pinned `deploy.deployment_hash` and the API hash chain
+/// stay reachable even when the active target is `local`. Shared
+/// implementation lives in [`crate::cli::deployment_context`].
+pub(crate) use crate::cli::deployment_context::resolve_agent_deployment_hash as resolve_deployment_hash;
 
 pub(crate) fn resolve_registry_auth_for_agent_deploy(
     project_dir: &Path,
@@ -2958,7 +2881,8 @@ impl CallableTrait for AgentInstallCommand {
 
             // Find the deployment hash for this project
             let pb = progress::spinner("Resolving deployment...");
-            let lock_for_local = crate::cli::deployment_lock::DeploymentLock::load(&project_dir)?;
+            let lock_for_local =
+                crate::cli::deployment_lock::DeploymentLock::load_active(&project_dir)?;
             let deployment_hash: Result<String, CliError> = ctx.block_on(async {
                 let project = if let Some(lock) = lock_for_local.as_ref() {
                     if let Some(pid) = lock.project_id {
@@ -3050,7 +2974,7 @@ impl CallableTrait for AgentInstallCommand {
         let pb = progress::spinner("Installing Status Panel agent");
 
         // Load deployment lock to get the correct project_id (avoids name collision)
-        let lock = crate::cli::deployment_lock::DeploymentLock::load(&project_dir)?;
+        let lock = crate::cli::deployment_lock::DeploymentLock::load_active(&project_dir)?;
 
         let result: Result<stacker_client::DeployResponse, CliError> = ctx.block_on(async {
             let target_label = config.deploy.target.to_string();

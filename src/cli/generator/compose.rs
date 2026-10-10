@@ -32,6 +32,15 @@ pub struct ComposeService {
     pub command: Option<String>,
     /// Docker compose healthcheck for this service.
     pub healthcheck: Option<ComposeHealthcheck>,
+    pub cap_add: Vec<String>,
+    pub cap_drop: Vec<String>,
+    pub privileged: bool,
+    pub platform: Option<String>,
+    pub devices: Vec<String>,
+    /// Container `/dev/shm` size (compose `shm_size`, e.g. `"256m"`).
+    pub shm_size: Option<String>,
+    /// Container `user:` (e.g. `"0:0"`).
+    pub user: Option<String>,
 }
 
 impl Default for ComposeService {
@@ -51,6 +60,13 @@ impl Default for ComposeService {
             runtime: None,
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
+            shm_size: None,
+            user: None,
         }
     }
 }
@@ -67,6 +83,11 @@ impl From<&ServiceDefinition> for ComposeService {
             depends_on: svc.depends_on.clone(),
             command: svc.command.clone(),
             healthcheck: svc.healthcheck.clone(),
+            cap_add: svc.cap_add.clone(),
+            cap_drop: svc.cap_drop.clone(),
+            privileged: svc.privileged,
+            platform: svc.platform.clone(),
+            devices: svc.devices.clone(),
             ..Default::default()
         };
         crate::helpers::stacker_labels::insert_runtime_labels(
@@ -344,6 +365,14 @@ fn build_app_service(config: &StackerConfig) -> ComposeService {
 
     // Healthcheck from app section
     svc.healthcheck = config.app.healthcheck.clone();
+    svc.cap_add = config.app.cap_add.clone();
+    svc.cap_drop = config.app.cap_drop.clone();
+    svc.privileged = config.app.privileged;
+    svc.platform = config.app.platform.clone();
+    svc.devices = config.app.devices.clone();
+    svc.depends_on = config.app.depends_on.clone();
+    svc.shm_size = config.app.shm_size.clone();
+    svc.user = config.app.user.clone();
 
     // Merge environment: top-level env first, then app-level (app wins)
     for (k, v) in &config.env {
@@ -667,6 +696,31 @@ impl ComposeDefinition {
                 }
             }
 
+            if let Some(ref platform) = svc.platform {
+                out.push_str(&format!("    platform: {}\n", yaml_quote(platform)));
+            }
+            if let Some(ref shm_size) = svc.shm_size {
+                out.push_str(&format!("    shm_size: {}\n", yaml_quote(shm_size)));
+            }
+            if let Some(ref user) = svc.user {
+                out.push_str(&format!("    user: {}\n", yaml_quote(user)));
+            }
+            if svc.privileged {
+                out.push_str("    privileged: true\n");
+            }
+            for (key, values) in [
+                ("cap_add", &svc.cap_add),
+                ("cap_drop", &svc.cap_drop),
+                ("devices", &svc.devices),
+            ] {
+                if !values.is_empty() {
+                    out.push_str(&format!("    {key}:\n"));
+                    for value in values {
+                        out.push_str(&format!("      - {}\n", yaml_quote(value)));
+                    }
+                }
+            }
+
             if !svc.ports.is_empty() {
                 out.push_str("    ports:\n");
                 for p in &svc.ports {
@@ -788,9 +842,60 @@ impl fmt::Display for ComposeDefinition {
 /// `env_keys` is the set of env var names whose values should be
 /// parameterized.  Typically this is every key declared in the author's
 /// `config_contract` with `mutability: generated` plus any `provided` fields.
+///
+/// `aliases` maps a compose key to the variable the author actually referenced
+/// in `stacker.yml`. A service's env key need not be the name the value is
+/// stored under — `MYSQL_PASSWORD: "${DB_PASSWORD}"` feeds one secret to a
+/// container that insists on its own name. Emitting `${MYSQL_PASSWORD}` there
+/// produces a reference nothing defines: compose resolves an unknown variable
+/// to the empty string with only a warning, so the container starts with a
+/// blank password and crash-loops. Pass [`env_reference_aliases`] so the
+/// reference keeps the name the env file really carries.
 pub fn parameterize_compose_env_vars(
     compose_content: &str,
     env_keys: &std::collections::HashSet<String>,
+) -> String {
+    parameterize_compose_env_vars_with_aliases(
+        compose_content,
+        env_keys,
+        &std::collections::HashMap::new(),
+    )
+}
+
+/// Collect `KEY -> VAR` for every `KEY: "${VAR}"` in the *unresolved*
+/// `stacker.yml`, where VAR differs from KEY.
+///
+/// The parsed config cannot answer this: `${VAR}` is resolved to its literal at
+/// load time, so by the time a compose file is rendered the author's reference
+/// is gone. Read the raw YAML text instead — only the exact whole-value form
+/// `${VAR}` counts, since a value that merely embeds a variable (a DSN, a URL)
+/// cannot be replaced by a single reference.
+pub fn env_reference_aliases(raw_stacker_yml: &str) -> std::collections::HashMap<String, String> {
+    let mut aliases = std::collections::HashMap::new();
+    let re = regex::Regex::new(
+        r#"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*"?\$\{([A-Za-z_][A-Za-z0-9_]*)\}"?\s*$"#,
+    )
+    .expect("valid regex");
+
+    for line in raw_stacker_yml.lines() {
+        if let Some(caps) = re.captures(line) {
+            let key = caps[1].to_string();
+            let var = caps[2].to_string();
+            if key != var {
+                aliases.insert(key, var);
+            }
+        }
+    }
+
+    aliases
+}
+
+/// [`parameterize_compose_env_vars`], but emitting the author's own variable
+/// name where one differs from the compose key.
+pub fn parameterize_compose_env_vars_with_aliases(
+    compose_content: &str,
+    env_keys: &std::collections::HashSet<String>,
+    aliases: &std::collections::HashMap<String, String>,
 ) -> String {
     if env_keys.is_empty() {
         return compose_content.to_string();
@@ -832,11 +937,12 @@ pub fn parameterize_compose_env_vars(
                 if let Some((key, _value)) = entry.split_once('=') {
                     let key = key.trim();
                     if is_env_identifier(key) && env_keys.contains(key) {
+                        let reference = aliases.get(key).map(String::as_str).unwrap_or(key);
                         result.push_str(&line[..indent]);
                         result.push_str("- ");
                         result.push_str(key);
                         result.push_str("=${");
-                        result.push_str(key);
+                        result.push_str(reference);
                         result.push_str("}\n");
                         continue;
                     }
@@ -845,12 +951,13 @@ pub fn parameterize_compose_env_vars(
                 // Match "      KEY: value" — the key must be a valid env identifier.
                 let key = key.trim();
                 if is_env_identifier(key) && env_keys.contains(key) {
+                    let reference = aliases.get(key).map(String::as_str).unwrap_or(key);
                     // Preserve the original indent and replace the value.
                     let prefix = &line[..indent + key.len()];
                     // Find where the value starts (after "KEY: ").
                     result.push_str(prefix);
                     result.push_str(": ${");
-                    result.push_str(key);
+                    result.push_str(reference);
                     result.push_str("}\n");
                     continue;
                 }
@@ -1404,6 +1511,11 @@ services:
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         }];
 
         let names = service_names(&config);
@@ -1447,6 +1559,11 @@ services:
             depends_on: Vec::new(),
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = ConfigBuilder::new()
             .name("with-db")
@@ -1774,6 +1891,11 @@ services:
             depends_on: Vec::new(),
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = ConfigBuilder::new()
             .name("with-vol")
@@ -1786,6 +1908,27 @@ services:
         let yaml = compose.render();
         assert!(yaml.contains("volumes:"));
         assert!(yaml.contains("  redis-data:"));
+    }
+
+    /// `app.shm_size`, `app.user` and `app.depends_on` were accepted by the
+    /// parser but never reached the generated compose (silently dropped).
+    /// They must be rendered for the app service.
+    #[test]
+    fn test_compose_app_renders_shm_size_user_depends_on() {
+        let mut config = minimal_config(AppType::Static);
+        config.app.shm_size = Some("256m".to_string());
+        config.app.user = Some("0:0".to_string());
+        config.app.depends_on = vec!["postgres".to_string()];
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let yaml = compose.render();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let app = doc.get("services").and_then(|s| s.get("app")).unwrap();
+        assert_eq!(app.get("shm_size").and_then(|v| v.as_str()), Some("256m"));
+        assert_eq!(app.get("user").and_then(|v| v.as_str()), Some("0:0"));
+        let depends = app.get("depends_on").and_then(|v| v.as_sequence()).unwrap();
+        assert_eq!(depends.len(), 1);
+        assert_eq!(depends[0].as_str(), Some("postgres"));
     }
 
     #[test]
@@ -1854,6 +1997,11 @@ services:
             depends_on: Vec::new(),
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
 
         let compose_svc = ComposeService::from(&svc_def);
@@ -1880,6 +2028,11 @@ services:
             depends_on: Vec::new(),
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
 
         let compose_svc = ComposeService::from(&svc_def);
@@ -2137,6 +2290,11 @@ services:
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = ConfigBuilder::new()
             .name("npm-proxied")
@@ -2186,6 +2344,11 @@ services:
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = ConfigBuilder::new()
             .name("partial-proxy")
@@ -2268,6 +2431,11 @@ services:
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = ConfigBuilder::new()
             .name("traefik-app")
@@ -2327,6 +2495,115 @@ services:
     }
 
     #[test]
+    /// A container that insists on its own variable name is fed from one the
+    /// author defined: `MYSQL_PASSWORD: "${DB_PASSWORD}"`. Emitting
+    /// `${MYSQL_PASSWORD}` there names something no `.env` defines — compose
+    /// resolves it to the empty string with a warning, and mysql crash-loops
+    /// on "Database is uninitialized and password option is not specified".
+    #[test]
+    fn an_alias_keeps_the_name_the_env_file_actually_defines() {
+        let compose = "\
+services:
+  db:
+    image: mysql:8
+    environment:
+      MYSQL_PASSWORD: placeholder-value # pragma: allowlist secret
+      MYSQL_ROOT_PASSWORD: placeholder-value # pragma: allowlist secret
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("MYSQL_PASSWORD".to_string());
+        keys.insert("MYSQL_ROOT_PASSWORD".to_string());
+
+        let mut aliases = std::collections::HashMap::new();
+        aliases.insert("MYSQL_PASSWORD".to_string(), "DB_PASSWORD".to_string());
+        aliases.insert(
+            "MYSQL_ROOT_PASSWORD".to_string(),
+            "DB_ROOT_PASSWORD".to_string(),
+        );
+
+        let result = parameterize_compose_env_vars_with_aliases(compose, &keys, &aliases);
+        assert!(
+            result.contains("MYSQL_PASSWORD: ${DB_PASSWORD}"),
+            "the reference must name the variable the env file carries:\n{result}"
+        );
+        assert!(
+            result.contains("MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}"),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn a_key_without_an_alias_still_references_itself() {
+        let compose = "\
+services:
+  app:
+    environment:
+      SECRET_KEY: placeholder-value # pragma: allowlist secret
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("SECRET_KEY".to_string());
+
+        let result = parameterize_compose_env_vars_with_aliases(
+            compose,
+            &keys,
+            &std::collections::HashMap::new(),
+        );
+        assert!(result.contains("SECRET_KEY: ${SECRET_KEY}"), "{result}");
+    }
+
+    #[test]
+    fn the_list_form_of_an_environment_block_honours_aliases() {
+        let compose = "\
+services:
+  db:
+    environment:
+      - MYSQL_PASSWORD=placeholder-value # pragma: allowlist secret
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("MYSQL_PASSWORD".to_string());
+        let mut aliases = std::collections::HashMap::new();
+        aliases.insert("MYSQL_PASSWORD".to_string(), "DB_PASSWORD".to_string());
+
+        let result = parameterize_compose_env_vars_with_aliases(compose, &keys, &aliases);
+        assert!(
+            result.contains("- MYSQL_PASSWORD=${DB_PASSWORD}"),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn aliases_are_read_from_the_unresolved_stacker_yml() {
+        let raw = r#"
+app:
+  environment:
+    DB_PASSWORD: "${DB_PASSWORD}"
+    WEBUI_URL: "https://${commonDomain}"
+services:
+  - name: db
+    environment:
+      MYSQL_PASSWORD: "${DB_PASSWORD}"
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MYSQL_DATABASE: ampache
+"#;
+        let aliases = env_reference_aliases(raw);
+
+        assert_eq!(
+            aliases.get("MYSQL_PASSWORD").map(String::as_str),
+            Some("DB_PASSWORD")
+        );
+        // Quoting is the author's choice, not a signal.
+        assert_eq!(
+            aliases.get("MYSQL_ROOT_PASSWORD").map(String::as_str),
+            Some("DB_ROOT_PASSWORD")
+        );
+        // A key that references its own name needs no alias.
+        assert!(!aliases.contains_key("DB_PASSWORD"));
+        // A value that merely embeds a variable cannot become one reference.
+        assert!(!aliases.contains_key("WEBUI_URL"));
+        // A plain literal is not a reference at all.
+        assert!(!aliases.contains_key("MYSQL_DATABASE"));
+    }
+
     fn parameterize_replaces_secret_values_with_env_refs() {
         let compose = "\
 services:

@@ -1,3 +1,4 @@
+pub(crate) mod admin_notifications;
 pub(crate) mod agent;
 pub mod audit;
 pub mod client;

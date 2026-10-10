@@ -9,7 +9,12 @@ use std::sync::{Mutex, OnceLock};
 
 use tokio::sync::OnceCell;
 
-static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+// A fresh `PgPool` per test, bound to that test's own runtime. Sharing one
+// pool across `#[tokio::test]` functions hands out connections belonging to a
+// runtime that has already been dropped, and `acquire()` then blocks for the
+// full 120s timeout and fails with `PoolTimedOut`. The server still starts
+// once; only the pool is per test.
+static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
 
 /// Tests share a single server and the same `test_user_id`, and tokio runs them
 /// concurrently. The mutex serializes them so they can't race on the same row.
@@ -18,8 +23,8 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-async fn app() -> &'static common::TestApp {
-    common::get_or_init_app(&APP)
+async fn app() -> common::TestApp {
+    common::get_or_init_app_fresh(&APP_CONFIG)
         .await
         .expect("Failed to start test app")
 }

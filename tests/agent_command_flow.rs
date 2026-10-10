@@ -1547,3 +1547,113 @@ async fn test_deactivate_pipe_report_accepts_runtime_lifecycle_shape() {
     assert_eq!(stored_result["removed"], true);
     assert_eq!(stored_result["lifecycle"]["state"], "inactive");
 }
+
+// ---------------------------------------------------------------------------
+// Registration records the deployment's owner when Stacker does not know it.
+//
+// Installing the agent on a deployment provisioned outside Stacker registered
+// an agent for a hash with no `deployment` row.
+// Nothing recorded the owner, so the snapshot's ownership check answered 404
+// and the dashboard said "Deployment not registered with the agent yet" while
+// the agent was online. The registering service (trusted by the internal key)
+// now passes the owner's user id as `user_id`.
+// ---------------------------------------------------------------------------
+
+async fn register_with_owner(
+    client: &reqwest::Client,
+    app: &common::TestAppWithVaultFresh,
+    deployment_hash: &str,
+    user_id: Option<&str>,
+) -> reqwest::StatusCode {
+    let mut payload = json!({
+        "deployment_hash": deployment_hash,
+        "agent_version": "1.0.0",
+        "capabilities": ["docker", "compose"],
+        "system_info": { "os": "linux", "arch": "x86_64", "memory_gb": 8 }
+    });
+    if let Some(user_id) = user_id {
+        payload["user_id"] = json!(user_id);
+    }
+    client
+        .post(format!("{}/api/v1/agent/register", &app.address))
+        .header("X-Internal-Key", common::TEST_INTERNAL_KEY)
+        .json(&payload)
+        .send()
+        .await
+        .expect("Failed to register agent")
+        .status()
+}
+
+async fn deployment_owners(
+    app: &common::TestAppWithVaultFresh,
+    deployment_hash: &str,
+) -> Vec<String> {
+    sqlx::query_scalar::<_, Option<String>>(
+        "SELECT d.user_id FROM deployment d JOIN project p ON p.id = d.project_id
+         WHERE d.deployment_hash = $1 AND p.user_id = d.user_id",
+    )
+    .bind(deployment_hash)
+    .fetch_all(&app.db_pool)
+    .await
+    .expect("Failed to read deployment owner")
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+#[tokio::test]
+async fn test_register_links_unknown_deployment_to_its_owner() {
+    let app = app().await;
+    let client = reqwest::Client::new();
+    let hash = format!("install_service_{}", uuid::Uuid::new_v4());
+
+    let status = register_with_owner(&client, &app, &hash, Some("owner_user_1")).await;
+    assert!(status.is_success(), "registration failed: {}", status);
+    assert_eq!(deployment_owners(&app, &hash).await, vec!["owner_user_1"]);
+
+    // Registering again (agent reinstall) neither fails nor duplicates the row.
+    let status = register_with_owner(&client, &app, &hash, Some("owner_user_1")).await;
+    assert!(status.is_success(), "re-registration failed: {}", status);
+    assert_eq!(deployment_owners(&app, &hash).await, vec!["owner_user_1"]);
+}
+
+#[tokio::test]
+async fn test_reregistration_links_an_agent_that_was_registered_without_owner() {
+    let app = app().await;
+    let client = reqwest::Client::new();
+    let hash = format!("install_service_{}", uuid::Uuid::new_v4());
+
+    // A caller that sends no owner still registers, as before.
+    let status = register_with_owner(&client, &app, &hash, None).await;
+    assert!(
+        status.is_success(),
+        "registration without owner failed: {}",
+        status
+    );
+    assert!(deployment_owners(&app, &hash).await.is_empty());
+
+    // The agent exists, the deployment row does not.
+    let status = register_with_owner(&client, &app, &hash, Some("owner_user_2")).await;
+    assert!(status.is_success(), "re-registration failed: {}", status);
+    assert_eq!(deployment_owners(&app, &hash).await, vec!["owner_user_2"]);
+}
+
+#[tokio::test]
+async fn test_register_never_changes_the_owner_of_a_known_deployment() {
+    let app = app().await;
+    let client = reqwest::Client::new();
+    let hash = format!("stacker_native_{}", uuid::Uuid::new_v4());
+    let project_name = format!("native-{}", &hash[hash.len() - 8..]);
+    create_test_deployment(&app, &project_name, &hash).await;
+
+    let status = register_with_owner(&client, &app, &hash, Some("someone_else")).await;
+    assert!(status.is_success(), "registration failed: {}", status);
+    assert_eq!(deployment_owners(&app, &hash).await, vec!["test_user_id"]);
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM deployment WHERE deployment_hash = $1")
+            .bind(&hash)
+            .fetch_one(&app.db_pool)
+            .await
+            .expect("count");
+    assert_eq!(rows, 1);
+}

@@ -410,12 +410,16 @@ pub async fn finalize_build_box(
 
     let fail = |stage: &str, err: String| BakeError::Finalize(format!("{stage}: {err}"));
 
+    // The build box is created for this bake and destroyed afterwards. It has no
+    // `server` row, so there is nothing to pin a host key against and no second
+    // connection that a pin could protect.
     let session = open_ssh(
         &ctx.host,
         ctx.port,
         &ctx.user,
         &ctx.private_key_pem,
         std::time::Duration::from_secs(30),
+        &crate::helpers::ssh_client::HostKeyPolicy::trust_first_use(),
     )
     .await
     .map_err(|e| fail("ssh connect", e.to_string()))?;

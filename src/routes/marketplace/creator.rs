@@ -123,6 +123,36 @@ fn validate_config_contract(
         })
 }
 
+/// Which pricing columns an *update* is allowed to write.
+///
+/// `None` means "leave the stored value alone" — the UPDATE statements
+/// COALESCE these fields. Billing terms come from an admin
+/// (`PATCH /marketplace/{id}/pricing` sets `deployment_daily` with a
+/// `daily_rate`); an author resubmitting a new version does not send them, and
+/// their absence must not be read as "make it free".
+struct PricingUpdate {
+    price: Option<f64>,
+    billing_cycle: Option<String>,
+    currency: Option<String>,
+}
+
+fn pricing_update(
+    plan_type: Option<&str>,
+    price: Option<f64>,
+    currency: Option<&str>,
+) -> PricingUpdate {
+    PricingUpdate {
+        price: match plan_type {
+            // "free" is itself a statement about price, so it zeroes it.
+            Some("free") => Some(0.0),
+            Some(_) => price,
+            None => None,
+        },
+        billing_cycle: plan_type.map(str::to_string),
+        currency: currency.map(str::to_string),
+    }
+}
+
 #[tracing::instrument(name = "Create draft template", skip_all)]
 #[post("")]
 pub async fn create_handler(
@@ -149,14 +179,42 @@ pub async fn create_handler(
 
     let creator_name = format!("{} {}", user.first_name, user.last_name);
 
-    // Normalize pricing: plan_type "free" forces price to 0
-    let billing_cycle = req.plan_type.unwrap_or_else(|| "free".to_string());
+    // Normalize pricing: plan_type "free" forces price to 0.
+    //
+    // Defaulting only applies to a *new* template. On an update the absence of
+    // a pricing field means "leave it alone", never "make it free": billing
+    // terms are set by an admin (PATCH /marketplace/{id}/pricing sets
+    // billing_cycle=deployment_daily with a daily_rate), and an author
+    // resubmitting a new version does not send them. Folding None into "free"
+    // here silently disarmed the charge — the clone path only authorizes when
+    // billing_cycle is "deployment_daily" — so every resubmit turned a paid
+    // stack into a free one while daily_rate and monthly_cap sat untouched in
+    // the row, making the row look correctly configured.
+    let requested_plan_type = req.plan_type.clone();
+    let requested_price = req.price;
+    let requested_currency = req.currency.clone();
+
+    let billing_cycle = requested_plan_type
+        .clone()
+        .unwrap_or_else(|| "free".to_string());
     let price = if billing_cycle == "free" {
         0.0
     } else {
-        req.price.unwrap_or(0.0)
+        requested_price.unwrap_or(0.0)
     };
-    let currency = req.currency.unwrap_or_else(|| "USD".to_string());
+    let currency = requested_currency
+        .clone()
+        .unwrap_or_else(|| "USD".to_string());
+
+    let PricingUpdate {
+        price: update_price,
+        billing_cycle: update_billing_cycle,
+        currency: update_currency,
+    } = pricing_update(
+        requested_plan_type.as_deref(),
+        requested_price,
+        requested_currency.as_deref(),
+    );
 
     let existing = db::marketplace::get_by_slug_and_user(pg_pool.get_ref(), &req.slug, &user.id)
         .await
@@ -166,13 +224,21 @@ pub async fn create_handler(
         // Update existing template
         tracing::info!("Updating existing template with slug: {}", req.slug);
 
-        // Use the resubmit-aware update for templates that are already
-        // submitted, under review, or approved — `update_metadata` only
-        // allows draft/rejected/needs_changes.
-        let updated = if matches!(
+        // A template in the review queue is frozen until an admin approves,
+        // rejects or asks for changes; letting the author write here would
+        // swap the stack definition under the reviewer.
+        if matches!(
             existing_template.status.as_str(),
-            "submitted" | "under_review" | "approved"
+            "submitted" | "under_review"
         ) {
+            return Err(JsonResponse::<models::StackTemplate>::build().conflict(
+                "Template is under review and cannot be updated until the review is complete",
+            ));
+        }
+
+        // Use the resubmit-aware update for approved templates —
+        // `update_metadata` only allows draft/rejected/needs_changes.
+        let updated = if existing_template.status == "approved" {
             db::marketplace::update_metadata_for_resubmit(
                 pg_pool.get_ref(),
                 &existing_template.id,
@@ -183,10 +249,10 @@ pub async fn create_handler(
                 Some(tags.clone()),
                 Some(tech_stack.clone()),
                 Some(infrastructure_requirements.clone()),
-                Some(price),
-                Some(billing_cycle.as_str()),
+                update_price,
+                update_billing_cycle.as_deref(),
                 req.required_plan_name.as_deref(),
-                Some(currency.as_str()),
+                update_currency.as_deref(),
                 req.public_ports.clone(),
                 req.vendor_url.as_deref(),
             )
@@ -205,10 +271,10 @@ pub async fn create_handler(
                 Some(tags.clone()),
                 Some(tech_stack.clone()),
                 Some(infrastructure_requirements.clone()),
-                Some(price),
-                Some(billing_cycle.as_str()),
+                update_price,
+                update_billing_cycle.as_deref(),
                 req.required_plan_name.as_deref(),
-                Some(currency.as_str()),
+                update_currency.as_deref(),
                 req.public_ports.clone(),
                 req.vendor_url.as_deref(),
             )
@@ -645,12 +711,32 @@ fn ensure_contract_declares_generated_secrets(
     if missing.is_empty() {
         Ok(())
     } else {
-        Err(JsonResponse::<serde_json::Value>::build().bad_request(format!(
+        let message = format!(
             "config_contract is missing a `mutability: generated` or `provided` policy for secret-shaped field(s): {}. \
              Declare a generator or buyer-provided field for each in config_contract before publishing.",
             missing.join(", ")
-        )))
+        );
+        Err(JsonResponse::<serde_json::Value>::build()
+            .set_meta(serde_json::json!({
+                "code": "MARKETPLACE_CONFIG_CONTRACT_SECRET_POLICY_REQUIRED",
+                "fields": missing,
+            }))
+            .bad_request(message))
     }
+}
+
+/// The answer for a template the caller is not allowed to see.
+///
+/// Deliberately identical to the answer for a template that does not exist. A
+/// different status or wording tells a caller holding a guessed id that the
+/// template is real and belongs to someone else. Template ids are random
+/// UUIDs, so knowing one is the hard part and the leak was thin, but keeping
+/// the two answers identical costs nothing and removes the question.
+///
+/// Use this for every ownership refusal on a template, and for the
+/// template-missing case too, so the two cannot drift apart again.
+fn template_not_visible() -> actix_web::Error {
+    JsonResponse::<serde_json::Value>::build().not_found("Template not found")
 }
 
 fn ensure_template_owner(
@@ -660,7 +746,7 @@ fn ensure_template_owner(
     if template.creator_user_id == user_id {
         Ok(())
     } else {
-        Err(JsonResponse::<serde_json::Value>::build().forbidden("Forbidden"))
+        Err(template_not_visible())
     }
 }
 
@@ -754,10 +840,10 @@ pub async fn update_handler(
     )
     .fetch_one(pg_pool.get_ref())
     .await
-    .map_err(|_| JsonResponse::<serde_json::Value>::build().not_found("Not Found"))?;
+    .map_err(|_| template_not_visible())?;
 
     if owner_id != user.id {
-        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Forbidden"));
+        return Err(template_not_visible());
     }
 
     let req = body.into_inner();
@@ -906,9 +992,7 @@ pub async fn presign_asset_upload_handler(
     let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
-        })?;
+        .ok_or_else(template_not_visible)?;
 
     ensure_template_owner(&template, &user.id)?;
     ensure_template_assets_editable(&template)?;
@@ -963,9 +1047,7 @@ pub async fn finalize_asset_upload_handler(
     let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
-        })?;
+        .ok_or_else(template_not_visible)?;
 
     ensure_template_owner(&template, &user.id)?;
     ensure_template_assets_editable(&template)?;
@@ -1024,9 +1106,7 @@ pub async fn presign_asset_download_handler(
     let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
-        })?;
+        .ok_or_else(template_not_visible)?;
 
     ensure_template_owner(&template, &user.id)?;
 
@@ -1071,10 +1151,10 @@ pub async fn submit_handler(
     )
     .fetch_one(pg_pool.get_ref())
     .await
-    .map_err(|_| JsonResponse::<serde_json::Value>::build().not_found("Not Found"))?;
+    .map_err(|_| template_not_visible())?;
 
     if owner_id != user.id {
-        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Forbidden"));
+        return Err(template_not_visible());
     }
 
     ensure_no_secrets_confirmation(body.into_inner().confirm_no_secrets)?;
@@ -1210,10 +1290,10 @@ pub async fn resubmit_handler(
     )
     .fetch_one(pg_pool.get_ref())
     .await
-    .map_err(|_| JsonResponse::<serde_json::Value>::build().not_found("Not Found"))?;
+    .map_err(|_| template_not_visible())?;
 
     if owner_id != user.id {
-        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Forbidden"));
+        return Err(template_not_visible());
     }
 
     let req = body.into_inner();
@@ -1338,9 +1418,7 @@ pub async fn resubmit_handler(
     let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
-        })?;
+        .ok_or_else(template_not_visible)?;
 
     let template_clone = template.clone();
     tokio::spawn(async move {
@@ -1427,12 +1505,10 @@ async fn validate_optional_template_scope(
     let template = db::marketplace::get_by_id(pool, template_id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
-        })?;
+        .ok_or_else(template_not_visible)?;
 
     if template.creator_user_id != user_id {
-        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Access denied"));
+        return Err(template_not_visible());
     }
 
     Ok(())
@@ -1467,12 +1543,10 @@ pub async fn my_reviews_handler(
     let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
-        })?;
+        .ok_or_else(template_not_visible)?;
 
     if template.creator_user_id != user.id {
-        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Access denied"));
+        return Err(template_not_visible());
     }
 
     db::marketplace::list_reviews_by_template(pg_pool.get_ref(), id)
@@ -1495,12 +1569,10 @@ pub async fn vendor_profile_status_handler(
     let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
-        })?;
+        .ok_or_else(template_not_visible)?;
 
     if template.creator_user_id != user.id {
-        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Access denied"));
+        return Err(template_not_visible());
     }
 
     let vendor_profile = db::marketplace::get_vendor_profile_by_creator(
@@ -1738,6 +1810,53 @@ pub async fn complete_onboarding_handler(
 
 #[cfg(test)]
 mod field_policy_gate_tests {
+
+    /// An author resubmitting a new version sends no pricing fields. Folding
+    /// that absence into "free" disarmed the deployment_daily charge for every
+    /// hero stack: daily_rate and monthly_cap stayed in the row, so it looked
+    /// configured, while billing_cycle said free and the clone path skipped
+    /// authorization entirely.
+    #[test]
+    fn an_update_without_pricing_fields_changes_no_pricing() {
+        let update = super::pricing_update(None, None, None);
+        assert_eq!(update.price, None);
+        assert_eq!(update.billing_cycle, None);
+        assert_eq!(update.currency, None);
+    }
+
+    /// A price alone is not a plan: without plan_type nothing says the stored
+    /// billing terms should change.
+    #[test]
+    fn a_price_without_a_plan_type_is_not_written() {
+        let update = super::pricing_update(None, Some(19.0), Some("EUR"));
+        assert_eq!(update.price, None);
+        assert_eq!(update.billing_cycle, None);
+        assert_eq!(update.currency.as_deref(), Some("EUR"));
+    }
+
+    #[test]
+    fn declaring_free_still_zeroes_the_price() {
+        let update = super::pricing_update(Some("free"), Some(19.0), None);
+        assert_eq!(update.price, Some(0.0));
+        assert_eq!(update.billing_cycle.as_deref(), Some("free"));
+    }
+
+    #[test]
+    fn a_paid_plan_writes_the_price_it_was_given() {
+        let update = super::pricing_update(Some("one_time"), Some(19.0), Some("USD"));
+        assert_eq!(update.price, Some(19.0));
+        assert_eq!(update.billing_cycle.as_deref(), Some("one_time"));
+        assert_eq!(update.currency.as_deref(), Some("USD"));
+    }
+
+    /// The admin's own cycle survives when the author sends it back unchanged.
+    #[test]
+    fn deployment_daily_is_written_when_explicitly_given() {
+        let update = super::pricing_update(Some("deployment_daily"), None, None);
+        assert_eq!(update.billing_cycle.as_deref(), Some("deployment_daily"));
+        assert_eq!(update.price, None);
+    }
+
     use super::*;
 
     fn generated_contract() -> serde_json::Value {

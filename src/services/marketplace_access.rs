@@ -58,6 +58,29 @@ fn validation_failed(err: ConnectorError) -> MarketplaceAccessError {
     MarketplaceAccessError::ValidationFailed(err.to_string())
 }
 
+/// Map a gate rejection onto the HTTP error a deploy route must return:
+/// 402 when only a payment method is missing, 403 otherwise.
+pub fn map_access_error(err: MarketplaceAccessError) -> actix_web::Error {
+    use crate::helpers::JsonResponse;
+
+    match err {
+        MarketplaceAccessError::ValidationFailed(ref reason) => {
+            tracing::error!("Failed to validate marketplace access: {}", reason);
+            JsonResponse::<models::Project>::build()
+                .internal_server_error("Failed to validate marketplace access")
+        }
+        MarketplaceAccessError::NoPaymentMethod { .. } => {
+            JsonResponse::<models::Project>::build().payment_required(err.to_string())
+        }
+        MarketplaceAccessError::MissingUserToken
+        | MarketplaceAccessError::InsufficientFeaturePlan
+        | MarketplaceAccessError::InsufficientTemplatePlan { .. }
+        | MarketplaceAccessError::TemplateNotOwned => {
+            JsonResponse::<models::Project>::build().forbidden(err.to_string())
+        }
+    }
+}
+
 async fn user_owns_template_by_any_identifier(
     user_service: &Arc<dyn UserServiceConnector>,
     user_token: &str,
@@ -82,10 +105,36 @@ async fn user_owns_template_by_any_identifier(
     Ok(false)
 }
 
+/// How a non-free template the user does not own may still be deployed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessMode {
+    /// Only a purchase record authorizes it. Used by paths that have no
+    /// post-deploy settlement, where a card alone would deploy for free.
+    RequireOwnership,
+    /// A saved payment method is enough — the caller settles the charge after
+    /// a successful deploy (the one-click path's completion hook).
+    AllowCardOnFile,
+}
+
 pub async fn validate_marketplace_template_access(
     user_service: &Arc<dyn UserServiceConnector>,
     user: &models::User,
     template: &models::StackTemplate,
+) -> Result<(), MarketplaceAccessError> {
+    validate_marketplace_template_access_with_mode(
+        user_service,
+        user,
+        template,
+        AccessMode::RequireOwnership,
+    )
+    .await
+}
+
+pub async fn validate_marketplace_template_access_with_mode(
+    user_service: &Arc<dyn UserServiceConnector>,
+    user: &models::User,
+    template: &models::StackTemplate,
+    mode: AccessMode,
 ) -> Result<(), MarketplaceAccessError> {
     let user_token = user
         .access_token
@@ -150,10 +199,27 @@ pub async fn validate_marketplace_template_access(
     let is_free = no_price && no_plan;
 
     if !is_free
-        && template.product_id.is_some()
         && !user_owns_template_by_any_identifier(user_service, user_token, template).await?
     {
-        return Err(MarketplaceAccessError::TemplateNotOwned);
+        // NOTE: the ownership check must apply regardless of product_id.
+        // Guarding it on `product_id.is_some()` let a priced template with an
+        // unset product_id deploy freely (incident 2026-10-07).
+        return match mode {
+            AccessMode::RequireOwnership => Err(MarketplaceAccessError::TemplateNotOwned),
+            AccessMode::AllowCardOnFile => {
+                let capability = user_service
+                    .can_charge(user_token)
+                    .await
+                    .map_err(validation_failed)?;
+                if capability.can_charge {
+                    Ok(())
+                } else {
+                    Err(MarketplaceAccessError::NoPaymentMethod {
+                        reason: capability.reason.unwrap_or_else(|| "unknown".to_string()),
+                    })
+                }
+            }
+        };
     }
 
     Ok(())
@@ -825,6 +891,195 @@ mod tests {
         assert!(
             !svc.calls().contains(&CapturedCall::CanCharge),
             "can_charge must NOT be probed for one_time templates"
+        );
+    }
+
+    // ── Regression: a priced template with no product_id must not deploy freely ──
+    //
+    // 2026-10-07 incident: the ownership gate was guarded by
+    // `template.product_id.is_some()`, so a priced template whose product_id
+    // was unset skipped the check entirely and deployed with neither a
+    // purchase nor a card.
+
+    #[tokio::test]
+    async fn rejects_unowned_priced_template_without_product_id() {
+        let user_service: Arc<dyn UserServiceConnector> =
+            Arc::new(TestUserService::new(&[("professional", true)], &[]));
+
+        let template = models::StackTemplate {
+            slug: "priced-no-product-id".to_string(),
+            product_id: None,
+            price: Some(15.0),
+            required_plan_name: None,
+            ..Default::default()
+        };
+
+        let result =
+            validate_marketplace_template_access(&user_service, &test_user(), &template).await;
+
+        assert!(
+            matches!(result, Err(MarketplaceAccessError::TemplateNotOwned)),
+            "a priced template must not deploy without ownership or a card, \
+             even when product_id is unset"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_unowned_zero_price_but_plan_required_template_without_product_id() {
+        // Not free by the gate's definition (a non-free plan requirement makes
+        // it non-free) and unowned — must not slip through the product_id gap.
+        let user_service: Arc<dyn UserServiceConnector> =
+            Arc::new(TestUserService::new(&[("professional", true), ("enterprise", true)], &[]));
+
+        let template = models::StackTemplate {
+            slug: "plan-required-no-product-id".to_string(),
+            product_id: None,
+            price: None,
+            required_plan_name: Some("enterprise".to_string()),
+            ..Default::default()
+        };
+
+        let result =
+            validate_marketplace_template_access(&user_service, &test_user(), &template).await;
+
+        assert!(matches!(result, Err(MarketplaceAccessError::TemplateNotOwned)));
+    }
+
+    #[tokio::test]
+    async fn allows_owned_priced_template_without_product_id() {
+        // Ownership is matched by template id / slug too, so a real owner is
+        // unaffected when product_id is unset.
+        let user_service: Arc<dyn UserServiceConnector> = Arc::new(TestUserService::new(
+            &[("professional", true)],
+            &["priced-no-product-id"],
+        ));
+
+        let template = models::StackTemplate {
+            slug: "priced-no-product-id".to_string(),
+            product_id: None,
+            price: Some(15.0),
+            required_plan_name: None,
+            ..Default::default()
+        };
+
+        let result =
+            validate_marketplace_template_access(&user_service, &test_user(), &template).await;
+
+        assert!(result.is_ok());
+    }
+
+    // ── Deferred-settlement mode (one-click path): a card may stand in for
+    //    ownership, because that path charges after a successful deploy.
+
+    #[tokio::test]
+    async fn deferred_mode_allows_unowned_priced_template_with_card() {
+        let svc = Arc::new(TestUserService::new(&[("professional", true)], &[]));
+        let user_service: Arc<dyn UserServiceConnector> = svc.clone();
+        let template = models::StackTemplate {
+            slug: "priced-no-product-id".to_string(),
+            product_id: None,
+            price: Some(15.0),
+            required_plan_name: None,
+            ..Default::default()
+        };
+
+        let result = validate_marketplace_template_access_with_mode(
+            &user_service,
+            &test_user(),
+            &template,
+            AccessMode::AllowCardOnFile,
+        )
+        .await;
+
+        assert!(result.is_ok(), "a saved card authorizes post-deploy settlement");
+        assert!(svc.calls().contains(&CapturedCall::CanCharge));
+    }
+
+    #[tokio::test]
+    async fn deferred_mode_rejects_unowned_priced_template_without_card() {
+        let svc = Arc::new(
+            TestUserService::new(&[("professional", true)], &[])
+                .with_can_charge(false, Some("no_payment_method")),
+        );
+        let user_service: Arc<dyn UserServiceConnector> = svc.clone();
+        let template = models::StackTemplate {
+            slug: "priced-no-product-id".to_string(),
+            product_id: None,
+            price: Some(15.0),
+            required_plan_name: None,
+            ..Default::default()
+        };
+
+        let result = validate_marketplace_template_access_with_mode(
+            &user_service,
+            &test_user(),
+            &template,
+            AccessMode::AllowCardOnFile,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(MarketplaceAccessError::NoPaymentMethod { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn deferred_mode_rejects_unowned_template_with_product_id_without_card() {
+        // The product_id case must reach the same card fallback in deferred
+        // mode — otherwise the one-click path blocks legitimately card-backed
+        // deploys of templates that do carry a product_id.
+        let svc = Arc::new(
+            TestUserService::new(&[("professional", true)], &[])
+                .with_can_charge(false, Some("no_payment_method")),
+        );
+        let user_service: Arc<dyn UserServiceConnector> = svc.clone();
+        let template = models::StackTemplate {
+            slug: "paid-template".to_string(),
+            product_id: Some(100),
+            price: Some(15.0),
+            required_plan_name: None,
+            ..Default::default()
+        };
+
+        let result = validate_marketplace_template_access_with_mode(
+            &user_service,
+            &test_user(),
+            &template,
+            AccessMode::AllowCardOnFile,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(MarketplaceAccessError::NoPaymentMethod { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn deferred_mode_still_honors_ownership_without_probing_card() {
+        let svc = Arc::new(TestUserService::new(&[("professional", true)], &["100"]));
+        let user_service: Arc<dyn UserServiceConnector> = svc.clone();
+        let template = models::StackTemplate {
+            slug: "paid-template".to_string(),
+            product_id: Some(100),
+            price: Some(15.0),
+            required_plan_name: None,
+            ..Default::default()
+        };
+
+        let result = validate_marketplace_template_access_with_mode(
+            &user_service,
+            &test_user(),
+            &template,
+            AccessMode::AllowCardOnFile,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert!(
+            !svc.calls().contains(&CapturedCall::CanCharge),
+            "ownership alone must settle the check — no card probe"
         );
     }
 }

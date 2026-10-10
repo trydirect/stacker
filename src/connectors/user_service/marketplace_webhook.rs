@@ -113,6 +113,10 @@ pub struct MarketplaceWebhookPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vendor_email: Option<String>,
 
+    /// New vendor verification_status, for the vendor_verification_changed action.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_status: Option<String>,
+
     /// Full stack/compose definition from the latest template version. This is
     /// the field the User Service caches so `/applications` can serve a
     /// deployable definition (install-service Flow 4). Present on
@@ -297,6 +301,7 @@ impl MarketplaceWebhookSender {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -368,6 +373,7 @@ impl MarketplaceWebhookSender {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -435,6 +441,7 @@ impl MarketplaceWebhookSender {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -503,6 +510,7 @@ impl MarketplaceWebhookSender {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -571,6 +579,7 @@ impl MarketplaceWebhookSender {
             review_reason: review_reason.map(str::to_string),
             next_action_hint: Some(next_action_hint.to_string()),
             vendor_email: None,
+            verification_status: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -642,6 +651,7 @@ impl MarketplaceWebhookSender {
                     .to_string(),
             ),
             vendor_email: None,
+            verification_status: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -690,6 +700,7 @@ impl MarketplaceWebhookSender {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -701,6 +712,7 @@ impl MarketplaceWebhookSender {
         &self,
         template: &models::marketplace::StackTemplate,
         vendor_id: &str,
+        reason: Option<&str>,
     ) -> Result<WebhookResponse, ConnectorError> {
         let span = tracing::info_span!(
             "send_template_unpublished_webhook",
@@ -754,9 +766,44 @@ impl MarketplaceWebhookSender {
             view_count: template.view_count,
             approved_at: template.approved_at.map(|dt| dt.to_rfc3339()),
             required_plan_name: template.required_plan_name.clone(),
-            review_reason: None,
+            review_reason: reason.map(str::to_string),
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
+        };
+
+        self.send_webhook(&payload).instrument(span).await
+    }
+
+    /// Send a vendor verification status change webhook to User Service.
+    ///
+    /// Unlike every other sender in this file, this is not template-scoped -
+    /// `admin_unapprove`/`update_vendor_profile*` operate on the vendor
+    /// account directly and may have no approved template at all. The vendor
+    /// was never told why their account was (un)verified until this existed
+    /// (found 2026-10-04 alongside the admin-ui bug that made the field
+    /// unreachable in the first place).
+    pub async fn send_vendor_verification_changed(
+        &self,
+        vendor_user_id: &str,
+        verification_status: &str,
+        reason: Option<&str>,
+    ) -> Result<WebhookResponse, ConnectorError> {
+        let span = tracing::info_span!(
+            "send_vendor_verification_changed_webhook",
+            vendor_user_id = vendor_user_id,
+            verification_status = verification_status
+        );
+
+        let payload = MarketplaceWebhookPayload {
+            action: "vendor_verification_changed".to_string(),
+            vendor_user_id: Some(vendor_user_id.to_string()),
+            // Reuses review_reason rather than adding a dedicated field -
+            // same "why" semantics as every other admin-decision webhook
+            // (template_review_rejected, template_unpublished).
+            review_reason: reason.map(str::to_string),
+            verification_status: Some(verification_status.to_string()),
+            ..Default::default()
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -885,6 +932,7 @@ mod tests {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
             infrastructure_requirements: None,
             ..Default::default()
         };
@@ -927,6 +975,7 @@ mod tests {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
             infrastructure_requirements: None,
             ..Default::default()
         };
@@ -963,6 +1012,7 @@ mod tests {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
             infrastructure_requirements: None,
             ..Default::default()
         };
@@ -999,6 +1049,7 @@ mod tests {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
             infrastructure_requirements: None,
             ..Default::default()
         };
@@ -1037,6 +1088,7 @@ mod tests {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
             infrastructure_requirements: None,
             ..Default::default()
         };
@@ -1137,6 +1189,7 @@ mod tests {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
             infrastructure_requirements: None,
             ..Default::default()
         };
@@ -1177,6 +1230,7 @@ mod tests {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
             infrastructure_requirements: None,
             ..Default::default()
         };

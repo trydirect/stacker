@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::cli::config_parser::{CloudOrchestrator, DeployTarget, ProxyType, StackerConfig};
+use crate::cli::config_parser::{DeployTarget, ProxyType, StackerConfig};
 use crate::cli::credentials::{CredentialsManager, StoredCredentials};
 use crate::cli::error::CliError;
 use crate::cli::install_runner::{CommandExecutor, CommandOutput, ShellExecutor};
@@ -70,7 +70,7 @@ pub fn run_status(
     let compose_path = resolve_local_compose_path(project_dir)?;
 
     let compose_str = compose_path.to_string_lossy().to_string();
-    let project_name = resolve_local_compose_project_name(project_dir);
+    let project_name = resolve_local_compose_project_name(project_dir)?;
     let args = build_status_args(&compose_str, &project_name, json);
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
@@ -456,12 +456,12 @@ fn containers_signature(containers: &[serde_json::Value]) -> String {
 
 /// Query remote deployment status from the Stacker server, optionally watching.
 fn run_remote_status(
+    project_dir: &Path,
     json: bool,
     watch: bool,
     notify: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load stacker.yml to find project name
-    let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
 
     if !config_path.exists() {
@@ -591,9 +591,26 @@ fn run_remote_status(
 
         // Resolve project ID by name
         let project = client.find_project_by_name(&project_name).await?;
-        let project = project.ok_or_else(|| CliError::DeployFailed {
-            target: deploy_target,
-            reason: missing_remote_project_reason(&project_name, &base_url, deploy_target),
+        let project = project.ok_or_else(|| {
+            let mut reason = missing_remote_project_reason(&project_name, &base_url, deploy_target);
+            let has_local = crate::cli::deployment_lock::DeploymentLock::exists_for_target(
+                &project_dir,
+                "local",
+            ) || project_dir
+                .join(".stacker")
+                .join("docker-compose.yml")
+                .exists()
+                || crate::cli::local_compose::resolve_local_compose_path(&project_dir).is_ok();
+            if has_local {
+                reason.push_str(
+                    "\nA local deployment exists in this directory — run `stacker target local` \
+to inspect it with `stacker status` and `stacker logs`.",
+                );
+            }
+            CliError::DeployFailed {
+                target: deploy_target,
+                reason,
+            }
         })?;
 
         // Fetch server info for this project (best-effort)
@@ -717,63 +734,39 @@ fn run_remote_status(
     })
 }
 
-/// Detect whether the project is configured for a remote (cloud/server) deployment.
-pub(crate) fn is_remote_deployment(project_dir: &Path) -> bool {
-    if let Ok(Some(lock)) = crate::cli::deployment_lock::DeploymentLock::load(project_dir) {
-        if lock.deployment_id.is_some() || lock.target != "local" {
-            return true;
-        }
-    }
-
-    let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
-    if !config_path.exists() {
-        return false;
-    }
-
-    let config = match StackerConfig::from_file(&config_path)
-        .and_then(|config| config.with_resolved_deploy_target(None))
-    {
-        Ok(config) => config,
-        Err(_) => return false,
-    };
-
-    // Remote if target is Cloud/Server, or if remote orchestrator is configured
-    if matches!(
-        config.deploy.target,
-        DeployTarget::Cloud | DeployTarget::Server
-    ) {
-        return true;
-    }
-
-    if let Some(cloud_cfg) = &config.deploy.cloud {
-        if cloud_cfg.orchestrator == CloudOrchestrator::Remote {
-            return true;
-        }
-    }
-
-    false
-}
-
 impl CallableTrait for StatusCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let project_dir = std::env::current_dir()?;
-
-        if is_remote_deployment(&project_dir) {
-            // Remote deployment — query Stacker server
-            run_remote_status(self.json, self.watch, self.notify)?;
-        } else {
-            // Local deployment — docker compose ps
-            let executor = ShellExecutor;
-            let output = run_status(&project_dir, self.json, &executor)?;
-            print!("{}", output.stdout);
-
-            if self.watch {
-                eprintln!("Note: --watch is only supported for cloud deployments.");
-            }
-        }
-
-        Ok(())
+        dispatch_status(&project_dir, self.json, self.watch, self.notify)
     }
+}
+
+/// Route `stacker status` by deployment placement. Extracted for testability.
+pub fn dispatch_status(
+    project_dir: &Path,
+    json: bool,
+    watch: bool,
+    notify: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let placement = crate::cli::deployment_context::resolve_deploy_placement(project_dir)?;
+
+    if placement.is_remote() {
+        // Remote deployment — query Stacker server
+        run_remote_status(project_dir, json, watch, notify)?;
+    } else {
+        // Local deployment (or no evidence yet — run_status reports
+        // "No deployment found. Run 'stacker deploy' first." in that case)
+        // — docker compose ps.
+        let executor = ShellExecutor;
+        let output = run_status(project_dir, json, &executor)?;
+        print!("{}", output.stdout);
+
+        if watch {
+            eprintln!("Note: --watch is only supported for cloud deployments.");
+        }
+    }
+
+    Ok(())
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -781,6 +774,7 @@ impl CallableTrait for StatusCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::deployment_context::{resolve_deploy_placement, DeploymentPlacement};
     use crate::cli::deployment_lock::DeploymentLock;
     use crate::cli::stacker_client::ServerInfo;
     use chrono::{Duration, Utc};
@@ -993,13 +987,16 @@ mod tests {
     }
 
     #[test]
-    fn test_is_remote_deployment_no_config() {
+    fn test_placement_no_config_is_unknown() {
         let dir = tempfile::TempDir::new().unwrap();
-        assert!(!is_remote_deployment(dir.path()));
+        assert_eq!(
+            resolve_deploy_placement(dir.path()).unwrap(),
+            DeploymentPlacement::Unknown
+        );
     }
 
     #[test]
-    fn test_is_remote_deployment_for_server_target_config() {
+    fn test_placement_for_server_target_config() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(
             dir.path().join(DEFAULT_CONFIG_FILE),
@@ -1007,11 +1004,16 @@ mod tests {
         )
         .unwrap();
 
-        assert!(is_remote_deployment(dir.path()));
+        assert_eq!(
+            resolve_deploy_placement(dir.path()).unwrap(),
+            DeploymentPlacement::Remote {
+                target: "server".to_string()
+            }
+        );
     }
 
     #[test]
-    fn test_is_remote_deployment_for_named_server_target_config() {
+    fn test_placement_for_named_server_target_config() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(
             dir.path().join(DEFAULT_CONFIG_FILE),
@@ -1032,11 +1034,16 @@ deploy:
         )
         .unwrap();
 
-        assert!(is_remote_deployment(dir.path()));
+        assert_eq!(
+            resolve_deploy_placement(dir.path()).unwrap(),
+            DeploymentPlacement::Remote {
+                target: "server".to_string()
+            }
+        );
     }
 
     #[test]
-    fn test_is_remote_deployment_for_hydrated_lock() {
+    fn test_placement_for_hydrated_lock() {
         let dir = tempfile::TempDir::new().unwrap();
         DeploymentLock {
             target: "cloud".to_string(),
@@ -1055,7 +1062,12 @@ deploy:
         .save(dir.path())
         .unwrap();
 
-        assert!(is_remote_deployment(dir.path()));
+        assert_eq!(
+            resolve_deploy_placement(dir.path()).unwrap(),
+            DeploymentPlacement::Remote {
+                target: "cloud".to_string()
+            }
+        );
     }
 
     #[test]
@@ -1222,5 +1234,34 @@ deploy:
 
         assert!(reason.contains("https://dev.try.direct/stacker"));
         assert!(reason.contains("stacker deploy --target server"));
+    }
+
+    #[test]
+    fn test_dispatch_status_two_locks_require_active_target() {
+        // Regression (posthog repro, end-to-end through the command routing):
+        // two locks, no active-target — `stacker status` must demand
+        // `stacker target`, not query the remote API and fail with
+        // "Project ... was not found on Stacker API".
+        use crate::cli::deployment_context::AMBIGUOUS_TARGET_MESSAGE;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        DeploymentLock::for_local().save(dir.path()).unwrap();
+        DeploymentLock::for_server(&crate::cli::config_parser::ServerConfig {
+            host: "203.0.113.10".to_string(),
+            user: "root".to_string(),
+            ssh_key: None,
+            port: 22,
+        })
+        .save(dir.path())
+        .unwrap();
+
+        let err = dispatch_status(dir.path(), false, false, false).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains(AMBIGUOUS_TARGET_MESSAGE), "got: {}", msg);
+        assert!(
+            !msg.contains("was not found on Stacker API"),
+            "got: {}",
+            msg
+        );
     }
 }

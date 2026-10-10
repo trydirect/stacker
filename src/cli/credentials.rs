@@ -235,27 +235,41 @@ impl<S: CredentialStore> CredentialsManager<S> {
         feature: &str,
         oauth: &O,
     ) -> Result<StoredCredentials, CliError> {
-        let creds = self.store.load()?.ok_or_else(|| CliError::LoginRequired {
-            feature: feature.to_string(),
-        })?;
+        let stored = self.store.load()?;
 
-        if !creds.is_expired() {
-            return Ok(creds);
-        }
+        if let Some(creds) = stored.as_ref() {
+            if !creds.is_expired() {
+                return Ok(creds.clone());
+            }
 
-        // No auth URL to refresh against (never logged in via this
-        // machine's env/UserConfig) is just another "refresh not
-        // possible" case, same as a missing refresh_token below.
-        if let Ok(auth_url) = resolve_auth_url_from(None) {
-            if let Some(refreshed) = try_refresh_token(&creds, oauth, &auth_url) {
-                // Best-effort: if persisting the refreshed token fails, the
-                // caller still gets a valid in-memory token for this run.
-                let _ = self.store.save(&refreshed);
-                return Ok(refreshed);
+            // No auth URL to refresh against (never logged in via this
+            // machine's env/UserConfig) is just another "refresh not
+            // possible" case, same as a missing refresh_token below.
+            if let Ok(auth_url) = resolve_auth_url_from(None) {
+                if let Some(refreshed) = try_refresh_token(creds, oauth, &auth_url) {
+                    // Best-effort: if persisting the refreshed token fails, the
+                    // caller still gets a valid in-memory token for this run.
+                    let _ = self.store.save(&refreshed);
+                    return Ok(refreshed);
+                }
             }
         }
 
-        Err(CliError::TokenExpired)
+        // Unattended/CI fallback: `STACKER_TOKEN`, the exact variable
+        // `stacker ci export` writes into generated workflows. Consulted only
+        // when the credential file is missing or expired-and-unrefreshable —
+        // a valid file token always wins.
+        if let Some(from_env) = credentials_from_env() {
+            return Ok(from_env);
+        }
+
+        if stored.is_some() {
+            Err(CliError::TokenExpired)
+        } else {
+            Err(CliError::LoginRequired {
+                feature: feature.to_string(),
+            })
+        }
     }
 
     /// Returns the bearer token header value if credentials are valid.
@@ -263,6 +277,32 @@ impl<S: CredentialStore> CredentialsManager<S> {
         let creds = self.require_valid_token(feature)?;
         Ok(format!("{} {}", creds.token_type, creds.access_token))
     }
+}
+
+/// Unattended auth: credentials assembled from `STACKER_TOKEN` (and
+/// optionally `STACKER_URL`) — the variable `stacker ci export` writes into
+/// generated CI workflows. Returns `None` when unset or empty (an empty
+/// value must not mask a real `LoginRequired`/`TokenExpired` error).
+fn credentials_from_env() -> Option<StoredCredentials> {
+    let access_token = std::env::var("STACKER_TOKEN").ok()?;
+    let access_token = access_token.trim().to_string();
+    if access_token.is_empty() {
+        return None;
+    }
+    let server_url = std::env::var("STACKER_URL")
+        .ok()
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty());
+    Some(StoredCredentials {
+        access_token,
+        refresh_token: None,
+        token_type: "Bearer".to_string(),
+        expires_at: Utc::now() + Duration::seconds(session_ttl_secs() as i64),
+        email: None,
+        server_url,
+        org: None,
+        domain: None,
+    })
 }
 
 /// Attempt to renew `creds` via its `refresh_token`. Returns `None` (never
@@ -1095,6 +1135,8 @@ mod tests {
 
     #[test]
     fn test_require_valid_token_login_required_when_empty() {
+        let _lock = credentials_env_lock().lock().unwrap();
+        let _env = EnvVarGuard::set("STACKER_TOKEN", "");
         let (manager, _) = make_manager();
         let err = manager.require_valid_token("cloud deploy").unwrap_err();
         let msg = format!("{}", err);
@@ -1111,6 +1153,8 @@ mod tests {
         // otherwise attempt a real refresh call here now that expired_creds()
         // carries a refresh_token, see test_require_valid_token_expired_*
         // below for coverage of the actual refresh path.
+        let _lock = credentials_env_lock().lock().unwrap();
+        let _env = EnvVarGuard::set("STACKER_TOKEN", "");
         let (manager, _) = make_manager();
         manager.save(&expired_creds()).unwrap();
         let oauth = MockOAuthClient::failure("refresh not supported");
@@ -1183,6 +1227,8 @@ mod tests {
 
     #[test]
     fn test_require_valid_token_expired_falls_back_when_refresh_fails() {
+        let _lock = credentials_env_lock().lock().unwrap();
+        let _env = EnvVarGuard::set("STACKER_TOKEN", "");
         let (manager, _) = make_manager();
         manager.save(&expired_creds()).unwrap();
         let oauth = MockOAuthClient::failure("refresh token invalid or expired");
@@ -1196,6 +1242,8 @@ mod tests {
 
     #[test]
     fn test_require_valid_token_expired_without_refresh_token_skips_refresh_attempt() {
+        let _lock = credentials_env_lock().lock().unwrap();
+        let _env = EnvVarGuard::set("STACKER_TOKEN", "");
         let (manager, _) = make_manager();
         manager
             .save(&StoredCredentials {
@@ -1212,6 +1260,68 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, CliError::TokenExpired));
+    }
+
+    // ── STACKER_TOKEN env fallback (unattended/CI) ──
+
+    #[test]
+    fn test_env_token_used_when_no_credentials_file() {
+        let _lock = credentials_env_lock().lock().unwrap();
+        let _token = EnvVarGuard::set("STACKER_TOKEN", "env-token-abc");
+        let _url = EnvVarGuard::set("STACKER_URL", "https://env.example.test");
+
+        let (manager, _) = make_manager();
+        let creds = manager
+            .require_valid_token("ci deploy")
+            .expect("STACKER_TOKEN must authenticate when no file exists");
+        assert_eq!(creds.access_token, "env-token-abc");
+        assert_eq!(
+            creds.server_url.as_deref(),
+            Some("https://env.example.test")
+        );
+        assert!(!creds.is_expired());
+    }
+
+    #[test]
+    fn test_empty_env_token_is_ignored() {
+        let _lock = credentials_env_lock().lock().unwrap();
+        let _token = EnvVarGuard::set("STACKER_TOKEN", "   ");
+
+        let (manager, _) = make_manager();
+        let err = manager.require_valid_token("ci deploy").unwrap_err();
+        assert!(
+            matches!(err, CliError::LoginRequired { .. }),
+            "an empty STACKER_TOKEN must not mask LoginRequired, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_file_credentials_win_over_env_token() {
+        let _lock = credentials_env_lock().lock().unwrap();
+        let _token = EnvVarGuard::set("STACKER_TOKEN", "env-token-abc");
+
+        let (manager, _) = make_manager();
+        manager.save(&valid_creds()).unwrap();
+        let creds = manager.require_valid_token("ci deploy").unwrap();
+        assert_eq!(
+            creds.access_token, "test-access-token",
+            "a valid credentials file must take precedence over the env token"
+        );
+    }
+
+    #[test]
+    fn test_expired_file_credentials_fall_back_to_env_token() {
+        let _lock = credentials_env_lock().lock().unwrap();
+        let _token = EnvVarGuard::set("STACKER_TOKEN", "env-token-abc");
+
+        let (manager, _) = make_manager();
+        manager.save(&expired_creds()).unwrap();
+        let oauth = MockOAuthClient::failure("refresh not supported");
+        let creds = manager
+            .require_valid_token_with_oauth("ci deploy", &oauth)
+            .expect("env token must rescue an expired, unrefreshable session");
+        assert_eq!(creds.access_token, "env-token-abc");
     }
 
     #[test]

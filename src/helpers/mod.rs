@@ -1,5 +1,6 @@
 pub mod agent_capabilities;
 pub mod agent_client;
+pub mod agent_identity;
 pub mod agent_token;
 pub mod chat;
 pub mod client;
@@ -15,6 +16,7 @@ pub mod vault;
 
 pub use agent_capabilities::*;
 pub use agent_client::*;
+pub use agent_identity::*;
 pub use db_pools::*;
 pub use env_path::*;
 pub use json::*;

@@ -1731,6 +1731,99 @@ async fn create_handler_updates_approved_template_metadata() {
     );
 }
 
+/// A template in the review queue is frozen until an admin decides on it.
+/// `create_handler` used to route these statuses into
+/// `update_metadata_for_resubmit`, which refuses them, and answered 500.
+#[tokio::test]
+async fn create_handler_refuses_to_update_template_under_review() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    for status in ["submitted", "under_review"] {
+        let slug = format!("frozen-{}-template", status.replace('_', "-"));
+
+        let create_response = create_template_with_body(
+            &client,
+            &app.address,
+            "test-bearer-token",
+            json!({
+                "name": "Frozen Template",
+                "slug": slug,
+                "version": "1.0.0",
+                "stack_definition": { "services": { "web": { "image": "nginx:1.27" } } }
+            }),
+        )
+        .await;
+        assert_eq!(StatusCode::CREATED, create_response.status());
+        let template_id = Uuid::parse_str(
+            create_response
+                .json::<Value>()
+                .await
+                .expect("Create response should be valid JSON")["item"]["id"]
+                .as_str()
+                .expect("Template id should be a string"),
+        )
+        .expect("Template id should be a UUID");
+
+        sqlx::query(r#"UPDATE stack_template SET status = $2 WHERE id = $1"#)
+            .bind(template_id)
+            .bind(status)
+            .execute(&app.db_pool)
+            .await
+            .expect("Failed to set template status");
+
+        let update_response = create_template_with_body(
+            &client,
+            &app.address,
+            "test-bearer-token",
+            json!({
+                "name": "Frozen Template v2",
+                "slug": slug,
+                "version": "1.0.0",
+                "stack_definition": { "services": { "web": { "image": "nginx:1.28" } } }
+            }),
+        )
+        .await;
+        assert_eq!(
+            StatusCode::CONFLICT,
+            update_response.status(),
+            "POST /api/templates must refuse a {} template with 409",
+            status
+        );
+
+        let (name, persisted_status): (String, String) =
+            sqlx::query_as(r#"SELECT name, status FROM stack_template WHERE id = $1"#)
+                .bind(template_id)
+                .fetch_one(&app.db_pool)
+                .await
+                .expect("Template should still exist");
+        assert_eq!(
+            "Frozen Template", name,
+            "{} template name must not change",
+            status
+        );
+        assert_eq!(status, persisted_status);
+
+        let definition: Value = sqlx::query_scalar(
+            r#"SELECT stack_definition FROM stack_template_version
+               WHERE template_id = $1 AND is_latest = true"#,
+        )
+        .bind(template_id)
+        .fetch_one(&app.db_pool)
+        .await
+        .expect("Latest version should still exist");
+        assert_eq!(
+            json!({ "services": { "web": { "image": "nginx:1.27" } } }),
+            definition,
+            "{} template stack definition must not change under the reviewer",
+            status
+        );
+    }
+}
+
 #[tokio::test]
 async fn resubmit_approved_template_with_new_version_preserves_source_project_id() {
     let _env_lock = env_lock().lock().expect("env lock should be available");

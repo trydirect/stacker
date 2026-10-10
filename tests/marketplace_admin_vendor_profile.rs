@@ -28,7 +28,8 @@ fn create_admin_jwt() -> String {
     let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string());
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string());
 
-    format!("{}.{}.{}", header_b64, payload_b64, "test_signature")
+    let signature = common::sign_test_jwt(&header_b64, &payload_b64);
+    format!("{}.{}.{}", header_b64, payload_b64, signature)
 }
 
 async fn insert_template(pool: &sqlx::PgPool, creator_user_id: &str, slug: &str) -> String {
@@ -313,12 +314,10 @@ async fn admin_patch_vendor_profile_requires_admin_role() {
                     "email": "user@test.com",
                     "exp": (Utc::now() + Duration::minutes(30)).timestamp(),
                 });
-                format!(
-                    "{}.{}.{}",
-                    URL_SAFE_NO_PAD.encode(header.to_string()),
-                    URL_SAFE_NO_PAD.encode(payload.to_string()),
-                    "test_signature"
-                )
+                let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string());
+                let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string());
+                let signature = common::sign_test_jwt(&header_b64, &payload_b64);
+                format!("{}.{}.{}", header_b64, payload_b64, signature)
             }),
         )
         .json(&json!({

@@ -185,6 +185,11 @@ fn build_stacker_yml_from_deployment(
             depends_on: Vec::new(),
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         });
     }
 
@@ -381,6 +386,8 @@ mod tests {
             deployment_hash: "deployment_abc123".to_string(),
             status: "completed".to_string(),
             status_message: None,
+            error_kind: None,
+            err_description: None,
             created_at: "2026-01-01".to_string(),
             updated_at: "2026-01-01".to_string(),
         };

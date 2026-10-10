@@ -60,6 +60,24 @@ pub fn set_test_internal_key() {
     );
 }
 
+/// Key the test admin JWTs are signed with. The server reads it from the
+/// environment on each request, and runs in this process.
+pub const TEST_ADMIN_JWT_SECRET: &str = "test-admin-jwt-secret";
+
+/// HS256 signature for `header_b64.payload_b64`, as the admin service would
+/// sign it. Also configures the key for the app under test.
+pub fn sign_test_jwt(header_b64: &str, payload_b64: &str) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use hmac::{Hmac, Mac};
+    std::env::set_var(
+        stacker::connectors::ADMIN_JWT_SECRET_ENV,
+        TEST_ADMIN_JWT_SECRET,
+    );
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(TEST_ADMIN_JWT_SECRET.as_bytes()).unwrap();
+    mac.update(format!("{header_b64}.{payload_b64}").as_bytes());
+    URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+}
+
 pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option<TestApp> {
     ensure_test_access_control_conf();
     set_test_internal_key();
@@ -827,6 +845,34 @@ pub async fn get_or_init_vault_app(
     cell.get_or_try_init(|| async { spawn_app_with_vault().await.ok_or(()) })
         .await
         .ok()
+}
+
+/// Serialises tests that share one mock Vault server.
+///
+/// `TestAppWithVaultFresh::vault_server` is a single wiremock instance for the
+/// whole test binary: the app's Vault address is baked into the running server
+/// when it is spawned, so every test in the file talks to the same mock. Tests
+/// then call `reset()` and mount their own stubs, which means two running at
+/// once clear each other's expectations. The symptom is a different handful of
+/// tests failing on each run, which is worse than a consistent failure because
+/// it reads as noise.
+///
+/// Hold this guard for the length of any test that resets or mounts on the
+/// shared mock:
+///
+/// ```ignore
+/// let _vault = common::lock_vault_mock().await;
+/// let app = app().await;
+/// app.vault_server.reset().await;
+/// ```
+///
+/// A panicking test does not poison it (tokio mutexes do not poison), so one
+/// failure does not cascade into the rest of the file.
+pub async fn lock_vault_mock() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
 }
 
 pub struct TestAppWithVault {

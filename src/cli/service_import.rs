@@ -162,6 +162,11 @@ pub fn import_plan_from_compose_str(
             depends_on: depends_on.clone(),
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         });
         reviews.push(ImportedServiceReview {
             source_name: source_name.to_string(),

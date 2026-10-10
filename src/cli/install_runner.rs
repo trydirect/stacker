@@ -374,17 +374,168 @@ pub fn strategy_for(target: &DeployTarget) -> Box<dyn DeployStrategy> {
 ///
 /// Handles both string form (`"127.0.0.1:3000:3000"`, `"3000:3000"`) and
 /// mapping form (`{ published: 3000, target: 3000 }`).
-fn parse_compose_host_port(entry: &serde_yaml::Value) -> Option<String> {
-    match entry {
+/// Load the `.env` file sitting next to the compose file — the same file
+/// `docker compose` reads when it expands `${VAR}` references for that
+/// project. Missing file → empty map (preflight is best-effort by design).
+fn load_compose_dotenv(compose_path: &Path) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let Some(dir) = compose_path.parent() else {
+        return map;
+    };
+    let Ok(content) = std::fs::read_to_string(dir.join(".env")) else {
+        return map;
+    };
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim().trim_start_matches("export ").trim();
+        if key.is_empty() {
+            continue;
+        }
+        let value = value.trim();
+        let unquoted = if value.len() >= 2
+            && ((value.starts_with('"') && value.ends_with('"'))
+                || (value.starts_with('\'') && value.ends_with('\'')))
+        {
+            &value[1..value.len() - 1]
+        } else {
+            value
+        };
+        map.insert(key.to_string(), unquoted.to_string());
+    }
+    map
+}
+
+/// Expand one `${name}{rest}` variable reference. `Err(())` means "cannot
+/// resolve" — the caller must skip the whole port spec rather than probe it.
+fn expand_port_var(
+    name: &str,
+    rest: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<String, ()> {
+    let value = lookup(name);
+    if rest.is_empty() {
+        // ${VAR} / $VAR — required, no default.
+        return value.ok_or(());
+    }
+    if let Some(default) = rest.strip_prefix(":-") {
+        // ${VAR:-default} — default when unset OR empty.
+        let v = value.unwrap_or_default();
+        return Ok(if v.is_empty() { default.to_string() } else { v });
+    }
+    if let Some(default) = rest.strip_prefix('-') {
+        // ${VAR-default} — default only when unset.
+        return Ok(value.unwrap_or_else(|| default.to_string()));
+    }
+    if rest.starts_with(":?") {
+        // ${VAR:?err} — compose aborts on unset/empty; treat as unresolved so
+        // preflight skips the port and compose itself surfaces the real error.
+        return match value {
+            Some(v) if !v.is_empty() => Ok(v),
+            _ => Err(()),
+        };
+    }
+    if let Some(alt) = rest.strip_prefix(":+") {
+        // ${VAR:+alt} — alt when set and non-empty.
+        return match value {
+            Some(v) if !v.is_empty() => Ok(alt.to_string()),
+            _ => Ok(String::new()),
+        };
+    }
+    // Anything else (${VAR:offset} etc.) is not understood — skip, don't guess.
+    Err(())
+}
+
+/// Resolve compose-style variable references in a port spec (`$VAR`,
+/// `${VAR}`, `${VAR:-default}`, `${VAR-default}`, `${VAR:?err}`,
+/// `${VAR:+alt}`). Values come from the process environment first, then the
+/// compose file's `.env` — the precedence docker compose applies.
+///
+/// Returns `None` when a referenced variable cannot be resolved. Callers must
+/// then skip the port entirely: probing the raw string is what produced the
+/// false "port `-7130}` is already allocated" conflicts (the `${...}` braces
+/// contain their own `:`, so splitting before resolution mangles the spec).
+fn resolve_port_spec_vars(
+    spec: &str,
+    dotenv: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    use std::sync::LazyLock;
+    static PORT_VAR_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)").unwrap());
+
+    if !spec.contains('$') {
+        return Some(spec.to_string());
+    }
+    let lookup = |name: &str| -> Option<String> {
+        std::env::var(name)
+            .ok()
+            .or_else(|| dotenv.get(name).cloned())
+    };
+
+    let mut unresolved = false;
+    let out = PORT_VAR_RE.replace_all(spec, |caps: &regex::Captures| {
+        let expansion = match (caps.get(1), caps.get(2)) {
+            (Some(content), _) => {
+                let content = content.as_str();
+                let name_len = content
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .count();
+                let (name, rest) = content.split_at(name_len);
+                if name.is_empty() || name.starts_with(|c: char| c.is_ascii_digit()) {
+                    Err(())
+                } else {
+                    expand_port_var(name, rest, &lookup)
+                }
+            }
+            (_, Some(name)) => expand_port_var(name.as_str(), "", &lookup),
+            _ => Err(()),
+        };
+        match expansion {
+            Ok(v) => v,
+            Err(()) => {
+                unresolved = true;
+                String::new()
+            }
+        }
+    });
+    if unresolved {
+        None
+    } else {
+        Some(out.into_owned())
+    }
+}
+
+/// Parse one compose `ports:` entry into its host-side port spec.
+///
+/// `${VAR}` forms are resolved BEFORE splitting on `:` — the braces carry
+/// their own `:` (`${APP_PORT:-7130}`), and splitting first yields a mangled
+/// fake port (`-7130}`) that then "fails" to bind and reads as occupied.
+/// Returns `None` for container-only ports and for specs whose variables
+/// cannot be resolved (skip, never probe).
+fn parse_compose_host_port(
+    entry: &serde_yaml::Value,
+    dotenv: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let raw = match entry {
         serde_yaml::Value::String(spec) => {
-            let trimmed = spec.trim();
+            let resolved = resolve_port_spec_vars(spec.trim(), dotenv)?;
+            let trimmed = resolved.trim();
             if trimmed.is_empty() {
                 return None;
             }
+            // Short syntax `[ip:]host:container[/proto]` — the host part is
+            // the second-to-last ':' segment. Splitting happens only AFTER
+            // variable resolution, so `${APP_PORT:-7130}` stays intact.
             let without_proto = trimmed.split('/').next().unwrap_or(trimmed);
             let parts: Vec<&str> = without_proto.split(':').collect();
             if parts.len() < 2 {
-                return None;
+                return None; // container-only port, no host binding
             }
             let port = parts[parts.len() - 2].trim();
             if port.is_empty() {
@@ -394,18 +545,57 @@ fn parse_compose_host_port(entry: &serde_yaml::Value) -> Option<String> {
             }
         }
         serde_yaml::Value::Mapping(m) => {
+            // Long syntax: `published` IS the host port — no split needed.
             let key = serde_yaml::Value::String("published".to_string());
-            m.get(&key).and_then(|v| match v {
-                serde_yaml::Value::String(s) => Some(s.clone()),
-                serde_yaml::Value::Number(n) => Some(n.to_string()),
-                _ => None,
-            })
+            let published = match m.get(&key) {
+                Some(serde_yaml::Value::String(s)) => s.clone(),
+                Some(serde_yaml::Value::Number(n)) => n.to_string(),
+                _ => return None,
+            };
+            let resolved = resolve_port_spec_vars(published.trim(), dotenv)?;
+            let trimmed = resolved.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
         }
         _ => None,
+    };
+    raw
+}
+
+/// Expand a host-side port string into the concrete ports it binds:
+/// `"3000"` → `[3000]`, `"8100-8105"` → six ports.
+///
+/// Anything unparseable returns `[]` — an unparseable spec must never reach a
+/// `bind()` probe, because `bind("0.0.0.0:8100-8105")` fails with an invalid
+/// address that is indistinguishable from "port occupied". That conflation
+/// was the entire range-mapping false-positive bug.
+fn expand_host_ports(host_port: &str) -> Vec<u16> {
+    let hp = host_port.trim();
+    if let Ok(port) = hp.parse::<u16>() {
+        return vec![port];
     }
+    if let Some((start, end)) = hp.split_once('-') {
+        if let (Ok(start), Ok(end)) = (start.trim().parse::<u16>(), end.trim().parse::<u16>()) {
+            // Cap the expansion: a pathological range (1-65535) must not turn
+            // the preflight into 65k probes. Real templates use a handful of
+            // ports; beyond the cap we skip the spec (Docker's own bind error
+            // still surfaces at up-time).
+            if start <= end && end - start < 1024 {
+                return (start..=end).collect();
+            }
+        }
+    }
+    vec![]
 }
 
 /// Return all `(host_port, service_name)` pairs declared in a compose file.
+///
+/// Range mappings expand to one entry per concrete port, and `${VAR}` specs
+/// resolve against the compose file's `.env`; specs that cannot be resolved
+/// are dropped (best-effort preflight — never a false conflict).
 fn collect_compose_host_port_services(compose_path: &Path) -> Vec<(String, String)> {
     let raw = match std::fs::read_to_string(compose_path) {
         Ok(r) => r,
@@ -424,6 +614,7 @@ fn collect_compose_host_port_services(compose_path: &Path) -> Vec<(String, Strin
         None => return vec![],
     };
 
+    let dotenv = load_compose_dotenv(compose_path);
     let mut result = Vec::new();
     for (svc_key, svc_val) in services {
         let svc_name = svc_key.as_str().unwrap_or("<unknown>").to_string();
@@ -437,9 +628,9 @@ fn collect_compose_host_port_services(compose_path: &Path) -> Vec<(String, Strin
             None => continue,
         };
         for port in ports {
-            if let Some(host_port) = parse_compose_host_port(port) {
-                if !host_port.is_empty() {
-                    result.push((host_port, svc_name.clone()));
+            if let Some(host_port) = parse_compose_host_port(port, &dotenv) {
+                for concrete in expand_host_ports(&host_port) {
+                    result.push((concrete.to_string(), svc_name.clone()));
                 }
             }
         }
@@ -557,13 +748,19 @@ fn check_remote_host_port_conflicts(
 
 /// Detect port-conflict error patterns in install-container output and return
 /// human-readable hints to help the user diagnose and fix them.
-fn detect_port_conflicts_in_output(stderr: &str, stdout: &str) -> Vec<String> {
+///
+/// `pub(crate)` so the deploy watch can reuse it as a text fallback when the
+/// status API predates `available_options.error_kind`.
+pub(crate) fn detect_port_conflicts_in_output(stderr: &str, stdout: &str) -> Vec<String> {
     use std::sync::LazyLock;
 
     static BIND_RE: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"Bind for [\d.]+:(\d+) failed").unwrap());
     static ALLOCATED_RE: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"port (\d+) is already allocated").unwrap());
+    static PRECHECK_PORTS_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?i)ingress ports ([\d,\s]+or\s+\d+|\d+)").unwrap()
+    });
 
     let combined = format!("{}\n{}", stderr, stdout);
     let lower = combined.to_lowercase();
@@ -571,6 +768,8 @@ fn detect_port_conflicts_in_output(stderr: &str, stdout: &str) -> Vec<String> {
     if !lower.contains("is already allocated")
         && !lower.contains("bind for 0.0.0.0")
         && !lower.contains("failed programming external connectivity")
+        && !lower.contains("precheck_port_conflict")
+        && !lower.contains("already occupied")
     {
         return vec![];
     }
@@ -579,6 +778,15 @@ fn detect_port_conflicts_in_output(stderr: &str, stdout: &str) -> Vec<String> {
         "Port conflict detected on the deployment target.".to_string(),
         "A process or container on the remote server is already using a port that this deploy requires.".to_string(),
     ];
+
+    if let Some(caps) = PRECHECK_PORTS_RE.captures(&combined) {
+        if let Some(ports) = caps.get(1) {
+            hints.push(format!(
+                "Required ingress ports {} are already occupied — free them or move the conflicting container (e.g. another reverse proxy).",
+                ports.as_str()
+            ));
+        }
+    }
 
     let port: Option<String> = {
         let full = format!("{} {}", stderr, stdout);
@@ -652,8 +860,13 @@ fn check_local_host_port_conflicts(
     }
 
     // Find which ports are already bound on the local machine.
+    // `collect_compose_host_port_services` only yields concrete numeric ports
+    // (ranges expanded, unresolvable `${VAR}` dropped); the `parse` guard is
+    // defense in depth — an unparseable spec reaching `bind()` fails with an
+    // invalid address and would be misread as "occupied".
     let occupied: Vec<(String, String)> = port_services
         .into_iter()
+        .filter(|(port, _)| port.parse::<u16>().is_ok())
         .filter(|(port, _)| {
             let addr = format!("0.0.0.0:{}", port);
             TcpListener::bind(&addr).is_err()
@@ -3196,6 +3409,7 @@ mod tests {
 
     #[test]
     fn test_validate_remote_deploy_payload_accepts_generated_payload() {
+        let _env = crate::cli::test_support::ENV_LOCK.lock().unwrap();
         std::env::set_var("STACKER_CLOUD_TOKEN", "test-token-value");
         let cfg = sample_cloud_config();
         let payload = build_remote_deploy_payload(&cfg);
@@ -3206,6 +3420,7 @@ mod tests {
 
     #[test]
     fn test_resolve_remote_cloud_credentials_accepts_digitalocean_token() {
+        let _env = crate::cli::test_support::ENV_LOCK.lock().unwrap();
         std::env::remove_var("STACKER_CLOUD_TOKEN");
         std::env::remove_var("STACKER_DIGITALOCEAN_TOKEN");
         std::env::set_var("DIGITALOCEAN_TOKEN", "do-token-value");
@@ -4020,13 +4235,19 @@ mod tests {
     #[test]
     fn test_parse_compose_host_port_string_host_container() {
         let v = serde_yaml::Value::String("3000:3000".to_string());
-        assert_eq!(parse_compose_host_port(&v), Some("3000".to_string()));
+        assert_eq!(
+            parse_compose_host_port(&v, &std::collections::HashMap::new()),
+            Some("3000".to_string())
+        );
     }
 
     #[test]
     fn test_parse_compose_host_port_string_ip_host_container() {
         let v = serde_yaml::Value::String("127.0.0.1:8080:80".to_string());
-        assert_eq!(parse_compose_host_port(&v), Some("8080".to_string()));
+        assert_eq!(
+            parse_compose_host_port(&v, &std::collections::HashMap::new()),
+            Some("8080".to_string())
+        );
     }
 
     #[test]
@@ -4041,14 +4262,246 @@ mod tests {
             serde_yaml::Value::Number(serde_yaml::Number::from(3000u64)),
         );
         let v = serde_yaml::Value::Mapping(m);
-        assert_eq!(parse_compose_host_port(&v), Some("3000".to_string()));
+        assert_eq!(
+            parse_compose_host_port(&v, &std::collections::HashMap::new()),
+            Some("3000".to_string())
+        );
     }
 
     #[test]
     fn test_parse_compose_host_port_container_only() {
         // Port without host binding: "3000" → no host port to parse
         let v = serde_yaml::Value::String("3000".to_string());
-        assert_eq!(parse_compose_host_port(&v), None);
+        assert_eq!(
+            parse_compose_host_port(&v, &std::collections::HashMap::new()),
+            None
+        );
+    }
+
+    // ── Port-spec normalization: ranges & ${VAR} expansion ─────────
+
+    #[test]
+    fn test_expand_host_ports_single() {
+        assert_eq!(expand_host_ports("3000"), vec![3000u16]);
+        assert_eq!(expand_host_ports(" 80 "), vec![80u16]);
+    }
+
+    #[test]
+    fn test_expand_host_ports_range() {
+        assert_eq!(
+            expand_host_ports("8100-8105"),
+            vec![8100u16, 8101, 8102, 8103, 8104, 8105]
+        );
+        assert_eq!(expand_host_ports("9000-9000"), vec![9000u16]);
+    }
+
+    #[test]
+    fn test_expand_host_ports_garbage_is_skipped_not_probed() {
+        // These are the exact strings the old preflight fed to bind():
+        // each produced an invalid address, always errored, and was reported
+        // as "already allocated". They must expand to NOTHING now.
+        assert!(expand_host_ports("-7130}").is_empty());
+        assert!(expand_host_ports("8100-8105x").is_empty());
+        assert!(expand_host_ports("${APP_PORT}").is_empty());
+        assert!(expand_host_ports("").is_empty());
+        assert!(expand_host_ports("70000").is_empty()); // out of u16 range
+    }
+
+    #[test]
+    fn test_expand_host_ports_range_cap() {
+        // A pathological range must not expand into 65k probes.
+        assert!(expand_host_ports("1-65535").is_empty());
+        assert_eq!(expand_host_ports("1-1024").len(), 1024); // fits the cap
+        assert!(expand_host_ports("1-1100").is_empty()); // over the cap
+    }
+
+    #[test]
+    fn test_resolve_port_spec_vars_default_form() {
+        let env = std::collections::HashMap::new();
+        // unset variable → default is used
+        assert_eq!(
+            resolve_port_spec_vars("${STACKER_TEST_UNSET_XYZ:-7130}", &env),
+            Some("7130".to_string())
+        );
+        // unset variable, dash form
+        assert_eq!(
+            resolve_port_spec_vars("${STACKER_TEST_UNSET_XYZ-7131}", &env),
+            Some("7131".to_string())
+        );
+        // plain text untouched
+        assert_eq!(
+            resolve_port_spec_vars("8080:80", &env),
+            Some("8080:80".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_port_spec_vars_from_dotenv() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("APP_PORT".to_string(), "7130".to_string());
+        assert_eq!(
+            resolve_port_spec_vars("${APP_PORT}:7130", &env),
+            Some("7130:7130".to_string())
+        );
+        assert_eq!(
+            resolve_port_spec_vars("${APP_PORT:-9999}:7130", &env),
+            Some("7130:7130".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_port_spec_vars_unresolvable_is_none() {
+        let env = std::collections::HashMap::new();
+        // No default, not set anywhere → None (caller skips the port).
+        assert_eq!(
+            resolve_port_spec_vars("${STACKER_TEST_UNSET_XYZ}:80", &env),
+            None
+        );
+        assert_eq!(
+            resolve_port_spec_vars("$STACKER_TEST_UNSET_XYZ:80", &env),
+            None
+        );
+        // ${VAR:?err} with unset var → None (compose would abort; we skip).
+        assert_eq!(
+            resolve_port_spec_vars("${STACKER_TEST_UNSET_XYZ:?required}:80", &env),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_compose_host_port_resolves_default_expansion() {
+        // Regression: the old parser split this on ':' FIRST and returned the
+        // literal "-7130}" as the host port.
+        let env = std::collections::HashMap::new();
+        let v = serde_yaml::Value::String("${APP_PORT:-7130}:7130".to_string());
+        assert_eq!(parse_compose_host_port(&v, &env), Some("7130".to_string()));
+    }
+
+    #[test]
+    fn test_parse_compose_host_port_unresolvable_var_is_none() {
+        let env = std::collections::HashMap::new();
+        let v = serde_yaml::Value::String("${STACKER_TEST_UNSET_XYZ}:7130".to_string());
+        assert_eq!(parse_compose_host_port(&v, &env), None);
+    }
+
+    #[test]
+    fn test_collect_compose_host_port_services_expands_range_and_env() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            r#"
+services:
+  middlemanager:
+    image: foo
+    ports:
+      - "8100-8102:8100-8102"
+  app:
+    image: bar
+    ports:
+      - "${{STACKER_TEST_UNSET_XYZ:-7130}}:7130"
+"#
+        )
+        .unwrap();
+        let pairs = collect_compose_host_port_services(tmp.path());
+        let ports: Vec<&str> = pairs.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(ports, vec!["8100", "8101", "8102", "7130"]);
+    }
+
+    #[test]
+    fn test_check_local_host_port_conflicts_range_spec_no_false_positive() {
+        use std::io::Write;
+        // A range spec on FREE ports must not be reported as a conflict —
+        // this is the exact druid repro (BUGS.md §5).
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            "services:\n  web:\n    image: nginx\n    ports:\n      - \"59110-59115:8100-8105\"\n"
+        )
+        .unwrap();
+        // None of 59110..59115 is bound by this test; MockExecutor returns
+        // empty `docker compose ps` output (no own containers).
+        let executor = MockExecutor::success_with_stdout("");
+        let conflicts = check_local_host_port_conflicts(tmp.path(), "myproject", &executor);
+        assert!(
+            conflicts.is_empty(),
+            "free range must not be reported as a conflict: {:?}",
+            conflicts
+        );
+    }
+
+    #[test]
+    fn test_check_local_host_port_conflicts_range_reports_only_real_occupant() {
+        use std::io::Write;
+        // Occupy ONE port inside a declared range; only that port may be
+        // reported (and by name). 59103 is a fixed high port — if it's taken
+        // by something else on the machine the assertion still holds, since
+        // whoever holds it is exactly the kind of external owner we flag.
+        let listener = match std::net::TcpListener::bind("0.0.0.0:59103") {
+            Ok(l) => l,
+            Err(_) => return, // port unavailable on this machine — skip
+        };
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            "services:\n  web:\n    image: nginx\n    ports:\n      - \"59100-59105:8100-8105\"\n"
+        )
+        .unwrap();
+        let executor = MockExecutor::success_with_stdout("");
+        let conflicts = check_local_host_port_conflicts(tmp.path(), "myproject", &executor);
+        drop(listener);
+        assert_eq!(
+            conflicts.len(),
+            1,
+            "exactly the occupied port: {:?}",
+            conflicts
+        );
+        assert!(
+            conflicts[0].contains("59103"),
+            "conflict must name 59103: {:?}",
+            conflicts
+        );
+    }
+
+    #[test]
+    fn test_check_local_host_port_conflicts_default_expansion_free_port() {
+        use std::io::Write;
+        // ${VAR:-default} resolving to a free port → no conflict (the
+        // insforge repro, BUGS.md §6: used to report "port -7130} occupied").
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            "services:\n  app:\n    image: nginx\n    ports:\n      - \"${{STACKER_TEST_UNSET_XYZ:-59110}}:7130\"\n"
+        )
+        .unwrap();
+        let executor = MockExecutor::success_with_stdout("");
+        let conflicts = check_local_host_port_conflicts(tmp.path(), "myproject", &executor);
+        assert!(
+            conflicts.is_empty(),
+            "unresolvable-or-default spec must not conflict: {:?}",
+            conflicts
+        );
+    }
+
+    #[test]
+    fn test_check_local_host_port_conflicts_unresolvable_var_skipped() {
+        use std::io::Write;
+        // `${VAR}` with no default and nowhere set → skip the spec entirely
+        // (compose will fail with its own clear error at up-time).
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            "services:\n  app:\n    image: nginx\n    ports:\n      - \"${{STACKER_TEST_UNSET_XYZ}}:7130\"\n"
+        )
+        .unwrap();
+        let executor = MockExecutor::success_with_stdout("");
+        let conflicts = check_local_host_port_conflicts(tmp.path(), "myproject", &executor);
+        assert!(
+            conflicts.is_empty(),
+            "unresolvable var must be skipped, not probed: {:?}",
+            conflicts
+        );
     }
 
     #[test]
@@ -4099,28 +4552,41 @@ services:
 
     #[test]
     fn test_check_local_host_port_conflicts_free_port() {
-        use std::io::Write;
-        // Use a high ephemeral port unlikely to be occupied by another process
-        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
-        let free_port = listener.local_addr().unwrap().port();
-        drop(listener); // release it
-
+        use std::io::{Seek, Write};
+        // Use a high ephemeral port unlikely to be occupied by another process.
+        // The bind→drop→re-check sequence is inherently racy in a parallel test
+        // suite (another test can grab the released ephemeral port in between),
+        // so retry with a fresh port before declaring failure.
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        write!(
-            tmp,
-            "services:\n  web:\n    image: nginx\n    ports:\n      - \"{}:80\"\n",
-            free_port
-        )
-        .unwrap();
+        for attempt in 0..5 {
+            let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+            let free_port = listener.local_addr().unwrap().port();
+            drop(listener); // release it
 
-        let executor = MockExecutor::success();
-        let conflicts = check_local_host_port_conflicts(tmp.path(), "myproject", &executor);
-        assert!(
-            conflicts.is_empty(),
-            "expected no conflicts for free port {}: {:?}",
-            free_port,
-            conflicts
-        );
+            tmp.as_file_mut()
+                .set_len(0)
+                .and_then(|_| tmp.as_file_mut().seek(std::io::SeekFrom::Start(0)))
+                .unwrap();
+            write!(
+                tmp,
+                "services:\n  web:\n    image: nginx\n    ports:\n      - \"{}:80\"\n",
+                free_port
+            )
+            .unwrap();
+
+            let executor = MockExecutor::success();
+            let conflicts = check_local_host_port_conflicts(tmp.path(), "myproject", &executor);
+            if conflicts.is_empty() {
+                return;
+            }
+            assert!(
+                attempt < 4,
+                "expected no conflicts for free port {} after {} attempts: {:?}",
+                free_port,
+                attempt + 1,
+                conflicts
+            );
+        }
     }
 
     #[test]
@@ -4234,6 +4700,30 @@ services:
         let stderr = "Build failed: could not resolve dependency";
         let hints = detect_port_conflicts_in_output(stderr, "");
         assert!(hints.is_empty(), "should not flag non-port errors");
+    }
+
+    /// Exact Ansible preflight_port_conflicts.yml failure (exit 42): the
+    /// PRECHECK_PORT_CONFLICT marker when ingress ports 80/443/81 are taken
+    /// on the target host (here by a caddy container).
+    const PRECHECK_PORT_CONFLICT_ANSIBLE_ERROR: &str = r#"fatal: [46.224.127.228]: FAILED! => {"changed": false, "cmd": "...", "failed_when_result": true, "msg": "non-zero return code", "rc": 42, "stderr": "", "stdout": "PRECHECK_PORT_CONFLICT\nRequired ingress ports 80, 443, or 81 are already occupied.\nlisteners:\nLISTEN 0      4096   0.0.0.0:80  0.0.0.0:* users:((\"docker-proxy\",pid=3651988,fd=8))\ndocker_ps:\ncaddy\t0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp"}"#;
+
+    #[test]
+    fn test_detect_port_conflicts_in_output_precheck_marker() {
+        // Regression: the ingress-port precheck marker returned no hints, so
+        // legacy payloads without error_kind were left unclassified and the
+        // CLI printed "An unclassified internal error occurred".
+        let hints = detect_port_conflicts_in_output("", PRECHECK_PORT_CONFLICT_ANSIBLE_ERROR);
+        assert!(!hints.is_empty(), "should detect port conflict from precheck marker");
+    }
+
+    #[test]
+    fn test_detect_port_conflicts_in_output_precheck_marker_lists_ingress_ports() {
+        let hints = detect_port_conflicts_in_output("", PRECHECK_PORT_CONFLICT_ANSIBLE_ERROR);
+        let joined = hints.join("\n");
+        assert!(
+            joined.contains("80") && joined.contains("443"),
+            "should list the occupied ingress ports: {joined}"
+        );
     }
 
     #[test]

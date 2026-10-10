@@ -15,10 +15,10 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::time::{sleep, Duration, Instant};
 
-use crate::connectors::user_service::UserServiceDeploymentResolver;
 use crate::db;
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
+use crate::mcp::tools::OwnedDeploymentResolver;
 use crate::models::{Command, CommandPriority};
 use crate::services::{DeploymentIdentifier, DeploymentResolver, VaultService};
 use serde::Deserialize;
@@ -62,11 +62,8 @@ fn paused_deployment_mcp_sequence() -> Vec<&'static str> {
 
 /// Helper to create a resolver from context.
 /// Uses UserServiceDeploymentResolver from connectors to support legacy installations.
-fn create_resolver(context: &ToolContext) -> UserServiceDeploymentResolver {
-    UserServiceDeploymentResolver::from_context(
-        &context.settings.user_service_url,
-        context.user.access_token.as_deref(),
-    )
+fn create_resolver(context: &ToolContext) -> OwnedDeploymentResolver<'_> {
+    OwnedDeploymentResolver::new(context)
 }
 
 /// Poll for command result with timeout.

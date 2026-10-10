@@ -49,6 +49,7 @@ pub mod user_service;
 
 pub use admin_service::{
     extract_bearer_token, parse_jwt_claims, user_from_jwt_claims, validate_jwt_expiration,
+    verify_jwt_signature, ADMIN_JWT_SECRET_ENV,
 };
 pub use config::{
     ConnectorConfig, EventsConfig, InstallServiceConfig, PaymentServiceConfig, UserServiceConfig,

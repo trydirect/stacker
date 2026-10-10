@@ -366,6 +366,7 @@ pub async fn unapprove_handler(
 
     // Send webhook to unpublish from marketplace while preserving subscription state
     let template_clone = template.clone();
+    let unapprove_reason = req.reason.clone();
     tokio::spawn(async move {
         match WebhookSenderConfig::from_env() {
             Ok(config) => {
@@ -376,7 +377,11 @@ pub async fn unapprove_handler(
                 );
 
                 if let Err(e) = sender
-                    .send_template_unpublished(&template_clone, &template_clone.creator_user_id)
+                    .send_template_unpublished(
+                        &template_clone,
+                        &template_clone.creator_user_id,
+                        unapprove_reason.as_deref(),
+                    )
                     .instrument(span)
                     .await
                 {
@@ -614,6 +619,43 @@ pub async fn pricing_handler(
     }
 }
 
+/// Fires the vendor-facing verification-change notification, non-blocking.
+/// Shared by both vendor-profile PATCH handlers (template-scoped and
+/// creator-scoped) so a vendor is notified with the admin's reason
+/// regardless of which one the admin UI happened to call.
+fn spawn_vendor_verification_webhook(
+    creator_user_id: String,
+    verification_status: String,
+    reason: Option<String>,
+) {
+    tokio::spawn(async move {
+        match WebhookSenderConfig::from_env() {
+            Ok(config) => {
+                let sender = MarketplaceWebhookSender::new(config);
+                let span = tracing::info_span!(
+                    "send_vendor_verification_webhook",
+                    creator_user_id = %creator_user_id
+                );
+
+                if let Err(e) = sender
+                    .send_vendor_verification_changed(
+                        &creator_user_id,
+                        &verification_status,
+                        reason.as_deref(),
+                    )
+                    .instrument(span)
+                    .await
+                {
+                    tracing::warn!("Failed to send vendor verification webhook: {:?}", e);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Webhook sender config not available: {}", e);
+            }
+        }
+    });
+}
+
 #[derive(serde::Deserialize, Debug)]
 pub struct AdminVendorProfileRequest {
     pub verification_status: Option<String>,
@@ -622,6 +664,10 @@ pub struct AdminVendorProfileRequest {
     pub payout_provider: Option<String>,
     pub payout_account_ref: Option<String>,
     pub metadata: Option<serde_json::Value>,
+    /// Why verification_status is being set - forwarded to the vendor in
+    /// the vendor_verification_changed notification when present. Not
+    /// persisted; this is a one-shot explanation, not a profile field.
+    pub reason: Option<String>,
 }
 
 fn validate_vendor_status(
@@ -707,6 +753,14 @@ pub async fn update_vendor_profile_handler(
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
+    if let Some(verification_status) = req.verification_status.clone() {
+        spawn_vendor_verification_webhook(
+            template.creator_user_id.clone(),
+            verification_status,
+            req.reason.clone(),
+        );
+    }
+
     Ok(JsonResponse::<serde_json::Value>::build().ok("Vendor profile updated"))
 }
 
@@ -767,6 +821,14 @@ pub async fn update_vendor_profile_by_creator_handler(
     )
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    if let Some(verification_status) = req.verification_status.clone() {
+        spawn_vendor_verification_webhook(
+            creator_user_id.clone(),
+            verification_status,
+            req.reason.clone(),
+        );
+    }
 
     Ok(JsonResponse::<serde_json::Value>::build().ok("Vendor profile updated"))
 }

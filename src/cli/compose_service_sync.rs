@@ -360,6 +360,21 @@ fn service_to_compose_value(
     }
     insert_string_sequence(&mut map, "volumes", &service.volumes);
     insert_string_sequence(&mut map, "depends_on", &service.depends_on);
+    insert_string_sequence(&mut map, "cap_add", &service.cap_add);
+    insert_string_sequence(&mut map, "cap_drop", &service.cap_drop);
+    insert_string_sequence(&mut map, "devices", &service.devices);
+    if service.privileged {
+        map.insert(
+            serde_yaml::Value::String("privileged".into()),
+            serde_yaml::Value::Bool(true),
+        );
+    }
+    if let Some(platform) = &service.platform {
+        map.insert(
+            serde_yaml::Value::String("platform".into()),
+            serde_yaml::Value::String(platform.clone()),
+        );
+    }
     if !project_networks.is_empty() {
         insert_string_sequence(&mut map, "networks", project_networks);
     }
@@ -725,6 +740,11 @@ mod tests {
                 depends_on: vec![],
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             }],
             ..Default::default()
         }
@@ -775,6 +795,11 @@ mod tests {
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         }];
 
         let result =
@@ -841,6 +866,11 @@ volumes:
                 depends_on: Vec::new(),
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             }],
             ..Default::default()
         };

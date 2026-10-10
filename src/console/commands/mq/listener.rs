@@ -74,6 +74,35 @@ struct ProgressMessage {
     /// SSH port (default 22)
     #[serde(default)]
     ssh_port: Option<i32>,
+    /// Typed failure classification published by the install service on
+    /// terminal failures (`report_on_fail`). Declared explicitly — serde
+    /// silently drops undeclared fields, which is why this record never
+    /// reached `deployment.metadata` before. Shape is pinned by
+    /// `config/shared-fixtures/deploy-failure-payload.json`.
+    #[serde(default)]
+    available_options: Option<serde_json::Value>,
+}
+
+/// Stable machine-readable id of the failure class, extracted from
+/// `available_options.error_kind`. `None` when the producer predates the
+/// shared contract or the message isn't a classified failure.
+fn progress_error_kind(msg: &ProgressMessage) -> Option<String> {
+    msg.available_options
+        .as_ref()?
+        .get("error_kind")?
+        .as_str()
+        .map(ToOwned::to_owned)
+        .filter(|kind| !kind.is_empty())
+}
+
+/// Human remediation text for the failure, from `available_options.err_description`.
+fn progress_err_description(msg: &ProgressMessage) -> Option<String> {
+    msg.available_options
+        .as_ref()?
+        .get("err_description")?
+        .as_str()
+        .map(ToOwned::to_owned)
+        .filter(|text| !text.is_empty())
 }
 
 /// Select the identifier that unambiguously names the deployment.
@@ -526,6 +555,25 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                                             }
                                         }
 
+                                        // Persist the typed failure classification alongside
+                                        // the message; `stacker deploy` turns these into the
+                                        // exit code and the remediation hint (shared contract:
+                                        // config/shared-fixtures/deploy-failure-payload.json).
+                                        if let Some(options) = msg.available_options.as_ref() {
+                                            if options.is_object() {
+                                                if let Some(obj) = row.metadata.as_object_mut() {
+                                                    obj.insert(
+                                                        "available_options".to_string(),
+                                                        options.clone(),
+                                                    );
+                                                } else {
+                                                    row.metadata = serde_json::json!({
+                                                        "available_options": options
+                                                    });
+                                                }
+                                            }
+                                        }
+
                                         // Update server.srv_ip whenever the progress
                                         // message carries an IP from the cloud provisioner.
                                         // Previously this was gated on status == "completed",
@@ -668,7 +716,42 @@ mod tests {
             progress: "90".to_string(),
             srv_ip: srv_ip.map(ToOwned::to_owned),
             ssh_port: Some(22),
+            available_options: None,
         }
+    }
+
+    /// The shared failure payload (`config/shared-fixtures/deploy-failure-payload.json`)
+    /// must survive deserialization — before `available_options` was declared,
+    /// serde silently dropped it and the classification never reached the CLI.
+    #[test]
+    fn progress_message_keeps_available_options() {
+        let payload =
+            include_str!("../../../../tests/contracts/deploy-failure-payload.contract.json");
+        let example = serde_json::from_str::<serde_json::Value>(payload)
+            .expect("contract JSON is valid")["example"]
+            .clone();
+
+        let msg: ProgressMessage =
+            serde_json::from_value(example).expect("shared failure payload must deserialize");
+
+        let kind = progress_error_kind(&msg);
+        assert_eq!(kind.as_deref(), Some("port_conflict"));
+        assert_eq!(
+            progress_err_description(&msg).as_deref(),
+            Some(concat!(
+                "A port this stack needs is already in use on the target host (often by ",
+                "another already-deployed stack, e.g. statuspanel). Free the port or change ",
+                "it in stacker.yml, then redeploy."
+            ))
+        );
+    }
+
+    #[test]
+    fn progress_message_without_available_options_is_unclassified() {
+        let msg = progress_message("something failed", None);
+
+        assert_eq!(progress_error_kind(&msg), None);
+        assert_eq!(progress_err_description(&msg), None);
     }
 
     #[test]

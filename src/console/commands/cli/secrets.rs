@@ -1485,6 +1485,11 @@ mod tests {
             depends_on: vec!["postgres".to_string()],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         }
     }
 

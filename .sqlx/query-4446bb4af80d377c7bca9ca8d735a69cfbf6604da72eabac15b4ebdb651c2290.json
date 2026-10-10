@@ -1,0 +1,132 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE server\n        SET\n            srv_ip = $2,\n            ssh_port = COALESCE($3, ssh_port),\n            -- A new address means a new machine, so a pin for the old one must\n            -- not carry over; a re-provisioned server legitimately presents a\n            -- new host key. $2 is cast because it is also compared below.\n            host_key_fingerprint = CASE\n                WHEN server.srv_ip IS DISTINCT FROM $2::varchar THEN NULL\n                ELSE server.host_key_fingerprint\n            END,\n            updated_at = NOW() at time zone 'utc'\n        WHERE project_id = $1\n        RETURNING\n            id,\n            user_id,\n            project_id,\n            cloud_id,\n            region,\n            zone,\n            server,\n            os,\n            disk_type,\n            created_at,\n            updated_at,\n            srv_ip,\n            ssh_port,\n            ssh_user,\n            vault_key_path,\n            connection_mode,\n            key_status,\n            name,\n            host_key_fingerprint\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "project_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "cloud_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "region",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "zone",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "server",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "os",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 8,
+        "name": "disk_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "srv_ip",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 12,
+        "name": "ssh_port",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 13,
+        "name": "ssh_user",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 14,
+        "name": "vault_key_path",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 15,
+        "name": "connection_mode",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 16,
+        "name": "key_status",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 17,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 18,
+        "name": "host_key_fingerprint",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Varchar",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "4446bb4af80d377c7bca9ca8d735a69cfbf6604da72eabac15b4ebdb651c2290"
+}

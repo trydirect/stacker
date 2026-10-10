@@ -6,10 +6,15 @@ use serde_json::json;
 
 use tokio::sync::OnceCell;
 
-static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+// A fresh `PgPool` per test, bound to that test's own runtime. Sharing one
+// pool across `#[tokio::test]` functions hands out connections belonging to a
+// runtime that has already been dropped, and `acquire()` then blocks for the
+// full 120s timeout and fails with `PoolTimedOut`. The server still starts
+// once; only the pool is per test.
+static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
 
-async fn app() -> &'static common::TestApp {
-    common::get_or_init_app(&APP)
+async fn app() -> common::TestApp {
+    common::get_or_init_app_fresh(&APP_CONFIG)
         .await
         .expect("Failed to start test app")
 }
@@ -26,7 +31,7 @@ fn create_jwt(role: &str, email: &str, expires_in: Duration) -> String {
 
     let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string());
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string());
-    let signature = "test_signature"; // Signature not validated in admin_service connector
+    let signature = common::sign_test_jwt(&header_b64, &payload_b64);
 
     format!("{}.{}.{}", header_b64, payload_b64, signature)
 }

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use actix_web::web::Data;
-use actix_web::{post, web, HttpResponse, Responder};
+use actix_web::{post, web, HttpResponse, Responder, ResponseError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgPool;
@@ -26,6 +26,7 @@ use crate::helpers::cloud_init::{render_user_data, BootConfig, DerivedJwtSpec};
 use crate::helpers::VaultClient;
 use crate::models;
 use crate::models::User;
+use crate::services;
 
 #[derive(Debug, Deserialize)]
 pub struct CloneRequest {
@@ -343,6 +344,35 @@ pub async fn clone_server(
                  request_json will be empty (Applications panel may show 0 services)"
             );
         }
+    }
+
+    // Marketplace access gate. Without it a priced template cloned by slug
+    // deployed with neither a purchase nor a card (incident 2026-10-07).
+    // AllowCardOnFile because this path settles the charge after a successful
+    // deploy (the install service's completion hook). Runs before any records
+    // are created so a rejected clone leaves nothing behind. A slug that is
+    // not an approved marketplace template passes through unchanged.
+    let gate_lookup = crate::db::marketplace::get_approved_by_slug(&pg_pool, &form.stack).await;
+    match classify_gate_lookup(&form.stack, gate_lookup) {
+        GateLookup::Check(gate_template) => {
+            if let Err(err) = services::validate_marketplace_template_access_with_mode(
+                user_service.get_ref(),
+                &user,
+                &gate_template,
+                services::AccessMode::AllowCardOnFile,
+            )
+            .await
+            {
+                tracing::warn!(
+                    stack = %form.stack,
+                    error = %err,
+                    "one-click clone rejected by the marketplace access gate"
+                );
+                return crate::services::map_access_error(err).error_response();
+            }
+        }
+        GateLookup::Pass => {}
+        GateLookup::Block(response) => return response,
     }
 
     let mut project_model = crate::models::Project::new(
@@ -689,6 +719,39 @@ pub async fn clone_server(
     })
 }
 
+/// What the clone access gate does with its catalog lookup, before any
+/// user-service call.
+enum GateLookup<T> {
+    /// An approved marketplace template: run the access check against it.
+    Check(T),
+    /// Not a marketplace template: nothing to gate.
+    Pass,
+    /// The lookup itself failed: block rather than let a possibly priced
+    /// template through unchecked.
+    Block(HttpResponse),
+}
+
+/// Fail closed on a lookup error. It used to log and continue, so a transient
+/// catalog error let a priced template clone with no purchase or card - the
+/// same fail-open hole the user service's gate was closed for (2026-10-07).
+fn classify_gate_lookup<T>(stack: &str, lookup: Result<Option<T>, String>) -> GateLookup<T> {
+    match lookup {
+        Ok(Some(template)) => GateLookup::Check(template),
+        Ok(None) => GateLookup::Pass,
+        Err(err) => {
+            tracing::error!(
+                error = %err,
+                stack = %stack,
+                "marketplace access gate could not resolve the template; blocking the clone"
+            );
+            GateLookup::Block(HttpResponse::ServiceUnavailable().json(json!({
+                "error": "Marketplace catalog unavailable",
+                "details": "Could not verify this template's billing. Please retry shortly.",
+            })))
+        }
+    }
+}
+
 /// The pinned `${VAR}` references the buyer's environment would leave unset.
 ///
 /// `required` is `baked_snapshots.required_env_keys` — a JSON array recorded at
@@ -1010,6 +1073,32 @@ mod tests {
     async fn clone_with_blank_access_token_returns_401() {
         let status = call_clone(test_user(Some("   ".to_string()))).await;
         assert_eq!(status, actix_web::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[actix_web::test]
+    async fn gate_lookup_error_blocks_the_clone_with_503() {
+        match classify_gate_lookup::<()>("paid-kit", Err("db timeout".to_string())) {
+            GateLookup::Block(resp) => {
+                assert_eq!(resp.status(), actix_web::http::StatusCode::SERVICE_UNAVAILABLE)
+            }
+            _ => panic!("a failed catalog lookup must block the clone, not continue"),
+        }
+    }
+
+    #[actix_web::test]
+    async fn gate_lookup_miss_passes_non_marketplace_stacks() {
+        assert!(matches!(
+            classify_gate_lookup::<()>("my-repo", Ok(None)),
+            GateLookup::Pass
+        ));
+    }
+
+    #[actix_web::test]
+    async fn gate_lookup_hit_runs_the_access_check() {
+        assert!(matches!(
+            classify_gate_lookup("paid-kit", Ok(Some(7u8))),
+            GateLookup::Check(7)
+        ));
     }
 
     #[actix_web::test]
