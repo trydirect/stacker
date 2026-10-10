@@ -33,12 +33,26 @@ pub async fn list_handler(
 #[get("/install/{purchase_token}")]
 pub async fn install_script_handler(path: web::Path<String>) -> Result<HttpResponse> {
     let purchase_token = path.into_inner();
+    if !is_purchase_token(&purchase_token) {
+        return Ok(HttpResponse::NotFound().finish());
+    }
     let script = generate_install_script(&purchase_token);
 
     Ok(HttpResponse::Ok()
         .content_type("text/x-shellscript")
         .insert_header(("Content-Disposition", "inline; filename=\"install.sh\""))
         .body(script))
+}
+
+/// The token is written into a shell script meant for `| sh` and into a
+/// directory path, so only a plain identifier is accepted: anything else
+/// could run commands or leave /opt/stacker/marketplace.
+fn is_purchase_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= 128
+        && token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 fn generate_install_script(purchase_token: &str) -> String {
@@ -119,6 +133,9 @@ pub async fn download_stack_handler(
     _pg_pool: web::Data<PgPool>,
 ) -> Result<HttpResponse> {
     let purchase_token = path.into_inner();
+    if !is_purchase_token(&purchase_token) {
+        return Ok(HttpResponse::NotFound().finish());
+    }
 
     // TODO: Call User Service POST /marketplace/purchase-token/validate
     // to verify token and get stack_id, then locate and serve the archive.
@@ -461,4 +478,33 @@ pub async fn increment_deploy_count_handler(
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))
         .map(|_| JsonResponse::<serde_json::Value>::build().ok("Deploy count incremented"))
+}
+
+#[cfg(test)]
+mod purchase_token_tests {
+    use super::{generate_install_script, is_purchase_token};
+
+    #[test]
+    fn tokens_that_could_escape_the_script_or_the_path_are_refused() {
+        for token in [
+            "",
+            "x\";touch /tmp/pwned;\"",
+            "x$(touch /tmp/pwned)",
+            "x`touch /tmp/pwned`",
+            "../../../etc",
+            "a/b",
+            "a b",
+            &"a".repeat(129),
+        ] {
+            assert!(!is_purchase_token(token), "accepted {token:?}");
+        }
+    }
+
+    #[test]
+    fn a_plain_identifier_is_accepted_and_written_as_is() {
+        assert!(is_purchase_token("pt_example-123"));
+        assert!(
+            generate_install_script("pt_example-123").contains("PURCHASE_TOKEN=\"pt_example-123\"")
+        );
+    }
 }
