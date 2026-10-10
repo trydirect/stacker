@@ -70,6 +70,7 @@ impl ToolHandler for GetCloudTool {
                 tracing::error!("Failed to fetch cloud: {}", e);
                 format!("Cloud error: {}", e)
             })?
+            .filter(|cloud| cloud.user_id == context.user.id)
             .ok_or_else(|| "Cloud not found".to_string())?;
 
         let result =
@@ -115,6 +116,7 @@ impl ToolHandler for DeleteCloudTool {
         let _cloud = db::cloud::fetch(&context.pg_pool, args.id)
             .await
             .map_err(|e| format!("Cloud error: {}", e))?
+            .filter(|cloud| cloud.user_id == context.user.id)
             .ok_or_else(|| "Cloud not found".to_string())?;
 
         db::cloud::delete(&context.pg_pool, args.id, &context.user.id)

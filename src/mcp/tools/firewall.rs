@@ -17,11 +17,11 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::connectors::user_service::UserServiceDeploymentResolver;
 use crate::db;
 use crate::forms::status_panel::{ConfigureFirewallCommandRequest, FirewallPortRule};
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
+use crate::mcp::tools::OwnedDeploymentResolver;
 use crate::models::{Command, CommandPriority};
 use crate::services::{DeploymentIdentifier, DeploymentResolver};
 
@@ -75,10 +75,7 @@ impl ToolHandler for ConfigureFirewallTool {
             params.deployment_id,
         )?;
 
-        let resolver = UserServiceDeploymentResolver::from_context(
-            &context.settings.user_service_url,
-            context.user.access_token.as_deref(),
-        );
+        let resolver = OwnedDeploymentResolver::new(context);
         let deployment_hash = resolver.resolve(&identifier).await?;
 
         // Build firewall request
@@ -271,10 +268,7 @@ impl ToolHandler for ListFirewallRulesTool {
             params.deployment_id,
         )?;
 
-        let resolver = UserServiceDeploymentResolver::from_context(
-            &context.settings.user_service_url,
-            context.user.access_token.as_deref(),
-        );
+        let resolver = OwnedDeploymentResolver::new(context);
         let deployment_hash = resolver.resolve(&identifier).await?;
 
         // Queue a list command
@@ -384,10 +378,7 @@ impl ToolHandler for ConfigureFirewallFromRoleTool {
             params.deployment_id,
         )?;
 
-        let resolver = UserServiceDeploymentResolver::from_context(
-            &context.settings.user_service_url,
-            context.user.access_token.as_deref(),
-        );
+        let resolver = OwnedDeploymentResolver::new(context);
         let deployment_hash = resolver.resolve(&identifier).await?;
 
         // Fetch role info from database to get ports
