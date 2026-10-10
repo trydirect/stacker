@@ -33,7 +33,8 @@ fn create_admin_jwt() -> String {
     let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string());
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string());
 
-    format!("{}.{}.{}", header_b64, payload_b64, "test_signature")
+    let signature = common::sign_test_jwt(&header_b64, &payload_b64);
+    format!("{}.{}.{}", header_b64, payload_b64, signature)
 }
 
 async fn insert_template(

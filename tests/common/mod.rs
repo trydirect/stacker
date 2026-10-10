@@ -60,6 +60,24 @@ pub fn set_test_internal_key() {
     );
 }
 
+/// Key the test admin JWTs are signed with. The server reads it from the
+/// environment on each request, and runs in this process.
+pub const TEST_ADMIN_JWT_SECRET: &str = "test-admin-jwt-secret";
+
+/// HS256 signature for `header_b64.payload_b64`, as the admin service would
+/// sign it. Also configures the key for the app under test.
+pub fn sign_test_jwt(header_b64: &str, payload_b64: &str) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use hmac::{Hmac, Mac};
+    std::env::set_var(
+        stacker::connectors::ADMIN_JWT_SECRET_ENV,
+        TEST_ADMIN_JWT_SECRET,
+    );
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(TEST_ADMIN_JWT_SECRET.as_bytes()).unwrap();
+    mac.update(format!("{header_b64}.{payload_b64}").as_bytes());
+    URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+}
+
 pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option<TestApp> {
     ensure_test_access_control_conf();
     set_test_internal_key();

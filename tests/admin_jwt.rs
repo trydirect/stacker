@@ -26,7 +26,7 @@ fn create_jwt(role: &str, email: &str, expires_in: Duration) -> String {
 
     let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string());
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string());
-    let signature = "test_signature"; // Signature not validated in admin_service connector
+    let signature = common::sign_test_jwt(&header_b64, &payload_b64);
 
     format!("{}.{}.{}", header_b64, payload_b64, signature)
 }
