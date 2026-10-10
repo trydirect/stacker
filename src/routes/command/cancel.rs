@@ -1,6 +1,8 @@
+use crate::configuration::Settings;
 use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models::User;
+use crate::routes::legacy_installations::resolve_owned_deployment_by_hash;
 use actix_web::{post, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -11,11 +13,22 @@ pub async fn cancel_handler(
     user: web::ReqData<Arc<User>>,
     path: web::Path<(String, String)>,
     pg_pool: web::Data<PgPool>,
+    settings: web::Data<Settings>,
 ) -> Result<impl Responder> {
     let (deployment_hash, command_id) = path.into_inner();
 
-    // Fetch command first to verify it exists and belongs to this deployment
-    let command = db::command::fetch_by_id(pg_pool.get_ref(), &command_id)
+    resolve_owned_deployment_by_hash(
+        pg_pool.get_ref(),
+        settings.get_ref(),
+        user.as_ref(),
+        &deployment_hash,
+    )
+    .await?;
+
+    // Fetch command first to verify it exists and belongs to this deployment.
+    // By its string command_id (e.g. "cmd_<uuid>"), which is what cancel()
+    // matches on and what the API hands out - not the row UUID.
+    let command = db::command::fetch_by_command_id(pg_pool.get_ref(), &command_id)
         .await
         .map_err(|err| {
             tracing::error!("Failed to fetch command: {}", err);

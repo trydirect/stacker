@@ -203,26 +203,25 @@ async fn cancel_stored_command(world: &mut StepWorld, deployment_hash: String) {
         .expect("No stored command_id")
         .clone();
 
-    // First GET the command to obtain the row UUID (cancel uses fetch_by_id which needs UUID)
-    world
-        .get(&format!("/api/v1/commands/{}/{}", deployment_hash, cmd_id))
-        .await;
-    let uuid = world
-        .response_json
-        .as_ref()
-        .and_then(|j| j.pointer("/item/id"))
-        .and_then(|v| v.as_str())
-        .expect("Could not get command UUID from GET response")
-        .to_string();
-
-    // Now cancel using the UUID
     let body = json!({});
     world
         .post_json(
-            &format!("/api/v1/commands/{}/{}/cancel", deployment_hash, uuid),
+            &format!("/api/v1/commands/{}/{}/cancel", deployment_hash, cmd_id),
             &body,
         )
         .await;
+}
+
+#[then(regex = r#"^no deployment exists with hash "(.+)"$"#)]
+async fn no_deployment_with_hash(world: &mut StepWorld, deployment_hash: String) {
+    let pool = world.db_pool.as_ref().expect("No database pool");
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM deployment WHERE deployment_hash = $1")
+            .bind(&deployment_hash)
+            .fetch_one(pool)
+            .await
+            .expect("deployment count query failed");
+    assert_eq!(count, 0, "a deployment was created for {}", deployment_hash);
 }
 
 // ─── Snapshot steps ──────────────────────────────────────────────
