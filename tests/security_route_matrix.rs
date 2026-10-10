@@ -1570,6 +1570,23 @@ async fn snapshot(pool: &sqlx::PgPool) -> String {
     out
 }
 
+/// A client that opens a new connection per request. A refused request
+/// whose body was never read makes the server close the connection; a pooled
+/// client would then send the next request down that closed connection.
+fn live_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .pool_max_idle_per_host(0)
+        .build()
+        .unwrap()
+}
+
+fn body_for_method(method: &str) -> &'static str {
+    match method {
+        "POST" | "PUT" | "PATCH" => "{}",
+        _ => "",
+    }
+}
+
 async fn call(
     client: &reqwest::Client,
     base: &str,
@@ -1619,7 +1636,7 @@ async fn other_user_gets_the_same_answer_as_for_a_missing_resource() {
     let missing = Fixture::missing();
     let before = snapshot(&app.db_pool).await;
 
-    let client = reqwest::Client::new();
+    let client = live_client();
     let mut failures = Vec::new();
     for ((method, path), (url, body)) in sweep_requests() {
         let (missing_status, missing_body) = call(
@@ -1698,7 +1715,7 @@ async fn regular_user_is_refused_on_admin_routes() {
         return;
     };
     let table = table();
-    let client = reqwest::Client::new();
+    let client = live_client();
     let mut failures = Vec::new();
     for route in registered_routes() {
         if kind_of(&table, &route) != Some(Admin) {
@@ -1710,7 +1727,7 @@ async fn regular_user_is_refused_on_admin_routes() {
             &app.address,
             method,
             &fill_any(path),
-            "{}",
+            body_for_method(method),
             common::USER_B_TOKEN,
         )
         .await;
@@ -1733,7 +1750,7 @@ async fn agent_routes_refuse_a_user_session() {
     let Some(app) = common::spawn_app_two_users().await else {
         return;
     };
-    let client = reqwest::Client::new();
+    let client = live_client();
     let mut failures = Vec::new();
     for (method, path, kind, _) in ROUTES {
         if *kind != Agent {
@@ -1745,7 +1762,7 @@ async fn agent_routes_refuse_a_user_session() {
             &app.address,
             method,
             &url,
-            "{}",
+            body_for_method(method),
             common::USER_B_TOKEN,
         )
         .await;
