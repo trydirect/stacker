@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Stacker v0.3.2 — AI Infrastructure CLI by TryDirect</title>
-  <meta name="description" content="Stacker v0.3.2 scans your project, deploys to cloud or bare metal, manages remote service secrets, cloud firewalls, agents, and app pipes — all from your terminal.">
+  <title>Stacker v0.3.4 — AI Infrastructure CLI by TryDirect</title>
+  <meta name="description" content="Stacker v0.3.4 scans your project, deploys to cloud or bare metal, manages remote service secrets, cloud firewalls, agents, and app pipes — all from your terminal.">
   <meta name="theme-color" content="#7e57c2">
   <link rel="icon" type="image/png" href="assets/stacker-logo.png">
   <link rel="stylesheet" href="styles.css">
@@ -61,7 +61,7 @@
       <div class="hero__content">
         <div class="hero__badge" data-animate="fade-up">
           <span class="hero__badge-dot"></span>
-          New Release v0.3.2 &middot; AI-Powered &middot; Cloud + Bare Metal
+          New Release v0.3.4 &middot; AI-Powered &middot; Cloud + Bare Metal
         </div>
         <h1 class="hero__title" data-animate="fade-up" data-delay="100">
           Ship your stack from code to server<br>
@@ -83,21 +83,21 @@
           </a>
         </div>
         <div class="hero__release" data-animate="fade-up" data-delay="350">
-          <div class="hero__release-version">v0.3.2</div>
+          <div class="hero__release-version">v0.3.4</div>
           <p class="hero__release-text">
-            Latest release adds <strong>container-health alerts</strong> (<code>stacker monitor</code>),
-            <strong>declarative pipes</strong>, <strong>manual pipe endpoints</strong>, <strong>pipe retries</strong>,
-            and <strong>full reverse-proxy routing</strong> (Traefik, Caddy, NPM).
+            Latest release adds <strong>config sync without deploying</strong> (<code>stacker sync</code>),
+            <strong>marketplace field policies</strong> with per-install generated secrets,
+            <strong>secret-free baked snapshots</strong>, <strong>volume policies</strong>, and verified SSH access on cloud deploys.
           </p>
           <div class="hero__release-chips">
-            <span class="hero__release-chip">stacker monitor</span>
-            <span class="hero__release-chip">Container alerts</span>
-            <span class="hero__release-chip">Declarative pipes</span>
-            <span class="hero__release-chip">pipe diff / apply</span>
-            <span class="hero__release-chip">Manual endpoints</span>
-            <span class="hero__release-chip">Pipe retries</span>
-            <span class="hero__release-chip">Proxy routing</span>
-            <span class="hero__release-chip">Traefik · Caddy · NPM</span>
+            <span class="hero__release-chip">stacker sync</span>
+            <span class="hero__release-chip">sync --verify</span>
+            <span class="hero__release-chip">Field policies</span>
+            <span class="hero__release-chip">Generated secrets</span>
+            <span class="hero__release-chip">Secret-free bakes</span>
+            <span class="hero__release-chip">Volume policy</span>
+            <span class="hero__release-chip">SSH verification</span>
+            <span class="hero__release-chip">Docker preflight</span>
           </div>
         </div>
         <div class="hero__terminal" data-animate="fade-up" data-delay="400">
@@ -160,7 +160,7 @@
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
           </div>
           <h3 class="feature-card__title">Cloud + Bare Metal Deploy</h3>
-          <p class="feature-card__desc">Deploy to <strong>DigitalOcean</strong>, <strong>Hetzner</strong>, <strong>AWS</strong>, <strong>Linode</strong>, <strong>UpCloud</strong>, or your own server with the same workflow.</p>
+          <p class="feature-card__desc">Deploy to <strong>DigitalOcean</strong>, <strong>Hetzner</strong>, <strong>AWS</strong>, <strong>Linode</strong>, <strong>Vultr</strong>, <strong>Contabo</strong>, or your own server with the same workflow.</p>
         </div>
         <div class="feature-card" data-animate="fade-up" data-delay="100">
           <div class="feature-card__icon feature-card__icon--runtime">
@@ -213,10 +213,30 @@
     <div class="container">
       <div class="section__header" data-animate="fade-up">
         <span class="section__label">Latest Release</span>
-        <h2 class="section__title">Stacker v0.3.2<br><span class="gradient-text">adds container-health alerts, declarative pipes &amp; full proxy routing.</span></h2>
-        <p class="section__desc">The newest release introduces the <code>stacker monitor</code> container-down alarm, declarative pipes as Infrastructure-as-Code (<code>pipe diff</code> / <code>pipe apply</code>), manual pipe endpoints, pipe retry policies, and working reverse-proxy routing for Traefik, Caddy, and Nginx Proxy Manager.</p>
+        <h2 class="section__title">Stacker v0.3.4<br><span class="gradient-text">adds config sync, per-install secrets &amp; safer marketplace snapshots.</span></h2>
+        <p class="section__desc">Releases v0.3.3 and v0.3.4 introduce <code>stacker sync</code> for pushing configuration without a deploy, field policies that generate fresh secrets for every marketplace install, secret-free baked snapshots with author-declared volume policies, and cloud deploys that stop with an error instead of a warning when SSH access can't be verified.</p>
       </div>
       <div class="release__grid">
+        <article class="release-card" data-animate="fade-up" data-delay="0">
+          <span class="release-card__eyebrow">Sync</span>
+          <h3 class="release-card__title">stacker sync</h3>
+          <p class="release-card__desc">Push your declarative project and app configuration to Stacker without creating a deployment, contacting a server, or starting containers. Add <code>--verify</code> to confirm Stacker acknowledged it, <code>--json</code> for scripts, and <code>--env</code> / <code>--deployment</code> to target a profile.</p>
+        </article>
+        <article class="release-card" data-animate="fade-up" data-delay="100">
+          <span class="release-card__eyebrow">Marketplace</span>
+          <h3 class="release-card__title">Field policies &amp; generated secrets</h3>
+          <p class="release-card__desc">Mark each field in <code>config_contract</code> as <code>fixed</code>, <code>editable</code>, or <code>generated</code>. Generated values — <code>hex</code>, <code>alphanumeric</code>, <code>uuid</code>, <code>derived_jwt</code> — are stripped at publish and created fresh on every install, so no two buyers share a secret.</p>
+        </article>
+        <article class="release-card" data-animate="fade-up" data-delay="200">
+          <span class="release-card__eyebrow">Bake</span>
+          <h3 class="release-card__title">Secret-free snapshots &amp; volume policy</h3>
+          <p class="release-card__desc">Protected environment values are parameterized and the build box is cleaned of credentials, keys, and logs before a marketplace snapshot is taken. Authors declare which volumes ship inside the image and which each buyer starts fresh.</p>
+        </article>
+        <article class="release-card" data-animate="fade-up" data-delay="300">
+          <span class="release-card__eyebrow">Deploy</span>
+          <h3 class="release-card__title">Verified SSH access</h3>
+          <p class="release-card__desc">Cloud deploys now fail when the SSH key can't be stored or SSH access can't be verified after provisioning, instead of finishing with a warning. A Docker preflight runs before deploy, and the new <code>W003</code> warning flags an ignored <code>deploy.server.ssh_key</code>.</p>
+        </article>
         <article class="release-card" data-animate="fade-up" data-delay="0">
           <span class="release-card__eyebrow">Monitoring</span>
           <h3 class="release-card__title">stacker monitor</h3>
@@ -238,44 +258,24 @@
           <p class="release-card__desc">Working routing for Traefik (labels), Caddy (Caddyfile), and Nginx Proxy Manager (proxy hosts), all driven by <code>proxy.domains</code> — platform-managed, so no double-deploy or port collisions.</p>
         </article>
         <article class="release-card" data-animate="fade-up" data-delay="0">
-          <span class="release-card__eyebrow">Networking</span>
-          <h3 class="release-card__title">npm default network</h3>
-          <p class="release-card__desc">Projects using npm now automatically get a default external network injected so services can communicate without manual compose network configuration.</p>
-        </article>
-        <article class="release-card" data-animate="fade-up" data-delay="100">
-          <span class="release-card__eyebrow">Agent</span>
-          <h3 class="release-card__title">Health, logs &amp; npm detection</h3>
-          <p class="release-card__desc">Agent health checks, log streaming, and npm project detection are all fixed. Separator widths are consistent. Hardened for live production environments.</p>
-        </article>
-        <article class="release-card" data-animate="fade-up" data-delay="200">
-          <span class="release-card__eyebrow">Cloud</span>
-          <h3 class="release-card__title">Hetzner location fixes</h3>
-          <p class="release-card__desc">Location aliases like <code>nbg1</code> are now normalized to installer-compatible datacenter values such as <code>nbg1-dc3</code>. Default server type updated to <code>cx23</code>.</p>
-        </article>
-        <article class="release-card" data-animate="fade-up" data-delay="300">
           <span class="release-card__eyebrow">Config</span>
           <h3 class="release-card__title">Config promote &amp; inventory</h3>
           <p class="release-card__desc">Promote config keys across environments, diff inventories, check contracts, and use <code>--remote</code> to enrich targets with Vault-backed secret metadata without fetching values.</p>
         </article>
-        <article class="release-card" data-animate="fade-up" data-delay="0">
+        <article class="release-card" data-animate="fade-up" data-delay="100">
           <span class="release-card__eyebrow">Secrets</span>
           <h3 class="release-card__title">Remote service secrets</h3>
           <p class="release-card__desc">Store Vault-backed secrets for deployable service and app targets from <code>stacker.yml</code> and supported Compose services, with metadata-only reads for safe inspection.</p>
         </article>
-        <article class="release-card" data-animate="fade-up" data-delay="100">
+        <article class="release-card" data-animate="fade-up" data-delay="200">
           <span class="release-card__eyebrow">Operations</span>
           <h3 class="release-card__title">Cloud firewall controls</h3>
           <p class="release-card__desc">Open, remove, and list provider firewall rules without SSH, while guest OS firewall operations remain available through the agent for fine-grained control.</p>
         </article>
-        <article class="release-card" data-animate="fade-up" data-delay="200">
+        <article class="release-card" data-animate="fade-up" data-delay="300">
           <span class="release-card__eyebrow">MCP</span>
           <h3 class="release-card__title">Remote secret tools</h3>
           <p class="release-card__desc">AI clients can list remote secret targets and manage service secret metadata through the MCP server while plaintext values stay safely in Vault.</p>
-        </article>
-        <article class="release-card" data-animate="fade-up" data-delay="300">
-          <span class="release-card__eyebrow">Distribution</span>
-          <h3 class="release-card__title">Marketplace workflows</h3>
-          <p class="release-card__desc">Submit stacks for review with <code>stacker submit</code>, track approval status, and inspect reviewer feedback directly from the CLI with <code>stacker marketplace</code>.</p>
         </article>
       </div>
     </div>
@@ -503,7 +503,7 @@
     <div class="container">
       <div class="section__header" data-animate="fade-up">
         <span class="section__label">Commands</span>
-        <h2 class="section__title">21 top-level commands.<br><span class="gradient-text">Complete control.</span></h2>
+        <h2 class="section__title">35 top-level commands.<br><span class="gradient-text">Complete control.</span></h2>
         <p class="section__desc">Build, deploy, automate, secure, publish, and operate your stack from one CLI.</p>
       </div>
       <div class="commands__grid" data-animate="fade-up" data-delay="100">
@@ -526,6 +526,13 @@
           </div>
           <p class="command-card__desc">Deploy your stack to cloud or server targets, with optional <code>--runtime kata</code> isolation.</p>
         </div>
+        <div class="command-card" data-command="sync">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker sync</code>
+            <span class="command-card__flag">--verify</span>
+          </div>
+          <p class="command-card__desc">Push project and app configuration to Stacker without deploying — no server contact, no containers started.</p>
+        </div>
         <div class="command-card" data-command="logs">
           <div class="command-card__header">
             <code class="command-card__cmd">stacker logs</code>
@@ -538,6 +545,13 @@
             <code class="command-card__cmd">stacker status</code>
           </div>
           <p class="command-card__desc">View current deployment status, service health, and resource usage.</p>
+        </div>
+        <div class="command-card" data-command="monitor">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker monitor</code>
+            <span class="command-card__flag">--once</span>
+          </div>
+          <p class="command-card__desc">Watch container health and alert via terminal, webhook, or pipe when a container stops and when it recovers.</p>
         </div>
         <div class="command-card" data-command="destroy">
           <div class="command-card__header">
@@ -584,6 +598,13 @@
             <span class="command-card__flag">configure-firewall</span>
           </div>
           <p class="command-card__desc">Operate live deployments with health, logs, restart, deploy-app, configure-proxy, and firewall controls.</p>
+        </div>
+        <div class="command-card" data-command="cloud">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker cloud</code>
+            <span class="command-card__flag">firewall</span>
+          </div>
+          <p class="command-card__desc">Open, remove, and list cloud-provider firewall rules without SSH, and list saved cloud credentials.</p>
         </div>
         <div class="command-card" data-command="marketplace">
           <div class="command-card__header">
@@ -655,7 +676,13 @@
           <div class="cloud-logo__icon">
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 14l8-12 8 12"/><path d="M8 14l4 6 4-6"/></svg>
           </div>
-          <span>UpCloud</span>
+          <span>Vultr</span>
+        </div>
+        <div class="cloud-logo">
+          <div class="cloud-logo__icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01"/></svg>
+          </div>
+          <span>Contabo</span>
         </div>
         <div class="cloud-logo">
           <div class="cloud-logo__icon">
@@ -707,7 +734,7 @@
         </div>
         <div class="cta__stats">
           <div class="cta__stat">
-            <span class="cta__stat-value" data-count="21">0</span>
+            <span class="cta__stat-value" data-count="35">0</span>
             <span class="cta__stat-label">CLI Commands</span>
           </div>
           <div class="cta__stat">
@@ -719,7 +746,7 @@
             <span class="cta__stat-label">Cloud Platforms</span>
           </div>
           <div class="cta__stat">
-            <span class="cta__stat-value" data-count="994">0</span>
+            <span class="cta__stat-value" data-count="3000">0</span>
             <span class="cta__stat-label">Tests in Suite</span>
           </div>
         </div>

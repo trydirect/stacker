@@ -118,6 +118,30 @@ fn find_marketplace_sync_payload(requests: &[Request], expected_action: &str) ->
     })
 }
 
+/// The admin handlers answer first and send the webhook afterwards from a
+/// detached `tokio::spawn`, so the request reaches the mock some time after
+/// the response. Poll for it: a fixed 200 ms sleep was too short on a loaded
+/// CI runner and failed the suite at random.
+async fn wait_for_marketplace_sync_payload(
+    mock_user_service: &MockServer,
+    expected_action: &str,
+) -> Option<Value> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let requests = mock_user_service
+            .received_requests()
+            .await
+            .expect("Should capture webhook request");
+        if let Some(payload) = find_marketplace_sync_payload(&requests, expected_action) {
+            return Some(payload);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test]
 async fn admin_can_mark_template_needs_changes_and_creator_can_see_reason() {
     // Hold env_lock to prevent concurrent webhook-triggering tests from cross-contaminating
@@ -263,13 +287,8 @@ async fn admin_approval_sends_template_published_webhook() {
 
     assert_eq!(StatusCode::OK, admin_response.status());
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    let requests = mock_user_service
-        .received_requests()
+    let payload = wait_for_marketplace_sync_payload(&mock_user_service, "template_published")
         .await
-        .expect("Should capture webhook request");
-    let payload = find_marketplace_sync_payload(&requests, "template_published")
         .expect("Approval should send template_published marketplace webhook");
 
     assert_eq!("template_published", payload["action"]);
@@ -321,13 +340,8 @@ async fn admin_rejection_sends_template_review_rejected_webhook() {
 
     assert_eq!(StatusCode::OK, admin_response.status());
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    let requests = mock_user_service
-        .received_requests()
+    let payload = wait_for_marketplace_sync_payload(&mock_user_service, "template_review_rejected")
         .await
-        .expect("Should capture webhook request");
-    let payload = find_marketplace_sync_payload(&requests, "template_review_rejected")
         .expect("Rejection should send template_review_rejected marketplace webhook");
 
     assert_eq!("template_review_rejected", payload["action"]);
@@ -381,13 +395,8 @@ async fn admin_unapprove_sends_template_unpublished_webhook() {
 
     assert_eq!(StatusCode::OK, admin_response.status());
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    let requests = mock_user_service
-        .received_requests()
+    let payload = wait_for_marketplace_sync_payload(&mock_user_service, "template_unpublished")
         .await
-        .expect("Should capture webhook request");
-    let payload = find_marketplace_sync_payload(&requests, "template_unpublished")
         .expect("Unapprove should send template_unpublished marketplace webhook");
 
     assert_eq!("template_unpublished", payload["action"]);
@@ -451,14 +460,10 @@ async fn admin_vendor_profile_verification_change_notifies_vendor_with_reason() 
 
     assert_eq!(StatusCode::OK, admin_response.status());
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    let requests = mock_user_service
-        .received_requests()
-        .await
-        .expect("Should capture webhook request");
-    let payload = find_marketplace_sync_payload(&requests, "vendor_verification_changed")
-        .expect("Verification change should send vendor_verification_changed webhook");
+    let payload =
+        wait_for_marketplace_sync_payload(&mock_user_service, "vendor_verification_changed")
+            .await
+            .expect("Verification change should send vendor_verification_changed webhook");
 
     assert_eq!("vendor_verification_changed", payload["action"]);
     assert_eq!(common::USER_A_ID, payload["vendor_user_id"]);
