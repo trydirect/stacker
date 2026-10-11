@@ -16,6 +16,7 @@ pub mod pipe;
 pub mod product;
 pub mod project;
 pub mod project_app;
+pub mod project_invitation;
 pub mod project_member;
 pub mod rating;
 pub mod remote_secret;

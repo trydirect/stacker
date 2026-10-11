@@ -8,6 +8,7 @@ use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models;
 use crate::project_app;
+use crate::routes::project::access::{self, Need};
 use actix_web::{put, web, Responder, Result};
 use serde_json::Value;
 use serde_valid::Validate;
@@ -157,12 +158,17 @@ pub async fn item(
         .await
         .map_err(JsonResponse::internal_server_error)
         .and_then(|project| match project {
-            Some(project) if project.user_id != user.id => {
-                Err(JsonResponse::not_found("Project not found"))
-            }
             Some(project) => Ok(project),
             None => Err(JsonResponse::not_found("Project not found")),
         })?;
+    access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::Manage,
+        "Project not found",
+    )
+    .await?;
 
     let existing_apps = db::project_app::fetch_by_project(pg_pool.get_ref(), id)
         .await
