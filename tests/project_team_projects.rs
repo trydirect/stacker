@@ -102,7 +102,7 @@ async fn create_test_project_with_payload(
 
 #[tokio::test]
 async fn owner_can_share_project_with_viewer_by_user_id() {
-    let Some(app) = common::spawn_app_two_users().await else {
+    let Some(app) = common::spawn_app_two_users_on_team_plan().await else {
         return;
     };
 
@@ -124,7 +124,7 @@ async fn owner_can_share_project_with_viewer_by_user_id() {
 
 #[tokio::test]
 async fn non_owner_cannot_share_project() {
-    let Some(app) = common::spawn_app_two_users().await else {
+    let Some(app) = common::spawn_app_two_users_on_team_plan().await else {
         return;
     };
 
@@ -143,7 +143,7 @@ async fn non_owner_cannot_share_project() {
 
 #[tokio::test]
 async fn viewer_can_get_shared_project_latest_deployment() {
-    let Some(app) = common::spawn_app_two_users().await else {
+    let Some(app) = common::spawn_app_two_users_on_team_plan().await else {
         return;
     };
 
@@ -178,7 +178,7 @@ async fn viewer_can_get_shared_project_latest_deployment() {
 
 #[tokio::test]
 async fn viewer_can_list_shared_project_deployments_with_project_filter() {
-    let Some(app) = common::spawn_app_two_users().await else {
+    let Some(app) = common::spawn_app_two_users_on_team_plan().await else {
         return;
     };
 
@@ -215,7 +215,7 @@ async fn viewer_can_list_shared_project_deployments_with_project_filter() {
 
 #[tokio::test]
 async fn viewer_cannot_get_raw_project_payload() {
-    let Some(app) = common::spawn_app_two_users().await else {
+    let Some(app) = common::spawn_app_two_users_on_team_plan().await else {
         return;
     };
 
@@ -236,12 +236,15 @@ async fn viewer_cannot_get_raw_project_payload() {
         .await
         .expect("project get request failed");
 
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    // A viewer sees the project in their shared list and its deployments, not
+    // the stack payload (it carries app env, which can hold passwords). They
+    // do have access to the project, so the refusal is 403, not 404.
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
 async fn viewer_can_list_projects_shared_with_them() {
-    let Some(app) = common::spawn_app_two_users().await else {
+    let Some(app) = common::spawn_app_two_users_on_team_plan().await else {
         return;
     };
 
@@ -269,7 +272,7 @@ async fn viewer_can_list_projects_shared_with_them() {
 
 #[tokio::test]
 async fn shared_projects_list_excludes_sensitive_fields() {
-    let Some(app) = common::spawn_app_two_users().await else {
+    let Some(app) = common::spawn_app_two_users_on_team_plan().await else {
         return;
     };
 
@@ -303,7 +306,7 @@ async fn shared_projects_list_excludes_sensitive_fields() {
 
 #[tokio::test]
 async fn shared_projects_list_only_returns_projects_shared_to_requesting_user() {
-    let Some(app) = common::spawn_app_two_users().await else {
+    let Some(app) = common::spawn_app_two_users_on_team_plan().await else {
         return;
     };
 
@@ -345,7 +348,7 @@ async fn shared_projects_list_only_returns_projects_shared_to_requesting_user() 
 
 #[tokio::test]
 async fn shared_project_does_not_change_existing_project_list_contract() {
-    let Some(app) = common::spawn_app_two_users().await else {
+    let Some(app) = common::spawn_app_two_users_on_team_plan().await else {
         return;
     };
 
@@ -374,7 +377,7 @@ async fn shared_project_does_not_change_existing_project_list_contract() {
 
 #[tokio::test]
 async fn owner_can_list_project_members() {
-    let Some(app) = common::spawn_app_two_users().await else {
+    let Some(app) = common::spawn_app_two_users_on_team_plan().await else {
         return;
     };
 
@@ -400,7 +403,7 @@ async fn owner_can_list_project_members() {
 
 #[tokio::test]
 async fn non_owner_cannot_list_project_members() {
-    let Some(app) = common::spawn_app_two_users().await else {
+    let Some(app) = common::spawn_app_two_users_on_team_plan().await else {
         return;
     };
 
@@ -416,12 +419,14 @@ async fn non_owner_cannot_list_project_members() {
 
     let response = list_project_members(&app.address, project_id, common::USER_B_TOKEN).await;
 
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    // B is a viewer: they may know the project exists, but members are the
+    // owner's to manage, so this is 403. Someone with no access gets 404.
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
 async fn owner_can_remove_project_member() {
-    let Some(app) = common::spawn_app_two_users().await else {
+    let Some(app) = common::spawn_app_two_users_on_team_plan().await else {
         return;
     };
 
@@ -454,7 +459,7 @@ async fn owner_can_remove_project_member() {
 
 #[tokio::test]
 async fn removed_viewer_loses_shared_project_access() {
-    let Some(app) = common::spawn_app_two_users().await else {
+    let Some(app) = common::spawn_app_two_users_on_team_plan().await else {
         return;
     };
 

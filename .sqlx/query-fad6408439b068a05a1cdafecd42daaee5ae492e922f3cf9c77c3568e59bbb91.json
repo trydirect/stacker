@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT m.project_id, m.user_id, m.role, m.created_by, m.created_at, m.updated_at,\n               (SELECT i.email FROM project_invitation i\n                WHERE i.project_id = m.project_id AND i.accepted_by = m.user_id\n                  AND i.status = 'accepted'\n                ORDER BY i.accepted_at DESC\n                LIMIT 1) AS email\n        FROM project_member m\n        WHERE m.project_id = $1\n        ORDER BY m.created_at ASC, m.user_id ASC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "project_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "role",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_by",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "email",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "fad6408439b068a05a1cdafecd42daaee5ae492e922f3cf9c77c3568e59bbb91"
+}

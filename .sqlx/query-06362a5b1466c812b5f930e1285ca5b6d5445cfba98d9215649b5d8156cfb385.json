@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE project_invitation SET status = 'expired'\n        WHERE project_id = $1 AND status = 'pending' AND expires_at <= NOW()\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "06362a5b1466c812b5f930e1285ca5b6d5445cfba98d9215649b5d8156cfb385"
+}

@@ -1,6 +1,7 @@
 use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models;
+use crate::routes::project::access::{self, Need};
 use actix_web::{patch, web, Responder, Result};
 use serde::Deserialize;
 use sqlx::PgPool;
@@ -26,12 +27,10 @@ pub async fn toggle(
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
         .and_then(|project| match project {
-            Some(project) if project.user_id != user.id => {
-                Err(JsonResponse::<models::Project>::build().not_found(""))
-            }
             Some(project) => Ok(project),
             None => Err(JsonResponse::<models::Project>::build().not_found("")),
         })?;
+    access::check(pg_pool.get_ref(), &project, &user.id, Need::Owner, "").await?;
 
     if !form.is_protected {
         let confirmation = form.confirmation_name.as_deref().unwrap_or("");

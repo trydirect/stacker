@@ -38,6 +38,12 @@ pub async fn spawn_bdd_app() -> Option<BddTestApp> {
         "http://127.0.0.1:{}/me",
         auth_listener.local_addr().unwrap().port()
     );
+    // The same mock answers the User Service plan lookup: sharing a project
+    // needs the owner on the Team plan. Every other User Service path is 404.
+    configuration.user_service_url = format!(
+        "http://127.0.0.1:{}",
+        auth_listener.local_addr().unwrap().port()
+    );
     let _ = tokio::spawn(mock_auth_server(auth_listener));
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -209,13 +215,36 @@ async fn mock_auth(req: actix_web::HttpRequest) -> actix_web::Result<impl Respon
     Ok(web::Json(forms::user::UserForm { user }))
 }
 
+/// User A is on the Team plan, User B on the free plan.
+#[get("/oauth_server/api/me")]
+async fn mock_plan(req: actix_web::HttpRequest) -> actix_web::Result<impl Responder> {
+    let is_user_b = req
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .contains("user-b");
+    let code = if is_user_b {
+        "plan-free-periodically"
+    } else {
+        "plan-individual-monthly"
+    };
+    Ok(web::Json(
+        serde_json::json!({ "user": { "plan": { "code": code } } }),
+    ))
+}
+
 async fn mock_auth_server(listener: TcpListener) {
-    HttpServer::new(|| App::new().service(web::scope("/me").service(mock_auth)))
-        .listen(listener)
-        .unwrap()
-        .run()
-        .await
-        .unwrap();
+    HttpServer::new(|| {
+        App::new()
+            .service(web::scope("/me").service(mock_auth))
+            .service(mock_plan)
+    })
+    .listen(listener)
+    .unwrap()
+    .run()
+    .await
+    .unwrap();
 }
 
 // ─── Test data helpers ───────────────────────────────────────────

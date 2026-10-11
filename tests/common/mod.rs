@@ -272,6 +272,49 @@ pub async fn spawn_app_two_users_with_user_service(
     spawn_app_two_users_with_configuration(configuration).await
 }
 
+/// Two users where User A is on the Team plan (may share projects) and
+/// User B is on the free plan. Sharing a project checks the owner's plan with
+/// the User Service, which the plain two-user harness does not answer.
+pub async fn spawn_app_two_users_on_team_plan() -> Option<TwoUserTestApp> {
+    let user_service = MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/oauth_server/api/me"))
+        .respond_with(|req: &wiremock::Request| {
+            let is_user_b = req.headers.iter().any(|(name, values)| {
+                name.as_str().eq_ignore_ascii_case("authorization")
+                    && values.last().as_str().contains("user-b")
+            });
+            let code = if is_user_b {
+                "plan-free-periodically"
+            } else {
+                "plan-individual-monthly"
+            };
+            wiremock::ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({ "user": { "plan": { "code": code } } }))
+        })
+        .mount(&user_service)
+        .await;
+    // A member deploys as the owner, whose address comes from the internal
+    // user lookup.
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path(format!(
+            "/api/internal/users/{USER_A_ID}"
+        )))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({ "email": USER_A_EMAIL })),
+        )
+        .mount(&user_service)
+        .await;
+    std::env::set_var("INTERNAL_SERVICES_ACCESS_KEY", "test-internal-key");
+
+    let mut configuration = get_configuration().expect("Failed to get configuration");
+    configuration.user_service_url = user_service.uri();
+    // The mock must outlive the app, which lives for the rest of the test.
+    std::mem::forget(user_service);
+    spawn_app_two_users_with_configuration(configuration).await
+}
+
 pub async fn spawn_app_two_users_with_configuration(
     mut configuration: Settings,
 ) -> Option<TwoUserTestApp> {
