@@ -25,48 +25,58 @@ impl std::fmt::Debug for VaultClient {
     }
 }
 
-impl VaultClient {
-    pub fn new(settings: &VaultSettings) -> Self {
-        let mut client_builder = Client::builder();
-        if let (Some(cert), Some(key)) = (&settings.client_cert, &settings.client_key) {
-            match Identity::from_pkcs8_pem(cert.as_bytes(), key.as_bytes()) {
-                Ok(identity) => {
-                    client_builder = client_builder.identity(identity);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to load mTLS identity for Vault client: {}", e);
-                }
+/// The HTTP client for Vault: mTLS identity and the private CA from the
+/// settings. Every Vault call must use it, the health check included - a bare
+/// client fails TLS verification against a private-CA Vault while Vault itself
+/// is fine.
+pub fn http_client_builder(settings: &VaultSettings) -> reqwest::ClientBuilder {
+    let mut client_builder = Client::builder();
+    if let (Some(cert), Some(key)) = (&settings.client_cert, &settings.client_key) {
+        match Identity::from_pkcs8_pem(cert.as_bytes(), key.as_bytes()) {
+            Ok(identity) => {
+                client_builder = client_builder.identity(identity);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load mTLS identity for Vault client: {}", e);
             }
         }
-        match &settings.ca_cert {
-            Some(ca_pem) => match Certificate::from_pem(ca_pem.as_bytes()) {
-                Ok(ca) => {
-                    client_builder = client_builder.add_root_certificate(ca);
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to load CA certificate for Vault client, falling back to the \
-                         system trust store — every Vault call will fail if Vault uses a \
-                         private CA: {}",
-                        e
-                    );
-                }
-            },
-            // Silence here is what made this expensive to find: a private-CA
-            // Vault over https with no CA configured fails every call with
-            // "unable to get local issuer certificate" and nothing ever says
-            // the CA was missing. Set VAULT_CACERT to the CA's PEM *contents*.
-            None if settings.address.starts_with("https://") => {
+    }
+    match &settings.ca_cert {
+        Some(ca_pem) => match Certificate::from_pem(ca_pem.as_bytes()) {
+            Ok(ca) => {
+                client_builder = client_builder.add_root_certificate(ca);
+            }
+            Err(e) => {
                 tracing::error!(
-                    "Vault address {} is https but no CA certificate is configured \
-                     (VAULT_CACERT unset or empty) — relying on the system trust store. \
-                     If Vault uses a private CA, every Vault call will fail TLS verification.",
-                    settings.address
+                    "Failed to load CA certificate for Vault client, falling back to the \
+                     system trust store — every Vault call will fail if Vault uses a \
+                     private CA: {}",
+                    e
                 );
             }
-            None => {}
+        },
+        // Silence here is what made this expensive to find: a private-CA
+        // Vault over https with no CA configured fails every call with
+        // "unable to get local issuer certificate" and nothing ever says
+        // the CA was missing. Set VAULT_CACERT to the CA's PEM *contents*.
+        None if settings.address.starts_with("https://") => {
+            tracing::error!(
+                "Vault address {} is https but no CA certificate is configured \
+                 (VAULT_CACERT unset or empty) — relying on the system trust store. \
+                 If Vault uses a private CA, every Vault call will fail TLS verification.",
+                settings.address
+            );
         }
-        let client = client_builder.build().unwrap_or_else(|_| Client::new());
+        None => {}
+    }
+    client_builder
+}
+
+impl VaultClient {
+    pub fn new(settings: &VaultSettings) -> Self {
+        let client = http_client_builder(settings)
+            .build()
+            .unwrap_or_else(|_| Client::new());
 
         Self {
             client,
