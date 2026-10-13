@@ -1281,3 +1281,46 @@ async fn the_owner_sees_who_the_members_are() {
     assert_eq!(email_of(COLLEAGUE.id), json!("colleague@try.direct"));
     assert_eq!(email_of("legacy_viewer_id"), Value::Null);
 }
+
+// ── The project's servers ──
+
+#[tokio::test]
+async fn a_member_sees_the_projects_servers_to_deploy_to() {
+    let Some(app) = App::spawn().await else {
+        return;
+    };
+    let project = app.project(TEAM).await;
+    let server = common::create_test_server(&app.pool, TEAM.id, project, "ssh", None).await;
+    app.add_member(project, COLLEAGUE.id, "member").await;
+
+    let (status, body) = app
+        .call(Some(COLLEAGUE), "GET", &format!("/server/project/{project}"), None)
+        .await;
+    assert_eq!(status, 200, "member: {body}");
+    let ids: Vec<i64> = body["list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["id"].as_i64())
+        .collect();
+    assert_eq!(ids, vec![server as i64]);
+}
+
+#[tokio::test]
+async fn a_viewer_and_an_outsider_do_not_get_the_projects_servers() {
+    let Some(app) = App::spawn().await else {
+        return;
+    };
+    let project = app.project(TEAM).await;
+    common::create_test_server(&app.pool, TEAM.id, project, "ssh", None).await;
+    app.add_member(project, COLLEAGUE.id, "viewer").await;
+
+    let (status, _) = app
+        .call(Some(COLLEAGUE), "GET", &format!("/server/project/{project}"), None)
+        .await;
+    assert_eq!(status, 403, "viewer");
+    let (status, _) = app
+        .call(Some(PRO), "GET", &format!("/server/project/{project}"), None)
+        .await;
+    assert_eq!(status, 404, "outsider");
+}
