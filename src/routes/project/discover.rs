@@ -7,6 +7,7 @@ use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models::{self, ProjectApp};
 use crate::project_app::{is_platform_managed_app_code, normalize_app_code};
+use crate::routes::project::access::{self, Need};
 use actix_web::{get, post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -104,9 +105,14 @@ pub async fn discover_containers(
         .map_err(|e| JsonResponse::internal_server_error(e))?
         .ok_or_else(|| JsonResponse::not_found("Project not found"))?;
 
-    if project.user_id != user.id {
-        return Err(JsonResponse::not_found("Project not found"));
-    }
+    access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::View,
+        "Project not found",
+    )
+    .await?;
 
     // Get deployment_hash from query, the active project agent, or the latest
     // deployment record. Active agent state is preferred because command
@@ -342,9 +348,14 @@ pub async fn import_containers(
         .map_err(|e| JsonResponse::internal_server_error(e))?
         .ok_or_else(|| JsonResponse::not_found("Project not found"))?;
 
-    if project.user_id != user.id {
-        return Err(JsonResponse::not_found("Project not found"));
-    }
+    access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::Manage,
+        "Project not found",
+    )
+    .await?;
 
     let mut imported = Vec::new();
     let mut errors = Vec::new();

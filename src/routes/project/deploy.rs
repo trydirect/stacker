@@ -8,6 +8,7 @@ use crate::forms;
 use crate::helpers::project::builder::DcBuilder;
 use crate::helpers::{JsonResponse, MqManager, VaultClient};
 use crate::models;
+use crate::routes::project::access::{self, Need};
 use crate::services;
 use actix_web::{post, web, web::Data, Responder, Result};
 use serde::Deserialize;
@@ -1844,9 +1845,20 @@ pub async fn item(
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
         .and_then(|project| match project {
-            Some(project) if project.user_id == user.id => Ok(project),
-            _ => Err(JsonResponse::<models::Project>::build().not_found("not found")),
+            Some(project) => Ok(project),
+            None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
         })?;
+    let access = access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::Manage,
+        "not found",
+    )
+    .await?;
+    let user = Arc::new(
+        access::acting_user(&project, user.as_ref(), access, &sets.user_service_url).await?,
+    );
 
     let (project_id, deployment_id) = deploy_project(
         user.as_ref(),
@@ -1894,9 +1906,20 @@ pub async fn saved_item(
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
         .and_then(|project| match project {
-            Some(project) if project.user_id == user.id => Ok(project),
-            _ => Err(JsonResponse::<models::Project>::build().not_found("Project not found")),
+            Some(project) => Ok(project),
+            None => Err(JsonResponse::<models::Project>::build().not_found("Project not found")),
         })?;
+    let access = access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::Manage,
+        "Project not found",
+    )
+    .await?;
+    let user = Arc::new(
+        access::acting_user(&project, user.as_ref(), access, &sets.user_service_url).await?,
+    );
 
     let marketplace_template = if let Some(template_id) = project.source_template_id {
         let template = db::marketplace::get_by_id(pg_pool.get_ref(), template_id)
@@ -2121,12 +2144,20 @@ pub async fn rollback(
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
         .and_then(|project| match project {
-            Some(project) if project.user_id != user.id => {
-                Err(JsonResponse::<models::Project>::build().not_found("Project not found"))
-            }
             Some(project) => Ok(project),
             None => Err(JsonResponse::<models::Project>::build().not_found("Project not found")),
         })?;
+    let access = access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::Manage,
+        "Project not found",
+    )
+    .await?;
+    let user = Arc::new(
+        access::acting_user(&project, user.as_ref(), access, &sets.user_service_url).await?,
+    );
 
     let template_id = project.source_template_id.ok_or_else(|| {
         JsonResponse::<models::Project>::build()

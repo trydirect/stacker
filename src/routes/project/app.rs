@@ -16,6 +16,7 @@
 use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models::{self, Project};
+use crate::routes::project::access::{self, Need};
 use crate::services::{
     runtime_env_contract_response, ProjectAppService, RuntimeEnvContractResponse,
 };
@@ -217,9 +218,14 @@ pub async fn list_apps(
         .map_err(|e| JsonResponse::internal_server_error(e))?
         .ok_or_else(|| JsonResponse::not_found("Project not found"))?;
 
-    if project.user_id != user.id {
-        return Err(JsonResponse::not_found("Project not found"));
-    }
+    access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::View,
+        "Project not found",
+    )
+    .await?;
 
     // Fetch apps for project
     let apps = db::project_app::fetch_by_project(pg_pool.get_ref(), project_id)
@@ -249,9 +255,14 @@ pub async fn create_app(
         .map_err(|e| JsonResponse::internal_server_error(e))?
         .ok_or_else(|| JsonResponse::not_found("Project not found"))?;
 
-    if project.user_id != user.id {
-        return Err(JsonResponse::not_found("Project not found"));
-    }
+    access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::Manage,
+        "Project not found",
+    )
+    .await?;
 
     let code = payload.code.trim();
     if code.is_empty() {
@@ -358,9 +369,14 @@ pub async fn get_app(
         .map_err(|e| JsonResponse::internal_server_error(e))?
         .ok_or_else(|| JsonResponse::not_found("Project not found"))?;
 
-    if project.user_id != user.id {
-        return Err(JsonResponse::not_found("Project not found"));
-    }
+    access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::View,
+        "Project not found",
+    )
+    .await?;
 
     // Fetch app
     let app = db::project_app::fetch_by_project_and_code(pg_pool.get_ref(), project_id, &code)
@@ -389,9 +405,14 @@ pub async fn delete_app(
         .map_err(|e| JsonResponse::internal_server_error(e))?
         .ok_or_else(|| JsonResponse::not_found("Project not found"))?;
 
-    if project.user_id != user.id {
-        return Err(JsonResponse::not_found("Project not found"));
-    }
+    access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::Manage,
+        "Project not found",
+    )
+    .await?;
 
     let app = db::project_app::fetch_by_project_and_code(pg_pool.get_ref(), project_id, &code)
         .await
@@ -446,9 +467,14 @@ pub async fn get_app_config(
         .map_err(|e| JsonResponse::internal_server_error(e))?
         .ok_or_else(|| JsonResponse::not_found("Project not found"))?;
 
-    if project.user_id != user.id {
-        return Err(JsonResponse::not_found("Project not found"));
-    }
+    access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::View,
+        "Project not found",
+    )
+    .await?;
 
     // Fetch app
     let app = db::project_app::fetch_by_project_and_code(pg_pool.get_ref(), project_id, &code)
@@ -508,9 +534,14 @@ pub async fn get_env_vars(
         .map_err(|e| JsonResponse::internal_server_error(e))?
         .ok_or_else(|| JsonResponse::not_found("Project not found"))?;
 
-    if project.user_id != user.id {
-        return Err(JsonResponse::not_found("Project not found"));
-    }
+    access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::View,
+        "Project not found",
+    )
+    .await?;
 
     // Fetch app
     let app = db::project_app::fetch_by_project_and_code(pg_pool.get_ref(), project_id, &code)
@@ -558,9 +589,14 @@ pub async fn update_env_vars(
         .map_err(|e| JsonResponse::internal_server_error(e))?
         .ok_or_else(|| JsonResponse::not_found("Project not found"))?;
 
-    if project.user_id != user.id {
-        return Err(JsonResponse::not_found("Project not found"));
-    }
+    access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::Manage,
+        "Project not found",
+    )
+    .await?;
 
     // Fetch and update app
     let mut app = db::project_app::fetch_by_project_and_code(pg_pool.get_ref(), project_id, &code)
@@ -624,9 +660,14 @@ pub async fn delete_env_var(
         .map_err(|e| JsonResponse::internal_server_error(e))?
         .ok_or_else(|| JsonResponse::not_found("Project not found"))?;
 
-    if project.user_id != user.id {
-        return Err(JsonResponse::not_found("Project not found"));
-    }
+    access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::Manage,
+        "Project not found",
+    )
+    .await?;
 
     // Fetch and update app
     let mut app = db::project_app::fetch_by_project_and_code(pg_pool.get_ref(), project_id, &code)
@@ -685,9 +726,14 @@ pub async fn update_ports(
         .map_err(|e| JsonResponse::internal_server_error(e))?
         .ok_or_else(|| JsonResponse::not_found("Project not found"))?;
 
-    if project.user_id != user.id {
-        return Err(JsonResponse::not_found("Project not found"));
-    }
+    access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::Manage,
+        "Project not found",
+    )
+    .await?;
 
     // Fetch and update app
     let mut app = db::project_app::fetch_by_project_and_code(pg_pool.get_ref(), project_id, &code)
@@ -738,9 +784,14 @@ pub async fn update_domain(
         .map_err(|e| JsonResponse::internal_server_error(e))?
         .ok_or_else(|| JsonResponse::not_found("Project not found"))?;
 
-    if project.user_id != user.id {
-        return Err(JsonResponse::not_found("Project not found"));
-    }
+    access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::Manage,
+        "Project not found",
+    )
+    .await?;
 
     // Fetch and update app
     let mut app = db::project_app::fetch_by_project_and_code(pg_pool.get_ref(), project_id, &code)

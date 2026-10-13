@@ -2,6 +2,7 @@ use crate::db;
 use crate::forms::{RemoteSecretMetadataResponse, UpsertRemoteSecretRequest};
 use crate::helpers::JsonResponse;
 use crate::models;
+use crate::routes::project::access::{self, Need};
 use crate::services::VaultService;
 use actix_web::{delete, get, put, web, Responder, Result};
 use serde_json::json;
@@ -20,9 +21,7 @@ async fn fetch_owned_project_and_app(
         .map_err(JsonResponse::internal_server_error)?
         .ok_or_else(|| JsonResponse::not_found("Project not found"))?;
 
-    if project.user_id != user.id {
-        return Err(JsonResponse::not_found("Project not found"));
-    }
+    access::check(pool, &project, &user.id, Need::Owner, "Project not found").await?;
 
     let app = db::project_app::fetch_by_project_and_code(pool, project_id, app_code)
         .await

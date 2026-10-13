@@ -2,7 +2,7 @@ use crate::configuration::Settings;
 use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models::User;
-use crate::routes::legacy_installations::resolve_owned_deployment_by_hash;
+use crate::routes::project::access::{self, Need};
 use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -17,11 +17,12 @@ pub async fn get_handler(
 ) -> Result<impl Responder> {
     let (deployment_hash, command_id) = path.into_inner();
 
-    resolve_owned_deployment_by_hash(
+    access::resolve_team_deployment(
         pg_pool.get_ref(),
         settings.get_ref(),
         user.as_ref(),
         &deployment_hash,
+        Need::View,
     )
     .await?;
 

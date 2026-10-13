@@ -2,6 +2,7 @@ use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models;
 use crate::models::Project;
+use crate::routes::project::access::{self, Need};
 use actix_web::{delete, web, HttpResponse, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -19,12 +20,10 @@ pub async fn item(
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
         .and_then(|project| match project {
-            Some(project) if project.user_id != user.id => {
-                Err(JsonResponse::<models::Project>::build().not_found(""))
-            }
             Some(project) => Ok(project),
             None => Err(JsonResponse::<models::Project>::build().not_found("")),
         })?;
+    access::check(pg_pool.get_ref(), &project, &user.id, Need::Owner, "").await?;
 
     if project.is_protected {
         let blockers = db::project::check_deletion_blockers(pg_pool.get_ref(), project.id)

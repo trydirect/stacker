@@ -9,7 +9,7 @@ use crate::project_app::{
     store_configs_to_vault_from_params, store_registry_auth_command_to_vault,
     upsert_app_config_for_deploy, REGISTRY_AUTH_VAULT_KEY,
 };
-use crate::routes::legacy_installations::resolve_owned_deployment_by_hash;
+use crate::routes::project::access::{self, Need};
 use crate::services::env_model::reconcile_env_file_content;
 use crate::services::{AppConfig, ConfigRenderer, ProjectAppService, VaultService};
 use actix_web::{post, web, Responder, Result};
@@ -63,11 +63,12 @@ pub async fn create_handler(
     }
 
     // A queued command runs on the deployment's server: only its owner may queue one.
-    resolve_owned_deployment_by_hash(
+    access::resolve_team_deployment(
         pg_pool.get_ref(),
         settings.get_ref(),
         user.as_ref(),
         &req.deployment_hash,
+        Need::Manage,
     )
     .await?;
 
@@ -99,9 +100,17 @@ pub async fn create_handler(
             .and_then(|v| v.as_i64())
             .map(|v| v as i32)
         {
-            // The app config is written into this project: it must be the caller's.
+            // The app config is written into this project: the caller must
+            // own it or be a member allowed to change it.
             Some(id) => match db::project::fetch(pg_pool.get_ref(), id).await {
-                Ok(Some(project)) if project.user_id == user.id => Some(id),
+                Ok(Some(project))
+                    if matches!(
+                        access::access_of(pg_pool.get_ref(), &project, &user.id).await,
+                        Ok(Some(found)) if found.allows(Need::Manage)
+                    ) =>
+                {
+                    Some(id)
+                }
                 Ok(_) => {
                     return Err(JsonResponse::<()>::build().not_found("Project not found"));
                 }

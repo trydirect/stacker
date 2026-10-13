@@ -2,7 +2,7 @@ use crate::configuration::Settings;
 use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models::User;
-use crate::routes::legacy_installations::resolve_owned_deployment_by_hash;
+use crate::routes::project::access::{self, Need};
 use actix_web::{get, web, Responder, Result};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -31,11 +31,12 @@ pub async fn list_handler(
     let deployment_hash = path.into_inner();
     let limit = query.limit.unwrap_or(50).max(1).min(500);
 
-    resolve_owned_deployment_by_hash(
+    access::resolve_team_deployment(
         pg_pool.get_ref(),
         settings.get_ref(),
         user.as_ref(),
         &deployment_hash,
+        Need::View,
     )
     .await?;
 
