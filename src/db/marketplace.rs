@@ -6,7 +6,7 @@ use crate::models::{
 };
 use chrono::{Duration, Utc};
 use serde_json::{Map, Value};
-use sqlx::{PgPool, Row};
+use sqlx::{PgConnection, PgPool, Row};
 use tracing::Instrument;
 
 pub const SLUG_UNIQUE_CONSTRAINT: &str = "stack_template_slug_key";
@@ -2367,27 +2367,87 @@ pub async fn update_verifications(
     Ok(res.rows_affected() > 0)
 }
 
-/// Increment view_count for a marketplace template
+/// Writes one view/deploy event to both event tables: `marketplace_template_event`
+/// feeds creator analytics, `marketplace_event` is the raw event log.
+async fn insert_event_rows(
+    conn: &mut PgConnection,
+    template_id: &uuid::Uuid,
+    event_type: &str,
+    viewer_user_id: Option<&str>,
+    deployer_user_id: Option<&str>,
+    cloud_provider: Option<&str>,
+    metadata: &serde_json::Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"INSERT INTO marketplace_template_event
+            (template_id, event_type, user_id, viewer_user_id, deployer_user_id, cloud_provider, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
+    )
+    .bind(*template_id)
+    .bind(event_type)
+    .bind(viewer_user_id.or(deployer_user_id))
+    .bind(viewer_user_id)
+    .bind(deployer_user_id)
+    .bind(cloud_provider)
+    .bind(metadata)
+    .execute(&mut *conn)
+    .await?;
+
+    sqlx::query(
+        r#"INSERT INTO marketplace_event
+            (template_id, event_type, viewer_user_id, deployer_user_id, cloud_provider, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6)"#,
+    )
+    .bind(*template_id)
+    .bind(event_type)
+    .bind(viewer_user_id)
+    .bind(deployer_user_id)
+    .bind(cloud_provider)
+    .bind(metadata)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Increment view_count for a marketplace template and record a view event
 pub async fn increment_view_count(pool: &PgPool, template_id: &uuid::Uuid) -> Result<bool, String> {
     let query_span =
         tracing::info_span!("marketplace_increment_view_count", template_id = %template_id);
 
+    let internal = |e: sqlx::Error| {
+        tracing::error!("increment_view_count error: {:?}", e);
+        "Internal Server Error".to_string()
+    };
+    let mut tx = pool.begin().await.map_err(internal)?;
     let res = sqlx::query(
         r#"UPDATE stack_template SET view_count = COALESCE(view_count, 0) + 1 WHERE id = $1"#,
     )
     .bind(*template_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .instrument(query_span)
     .await
-    .map_err(|e| {
-        tracing::error!("increment_view_count error: {:?}", e);
-        "Internal Server Error".to_string()
-    })?;
+    .map_err(internal)?;
 
-    Ok(res.rows_affected() > 0)
+    let found = res.rows_affected() > 0;
+    if found {
+        insert_event_rows(
+            &mut tx,
+            template_id,
+            "view",
+            None,
+            None,
+            None,
+            &serde_json::json!({}),
+        )
+        .await
+        .map_err(internal)?;
+    }
+    tx.commit().await.map_err(internal)?;
+    Ok(found)
 }
 
-/// Increment deploy_count for a marketplace template
+/// Increment deploy_count for a marketplace template.
+/// No event is recorded: this counter is unauthenticated; verified deploy events come from `record_deploy_complete_once`.
 pub async fn increment_deploy_count(
     pool: &PgPool,
     template_id: &uuid::Uuid,
@@ -2493,6 +2553,21 @@ pub async fn record_deploy_complete_once(
         "Internal Server Error".to_string()
     })?;
 
+    insert_event_rows(
+        &mut tx,
+        template_id,
+        "deploy",
+        None,
+        None,
+        None,
+        &serde_json::json!({ "source": "deploy-complete" }),
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("record_deploy_complete_once event error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
     tx.commit().await.map_err(|e| {
         tracing::error!("record_deploy_complete_once commit error: {:?}", e);
         "Internal Server Error".to_string()
@@ -2502,37 +2577,74 @@ pub async fn record_deploy_complete_once(
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// TDD Stub Functions for Metrics/Analytics
-// These are intentionally unimplemented - tests will FAIL until implemented
+// Metrics/Analytics
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Insert a view event into marketplace_event table
-///
-/// TDD stub - unimplemented. Requires:
-/// - marketplace_event table migration
-/// - INSERT query with template_id, event_type='view', viewer_user_id, occurred_at, metadata
+/// Insert a view event (both event tables) in one transaction
 pub async fn insert_view_event(
-    _pool: &PgPool,
-    _template_id: uuid::Uuid,
-    _viewer_user_id: &str,
-    _metadata: serde_json::Value,
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+    viewer_user_id: &str,
+    metadata: serde_json::Value,
 ) -> Result<(), String> {
-    Err("insert_view_event not implemented - requires marketplace_event table".to_string())
+    insert_event_tx(
+        pool,
+        &template_id,
+        "view",
+        Some(viewer_user_id),
+        None,
+        None,
+        &metadata,
+    )
+    .await
 }
 
-/// Insert a deploy event into marketplace_event table
-///
-/// TDD stub - unimplemented. Requires:
-/// - marketplace_event table migration with cloud_provider column
-/// - INSERT query with template_id, event_type='deploy', deployer_user_id, cloud_provider, occurred_at, metadata
+/// Insert a deploy event (both event tables) in one transaction
 pub async fn insert_deploy_event(
-    _pool: &PgPool,
-    _template_id: uuid::Uuid,
-    _deployer_user_id: &str,
-    _cloud_provider: &str,
-    _metadata: serde_json::Value,
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+    deployer_user_id: &str,
+    cloud_provider: &str,
+    metadata: serde_json::Value,
 ) -> Result<(), String> {
-    Err("insert_deploy_event not implemented - requires marketplace_event table".to_string())
+    insert_event_tx(
+        pool,
+        &template_id,
+        "deploy",
+        None,
+        Some(deployer_user_id),
+        Some(cloud_provider),
+        &metadata,
+    )
+    .await
+}
+
+async fn insert_event_tx(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    event_type: &str,
+    viewer: Option<&str>,
+    deployer: Option<&str>,
+    cloud: Option<&str>,
+    metadata: &serde_json::Value,
+) -> Result<(), String> {
+    let internal = |e: sqlx::Error| {
+        tracing::error!("insert {} event error: {:?}", event_type, e);
+        "Internal Server Error".to_string()
+    };
+    let mut tx = pool.begin().await.map_err(internal)?;
+    insert_event_rows(
+        &mut tx,
+        template_id,
+        event_type,
+        viewer,
+        deployer,
+        cloud,
+        metadata,
+    )
+    .await
+    .map_err(internal)?;
+    tx.commit().await.map_err(internal)
 }
 
 /// Get vendor analytics for all templates owned by creator_user_id
