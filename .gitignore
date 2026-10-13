@@ -20,3 +20,6 @@ post-deploy-ran.txt
 bake/
 docs/MARKETPLACE_FIELD_POLICY.md
 docs/IMMUTABLE_DEPLOY.md
+
+# Local-only files: never commit (see AGENTS.md)
+local-only-settings/
