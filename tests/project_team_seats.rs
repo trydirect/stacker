@@ -1324,3 +1324,51 @@ async fn a_viewer_and_an_outsider_do_not_get_the_projects_servers() {
         .await;
     assert_eq!(status, 404, "outsider");
 }
+
+// ── The owner's saved clouds ──
+
+#[tokio::test]
+async fn a_member_picks_from_the_owners_saved_clouds_without_seeing_credentials() {
+    let Some(app) = App::spawn().await else {
+        return;
+    };
+    let project = app.project(TEAM).await;
+    let cloud = common::create_test_cloud(&app.pool, TEAM.id, "acme-htz", "htz").await;
+    common::create_test_cloud(&app.pool, COLLEAGUE.id, "colleague-own", "htz").await;
+    app.add_member(project, COLLEAGUE.id, "member").await;
+
+    for who in [COLLEAGUE, TEAM] {
+        let (status, body) = app
+            .call(Some(who), "GET", &format!("/project/{project}/clouds"), None)
+            .await;
+        assert_eq!(status, 200, "{}: {body}", who.email);
+        let list = body["list"].as_array().unwrap();
+        assert_eq!(list.len(), 1, "only the owner's clouds: {body}");
+        assert_eq!(list[0]["id"], cloud);
+        assert_eq!(list[0]["name"], "acme-htz");
+        assert_eq!(list[0]["provider"], "htz");
+        let text = body.to_string();
+        for field in ["cloud_token", "cloud_key", "cloud_secret", "test-cloud-token"] {
+            assert!(!text.contains(field), "{field} leaked: {text}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_viewer_and_an_outsider_do_not_get_the_owners_clouds() {
+    let Some(app) = App::spawn().await else {
+        return;
+    };
+    let project = app.project(TEAM).await;
+    common::create_test_cloud(&app.pool, TEAM.id, "acme-htz", "htz").await;
+    app.add_member(project, COLLEAGUE.id, "viewer").await;
+
+    let (status, _) = app
+        .call(Some(COLLEAGUE), "GET", &format!("/project/{project}/clouds"), None)
+        .await;
+    assert_eq!(status, 403, "viewer");
+    let (status, _) = app
+        .call(Some(PRO), "GET", &format!("/project/{project}/clouds"), None)
+        .await;
+    assert_eq!(status, 404, "outsider");
+}
