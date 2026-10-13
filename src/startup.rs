@@ -293,6 +293,7 @@ pub async fn run(
                     .service(
                         web::scope("/agreement")
                             .service(crate::routes::agreement::user_add_handler)
+                            .service(crate::routes::agreement::get_by_name_handler)
                             .service(crate::routes::agreement::get_handler)
                             .service(crate::routes::agreement::accept_handler),
                     )
@@ -489,6 +490,10 @@ pub async fn run(
                                          crate::routes::admin_notifications::unread_count_handler,
                                      )
                                      .service(crate::routes::admin_notifications::update_handler),
+                             )
+                             .service(
+                                 web::scope("/chat")
+                                     .service(crate::routes::chat::admin::recent),
                              ),
                     )
                     .service(

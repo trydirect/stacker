@@ -218,3 +218,27 @@ pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
             "Failed to delete agreement".to_string()
         })
 }
+
+pub async fn fetch_by_name(pool: &PgPool, name: &str) -> Result<Option<models::Agreement>, String> {
+    use sqlx::Row;
+    sqlx::query("SELECT id, name, text, created_at, updated_at FROM agreement WHERE name = $1 ORDER BY id LIMIT 1")
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+        .and_then(|row| {
+            row.map(|r| {
+                Ok(models::Agreement {
+                    id: r.try_get("id")?,
+                    name: r.try_get("name")?,
+                    text: r.try_get("text")?,
+                    created_at: r.try_get("created_at")?,
+                    updated_at: r.try_get("updated_at")?,
+                })
+            })
+            .transpose()
+        })
+        .map_err(|err| {
+            tracing::error!("Failed to fetch agreement by name, error: {:?}", err);
+            "Could not fetch data".to_string()
+        })
+}

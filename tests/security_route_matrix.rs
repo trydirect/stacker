@@ -88,6 +88,7 @@ const ROUTES: &[(&str, &str, Kind, &str)] = &[
     ("GET", "/rating/{id}", Public, "visible rating"),
     ("GET", "/agreement/{id}", Public, "agreement text"),
     ("GET", "/api/agreement/{id}", Public, "agreement text"),
+    ("GET", "/api/agreement/name/{name}", Public, "agreement text"),
     (
         "GET",
         "/dockerhub/namespaces",
