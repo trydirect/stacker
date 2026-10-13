@@ -57,6 +57,7 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/{id}/invitations"),
     ("POST", "/{id}/invitations"),
     ("GET", "/{id}/seats"),
+    ("GET", "/{id}/clouds"),
     // Destructive ones last, so a missing check cannot hide the others.
     ("DELETE", "/{id}/apps/{code}"),
     ("DELETE", "/{id}/invitations/{invitation_id}"),
@@ -396,6 +397,7 @@ const NEEDS: &[(&str, &str, Need)] = &[
     ("GET", "/{id}/invitations", Need::Owner),
     ("POST", "/{id}/invitations", Need::Owner),
     ("GET", "/{id}/seats", Need::Owner),
+    ("GET", "/{id}/clouds", Need::Manage),
     ("DELETE", "/{id}/apps/{code}", Need::Manage),
     ("DELETE", "/{id}/invitations/{invitation_id}", Need::Owner),
     ("DELETE", "/{id}", Need::Owner),

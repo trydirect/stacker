@@ -32,6 +32,7 @@ fn project_scope(path: &str) -> actix_web::Scope {
         .service(crate::routes::project::invitation::list)
         .service(crate::routes::project::invitation::revoke)
         .service(crate::routes::project::invitation::seats)
+        .service(crate::routes::project::clouds::list)
         .service(crate::routes::project::compose::add)
         .service(crate::routes::project::get::list)
         .service(crate::routes::project::get::shared_list)
