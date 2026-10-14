@@ -3826,6 +3826,26 @@ fn parse_port_mapping(port_str: &str) -> (String, String) {
     }
 }
 
+/// The `shared_ports` entry for a port mapping from stacker.yml.
+///
+/// A host IP must reach the server: `127.0.0.1:5432:5432` is host-local, and
+/// the server reads the IP from `container_port` to keep the port out of the
+/// firewall and to publish it on 127.0.0.1 only. Sending just `5432` opened a
+/// database bound to loopback to the internet.
+fn port_mapping_json(port_str: &str) -> serde_json::Value {
+    let (host, container) = parse_port_mapping(port_str);
+    let mapping = port_str.split('/').next().unwrap_or(port_str);
+    let container_port = if mapping.matches(':').count() >= 2 {
+        mapping.to_string()
+    } else {
+        container
+    };
+    serde_json::json!({
+        "host_port": host,
+        "container_port": container_port,
+    })
+}
+
 /// Parse a volume mapping string like "./dist:/usr/share/nginx/html" or "data:/var/lib/db"
 /// into (host_path, container_path, read_only) tuple.
 /// Handles optional `:ro` / `:rw` suffix (e.g. "/var/run/docker.sock:/var/run/docker.sock:ro").
@@ -3847,17 +3867,8 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
     let (dockerhub_user, dockerhub_name, dockerhub_tag) = parse_docker_image(&svc.image);
     let id = generate_app_id();
 
-    let shared_ports: Vec<serde_json::Value> = svc
-        .ports
-        .iter()
-        .map(|p| {
-            let (host, container) = parse_port_mapping(p);
-            serde_json::json!({
-                "host_port": host,
-                "container_port": container,
-            })
-        })
-        .collect();
+    let shared_ports: Vec<serde_json::Value> =
+        svc.ports.iter().map(|p| port_mapping_json(p)).collect();
 
     let volumes: Vec<serde_json::Value> = svc
         .volumes
@@ -3977,13 +3988,7 @@ fn app_source_to_app_json(
             .app
             .ports
             .iter()
-            .map(|p| {
-                let (host, container) = parse_port_mapping(p);
-                serde_json::json!({
-                    "host_port": host,
-                    "container_port": container,
-                })
-            })
+            .map(|p| port_mapping_json(p))
             .collect()
     };
 
