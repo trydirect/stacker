@@ -4,7 +4,7 @@ use crate::helpers::JsonResponse;
 use crate::models;
 use crate::routes::project::access::{self, Need};
 use crate::routes::project::invitation::{require_team_plan, reserve_seat, INVITABLE_ROLES};
-use actix_web::{delete, get, post, web, HttpResponse, Responder, Result};
+use actix_web::{delete, get, patch, post, web, HttpResponse, Responder, Result};
 use serde::Deserialize;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -85,6 +85,28 @@ pub async fn add(
     .map_err(|err| JsonResponse::<models::ProjectMember>::build().internal_server_error(err))?;
 
     Ok(JsonResponse::build().set_item(member).ok("OK"))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServerAccessForm {
+    pub enabled: bool,
+}
+
+/// Owner only: whether members get the servers' SSH key and passwords in the
+/// deployment report.
+#[tracing::instrument(name = "Set members server access", skip_all)]
+#[patch("/{id}/server-access")]
+pub async fn set_server_access(
+    user: web::ReqData<Arc<models::User>>,
+    path: web::Path<(i32,)>,
+    web::Json(form): web::Json<ServerAccessForm>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let project = fetch_owned_project(pg_pool.get_ref(), path.0, &user.id).await?;
+    db::project::set_members_server_access(pg_pool.get_ref(), project.id, form.enabled)
+        .await
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+    Ok(JsonResponse::<models::Project>::build().ok("OK"))
 }
 
 #[tracing::instrument(name = "List project members", skip_all)]

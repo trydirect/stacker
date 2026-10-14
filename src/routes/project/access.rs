@@ -186,6 +186,26 @@ pub fn initiator_email(user: &models::User, access: Access) -> Option<String> {
     (access != Access::Owner).then(|| user.email.clone())
 }
 
+/// The member to send the deployment report to as well as the owner, when the
+/// owner turned on server access for members. The report carries the server's
+/// SSH key and passwords, so a lookup failure means no.
+pub async fn report_initiator(
+    pool: &PgPool,
+    project: &models::Project,
+    user: &models::User,
+    access: Access,
+) -> Option<String> {
+    initiator_email(user, access)?;
+    match db::project::members_server_access(pool, project.id).await {
+        Ok(true) => initiator_email(user, access),
+        Ok(false) => None,
+        Err(err) => {
+            tracing::warn!("Server access lookup failed, the report goes to the owner only: {err}");
+            None
+        }
+    }
+}
+
 /// The owner's address from the User Service internal user lookup.
 async fn owner_email(user_service_url: &str, owner_id: &str) -> Result<String, String> {
     let key = std::env::var("INTERNAL_SERVICES_ACCESS_KEY").unwrap_or_default();

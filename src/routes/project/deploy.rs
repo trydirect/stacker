@@ -1858,7 +1858,8 @@ pub async fn item(
     )
     .await?;
     let mut form = form.into_inner();
-    form.initiator_email = access::initiator_email(&user, access);
+    form.initiator_email =
+        access::report_initiator(pg_pool.get_ref(), &project, &user, access).await;
     let user = Arc::new(
         access::acting_user(&project, user.as_ref(), access, &sets.user_service_url).await?,
     );
@@ -1920,7 +1921,8 @@ pub async fn saved_item(
         "Project not found",
     )
     .await?;
-    form.initiator_email = access::initiator_email(&user, access);
+    form.initiator_email =
+        access::report_initiator(pg_pool.get_ref(), &project, &user, access).await;
     let user = Arc::new(
         access::acting_user(&project, user.as_ref(), access, &sets.user_service_url).await?,
     );
@@ -2159,7 +2161,8 @@ pub async fn rollback(
         "Project not found",
     )
     .await?;
-    let initiator_email = access::initiator_email(&user, access);
+    let initiator_email =
+        access::report_initiator(pg_pool.get_ref(), &project, &user, access).await;
     let user = Arc::new(
         access::acting_user(&project, user.as_ref(), access, &sets.user_service_url).await?,
     );

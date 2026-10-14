@@ -311,6 +311,7 @@ struct Seats {
     seats_used: i64,
     seats_free: i64,
     can_invite: bool,
+    members_server_access: bool,
 }
 
 #[tracing::instrument(name = "Project seats", skip_all)]
@@ -336,6 +337,9 @@ pub async fn seats(
         .await
         .map_err(|err| JsonResponse::internal_server_error(err.to_string()))?;
 
+    let members_server_access = db::project::members_server_access(pg_pool.get_ref(), project.id)
+        .await
+        .map_err(JsonResponse::internal_server_error)?;
     let free = (PROJECT_SEATS - used).max(0);
     let on_team = matches!(plan_code(settings.get_ref(), &user).await, Ok(Some(code)) if can_share_projects(&code));
     Ok(JsonResponse::build()
@@ -344,6 +348,7 @@ pub async fn seats(
             seats_used: used,
             seats_free: free,
             can_invite: on_team && free > 0,
+            members_server_access,
         })
         .ok("OK"))
 }

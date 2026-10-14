@@ -224,6 +224,7 @@ impl App {
             "GET" => self.client.get(&url),
             "POST" => self.client.post(&url),
             "PUT" => self.client.put(&url),
+            "PATCH" => self.client.patch(&url),
             "DELETE" => self.client.delete(&url),
             other => panic!("unsupported verb {other}"),
         };
@@ -1371,4 +1372,109 @@ async fn a_viewer_and_an_outsider_do_not_get_the_owners_clouds() {
         .call(Some(PRO), "GET", &format!("/project/{project}/clouds"), None)
         .await;
     assert_eq!(status, 404, "outsider");
+}
+
+// ── Server access for members ──
+//
+// The deployment report carries the server's SSH key and passwords. A member
+// who deploys gets it only when the owner turned on server access for members.
+
+async fn server_access(app: &App, project: i32) -> bool {
+    let (status, body) = app
+        .call(
+            Some(TEAM),
+            "GET",
+            &format!("/project/{project}/seats"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "seats: {body}");
+    body["item"]["members_server_access"].as_bool().unwrap()
+}
+
+#[tokio::test]
+async fn the_owner_decides_whether_members_get_server_access() {
+    let Some(app) = App::spawn().await else {
+        return;
+    };
+    let project = app.project(TEAM).await;
+    app.add_member(project, COLLEAGUE.id, "member").await;
+    assert!(!server_access(&app, project).await, "off by default");
+
+    let route = format!("/project/{project}/server-access");
+    let (status, body) = app
+        .call(
+            Some(TEAM),
+            "PATCH",
+            &route,
+            Some(json!({ "enabled": true })),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(server_access(&app, project).await);
+
+    let (status, _) = app
+        .call(
+            Some(COLLEAGUE),
+            "PATCH",
+            &route,
+            Some(json!({ "enabled": false })),
+        )
+        .await;
+    assert_eq!(status, 403, "a member cannot change it");
+    assert!(server_access(&app, project).await);
+
+    let (status, _) = app
+        .call(
+            Some(TEAM),
+            "PATCH",
+            &route,
+            Some(json!({ "enabled": false })),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert!(!server_access(&app, project).await);
+}
+
+#[tokio::test]
+async fn a_member_gets_the_deployment_report_only_with_server_access() {
+    use stacker::routes::access::{report_initiator, Access};
+
+    let Some(app) = App::spawn().await else {
+        return;
+    };
+    let project_id = app.project(TEAM).await;
+    let project = stacker::db::project::fetch(&app.pool, project_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let member = stacker::models::User {
+        id: COLLEAGUE.id.to_string(),
+        first_name: String::new(),
+        last_name: String::new(),
+        email: COLLEAGUE.email.to_string(),
+        role: "group_user".to_string(),
+        email_confirmed: true,
+        mfa_verified: false,
+        access_token: None,
+    };
+
+    assert_eq!(
+        report_initiator(&app.pool, &project, &member, Access::Member).await,
+        None
+    );
+
+    stacker::db::project::set_members_server_access(&app.pool, project_id, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        report_initiator(&app.pool, &project, &member, Access::Member)
+            .await
+            .as_deref(),
+        Some(COLLEAGUE.email)
+    );
+    assert_eq!(
+        report_initiator(&app.pool, &project, &member, Access::Owner).await,
+        None
+    );
 }

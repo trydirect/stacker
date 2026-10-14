@@ -42,6 +42,7 @@ fn project_scope(path: &str) -> actix_web::Scope {
         .service(crate::routes::project::sync::item)
         .service(crate::routes::project::delete::item)
         .service(crate::routes::project::protection::toggle)
+        .service(crate::routes::project::member::set_server_access)
         .service(crate::routes::project::app::list_apps)
         .service(crate::routes::project::app::create_app)
         .service(crate::routes::project::app::get_app)
