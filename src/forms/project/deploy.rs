@@ -88,6 +88,11 @@ pub struct Deploy {
     /// not use this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) proxy_domains: Option<Value>,
+
+    /// Set by the server when a project member deploys as the owner, never
+    /// read from the request.
+    #[serde(skip)]
+    pub(crate) initiator_email: Option<String>,
 }
 
 impl std::fmt::Debug for Deploy {
