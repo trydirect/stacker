@@ -215,7 +215,7 @@ struct DeployCompleteResponse {
     deploy_count_incremented: bool,
 }
 
-fn require_stacker_service_auth(req: &HttpRequest) -> Result<()> {
+pub(crate) fn require_stacker_service_auth(req: &HttpRequest) -> Result<()> {
     let expected_token = std::env::var("STACKER_SERVICE_TOKEN").unwrap_or_default();
     if expected_token.trim().is_empty() {
         return Err(JsonResponse::<serde_json::Value>::build()

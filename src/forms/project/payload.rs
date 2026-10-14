@@ -13,6 +13,11 @@ pub struct Payload {
     pub(crate) deployment_hash: Option<String>,
     pub(crate) user_token: Option<String>,
     pub(crate) user_email: Option<String>,
+    /// A project member who started this deployment as the owner; the install
+    /// service reports to them as well. Set by the server only: project
+    /// metadata comes from the client, so it is never read from there.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub(crate) initiator_email: Option<String>,
     #[serde(
         default,
         rename = "commonDomain",
@@ -222,5 +227,31 @@ mod tests {
             empty.get("proxy_domains").is_none(),
             "proxy_domains must be omitted when unset"
         );
+    }
+
+    #[test]
+    fn initiator_email_is_sent_but_never_read_from_project_metadata() {
+        // A member deploys as the owner; the install service also reports to
+        // the member. Project metadata comes from the client, so an address
+        // there must not become a report recipient.
+        let project = models::Project::new(
+            "owner-1".to_string(),
+            "team-stack".to_string(),
+            json!({
+                "stack": {"stack_code": "team-stack"},
+                "custom": {"web": [], "custom_stack_code": "team-stack"},
+                "initiator_email": "someone@example.com"
+            }),
+            json!({}),
+        );
+        let mut payload = Payload::try_from(&project).expect("payload");
+        assert_eq!(payload.initiator_email, None);
+
+        let empty = serde_json::to_value(&payload).expect("serialize");
+        assert!(empty.get("initiator_email").is_none());
+
+        payload.initiator_email = Some("member@example.com".to_string());
+        let serialized = serde_json::to_value(&payload).expect("serialize");
+        assert_eq!(serialized["initiator_email"], json!("member@example.com"));
     }
 }

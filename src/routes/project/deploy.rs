@@ -1536,6 +1536,7 @@ async fn execute_deployment(
             new_public_key,
             new_private_key,
             form.proxy_domains.clone(),
+            form.initiator_email.clone(),
         )
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
@@ -1856,6 +1857,9 @@ pub async fn item(
         "not found",
     )
     .await?;
+    let mut form = form.into_inner();
+    form.initiator_email =
+        access::report_initiator(pg_pool.get_ref(), &project, &user, access).await;
     let user = Arc::new(
         access::acting_user(&project, user.as_ref(), access, &sets.user_service_url).await?,
     );
@@ -1863,7 +1867,7 @@ pub async fn item(
     let (project_id, deployment_id) = deploy_project(
         user.as_ref(),
         project,
-        form.into_inner(),
+        form,
         pg_pool.get_ref(),
         mq_manager.get_ref(),
         sets.get_ref(),
@@ -1917,6 +1921,8 @@ pub async fn saved_item(
         "Project not found",
     )
     .await?;
+    form.initiator_email =
+        access::report_initiator(pg_pool.get_ref(), &project, &user, access).await;
     let user = Arc::new(
         access::acting_user(&project, user.as_ref(), access, &sets.user_service_url).await?,
     );
@@ -2155,6 +2161,8 @@ pub async fn rollback(
         "Project not found",
     )
     .await?;
+    let initiator_email =
+        access::report_initiator(pg_pool.get_ref(), &project, &user, access).await;
     let user = Arc::new(
         access::acting_user(&project, user.as_ref(), access, &sets.user_service_url).await?,
     );
@@ -2227,7 +2235,8 @@ pub async fn rollback(
     let (metadata, template_stack_code) =
         build_rollback_project_payload(target_version.stack_definition.clone())
             .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
-    let deploy_form = build_rollback_deploy_form(template_stack_code);
+    let mut deploy_form = build_rollback_deploy_form(template_stack_code);
+    deploy_form.initiator_email = initiator_email;
 
     validate_reused_cloud_server(&cloud, &server)
         .await

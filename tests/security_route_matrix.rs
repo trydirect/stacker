@@ -265,6 +265,12 @@ const ROUTES: &[(&str, &str, Kind, &str)] = &[
         "internal service key",
     ),
     (
+        "GET",
+        "/api/v1/deployments/{deployment_hash}/member-access",
+        Token,
+        "internal service key; a user's role for the User Service",
+    ),
+    (
         "POST",
         "/api/v1/marketplace/payouts/webhook",
         Token,

@@ -247,6 +247,37 @@ pub async fn set_protected(
     })
 }
 
+/// Whether the owner lets project members get the servers' SSH key and
+/// passwords (the deployment report).
+pub async fn members_server_access(pool: &PgPool, id: i32) -> Result<bool, String> {
+    sqlx::query_scalar::<_, bool>("SELECT members_server_access FROM project WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map(|flag| flag.unwrap_or(false))
+        .map_err(|err| {
+            tracing::error!("Failed to read members_server_access: {:?}", err);
+            "Failed to read project".to_string()
+        })
+}
+
+pub async fn set_members_server_access(
+    pool: &PgPool,
+    id: i32,
+    enabled: bool,
+) -> Result<bool, String> {
+    sqlx::query("UPDATE project SET members_server_access = $2 WHERE id = $1")
+        .bind(id)
+        .bind(enabled)
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected() > 0)
+        .map_err(|err| {
+            tracing::error!("Failed to set members_server_access: {:?}", err);
+            "Failed to update project".to_string()
+        })
+}
+
 /// Summary of resources that block project deletion.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DeletionBlockers {

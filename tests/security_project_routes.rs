@@ -57,6 +57,7 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/{id}/invitations"),
     ("POST", "/{id}/invitations"),
     ("GET", "/{id}/seats"),
+    ("PATCH", "/{id}/server-access"),
     ("GET", "/{id}/clouds"),
     // Destructive ones last, so a missing check cannot hide the others.
     ("DELETE", "/{id}/apps/{code}"),
@@ -107,6 +108,7 @@ fn body_for(method: &str, path: &str) -> Option<serde_json::Value> {
             json!({ "custom": { "custom_stack_code": "intruder" } })
         }
         ("PATCH", "/{id}/protection") => json!({ "is_protected": false }),
+        ("PATCH", "/{id}/server-access") => json!({ "enabled": true }),
         _ => return None,
     };
     Some(body)
@@ -397,6 +399,7 @@ const NEEDS: &[(&str, &str, Need)] = &[
     ("GET", "/{id}/invitations", Need::Owner),
     ("POST", "/{id}/invitations", Need::Owner),
     ("GET", "/{id}/seats", Need::Owner),
+    ("PATCH", "/{id}/server-access", Need::Owner),
     ("GET", "/{id}/clouds", Need::Manage),
     ("DELETE", "/{id}/apps/{code}", Need::Manage),
     ("DELETE", "/{id}/invitations/{invitation_id}", Need::Owner),
