@@ -53,7 +53,8 @@ RUN apt-get update && apt-get install --no-install-recommends -y libssl-dev; \
     cargo build --release --bin server; \
     cargo build --release --bin console --features explain; \
     cargo build --release --bin cleanup-notify; \
-    cargo build --release --bin backfill_field_policy
+    cargo build --release --bin backfill_field_policy; \
+    cargo build --release --bin bake
 
 #RUN ls -la /app/target/release/ >&2
 
@@ -78,6 +79,7 @@ COPY --from=builder /app/target/release/server /server
 COPY --from=builder /app/target/release/console /console
 COPY --from=builder /app/target/release/cleanup-notify /cleanup-notify
 COPY --from=builder /app/target/release/backfill_field_policy /backfill_field_policy
+COPY --from=builder /app/target/release/bake /bake
 
 FROM ${BINARIES}-source AS binaries
 
@@ -94,6 +96,7 @@ COPY --from=binaries /server .
 COPY --from=binaries /console .
 COPY --from=binaries /cleanup-notify .
 COPY --from=binaries /backfill_field_policy .
+COPY --from=binaries /bake .
 COPY --from=config /app/.env .
 COPY --from=config /app/configuration.yaml .
 COPY --from=config /usr/local/cargo/bin/sqlx /usr/local/bin/sqlx
