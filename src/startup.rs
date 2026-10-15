@@ -459,6 +459,11 @@ pub async fn run(
                     .service(
                         web::scope("/admin")
                             .service(
+                                web::scope("/bake")
+                                    .service(crate::routes::admin_bake::start_handler)
+                                    .service(crate::routes::admin_bake::status_handler),
+                            )
+                            .service(
                                 web::scope("/templates")
                                     .service(
                                         crate::routes::marketplace::admin::list_submitted_handler,

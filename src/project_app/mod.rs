@@ -50,7 +50,7 @@ const PLATFORM_DISPLAY_CODES: &[&str] = &[
 /// Directories platform-managed services are deployed into, by the convention
 /// in `stacker/docs/APP_DEPLOYMENT.md`: project services live under the
 /// project directory, platform ones get their own.
-const PLATFORM_INSTALL_DIRS: &[&str] = &[
+pub(crate) const PLATFORM_INSTALL_DIRS: &[&str] = &[
     "/home/trydirect/statuspanel",
     "/home/trydirect/nginx_proxy_manager",
 ];

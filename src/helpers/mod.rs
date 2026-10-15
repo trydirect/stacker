@@ -36,6 +36,7 @@ pub use dockerhub::*;
 pub use cloud::*;
 pub mod audit_cache;
 pub mod bake;
+pub mod bake_job;
 pub mod bake_finalize;
 pub mod bake_registry;
 pub mod cloud_init;
