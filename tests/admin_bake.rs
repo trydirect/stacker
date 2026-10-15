@@ -71,6 +71,23 @@ async fn seed_build_box(pool: &sqlx::PgPool, ip: &str) -> i32 {
     deployment
 }
 
+/// Another server record in the deployment's project, at `ip`; returns its id.
+async fn add_server(pool: &sqlx::PgPool, deployment: i32, ip: &str) -> i32 {
+    let project: i32 = sqlx::query_scalar("SELECT project_id FROM deployment WHERE id = $1")
+        .bind(deployment)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let server = common::create_test_server(pool, common::USER_A_ID, project, "active", None).await;
+    sqlx::query("UPDATE server SET srv_ip = $2 WHERE id = $1")
+        .bind(server)
+        .bind(ip)
+        .execute(pool)
+        .await
+        .unwrap();
+    server
+}
+
 async fn job_count(pool: &sqlx::PgPool) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM bake_job")
         .fetch_one(pool)
@@ -193,6 +210,40 @@ async fn a_bake_is_refused_before_the_box_is_touched_and_accepted_when_everythin
     assert_eq!(status.status().as_u16(), 200);
     let body: Value = status.json().await.unwrap();
     assert_eq!(body["item"]["id"], id);
+
+    // A project redeployed with --force-new keeps a server record per attempt,
+    // and Hetzner hands the new box an old box's IP. `server_id` - the Hetzner
+    // id, as the `bake` binary takes it - names the build box among them.
+    let redeployed = seed_build_box(&app.db_pool, "198.51.100.40").await;
+    add_server(&app.db_pool, redeployed, BOX_IP).await;
+    let build_box = add_server(&app.db_pool, redeployed, BOX_IP).await;
+    let jobs_before = job_count(&app.db_pool).await;
+    for (server_id, why) in [
+        (Value::Null, "several servers and no server_id"),
+        (
+            json!(9999),
+            "a server_id that is none of the project's boxes",
+        ),
+    ] {
+        let (status, resp) = post(
+            &app,
+            json!({"deployment_id": redeployed, "stack": STACK, "health_url": health, "server_id": server_id}),
+        )
+        .await;
+        assert_eq!(status, 409, "{why}: {resp}");
+        assert_eq!(job_count(&app.db_pool).await, jobs_before, "{why}: no job");
+    }
+    let (status, resp) = post(
+        &app,
+        json!({"deployment_id": redeployed, "stack": STACK, "health_url": health, "server_id": 4242}),
+    )
+    .await;
+    assert_eq!(status, 202, "{resp}");
+    assert_eq!(resp["item"]["server_ip"], BOX_IP);
+    assert_eq!(
+        resp["item"]["server_id"], build_box,
+        "the newest record at the box's IP: older ones belong to removed boxes"
+    );
 }
 
 #[tokio::test]
