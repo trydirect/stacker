@@ -37,7 +37,7 @@ async fn log_audit(
     }
 }
 
-#[tracing::instrument(name = "Authenticate agent via X-Agent-Id and Bearer token")]
+#[tracing::instrument(name = "Authenticate agent via X-Agent-Id and Bearer token", skip_all)]
 pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
     // Check for X-Agent-Id header
     let agent_id_header = get_header::<String>(req, "x-agent-id")?;

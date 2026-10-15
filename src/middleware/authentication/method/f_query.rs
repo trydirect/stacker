@@ -3,7 +3,7 @@ use actix_web::{dev::ServiceRequest, web, HttpMessage};
 use std::sync::Arc;
 use urlencoding::decode;
 
-#[tracing::instrument(name = "Authenticate with query token")]
+#[tracing::instrument(name = "Authenticate with query token", skip_all)]
 pub async fn try_query(req: &mut ServiceRequest) -> Result<bool, String> {
     if !req.path().starts_with("/mcp") {
         return Ok(false);
