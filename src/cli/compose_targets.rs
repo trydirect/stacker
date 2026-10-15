@@ -175,6 +175,7 @@ fn collect_compose_services(
             };
 
             services.push(ServiceDefinition {
+                runtime: Default::default(),
                 name: service_name.to_string(),
                 image,
                 ports: mapping_sequence(definition, "ports")

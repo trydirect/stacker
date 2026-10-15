@@ -434,6 +434,68 @@ pub struct AppRenderContext {
     pub healthcheck: Option<HealthCheck>,
     /// Container runtime override (e.g., "kata" for hardware isolation)
     pub runtime: Option<String>,
+    /// command, entrypoint and the settings in `project_app.runtime`.
+    #[serde(flatten)]
+    pub run: AppRunSettings,
+}
+
+/// What the app runs and how, beyond image and wiring. See
+/// shared-fixtures/api-contracts/stack-service-runtime-fields.json.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AppRunSettings {
+    pub command: Option<String>,
+    pub entrypoint: Option<String>,
+    #[serde(default)]
+    pub cap_add: Vec<String>,
+    #[serde(default)]
+    pub cap_drop: Vec<String>,
+    #[serde(default)]
+    pub devices: Vec<String>,
+    #[serde(default)]
+    pub profiles: Vec<String>,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    pub replicas: Option<u32>,
+    /// `deploy.resources.reservations.devices` entries, as stored.
+    #[serde(default)]
+    pub gpu_devices: Vec<Value>,
+}
+
+impl AppRunSettings {
+    fn from_app(app: &ProjectApp) -> Self {
+        let runtime = app.runtime.as_ref();
+        let strings = |key: &str| -> Vec<String> {
+            runtime
+                .and_then(|r| r.get(key))
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let deploy = runtime.and_then(|r| r.get("deploy"));
+        Self {
+            command: app.command.clone().filter(|c| !c.is_empty()),
+            entrypoint: app.entrypoint.clone().filter(|e| !e.is_empty()),
+            cap_add: strings("cap_add"),
+            cap_drop: strings("cap_drop"),
+            devices: strings("devices"),
+            profiles: strings("profiles"),
+            aliases: strings("aliases"),
+            replicas: deploy
+                .and_then(|d| d.get("replicas"))
+                .and_then(Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok()),
+            gpu_devices: deploy
+                .and_then(|d| d.pointer("/resources/reservations/devices"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -642,6 +704,7 @@ impl ConfigRenderer {
             labels,
             healthcheck,
             runtime: None,
+            run: AppRunSettings::from_app(app),
         })
     }
 
@@ -1182,12 +1245,24 @@ services:
     runtime: {{ app.runtime }}
 {% endif %}
 {% if app.command %}
-    command: {{ app.command }}
+    command: {{ app.command | yaml_quote }}
 {% endif %}
 {% if app.entrypoint %}
-    entrypoint: {{ app.entrypoint }}
+    entrypoint: {{ app.entrypoint | yaml_quote }}
 {% endif %}
-    restart: {{ app.restart_policy }}
+    restart: {{ app.restart_policy | yaml_quote }}
+{% if app.profiles | length > 0 %}
+    profiles: {{ app.profiles | json_encode() }}
+{% endif %}
+{% if app.cap_add | length > 0 %}
+    cap_add: {{ app.cap_add | json_encode() }}
+{% endif %}
+{% if app.cap_drop | length > 0 %}
+    cap_drop: {{ app.cap_drop | json_encode() }}
+{% endif %}
+{% if app.devices | length > 0 %}
+    devices: {{ app.devices | json_encode() }}
+{% endif %}
 {% if app.environment | length > 0 %}
     environment:
 {% for key, value in app.environment %}{% set entry = key ~ "=" ~ value %}
@@ -1207,13 +1282,20 @@ services:
 
 {% endfor %}
 {% endif %}
+    networks:
 {% if app.networks | length > 0 %}
-    networks:
 {% for network in app.networks %}
-      - {{ network }}
-{% endfor %}
+{% if app.aliases | length > 0 %}
+      {{ network }}:
+        aliases: {{ app.aliases | json_encode() }}
 {% else %}
-    networks:
+      - {{ network }}
+{% endif %}
+{% endfor %}
+{% elif app.aliases | length > 0 %}
+      {{ default_network }}:
+        aliases: {{ app.aliases | json_encode() }}
+{% else %}
       - {{ default_network }}
 {% endif %}
 {% if app.depends_on | length > 0 %}
@@ -1244,9 +1326,16 @@ services:
       start_period: {{ app.healthcheck.start_period }}
 {% endif %}
 {% endif %}
-{% if app.resources.memory_limit or app.resources.cpu_limit %}
+{% set has_limits = app.resources.memory_limit or app.resources.cpu_limit %}
+{% set has_gpu = app.gpu_devices | length > 0 %}
+{% if has_limits or has_gpu or app.replicas is number %}
     deploy:
+{% if app.replicas is number %}
+      replicas: {{ app.replicas }}
+{% endif %}
+{% if has_limits or has_gpu %}
       resources:
+{% if has_limits %}
         limits:
 {% if app.resources.memory_limit %}
           memory: {{ app.resources.memory_limit }}
@@ -1254,13 +1343,19 @@ services:
 {% if app.resources.cpu_limit %}
           cpus: '{{ app.resources.cpu_limit }}'
 {% endif %}
-{% if app.resources.memory_reservation or app.resources.cpu_reservation %}
+{% endif %}
+{% set limit_reservations = has_limits and (app.resources.memory_reservation or app.resources.cpu_reservation) %}
+{% if limit_reservations or has_gpu %}
         reservations:
-{% if app.resources.memory_reservation %}
+{% if limit_reservations and app.resources.memory_reservation %}
           memory: {{ app.resources.memory_reservation }}
 {% endif %}
-{% if app.resources.cpu_reservation %}
+{% if limit_reservations and app.resources.cpu_reservation %}
           cpus: '{{ app.resources.cpu_reservation }}'
+{% endif %}
+{% if has_gpu %}
+          devices: {{ app.gpu_devices | json_encode() }}
+{% endif %}
 {% endif %}
 {% endif %}
 {% endif %}
@@ -1842,9 +1937,78 @@ mod tests {
         assert_eq!(ctx.image, "nginx:latest");
     }
 
+    /// Every key of `expected` is in `actual` with the same value;
+    /// `networks_aliases`: every network the service joins carries them.
+    fn assert_compose_subset(case: &str, actual: &serde_json::Value, expected: &serde_json::Value) {
+        for (key, want) in expected.as_object().unwrap() {
+            if key == "networks_aliases" {
+                let networks = actual["networks"].as_object().unwrap_or_else(|| {
+                    panic!(
+                        "{case}: networks with aliases expected, got {}",
+                        actual["networks"]
+                    )
+                });
+                assert!(!networks.is_empty(), "{case}: no network");
+                for (name, net) in networks {
+                    assert_eq!(&net["aliases"], want, "{case}: aliases on {name}");
+                }
+            } else if want.is_object() {
+                assert_compose_subset(case, &actual[key], want);
+            } else {
+                assert_eq!(&actual[key], want, "{case}: `{key}`\nservice: {actual}");
+            }
+        }
+    }
+
+    /// shared-fixtures/api-contracts/stack-service-runtime-fields.json, path
+    /// agent_render: stacker.yml -> registered project app -> project_app row
+    /// -> the compose the status-panel agent applies.
+    #[test]
+    fn agent_render_carries_every_declared_setting() {
+        let contract: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/contracts/stack-service-runtime-fields.contract.json"
+        ))
+        .unwrap();
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project {
+            name: "runtime-fields".to_string(),
+            ..Project::default()
+        };
+        for case in contract["cases"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let service = &case["stacker_yml"];
+            let yml = json!({
+                "name": "runtime-fields",
+                "app": { "type": "custom", "image": "nginx:1.27" },
+                "services": [service],
+            });
+            let config = crate::cli::config_parser::StackerConfig::from_str(
+                &serde_yaml::to_string(&yml).unwrap(),
+            )
+            .unwrap();
+            let body = crate::cli::stacker_client::build_project_body(&config);
+            let form: crate::forms::project::ProjectForm =
+                serde_json::from_value(json!({ "custom": body["custom"] })).unwrap();
+            let apps = crate::project_app::sync::project_level_apps_from_form(1, &form);
+            let code = service["name"].as_str().unwrap();
+            let app = apps
+                .iter()
+                .find(|a| a.code == code)
+                .unwrap_or_else(|| panic!("{name}: no project_app row"));
+            let ctx = renderer
+                .project_app_to_context(app, HashMap::new())
+                .unwrap();
+            let compose = renderer.render_compose(&[ctx], &project).unwrap();
+            let doc: serde_json::Value = serde_yaml::from_str(&compose)
+                .unwrap_or_else(|e| panic!("{name}: rendered compose is YAML: {e}\n{compose}"));
+            assert_compose_subset(name, &doc["services"][code], &case["compose"]);
+        }
+    }
+
     #[test]
     fn render_compose_includes_kata_runtime() {
         let ctx = AppRenderContext {
+            run: Default::default(),
             code: "web".to_string(),
             name: "web".to_string(),
             image: "nginx:latest".to_string(),
@@ -1874,6 +2038,7 @@ mod tests {
     #[test]
     fn render_compose_runtime_none_serializes_null() {
         let ctx = AppRenderContext {
+            run: Default::default(),
             code: "web".to_string(),
             name: "web".to_string(),
             image: "nginx:latest".to_string(),
@@ -1916,6 +2081,7 @@ mod tests {
             ..Project::default()
         };
         let app_ctx = AppRenderContext {
+            run: Default::default(),
             code: "app".to_string(),
             name: "app".to_string(),
             image: "miniflux/miniflux:latest".to_string(),
@@ -1980,6 +2146,7 @@ mod tests {
             ..Project::default()
         };
         let app_ctx = AppRenderContext {
+            run: Default::default(),
             code: "miniflux".to_string(),
             name: "miniflux".to_string(),
             image: "miniflux/miniflux:latest".to_string(),
@@ -2021,6 +2188,7 @@ mod tests {
             ..Project::default()
         };
         let postgres_ctx = AppRenderContext {
+            run: Default::default(),
             code: "postgres".to_string(),
             name: "postgres".to_string(),
             image: "postgres:16-alpine".to_string(),
@@ -2115,6 +2283,7 @@ mod tests {
         }
 
         let ctx = AppRenderContext {
+            run: Default::default(),
             code: "web".to_string(),
             name: "web".to_string(),
             image: "nginx:latest".to_string(),
@@ -2167,6 +2336,7 @@ mod tests {
             ..Project::default()
         };
         let ctx = AppRenderContext {
+            run: Default::default(),
             code: "web".to_string(),
             name: "web".to_string(),
             image: "nginx:latest".to_string(),
@@ -2200,6 +2370,7 @@ mod tests {
             ..Project::default()
         };
         let ctx = AppRenderContext {
+            run: Default::default(),
             code: "web".to_string(),
             name: "web".to_string(),
             image: "nginx:latest".to_string(),
@@ -2239,6 +2410,7 @@ mod tests {
             "web",
         );
         let ctx = AppRenderContext {
+            run: Default::default(),
             code: "web".to_string(),
             name: "web".to_string(),
             image: "nginx:latest".to_string(),

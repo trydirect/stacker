@@ -1474,6 +1474,7 @@ mod tests {
 
     fn service_definition(name: &str) -> ServiceDefinition {
         ServiceDefinition {
+            runtime: Default::default(),
             name: name.to_string(),
             image: "optimum/syncopia-upload:latest".to_string(),
             ports: vec!["8000:8000".to_string()],

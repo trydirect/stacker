@@ -370,5 +370,6 @@ pub(crate) fn merge_project_app(existing: ProjectApp, incoming: ProjectApp) -> P
             .config_contract
             .clone()
             .or_else(|| existing.config_contract.clone()),
+        runtime: incoming.runtime.or(existing.runtime),
     }
 }

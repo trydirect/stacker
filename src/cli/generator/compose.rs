@@ -5,7 +5,8 @@ use std::fmt;
 use std::path::Path;
 
 use crate::cli::config_parser::{
-    AppType, ComposeHealthcheck, DomainConfig, ProxyType, ServiceDefinition, SslMode, StackerConfig,
+    AppType, ComposeHealthcheck, DomainConfig, ProxyType, ServiceDefinition, ServiceDeploy,
+    SslMode, StackerConfig,
 };
 use crate::cli::error::CliError;
 
@@ -41,6 +42,11 @@ pub struct ComposeService {
     pub shm_size: Option<String>,
     /// Container `user:` (e.g. `"0:0"`).
     pub user: Option<String>,
+    pub entrypoint: Option<String>,
+    pub profiles: Vec<String>,
+    /// Added as `aliases:` on every network in `networks`.
+    pub aliases: Vec<String>,
+    pub deploy: Option<ServiceDeploy>,
 }
 
 impl Default for ComposeService {
@@ -67,6 +73,10 @@ impl Default for ComposeService {
             devices: Vec::new(),
             shm_size: None,
             user: None,
+            entrypoint: None,
+            profiles: Vec::new(),
+            aliases: Vec::new(),
+            deploy: None,
         }
     }
 }
@@ -88,8 +98,15 @@ impl From<&ServiceDefinition> for ComposeService {
             privileged: svc.privileged,
             platform: svc.platform.clone(),
             devices: svc.devices.clone(),
+            entrypoint: svc.runtime.entrypoint.clone(),
+            profiles: svc.runtime.profiles.clone(),
+            aliases: svc.runtime.aliases.clone(),
+            deploy: svc.runtime.deploy.clone(),
             ..Default::default()
         };
+        if let Some(restart) = svc.runtime.restart {
+            compose_service.restart = restart.as_str().to_string();
+        }
         crate::helpers::stacker_labels::insert_runtime_labels(
             &mut compose_service.labels,
             None::<String>,
@@ -712,6 +729,7 @@ impl ComposeDefinition {
                 ("cap_add", &svc.cap_add),
                 ("cap_drop", &svc.cap_drop),
                 ("devices", &svc.devices),
+                ("profiles", &svc.profiles),
             ] {
                 if !values.is_empty() {
                     out.push_str(&format!("    {key}:\n"));
@@ -741,6 +759,10 @@ impl ComposeDefinition {
                 out.push_str(&format!("    command: {}\n", yaml_quote(cmd)));
             }
 
+            if let Some(ref entrypoint) = svc.entrypoint {
+                out.push_str(&format!("    entrypoint: {}\n", yaml_quote(entrypoint)));
+            }
+
             if !svc.volumes.is_empty() {
                 out.push_str("    volumes:\n");
                 for v in &svc.volumes {
@@ -766,12 +788,32 @@ impl ComposeDefinition {
                 out.push_str(&format!("      retries: {}\n", hc.retries));
             }
 
-            out.push_str(&format!("    restart: {}\n", svc.restart));
+            // `no` unquoted is a boolean to YAML 1.1 readers.
+            if svc.restart == "no" {
+                out.push_str("    restart: \"no\"\n");
+            } else {
+                out.push_str(&format!("    restart: {}\n", svc.restart));
+            }
+
+            if let Some(ref deploy) = svc.deploy {
+                out.push_str("    deploy:\n");
+                let body = serde_yaml::to_string(deploy).unwrap_or_default();
+                for line in body.lines().filter(|l| !l.is_empty() && *l != "---") {
+                    out.push_str(&format!("      {}\n", line));
+                }
+            }
 
             if !svc.networks.is_empty() {
                 out.push_str("    networks:\n");
                 for n in &svc.networks {
-                    out.push_str(&format!("      - {}\n", n));
+                    if svc.aliases.is_empty() {
+                        out.push_str(&format!("      - {}\n", n));
+                    } else {
+                        out.push_str(&format!("      {}:\n        aliases:\n", n));
+                        for alias in &svc.aliases {
+                            out.push_str(&format!("          - {}\n", yaml_quote(alias)));
+                        }
+                    }
                 }
             }
 
@@ -1503,6 +1545,7 @@ services:
         config.app_present = false; // simulate no declared app: section
         config.app.image = Some("myorg/app:1.0".to_string());
         config.services = vec![ServiceDefinition {
+            runtime: Default::default(),
             name: "db".to_string(),
             image: "postgres:16".to_string(),
             ports: vec![],
@@ -1551,6 +1594,7 @@ services:
     #[test]
     fn test_compose_includes_additional_services() {
         let svc = ServiceDefinition {
+            runtime: Default::default(),
             name: "postgres".into(),
             image: "postgres:16".into(),
             ports: vec!["5432:5432".into()],
@@ -1883,6 +1927,7 @@ services:
     #[test]
     fn test_compose_render_contains_volumes_section() {
         let svc = ServiceDefinition {
+            runtime: Default::default(),
             name: "redis".into(),
             image: "redis:7".into(),
             ports: Vec::new(),
@@ -1989,6 +2034,7 @@ services:
     #[test]
     fn test_service_definition_to_compose_service() {
         let svc_def = ServiceDefinition {
+            runtime: Default::default(),
             name: "mysql".into(),
             image: "mysql:8".into(),
             ports: vec!["3306:3306".into()],
@@ -2020,6 +2066,7 @@ services:
     #[test]
     fn service_definition_adds_project_scope_labels() {
         let svc_def = ServiceDefinition {
+            runtime: Default::default(),
             name: "smtp".into(),
             image: "trydirect/smtp:latest".into(),
             ports: Vec::new(),
@@ -2282,6 +2329,7 @@ services:
     #[test]
     fn npm_proxy_injects_default_network_into_proxied_service() {
         let svc = ServiceDefinition {
+            runtime: Default::default(),
             name: "api".into(),
             image: "myapp:latest".into(),
             ports: vec!["8080:8080".into()],
@@ -2336,6 +2384,7 @@ services:
     #[test]
     fn npm_proxy_does_not_inject_into_unproxied_service() {
         let smtp = ServiceDefinition {
+            runtime: Default::default(),
             name: "smtp".into(),
             image: "trydirect/smtp".into(),
             ports: vec![],
@@ -2423,6 +2472,7 @@ services:
         // proxied service must also join `default_network` for the managed
         // proxy to reach it. (Previously only NginxProxyManager did this.)
         let svc = ServiceDefinition {
+            runtime: Default::default(),
             name: "web".into(),
             image: "nginx:latest".into(),
             ports: vec![],
