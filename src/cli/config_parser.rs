@@ -293,7 +293,7 @@ fn default_health_retries_compose() -> u32 {
 ///
 /// This is distinct from `MonitoringConfig::healthcheck`, which is an
 /// app-level HTTP endpoint polling configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ComposeHealthcheck {
     pub test: String,
     #[serde(default = "default_health_interval")]
@@ -340,6 +340,140 @@ pub struct ServiceDefinition {
     pub platform: Option<String>,
     #[serde(default)]
     pub devices: Vec<String>,
+
+    /// restart, entrypoint, profiles, aliases, deploy.
+    #[serde(flatten)]
+    pub runtime: ServiceRuntime,
+}
+
+/// How a service runs, beyond its image and wiring. Each maps to the compose
+/// key of the same name (`aliases` to `networks.<network>.aliases`); left
+/// unset, the compose keeps its defaults.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ServiceRuntime {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart: Option<RestartPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<String>,
+    /// The service starts only when one of these compose profiles is active.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<String>,
+    /// Other names the service answers to on every network it joins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deploy: Option<ServiceDeploy>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RestartPolicy {
+    No,
+    Always,
+    UnlessStopped,
+    OnFailure,
+}
+
+impl RestartPolicy {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RestartPolicy::No => "no",
+            RestartPolicy::Always => "always",
+            RestartPolicy::UnlessStopped => "unless-stopped",
+            RestartPolicy::OnFailure => "on-failure",
+        }
+    }
+}
+
+/// The subset of compose `deploy:` a single host honours.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceDeploy {
+    /// `0` keeps the service defined but not started. Also read from a
+    /// `${VAR}` reference, which arrives as a string.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_count",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub replicas: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<ServiceResources>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceResources {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reservations: Option<ServiceReservations>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceReservations {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<DeviceRequest>,
+}
+
+/// A device the container reserves, e.g. an NVIDIA GPU:
+/// `{driver: nvidia, count: 1, capabilities: [gpu]}`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<DeviceCount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub device_ids: Vec<String>,
+    pub capabilities: Vec<String>,
+}
+
+/// `count: 2` or `count: all`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceCount {
+    Count(u32),
+    All,
+}
+
+impl Serialize for DeviceCount {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            DeviceCount::Count(n) => serializer.serialize_u32(*n),
+            DeviceCount::All => serializer.serialize_str("all"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DeviceCount {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match serde_yaml::Value::deserialize(deserializer)? {
+            serde_yaml::Value::String(s) if s == "all" => Ok(DeviceCount::All),
+            other => count_from_value(&other)
+                .map(DeviceCount::Count)
+                .ok_or_else(|| serde::de::Error::custom("count must be a number or `all`")),
+        }
+    }
+}
+
+fn count_from_value(value: &serde_yaml::Value) -> Option<u32> {
+    match value {
+        serde_yaml::Value::Number(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()),
+        serde_yaml::Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+fn deserialize_optional_count<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<serde_yaml::Value>::deserialize(deserializer)? {
+        None | Some(serde_yaml::Value::Null) => Ok(None),
+        Some(value) => count_from_value(&value)
+            .map(Some)
+            .ok_or_else(|| serde::de::Error::custom("replicas must be a whole number, 0 or more")),
+    }
 }
 
 fn deserialize_services<'de, D>(deserializer: D) -> Result<Vec<ServiceDefinition>, D::Error>
@@ -4180,6 +4314,7 @@ app:
     #[test]
     fn e007_names_the_offending_service() {
         let svc = ServiceDefinition {
+            runtime: Default::default(),
             name: "db".to_string(),
             image: "postgres:16".to_string(),
             ports: vec!["5432:5432".to_string(), "99999:5432".to_string()],
@@ -4691,6 +4826,7 @@ deploy:
             .app_type(AppType::Node)
             .app_path("./src")
             .add_service(ServiceDefinition {
+                runtime: Default::default(),
                 name: "postgres".to_string(),
                 image: "postgres:16".to_string(),
                 ports: vec!["5432:5432".to_string()],
@@ -4770,6 +4906,7 @@ deploy:
         let config = ConfigBuilder::new()
             .name("multi")
             .add_service(ServiceDefinition {
+                runtime: Default::default(),
                 name: "pg".to_string(),
                 image: "postgres:16".to_string(),
                 ports: vec![],
@@ -4785,6 +4922,7 @@ deploy:
                 devices: Vec::new(),
             })
             .add_service(ServiceDefinition {
+                runtime: Default::default(),
                 name: "redis".to_string(),
                 image: "redis:7".to_string(),
                 ports: vec![],
@@ -4800,6 +4938,7 @@ deploy:
                 devices: Vec::new(),
             })
             .add_service(ServiceDefinition {
+                runtime: Default::default(),
                 name: "minio".to_string(),
                 image: "minio/minio".to_string(),
                 ports: vec![],

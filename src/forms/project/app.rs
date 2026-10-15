@@ -65,6 +65,24 @@ pub struct App {
     pub restart: String,
     pub command: Option<String>,
     pub entrypoint: Option<String>,
+    /// Compose settings a stacker.yml service declares
+    /// (shared-fixtures/api-contracts/stack-service-runtime-fields.json).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub healthcheck: Option<crate::cli::config_parser::ComposeHealthcheck>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cap_add: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cap_drop: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deploy: Option<crate::cli::config_parser::ServiceDeploy>,
     pub volumes: Option<Vec<forms::project::Volume>>,
     #[serde(flatten)]
     pub environment: forms::project::Environment,
@@ -114,7 +132,20 @@ impl App {
         let networks = dctypes::Networks::try_from(&self.network).unwrap_or_default();
 
         let networks = replace_id_with_name(networks, all_networks);
-        service.networks = dctypes::Networks::Simple(networks);
+        service.networks = if self.aliases.is_empty() {
+            dctypes::Networks::Simple(networks)
+        } else {
+            let settings = dctypes::AdvancedNetworkSettings {
+                aliases: self.aliases.clone(),
+                ..Default::default()
+            };
+            dctypes::Networks::Advanced(dctypes::AdvancedNetworks(
+                networks
+                    .into_iter()
+                    .map(|name| (name, dctypes::MapOrEmpty::Map(settings.clone())))
+                    .collect(),
+            ))
+        };
 
         let ports: Vec<dctypes::Port> = match &self.shared_ports {
             Some(ports) => {
@@ -169,8 +200,70 @@ impl App {
         }
         service.volumes = volumes;
         service.environment = dctypes::Environment::KvPair(envs);
+        if !self.depends_on.is_empty() {
+            service.depends_on = dctypes::DependsOnOptions::Simple(self.depends_on.clone());
+        }
+        service.healthcheck = self.healthcheck.as_ref().map(compose_healthcheck);
+        service.cap_add = self.cap_add.clone();
+        service.cap_drop = self.cap_drop.clone();
+        service.devices = self.devices.clone();
+        service.profiles = self.profiles.clone();
+        service.deploy = self.deploy.as_ref().map(compose_deploy);
 
         Ok(service)
+    }
+}
+
+fn compose_healthcheck(hc: &crate::cli::config_parser::ComposeHealthcheck) -> dctypes::Healthcheck {
+    let test = match crate::cli::compose_service_sync::healthcheck_test_value(&hc.test) {
+        serde_yaml::Value::Sequence(parts) => dctypes::HealthcheckTest::Multiple(
+            parts
+                .iter()
+                .filter_map(|p| p.as_str().map(str::to_string))
+                .collect(),
+        ),
+        _ => dctypes::HealthcheckTest::Single(hc.test.clone()),
+    };
+    dctypes::Healthcheck {
+        test: Some(test),
+        interval: Some(hc.interval.clone()),
+        timeout: Some(hc.timeout.clone()),
+        retries: i64::from(hc.retries),
+        ..Default::default()
+    }
+}
+
+fn compose_deploy(deploy: &crate::cli::config_parser::ServiceDeploy) -> dctypes::Deploy {
+    use crate::cli::config_parser::DeviceCount;
+    let devices = deploy
+        .resources
+        .as_ref()
+        .and_then(|r| r.reservations.as_ref())
+        .map(|r| {
+            r.devices
+                .iter()
+                .map(|d| dctypes::Device {
+                    driver: d.driver.clone(),
+                    count: d.count.map(|c| match c {
+                        DeviceCount::All => dctypes::DeviceCount::All,
+                        DeviceCount::Count(n) => dctypes::DeviceCount::Count(u64::from(n)),
+                    }),
+                    device_ids: (!d.device_ids.is_empty()).then(|| d.device_ids.clone()),
+                    capabilities: Some(d.capabilities.clone()),
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>()
+        });
+    dctypes::Deploy {
+        replicas: deploy.replicas.map(i64::from),
+        resources: devices.map(|devices| dctypes::Resources {
+            reservations: Some(dctypes::Limits {
+                devices: Some(devices),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
     }
 }
 

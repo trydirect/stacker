@@ -177,6 +177,7 @@ fn build_stacker_yml_from_deployment(
     // Services (have parent)
     for app in apps.iter().filter(|a| a.parent_app_code.is_some()) {
         builder = builder.add_service(ServiceDefinition {
+            runtime: Default::default(),
             name: app.code.clone(),
             image: app.image.clone(),
             ports: Vec::new(),

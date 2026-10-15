@@ -54,6 +54,43 @@ fn app_networks_json(
     }
 }
 
+/// The healthcheck in the shape the config renderer reads: `test` as a list.
+fn healthcheck_json(hc: &crate::cli::config_parser::ComposeHealthcheck) -> Value {
+    let test = match crate::cli::compose_service_sync::healthcheck_test_value(&hc.test) {
+        serde_yaml::Value::Sequence(parts) => parts
+            .iter()
+            .filter_map(|p| p.as_str().map(str::to_string))
+            .collect::<Vec<_>>(),
+        _ => vec!["CMD-SHELL".to_string(), hc.test.clone()],
+    };
+    json!({
+        "test": test,
+        "interval": hc.interval,
+        "timeout": hc.timeout,
+        "retries": hc.retries,
+    })
+}
+
+/// `project_app.runtime`: the settings with no column of their own.
+fn app_runtime_json(app: &ProjectFormApp) -> Option<Value> {
+    let mut runtime = serde_json::Map::new();
+    for (key, values) in [
+        ("cap_add", &app.cap_add),
+        ("cap_drop", &app.cap_drop),
+        ("devices", &app.devices),
+        ("profiles", &app.profiles),
+        ("aliases", &app.aliases),
+    ] {
+        if !values.is_empty() {
+            runtime.insert(key.to_string(), json!(values));
+        }
+    }
+    if let Some(deploy) = &app.deploy {
+        runtime.insert("deploy".to_string(), json!(deploy));
+    }
+    (!runtime.is_empty()).then_some(Value::Object(runtime))
+}
+
 fn build_project_app(
     project_id: i32,
     deploy_order: i32,
@@ -84,6 +121,9 @@ fn build_project_app(
     project_app.command = non_empty_string(app.command.as_deref());
     project_app.entrypoint = non_empty_string(app.entrypoint.as_deref());
     project_app.networks = app_networks_json(app, all_networks);
+    project_app.depends_on = (!app.depends_on.is_empty()).then(|| json!(app.depends_on));
+    project_app.healthcheck = app.healthcheck.as_ref().map(healthcheck_json);
+    project_app.runtime = app_runtime_json(app);
     project_app.enabled = Some(true);
     project_app.deploy_order = Some(deploy_order);
     project_app.config_contract = app.config_contract.clone();

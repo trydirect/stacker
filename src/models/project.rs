@@ -163,6 +163,10 @@ pub struct Project {
     pub is_protected: bool,               // prevent deletion when true
     pub deletion_scheduled_at: Option<DateTime<Utc>>, // auto-deletion date for stale projects
     pub deletion_warning_sent_at: Option<DateTime<Utc>>, // when the last warning was sent
+    /// Owner's choice: members get server access and deploy reports.
+    /// Read and set through db::project; kept out of API bodies.
+    #[serde(skip)]
+    pub members_server_access: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow)]
@@ -189,6 +193,7 @@ impl Project {
             is_protected: false,
             deletion_scheduled_at: None,
             deletion_warning_sent_at: None,
+            members_server_access: false,
         }
     }
 
@@ -236,6 +241,7 @@ impl Default for Project {
             is_protected: false,
             deletion_scheduled_at: None,
             deletion_warning_sent_at: None,
+            members_server_access: false,
         }
     }
 }
