@@ -67,6 +67,11 @@
         "ordinal": 12,
         "name": "deletion_warning_sent_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "members_server_access",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -87,7 +92,8 @@
       true,
       false,
       true,
-      true
+      true,
+      false
     ]
   },
   "hash": "5fea60d7574cfd238a7cbae4d93423869bd7b79dd5b246d80f0b6f39ce4659dc"
