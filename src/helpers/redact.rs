@@ -159,6 +159,31 @@ const CONFIG_CONTRACT_KEY: &str = "config_contract";
 /// Replace, in place, the values of env entries whose key is in `keys`.
 /// Handles the same shapes as [`redact_sensitive_json_values`] plus `KEY=value`
 /// strings in environment arrays.
+/// Whether `value` only names another variable (`${NAME}` or `$NAME`).
+///
+/// Such a value is not a secret: it is how one generated secret feeds several
+/// keys, so stripping keeps it. `${NAME:-default}` does not count, the default
+/// can be the secret itself.
+fn is_env_reference(value: &str) -> bool {
+    let name = match value.strip_prefix("${") {
+        Some(rest) => match rest.strip_suffix('}') {
+            Some(name) => name,
+            None => return false,
+        },
+        None => match value.strip_prefix('$') {
+            Some(name) => name,
+            None => return false,
+        },
+    };
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c == '_' || c.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+fn json_is_env_reference(value: &serde_json::Value) -> bool {
+    value.as_str().map_or(false, is_env_reference)
+}
+
 pub fn strip_json_values_for_keys(
     value: &mut serde_json::Value,
     keys: &BTreeSet<String>,
@@ -170,7 +195,7 @@ pub fn strip_json_values_for_keys(
             if let Some(name) = map.get("key").and_then(|v| v.as_str()) {
                 if keys.contains(name) {
                     if let Some(val) = map.get_mut("value") {
-                        if !val.is_null() {
+                        if !val.is_null() && !json_is_env_reference(val) {
                             *val = serde_json::Value::String(replacement.to_string());
                         }
                     }
@@ -187,7 +212,9 @@ pub fn strip_json_values_for_keys(
                     continue;
                 }
                 if keys.contains(key) && !val.is_null() {
-                    *val = serde_json::Value::String(replacement.to_string());
+                    if !json_is_env_reference(val) {
+                        *val = serde_json::Value::String(replacement.to_string());
+                    }
                 } else {
                     strip_json_values_for_keys(val, keys, replacement);
                 }
@@ -198,7 +225,9 @@ pub fn strip_json_values_for_keys(
                 if let serde_json::Value::String(s) = item {
                     if let Some(eq) = s.find('=') {
                         if keys.contains(&s[..eq]) {
-                            *s = format!("{}={}", &s[..eq], replacement);
+                            if !is_env_reference(&s[eq + 1..]) {
+                                *s = format!("{}={}", &s[..eq], replacement);
+                            }
                             continue;
                         }
                     }
@@ -225,7 +254,9 @@ fn strip_yaml_values_for_keys(
                         continue;
                     }
                     if keys.contains(k) && !val.is_null() {
-                        *val = serde_yaml::Value::String(replacement.to_string());
+                        if !val.as_str().map_or(false, is_env_reference) {
+                            *val = serde_yaml::Value::String(replacement.to_string());
+                        }
                         continue;
                     }
                 }
@@ -236,7 +267,7 @@ fn strip_yaml_values_for_keys(
             for item in seq.iter_mut() {
                 if let serde_yaml::Value::String(s) = item {
                     if let Some(eq) = s.find('=') {
-                        if keys.contains(&s[..eq]) {
+                        if keys.contains(&s[..eq]) && !is_env_reference(&s[eq + 1..]) {
                             *s = format!("{}={}", &s[..eq], replacement);
                         }
                     }
@@ -500,5 +531,71 @@ config_contract:
             Some("generated"),
             "policy survives:\n{out}"
         );
+    }
+
+    // A value that only names another variable is not a secret. It is how one
+    // generated secret feeds two keys (plane: the app's AWS_SECRET_ACCESS_KEY
+    // is "${MINIO_ROOT_PASSWORD}"); blanking it broke that link and the two
+    // services got different values. A default inside the reference can hold
+    // the secret itself, so `${VAR:-value}` is still blanked.
+
+    #[test]
+    fn strip_json_keeps_references_to_other_variables() {
+        let mut v = json!({
+            "services": {
+                "api": {
+                    "environment": {
+                        "SECRET_KEY": "${MINIO_ROOT_PASSWORD}",
+                        "POSTGRES_PASSWORD": "${DB_PASSWORD:-author-secret}"
+                    }
+                },
+                "worker": { "environment": ["SECRET_KEY=$MINIO_ROOT_PASSWORD"] }
+            },
+            "vars": [{ "key": "SECRET_KEY", "value": "${MINIO_ROOT_PASSWORD}" }]
+        });
+
+        strip_json_values_for_keys(&mut v, &generated_keys(), "");
+
+        let env = &v["services"]["api"]["environment"];
+        assert_eq!(env["SECRET_KEY"], "${MINIO_ROOT_PASSWORD}");
+        assert_eq!(env["POSTGRES_PASSWORD"], "", "a default may be the secret");
+        assert_eq!(
+            v["services"]["worker"]["environment"][0],
+            "SECRET_KEY=$MINIO_ROOT_PASSWORD"
+        );
+        assert_eq!(v["vars"][0]["value"], "${MINIO_ROOT_PASSWORD}");
+    }
+
+    #[test]
+    fn strip_yaml_keeps_references_to_other_variables() {
+        let yaml = "\
+services:
+  api:
+    environment:
+      SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-author-secret}
+  worker:
+    environment:
+      - SECRET_KEY=${MINIO_ROOT_PASSWORD}
+";
+        let out = strip_yaml_string_for_keys(yaml, &generated_keys(), "");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+
+        assert_eq!(
+            parsed["services"]["api"]["environment"]["SECRET_KEY"].as_str(),
+            Some("${MINIO_ROOT_PASSWORD}"),
+            "{out}"
+        );
+        assert_eq!(
+            parsed["services"]["api"]["environment"]["POSTGRES_PASSWORD"].as_str(),
+            Some(""),
+            "{out}"
+        );
+        assert_eq!(
+            parsed["services"]["worker"]["environment"][0].as_str(),
+            Some("SECRET_KEY=${MINIO_ROOT_PASSWORD}"),
+            "{out}"
+        );
+        assert!(!out.contains("author-secret"), "{out}");
     }
 }
