@@ -112,7 +112,8 @@ pub enum AccessMode {
     /// post-deploy settlement, where a card alone would deploy for free.
     RequireOwnership,
     /// A saved payment method is enough — the caller settles the charge after
-    /// a successful deploy (the one-click path's completion hook).
+    /// a successful deploy (the one-click path's completion hook). The Pro
+    /// feature plan is not required on this path.
     AllowCardOnFile,
 }
 
@@ -141,12 +142,17 @@ pub async fn validate_marketplace_template_access_with_mode(
         .as_deref()
         .ok_or(MarketplaceAccessError::MissingUserToken)?;
 
-    let has_feature_plan = user_service
-        .user_has_plan(&user.id, MARKETPLACE_INSTALL_MIN_PLAN, Some(user_token))
-        .await
-        .map_err(validation_failed)?;
-    if !has_feature_plan {
-        return Err(MarketplaceAccessError::InsufficientFeaturePlan);
+    // Quick Deploy (AllowCardOnFile) is plan-independent: every buyer adds a
+    // card and pays for the Managed server. CLI and marketplace installs keep
+    // the Pro feature plan.
+    if mode == AccessMode::RequireOwnership {
+        let has_feature_plan = user_service
+            .user_has_plan(&user.id, MARKETPLACE_INSTALL_MIN_PLAN, Some(user_token))
+            .await
+            .map_err(validation_failed)?;
+        if !has_feature_plan {
+            return Err(MarketplaceAccessError::InsufficientFeaturePlan);
+        }
     }
 
     if let Some(required_plan) = template
@@ -1081,5 +1087,101 @@ mod tests {
             !svc.calls().contains(&CapturedCall::CanCharge),
             "ownership alone must settle the check — no card probe"
         );
+    }
+
+    // ── Quick Deploy is plan-independent (quick-deploy-managed-server-billing.feature) ──
+    // Every buyer adds a card and pays for the Managed server, so the Pro
+    // feature plan does not gate the one-click path. CLI and marketplace
+    // installs (RequireOwnership) keep it.
+
+    #[tokio::test]
+    async fn deferred_mode_lets_a_free_plan_user_deploy_a_free_template() {
+        let svc = Arc::new(TestUserService::new(&[("professional", false)], &[]));
+        let user_service: Arc<dyn UserServiceConnector> = svc.clone();
+        let template = models::StackTemplate {
+            slug: "local-ai-packaged".to_string(),
+            ..Default::default()
+        };
+
+        let result = validate_marketplace_template_access_with_mode(
+            &user_service,
+            &test_user(),
+            &template,
+            AccessMode::AllowCardOnFile,
+        )
+        .await;
+
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn deferred_mode_asks_a_free_plan_user_for_a_card_on_a_priced_template() {
+        let svc = Arc::new(
+            TestUserService::new(&[("professional", false)], &[])
+                .with_can_charge(false, Some("no_payment_method")),
+        );
+        let user_service: Arc<dyn UserServiceConnector> = svc.clone();
+        let template = models::StackTemplate {
+            slug: "paid-template".to_string(),
+            product_id: Some(100),
+            price: Some(15.0),
+            ..Default::default()
+        };
+
+        let result = validate_marketplace_template_access_with_mode(
+            &user_service,
+            &test_user(),
+            &template,
+            AccessMode::AllowCardOnFile,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(MarketplaceAccessError::NoPaymentMethod { .. })),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_mode_still_requires_the_templates_own_plan() {
+        let svc = Arc::new(TestUserService::new(
+            &[("professional", false), ("enterprise", false)],
+            &[],
+        ));
+        let user_service: Arc<dyn UserServiceConnector> = svc.clone();
+
+        let result = validate_marketplace_template_access_with_mode(
+            &user_service,
+            &test_user(),
+            &test_template(),
+            AccessMode::AllowCardOnFile,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(MarketplaceAccessError::InsufficientTemplatePlan { .. })
+            ),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ownership_mode_still_requires_the_pro_feature_plan() {
+        let svc = Arc::new(TestUserService::new(&[("professional", false)], &[]));
+        let user_service: Arc<dyn UserServiceConnector> = svc.clone();
+        let template = models::StackTemplate {
+            slug: "local-ai-packaged".to_string(),
+            ..Default::default()
+        };
+
+        let result =
+            validate_marketplace_template_access(&user_service, &test_user(), &template).await;
+
+        assert!(matches!(
+            result,
+            Err(MarketplaceAccessError::InsufficientFeaturePlan)
+        ));
     }
 }
