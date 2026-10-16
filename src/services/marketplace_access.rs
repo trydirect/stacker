@@ -538,6 +538,22 @@ mod tests {
                 status: "captured".to_string(),
             })
         }
+
+        async fn report_managed_usage(
+            &self,
+            _service_token: &str,
+            _usage: &crate::connectors::user_service::ManagedUsageReport,
+        ) -> Result<(), ConnectorError> {
+            Ok(())
+        }
+
+        async fn record_managed_billing_event(
+            &self,
+            _service_token: &str,
+            _event: &crate::connectors::user_service::ManagedBillingEvent,
+        ) -> Result<(), ConnectorError> {
+            Ok(())
+        }
     }
 
     fn test_user() -> models::User {
