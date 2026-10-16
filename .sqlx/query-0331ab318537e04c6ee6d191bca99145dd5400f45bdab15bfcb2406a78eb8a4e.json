@@ -1,0 +1,124 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE managed_usage\n           SET status = 'active', started_at = now(), updated_at = now()\n           WHERE deployment_hash = $1 AND status = 'pending'\n           RETURNING *",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "deployment_hash",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "stack",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "server_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "daily_rate_minor",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "monthly_cap_minor",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "currency",
+        "type_info": "Bpchar"
+      },
+      {
+        "ordinal": 8,
+        "name": "status",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 9,
+        "name": "outcome",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "started_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "stopped_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "suspended_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "period_start",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 14,
+        "name": "period_reported_minor",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 15,
+        "name": "last_reported_on",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 16,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 17,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "0331ab318537e04c6ee6d191bca99145dd5400f45bdab15bfcb2406a78eb8a4e"
+}
