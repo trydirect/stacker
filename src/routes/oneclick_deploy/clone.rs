@@ -82,8 +82,8 @@ pub struct CloneResponse {
     /// SSH private key (PEM) for the deploy key injected into the cloned server.
     /// The user service must pass this to the install service for Ansible access.
     pub ssh_private_key: String,
-    /// Present only for deployment_daily templates. The user service stores
-    /// this so it can void on failure or pass to deploy-complete for capture.
+    /// No longer set: the Managed server is metered daily (`managed_usage`)
+    /// instead of held on the card. Kept so existing readers still parse.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authorization_id: Option<String>,
 }
@@ -375,6 +375,70 @@ pub async fn clone_server(
         GateLookup::Block(response) => return response,
     }
 
+    // ── Managed server billing: rate and card, before any record ─────────
+    // Every Quick Deploy runs on a TryDirect-managed server billed daily to
+    // the buyer (shared-fixtures/api-contracts/managed-server-billing.json).
+    let template = match crate::db::marketplace::get_approved_by_slug(&pg_pool, &form.stack).await {
+        Ok(Some(template)) => template,
+        Ok(None) => {
+            tracing::warn!(
+                template_slug = %form.stack,
+                "stack not registered in stack_template; refusing to deploy"
+            );
+            return HttpResponse::NotFound().json(json!({
+                "error": "Unknown stack",
+                "details": format!(
+                    "stack '{}' is not registered in the marketplace catalog",
+                    form.stack
+                ),
+            }));
+        }
+        Err(err) => {
+            // Fail closed: without the template the rate cannot be known.
+            tracing::error!(error = %err, "template lookup for billing failed");
+            return HttpResponse::ServiceUnavailable().json(json!({
+                "error": "billing lookup failed",
+                "details": err,
+            }));
+        }
+    };
+    let server_type_rate =
+        match crate::db::server_type_daily_rate::fetch(&pg_pool, &form.server_type).await {
+            Ok(rate) => rate.map(|cfg| (cfg.daily_rate, cfg.monthly_cap)),
+            Err(err) => {
+                tracing::error!(error = %err, "server type rate lookup failed");
+                return HttpResponse::ServiceUnavailable().json(json!({
+                    "error": "billing lookup failed",
+                    "details": err,
+                }));
+            }
+        };
+    let capability = match user_service
+        .can_charge(user.access_token.as_deref().unwrap_or(""))
+        .await
+    {
+        Ok(capability) => capability,
+        Err(err) => {
+            tracing::error!(error = ?err, "can_charge failed");
+            return HttpResponse::ServiceUnavailable().json(json!({
+                "error": "payment check failed",
+                "details": err.to_string(),
+            }));
+        }
+    };
+    let billed = match managed_billing_check(
+        crate::services::managed_usage::resolve_daily_rate(
+            template.daily_rate,
+            template.monthly_cap,
+            server_type_rate,
+        ),
+        &capability,
+        &form.server_type,
+    ) {
+        Ok(billed) => billed,
+        Err(response) => return response,
+    };
+
     let mut project_model = crate::models::Project::new(
         user.id.clone(),
         project_name,
@@ -445,145 +509,6 @@ pub async fn clone_server(
         "clone deployment records created"
     );
 
-    // ── Deployment-daily billing: authorize before server creation ────────
-    let mut authorization_id: Option<String> = None;
-    match crate::db::marketplace::get_approved_by_slug(&pg_pool, &form.stack).await {
-        Ok(Some(template)) => {
-            tracing::info!(
-                template_slug = %form.stack,
-                billing_cycle = ?template.billing_cycle,
-                daily_rate = ?template.daily_rate,
-                "template found for billing check"
-            );
-            if template.billing_cycle.as_deref() == Some("deployment_daily") {
-                // Resolve daily_rate: template override or server-type default
-                let daily_rate = if let Some(rate) = template.daily_rate {
-                    rate
-                } else if let Ok(Some(cfg)) =
-                    crate::db::server_type_daily_rate::fetch(&pg_pool, &form.server_type).await
-                {
-                    cfg.daily_rate
-                } else {
-                    0.87 // fallback default
-                };
-                let monthly_cap = template.monthly_cap.unwrap_or_else(|| daily_rate * 30.0);
-
-                // Convert to minor units (cents)
-                let amount_minor = (daily_rate * 100.0).round() as i64;
-                let currency = template
-                    .currency
-                    .clone()
-                    .unwrap_or_else(|| "USD".to_string());
-                let idem_key = format!("oneclick-{}", deployment_hash);
-
-                // Get user's access token for authorization
-                let user_token = user.access_token.as_deref().unwrap_or("");
-                if !user_token.is_empty() {
-                    match user_service
-                        .authorize_install_charge(
-                            user_token,
-                            &template.id,
-                            amount_minor,
-                            &currency,
-                            &idem_key,
-                        )
-                        .await
-                    {
-                        Ok(handle) => {
-                            let expires_at = handle
-                                .expires_at
-                                .as_deref()
-                                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                                .map(|dt| dt.with_timezone(&chrono::Utc));
-
-                            match crate::db::marketplace_billing::insert_authorization(
-                                &pg_pool,
-                                crate::db::marketplace_billing::NewAuthorization {
-                                    user_id: user.id.clone(),
-                                    template_id: template.id,
-                                    idempotency_key: idem_key,
-                                    authorization_id: handle.authorization_id.clone(),
-                                    amount_minor: handle.amount_minor,
-                                    currency: handle.currency.clone(),
-                                    expires_at,
-                                    billing_cycle: Some("deployment_daily".to_string()),
-                                    daily_rate: Some(daily_rate),
-                                    monthly_cap: Some(monthly_cap),
-                                },
-                            )
-                            .await
-                            {
-                                Ok(auth_row) => {
-                                    crate::db::marketplace_billing::attach_deployment_hash(
-                                        &pg_pool,
-                                        auth_row.id,
-                                        &deployment_hash,
-                                    )
-                                    .await
-                                    .ok();
-                                    authorization_id = Some(handle.authorization_id);
-                                    tracing::info!(
-                                        deployment_hash = %deployment_hash,
-                                        daily_rate = daily_rate,
-                                        monthly_cap = monthly_cap,
-                                        "deployment_daily authorization created"
-                                    );
-                                }
-                                Err(err) => {
-                                    tracing::error!("Failed to store authorization: {}", err);
-                                    let _ = user_service
-                                        .void_install_charge(
-                                            user_token,
-                                            &handle.authorization_id,
-                                            "db_write_failed",
-                                        )
-                                        .await;
-                                    return HttpResponse::InternalServerError().json(json!({
-                                        "error": "authorization storage failed",
-                                        "details": err,
-                                    }));
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            tracing::error!("authorize_install_charge failed: {:?}", err);
-                            return HttpResponse::PaymentRequired().json(json!({
-                                "error": "Payment authorization failed",
-                                "details": format!("{:?}", err),
-                            }));
-                        }
-                    }
-                } else {
-                    tracing::warn!(
-                        "deployment_daily template but user has no access_token, skipping authorize"
-                    );
-                }
-            } else {
-                tracing::info!(
-                    template_slug = %form.stack,
-                    billing_cycle = ?template.billing_cycle,
-                    "template is not deployment_daily, skipping billing"
-                );
-            }
-        }
-        Ok(None) => {
-            tracing::warn!(
-                template_slug = %form.stack,
-                "stack not registered in stack_template; refusing to deploy"
-            );
-            return HttpResponse::NotFound().json(json!({
-                "error": "Unknown stack",
-                "details": format!(
-                    "stack '{}' is not registered in the marketplace catalog",
-                    form.stack
-                ),
-            }));
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, "failed to look up template for billing");
-        }
-    }
-
     // Generate a per-deploy SSH keypair so Ansible can reach the server post-boot.
     let (public_key, private_key) = match VaultClient::generate_ssh_keypair() {
         Ok(pair) => pair,
@@ -643,10 +568,36 @@ pub async fn clone_server(
         user_data: Some(user_data),
     };
 
+    // Usage is recorded now and starts only when the deploy succeeds.
+    if let Err(err) = crate::db::managed_usage::insert_pending(
+        &pg_pool,
+        &crate::db::managed_usage::NewManagedUsage {
+            deployment_hash: deployment_hash.clone(),
+            user_id: user.id.clone(),
+            stack: form.stack.clone(),
+            server_type: form.server_type.clone(),
+            daily_rate_minor: billed.rate_minor,
+            monthly_cap_minor: billed.cap_minor,
+        },
+    )
+    .await
+    {
+        tracing::error!(error = %err, "failed to record managed usage");
+        return HttpResponse::InternalServerError().json(json!({
+            "error": "usage record failed",
+            "details": err,
+        }));
+    }
+
     let provisioned = match client.create_server_from_image(token, request).await {
         Ok(server) => server,
         Err(err) => {
             tracing::error!(error = %err, "clone from snapshot failed");
+            if let Err(close_err) =
+                crate::db::managed_usage::close(&pg_pool, &deployment_hash, "deploy_failed").await
+            {
+                tracing::warn!(error = %close_err, "failed to close managed usage");
+            }
             return HttpResponse::BadGateway().json(serde_json::json!({
                 "error": "Hetzner clone failed",
                 "details": err.to_string(),
@@ -715,8 +666,34 @@ pub async fn clone_server(
         project_id: project.id,
         deployment_hash,
         ssh_private_key: private_key,
-        authorization_id,
+        authorization_id: None,
     })
+}
+
+/// Whether a Quick Deploy may start, and at what rate its Managed server is
+/// billed. The server type must have a rate (no fallback rate), then the
+/// buyer must have a verified card: the server is billed to every buyer,
+/// whatever the plan (quick-deploy-managed-server-billing.feature).
+fn managed_billing_check(
+    rate: Option<crate::services::managed_usage::DailyRate>,
+    capability: &crate::connectors::user_service::BillingCapability,
+    server_type: &str,
+) -> Result<crate::services::managed_usage::DailyRate, HttpResponse> {
+    let Some(rate) = rate else {
+        return Err(HttpResponse::UnprocessableEntity().json(json!({
+            "error": "no_server_rate",
+            "details": format!("server type '{server_type}' has no daily rate"),
+            "server_type": server_type,
+        })));
+    };
+    if !capability.can_charge {
+        return Err(HttpResponse::PaymentRequired().json(json!({
+            "error": "Payment method required",
+            "details": "A verified card is required for the Managed server",
+            "reason": capability.reason.as_deref().unwrap_or("no_payment_method"),
+        })));
+    }
+    Ok(rate)
 }
 
 /// What the clone access gate does with its catalog lookup, before any
@@ -990,6 +967,52 @@ mod tests {
     use actix_web::test;
     use actix_web::web;
     use actix_web::HttpMessage;
+
+    fn capability(can_charge: bool) -> crate::connectors::user_service::BillingCapability {
+        crate::connectors::user_service::BillingCapability {
+            can_charge,
+            reason: (!can_charge).then(|| "no_payment_method".to_string()),
+        }
+    }
+
+    const CPX32_RATE: crate::services::managed_usage::DailyRate =
+        crate::services::managed_usage::DailyRate {
+            rate_minor: 86,
+            cap_minor: 2600,
+        };
+
+    #[actix_web::test]
+    async fn a_server_type_without_a_rate_is_refused_before_the_card() {
+        let resp = managed_billing_check(None, &capability(false), "ccx63").unwrap_err();
+        assert_eq!(
+            resp.status(),
+            actix_web::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(&actix_web::body::to_bytes(resp.into_body()).await.unwrap())
+                .unwrap();
+        assert_eq!(body["error"], "no_server_rate");
+        assert_eq!(body["server_type"], "ccx63");
+    }
+
+    #[actix_web::test]
+    async fn a_buyer_without_a_card_is_asked_for_one() {
+        let resp =
+            managed_billing_check(Some(CPX32_RATE), &capability(false), "cpx32").unwrap_err();
+        assert_eq!(resp.status(), actix_web::http::StatusCode::PAYMENT_REQUIRED);
+        let body: serde_json::Value =
+            serde_json::from_slice(&actix_web::body::to_bytes(resp.into_body()).await.unwrap())
+                .unwrap();
+        assert_eq!(body["reason"], "no_payment_method");
+    }
+
+    #[actix_web::test]
+    async fn a_buyer_with_a_card_is_billed_at_the_resolved_rate() {
+        assert_eq!(
+            managed_billing_check(Some(CPX32_RATE), &capability(true), "cpx32").unwrap(),
+            CPX32_RATE
+        );
+    }
 
     /// The User Service stores this as `installations.stack_id`; without it
     /// `_sync_apps_from_stacker` returns on its first line and the
