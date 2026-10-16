@@ -244,9 +244,12 @@ fn compose_deploy(deploy: &crate::cli::config_parser::ServiceDeploy) -> dctypes:
                 .iter()
                 .map(|d| dctypes::Device {
                     driver: d.driver.clone(),
-                    count: d.count.map(|c| match c {
-                        DeviceCount::All => dctypes::DeviceCount::All,
-                        DeviceCount::Count(n) => dctypes::DeviceCount::Count(u64::from(n)),
+                    // A `${VAR}` count cannot be typed here and is left out.
+                    count: d.count.as_ref().and_then(|c| match c {
+                        DeviceCount::All => Some(dctypes::DeviceCount::All),
+                        DeviceCount::Count(n) => {
+                            n.value().map(|n| dctypes::DeviceCount::Count(u64::from(n)))
+                        }
                     }),
                     device_ids: (!d.device_ids.is_empty()).then(|| d.device_ids.clone()),
                     capabilities: Some(d.capabilities.clone()),
@@ -255,7 +258,11 @@ fn compose_deploy(deploy: &crate::cli::config_parser::ServiceDeploy) -> dctypes:
                 .collect::<Vec<_>>()
         });
     dctypes::Deploy {
-        replicas: deploy.replicas.map(i64::from),
+        replicas: deploy
+            .replicas
+            .as_ref()
+            .and_then(|r| r.value())
+            .map(i64::from),
         resources: devices.map(|devices| dctypes::Resources {
             reservations: Some(dctypes::Limits {
                 devices: Some(devices),

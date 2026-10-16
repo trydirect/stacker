@@ -390,13 +390,14 @@ impl RestartPolicy {
 #[serde(deny_unknown_fields)]
 pub struct ServiceDeploy {
     /// `0` keeps the service defined but not started. Also read from a
-    /// `${VAR}` reference, which arrives as a string.
+    /// `${VAR}` reference: filled, it arrives as a string; read without
+    /// filling variables, the reference is kept as written.
     #[serde(
         default,
         deserialize_with = "deserialize_optional_count",
         skip_serializing_if = "Option::is_none"
     )]
-    pub replicas: Option<u32>,
+    pub replicas: Option<Count>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<ServiceResources>,
 }
@@ -429,17 +430,43 @@ pub struct DeviceRequest {
     pub capabilities: Vec<String>,
 }
 
-/// `count: 2` or `count: all`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A count: a whole number, or a `${VAR}` reference the deploy fills in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Count {
+    Value(u32),
+    Reference(String),
+}
+
+impl Count {
+    /// The number, when it is known before the deploy fills variables.
+    pub fn value(&self) -> Option<u32> {
+        match self {
+            Count::Value(n) => Some(*n),
+            Count::Reference(_) => None,
+        }
+    }
+}
+
+impl Serialize for Count {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Count::Value(n) => serializer.serialize_u32(*n),
+            Count::Reference(r) => serializer.serialize_str(r),
+        }
+    }
+}
+
+/// `count: 2`, `count: all` or `count: ${VAR}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceCount {
-    Count(u32),
+    Count(Count),
     All,
 }
 
 impl Serialize for DeviceCount {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            DeviceCount::Count(n) => serializer.serialize_u32(*n),
+            DeviceCount::Count(c) => c.serialize(serializer),
             DeviceCount::All => serializer.serialize_str("all"),
         }
     }
@@ -456,15 +483,51 @@ impl<'de> Deserialize<'de> for DeviceCount {
     }
 }
 
-fn count_from_value(value: &serde_yaml::Value) -> Option<u32> {
+fn count_from_value(value: &serde_yaml::Value) -> Option<Count> {
     match value {
-        serde_yaml::Value::Number(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()),
-        serde_yaml::Value::String(s) => s.trim().parse().ok(),
+        serde_yaml::Value::Number(n) => n
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .map(Count::Value),
+        serde_yaml::Value::String(s) if is_variable_reference(s.trim()) => {
+            Some(Count::Reference(s.trim().to_string()))
+        }
+        serde_yaml::Value::String(s) => s.trim().parse().ok().map(Count::Value),
         _ => None,
     }
 }
 
-fn deserialize_optional_count<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+/// `${NAME}`, `${NAME:-default}` (and the other compose modifiers) or `$NAME`.
+fn is_variable_reference(value: &str) -> bool {
+    let name = match value.strip_prefix("${") {
+        Some(rest) => match rest.strip_suffix('}') {
+            Some(inner) => {
+                let end = inner
+                    .find(|c: char| !(c == '_' || c.is_ascii_alphanumeric()))
+                    .unwrap_or(inner.len());
+                let modifier = &inner[end..];
+                if !(modifier.is_empty()
+                    || [":-", "-", ":?", "?", ":+", "+"]
+                        .iter()
+                        .any(|m| modifier.starts_with(m)))
+                {
+                    return false;
+                }
+                &inner[..end]
+            }
+            None => return false,
+        },
+        None => match value.strip_prefix('$') {
+            Some(name) => name,
+            None => return false,
+        },
+    };
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c == '_' || c.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+fn deserialize_optional_count<'de, D>(deserializer: D) -> Result<Option<Count>, D::Error>
 where
     D: Deserializer<'de>,
 {
