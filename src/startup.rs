@@ -128,6 +128,13 @@ pub async fn run(
         user_service_connector.get_ref().clone(),
         settings.per_install_billing_enabled,
     );
+    // Reports each running day of a Quick Deploy Managed server to the
+    // Stripe meter through the User Service, and hands servers unpaid for 3
+    // days of suspension to the admins. Without it the servers are not billed.
+    crate::services::managed_usage_sweeper::spawn(
+        api_pool.get_ref().clone(),
+        user_service_connector.get_ref().clone(),
+    );
     // Deletes container rows retired more than a month ago. Housekeeping only:
     // it touches nothing the dashboard shows, and skipping it costs a slowly
     // growing table rather than correctness.
@@ -291,6 +298,13 @@ pub async fn run(
             )
             .service(
                 web::scope("/api")
+                    .service(
+                        web::scope("/internal/managed-usage")
+                            .service(crate::routes::managed_usage::suspend)
+                            .service(crate::routes::managed_usage::start)
+                            .service(crate::routes::managed_usage::fail)
+                            .service(crate::routes::managed_usage::stop),
+                    )
                     .service(
                         web::scope("/agreement")
                             .service(crate::routes::agreement::user_add_handler)
