@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "quick-deploy-server-type",
+  "description": "The server type a Quick Deploy of a stack provisions, and the rates it is priced at. Stacker's part of the contract.",
+  "_notes": [
+    "A Quick Deploy clones the stack's baked snapshot, whose disk is the disk of the build box it was baked on, so the snapshot's server type is the type a clone of that stack uses.",
+    "The bake records the build box's server type on the snapshot. A snapshot baked before that has none, and the caller's default type applies.",
+    "POST /api/v1/deploy/validate returns quick_deploy: that server type and the daily rate and monthly cap of every server type - the rates the clone bills."
+  ],
+  "version": "v1",
+  "rates": {
+    "cpx32": {
+      "daily_rate": 0.86,
+      "monthly_cap": 26.0
+    },
+    "cpx42": {
+      "daily_rate": 1.67,
+      "monthly_cap": 50.0
+    }
+  },
+  "stacker_validate": {
+    "quick_deploy": {
+      "type": "object",
+      "required": [
+        "server_type",
+        "rates"
+      ],
+      "properties": {
+        "server_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "server type the stack's latest healthy snapshot was baked on; null when unknown"
+        },
+        "rates": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "daily_rate",
+              "monthly_cap"
+            ],
+            "properties": {
+              "daily_rate": {
+                "type": "number"
+              },
+              "monthly_cap": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

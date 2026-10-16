@@ -351,6 +351,7 @@ async fn run_job(
         None,
         Some(p.contract),
         Some(required_env_keys),
+        p.server.server.as_deref(),
     )
     .await?;
     Ok((record.image_id, row.id))
