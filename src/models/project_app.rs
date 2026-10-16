@@ -108,6 +108,12 @@ pub struct ProjectApp {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[sqlx(default)]
     pub config_contract: Option<Value>,
+    /// Compose settings beyond image and wiring, as declared in stacker.yml:
+    /// `{cap_add, cap_drop, devices, profiles, aliases, deploy}`. See
+    /// shared-fixtures/api-contracts/stack-service-runtime-fields.json.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub runtime: Option<Value>,
 }
 
 impl ProjectApp {
@@ -146,6 +152,7 @@ impl ProjectApp {
             parent_app_code: None,
             deployment_id: None,
             config_contract: None,
+            runtime: None,
         }
     }
 
@@ -218,6 +225,7 @@ impl Default for ProjectApp {
             parent_app_code: None,
             deployment_id: None,
             config_contract: None,
+            runtime: None,
         }
     }
 }

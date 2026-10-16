@@ -174,9 +174,9 @@ pub async fn insert(pool: &PgPool, app: &models::ProjectApp) -> Result<models::P
             domain, ssl_enabled, resources, restart_policy, command,
             entrypoint, networks, depends_on, healthcheck, labels,
             config_files, template_source, enabled, deploy_order, parent_app_code,
-            deployment_id, created_at, updated_at
+            deployment_id, runtime, created_at, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, NOW(), NOW())
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, NOW(), NOW())
         RETURNING *
         "#,
         app.project_id,
@@ -202,6 +202,7 @@ pub async fn insert(pool: &PgPool, app: &models::ProjectApp) -> Result<models::P
         app.deploy_order,
         app.parent_app_code,
         app.deployment_id,
+        app.runtime,
     )
     .fetch_one(pool)
     .instrument(query_span)
@@ -241,6 +242,7 @@ pub async fn update(pool: &PgPool, app: &models::ProjectApp) -> Result<models::P
             deploy_order = $21,
             parent_app_code = $22,
             deployment_id = $23,
+            runtime = $24,
             config_version = COALESCE(config_version, 0) + 1,
             updated_at = NOW()
         WHERE id = $1
@@ -269,6 +271,7 @@ pub async fn update(pool: &PgPool, app: &models::ProjectApp) -> Result<models::P
         app.deploy_order,
         app.parent_app_code,
         app.deployment_id,
+        app.runtime,
     )
     .fetch_one(pool)
     .instrument(query_span)

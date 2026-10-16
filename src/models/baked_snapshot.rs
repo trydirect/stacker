@@ -28,6 +28,11 @@ pub struct BakedSnapshot {
     /// check rather than becoming undeployable.
     #[sqlx(default)]
     pub required_env_keys: Option<serde_json::Value>,
+    /// Server type of the build box (e.g. `cpx42`). Quick Deploy provisions
+    /// this type: the image carries that type's disk. `None` for snapshots
+    /// baked before this column existed — the default type applies.
+    #[sqlx(default)]
+    pub server_type: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

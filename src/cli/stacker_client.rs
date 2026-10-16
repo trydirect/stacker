@@ -3900,7 +3900,7 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
         "code": svc.name.to_lowercase(),
         "type": "web",
         "dockerhub_name": dockerhub_name,
-        "restart": "always",
+        "restart": svc.runtime.restart.map_or("always", |r| r.as_str()),
         "custom": true,
         "shared_ports": shared_ports,
         "volumes": volumes,
@@ -3909,6 +3909,26 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
     });
 
     let obj = app.as_object_mut().unwrap();
+    // Everything else the service declares reaches the server's compose too
+    // (shared-fixtures/api-contracts/stack-service-runtime-fields.json).
+    for (key, values) in [
+        ("depends_on", &svc.depends_on),
+        ("cap_add", &svc.cap_add),
+        ("cap_drop", &svc.cap_drop),
+        ("devices", &svc.devices),
+        ("profiles", &svc.runtime.profiles),
+        ("aliases", &svc.runtime.aliases),
+    ] {
+        if !values.is_empty() {
+            obj.insert(key.to_string(), serde_json::json!(values));
+        }
+    }
+    if let Some(ref entrypoint) = svc.runtime.entrypoint {
+        obj.insert("entrypoint".to_string(), serde_json::json!(entrypoint));
+    }
+    if let Some(ref deploy) = svc.runtime.deploy {
+        obj.insert("deploy".to_string(), serde_json::json!(deploy));
+    }
     if let Some(user) = dockerhub_user {
         obj.insert("dockerhub_user".to_string(), serde_json::json!(user));
     }
@@ -5378,6 +5398,7 @@ mod tests {
     #[test]
     fn test_build_project_body_skips_declared_npm_service_when_proxy_is_managed() {
         let npm_service = ServiceDefinition {
+            runtime: Default::default(),
             name: "nginx_proxy_manager".to_string(),
             image: "jc21/nginx-proxy-manager:latest".to_string(),
             ports: vec![
@@ -5397,6 +5418,7 @@ mod tests {
             devices: Vec::new(),
         };
         let redis_service = ServiceDefinition {
+            runtime: Default::default(),
             name: "redis".to_string(),
             image: "redis:7-alpine".to_string(),
             ports: vec![],
@@ -5436,6 +5458,7 @@ mod tests {
     #[test]
     fn test_build_project_body_skips_platform_managed_services_even_without_proxy() {
         let npm_service = ServiceDefinition {
+            runtime: Default::default(),
             name: "nginx_proxy_manager".to_string(),
             image: "jc21/nginx-proxy-manager:latest".to_string(),
             ports: vec![
@@ -5455,6 +5478,7 @@ mod tests {
             devices: Vec::new(),
         };
         let statuspanel_service = ServiceDefinition {
+            runtime: Default::default(),
             name: "statuspanel".to_string(),
             image: "trydirect/status:latest".to_string(),
             ports: vec!["5000:5000".to_string()],
@@ -5470,6 +5494,7 @@ mod tests {
             devices: Vec::new(),
         };
         let smtp_service = ServiceDefinition {
+            runtime: Default::default(),
             name: "smtp".to_string(),
             image: "trydirect/smtp:latest".to_string(),
             ports: vec!["127.0.0.1:1025:25".to_string()],
@@ -5530,6 +5555,7 @@ mod tests {
     #[test]
     fn test_scn_001_stacker_yml_service_serializes_as_service_target() {
         let upload_service = ServiceDefinition {
+            runtime: Default::default(),
             name: "upload".to_string(),
             image: "ghcr.io/example/upload:1.0".to_string(),
             ports: vec!["8081:8080".to_string()],

@@ -424,6 +424,7 @@ pub async fn import_containers(
             parent_app_code: None,
             deployment_id: None,
             config_contract: None,
+            runtime: None,
         };
 
         match db::project_app::insert(pg_pool.get_ref(), &app).await {

@@ -12,6 +12,7 @@
 use actix_web::web::ServiceConfig;
 use actix_web::{post, web, HttpResponse, Responder};
 use serde::Serialize;
+use sqlx::PgPool;
 use std::collections::BTreeMap;
 
 use crate::cli::config_parser::StackerConfig;
@@ -82,6 +83,65 @@ struct ValidateOk {
     version: Option<String>,
     composition: Composition,
     config_contract: crate::cli::config_parser::ConfigContract,
+    quick_deploy: QuickDeploy,
+}
+
+/// What a Quick Deploy of this stack provisions and what each type costs.
+/// See shared-fixtures/api-contracts/quick-deploy-server-type.json.
+#[derive(Debug, Serialize)]
+struct QuickDeploy {
+    /// Server type the snapshot the clone uses was baked on; `None`
+    /// when unknown, and the caller's default type applies.
+    server_type: Option<String>,
+    rates: BTreeMap<String, Rate>,
+}
+
+#[derive(Debug, Serialize)]
+struct Rate {
+    daily_rate: f64,
+    monthly_cap: f64,
+}
+
+async fn quick_deploy_for(
+    pool: Option<&PgPool>,
+    stack: &str,
+    version: Option<&str>,
+) -> QuickDeploy {
+    let Some(pool) = pool else {
+        return QuickDeploy {
+            server_type: None,
+            rates: BTreeMap::new(),
+        };
+    };
+    // The snapshot the clone will use: the exact version when given, else the latest.
+    let snapshot = match version {
+        Some(version) => crate::db::baked_snapshot::resolve(pool, stack, version, "hetzner").await,
+        None => crate::db::baked_snapshot::resolve_latest(pool, stack, "hetzner").await,
+    };
+    let server_type = snapshot
+        .unwrap_or_else(|e| {
+            tracing::warn!("quick deploy server type: {e}");
+            None
+        })
+        .and_then(|snapshot| snapshot.server_type);
+    let rates = crate::db::server_type_daily_rate::list(pool)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("quick deploy rates: {e}");
+            Vec::new()
+        })
+        .into_iter()
+        .map(|r| {
+            (
+                r.server_type,
+                Rate {
+                    daily_rate: r.daily_rate,
+                    monthly_cap: r.monthly_cap,
+                },
+            )
+        })
+        .collect();
+    QuickDeploy { server_type, rates }
 }
 
 #[derive(Debug, Serialize)]
@@ -127,7 +187,7 @@ fn to_issue_json(issues: &[&crate::cli::error::ValidationIssue]) -> Vec<Validati
 /// Body: raw stacker.yml YAML (text/plain). Returns 200 with the parsed
 /// composition when valid, 422 with structured issues when not.
 #[post("/validate")]
-async fn validate(body: String) -> impl Responder {
+async fn validate(body: String, pool: Option<web::Data<PgPool>>) -> impl Responder {
     // Parse. A malformed YAML is a config error, not a server error.
     // Use from_str_raw so config_contract install inputs (`${VAR}`) that are
     // filled at deploy time do not fail validation when undefined here.
@@ -172,6 +232,12 @@ async fn validate(body: String) -> impl Responder {
         version: config.version.clone(),
         composition: compose_from(&config),
         config_contract: config.config_contract.clone(),
+        quick_deploy: quick_deploy_for(
+            pool.as_ref().map(|p| p.get_ref()),
+            &config.name,
+            config.version.as_deref(),
+        )
+        .await,
     })
 }
 
@@ -219,6 +285,32 @@ deploy:
 
     fn raw_yaml_malformed() -> &'static str {
         "name: [unclosed"
+    }
+
+    // local-ai-packaged starts its CPU Ollama unless OLLAMA_CPU_REPLICAS=0.
+    // Validate reads stacker.yml without filling ${VAR}, so the reference
+    // must be accepted as written.
+    #[actix_web::test]
+    async fn replicas_from_an_env_reference_is_valid() {
+        let yaml = r#"name: local-ai
+app:
+  type: custom
+  image: nginx:alpine
+services:
+  - name: ollama-cpu
+    image: ollama/ollama:0.40.4
+    deploy:
+      replicas: ${OLLAMA_CPU_REPLICAS}
+"#;
+        let app = actix_web::test::init_service(actix_web::App::new().service(validate)).await;
+        let req = test::TestRequest::post()
+            .uri("/validate")
+            .set_payload(yaml)
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        let status = resp.status();
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{body}");
     }
 
     #[actix_web::test]
