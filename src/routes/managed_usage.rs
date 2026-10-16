@@ -119,12 +119,68 @@ pub async fn suspend(
     let Some(user_id) = body.user_id.as_deref().filter(|id| !id.trim().is_empty()) else {
         return Ok(HttpResponse::BadRequest().json(json!({ "error": "user_id is required" })));
     };
-    Ok(
-        match managed_usage::suspend_for_user(&pool, user_id).await {
-            Ok(rows) => HttpResponse::Ok().json(json!({
-                "suspended": rows.iter().map(|r| r.deployment_hash.clone()).collect::<Vec<_>>(),
-            })),
-            Err(err) => HttpResponse::InternalServerError().json(json!({ "error": err })),
-        },
-    )
+    let rows = match managed_usage::suspend_for_user(&pool, user_id).await {
+        Ok(rows) => rows,
+        Err(err) => {
+            return Ok(HttpResponse::InternalServerError().json(json!({ "error": err })));
+        }
+    };
+    for row in &rows {
+        stop_containers(&pool, &row.deployment_hash, &row.user_id).await;
+    }
+    Ok(HttpResponse::Ok().json(json!({
+        "suspended": rows.iter().map(|r| r.deployment_hash.clone()).collect::<Vec<_>>(),
+    })))
+}
+
+/// Queue a `stop` for every app of the deployment: the containers stop, the
+/// data stays on the server. Failures are logged; the server is already no
+/// longer billed and the admins get it after 3 days.
+async fn stop_containers(pool: &PgPool, deployment_hash: &str, user_id: &str) {
+    use crate::models::{Command, CommandPriority};
+
+    let apps = match crate::db::deployment::fetch_by_deployment_hash(pool, deployment_hash).await {
+        Ok(Some(deployment)) => {
+            crate::db::project_app::fetch_by_project(pool, deployment.project_id)
+                .await
+                .unwrap_or_default()
+        }
+        Ok(None) => Vec::new(),
+        Err(err) => {
+            tracing::warn!(deployment_hash = %deployment_hash, error = %err, "suspend: deployment lookup failed");
+            Vec::new()
+        }
+    };
+    for app in apps {
+        let command = Command::new(
+            uuid::Uuid::new_v4().to_string(),
+            deployment_hash.to_string(),
+            "stop".to_string(),
+            user_id.to_string(),
+        )
+        .with_priority(CommandPriority::High)
+        .with_parameters(json!({
+            "name": "stacker.stop",
+            "params": {
+                "deployment_hash": deployment_hash,
+                "app_code": app.code,
+                "timeout": 30
+            }
+        }));
+        let queued = match crate::db::command::insert(pool, &command).await {
+            Ok(command) => {
+                crate::db::command::add_to_queue(
+                    pool,
+                    &command.command_id,
+                    deployment_hash,
+                    &CommandPriority::High,
+                )
+                .await
+            }
+            Err(err) => Err(err),
+        };
+        if let Err(err) = queued {
+            tracing::warn!(deployment_hash = %deployment_hash, app_code = %app.code, error = %err, "suspend: stop command failed");
+        }
+    }
 }

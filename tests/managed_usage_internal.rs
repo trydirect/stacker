@@ -164,3 +164,43 @@ async fn stop_ends_the_usage_of_a_deleted_deployment_and_returns_the_vm() {
     let (status, _) = post(&app, "dep-none/stop", Some(KEY), json!({})).await;
     assert_eq!(status, 404);
 }
+
+/// Scenario: an unpaid invoice suspends the server: containers stopped, data kept.
+#[tokio::test]
+async fn suspend_queues_a_stop_for_every_container_of_the_deployment() {
+    let Some(app) = common::spawn_app().await else {
+        return;
+    };
+    set_key();
+    let pool = &app.db_pool;
+    let project_id = common::create_test_project(pool, "u-stop").await;
+    for code in ["n8n", "postgres"] {
+        sqlx::query(
+            "INSERT INTO project_app (project_id, code, name, image, created_at, updated_at)
+             VALUES ($1, $2, $2, 'nginx:alpine', NOW(), NOW())",
+        )
+        .bind(project_id)
+        .bind(code)
+        .execute(pool)
+        .await
+        .expect("project_app");
+    }
+    common::create_test_deployment(pool, "u-stop", project_id, "dep-stopme").await;
+    pending(&app, "dep-stopme", "u-stop").await;
+    managed_usage::start(pool, "dep-stopme").await.unwrap();
+
+    let (status, body) = post(&app, "suspend", Some(KEY), json!({"user_id": "u-stop"})).await;
+    assert_eq!(status, 200, "{body}");
+
+    let rows: Vec<(String, Value)> = sqlx::query_as(
+        "SELECT type, parameters FROM commands WHERE deployment_hash = $1 ORDER BY parameters->'params'->>'app_code'",
+    )
+    .bind("dep-stopme")
+    .fetch_all(pool)
+    .await
+    .expect("commands");
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(rows.iter().all(|(t, _)| t == "stop"));
+    assert_eq!(rows[0].1["params"]["app_code"], "n8n");
+    assert_eq!(rows[1].1["params"]["app_code"], "postgres");
+}
