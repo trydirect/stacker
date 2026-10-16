@@ -2544,7 +2544,6 @@ services:
         );
     }
 
-    #[test]
     /// A container that insists on its own variable name is fed from one the
     /// author defined: `MYSQL_PASSWORD: "${DB_PASSWORD}"`. Emitting
     /// `${MYSQL_PASSWORD}` there names something no `.env` defines — compose
@@ -2654,6 +2653,7 @@ services:
         assert!(!aliases.contains_key("MYSQL_DATABASE"));
     }
 
+    #[test]
     fn parameterize_replaces_secret_values_with_env_refs() {
         let compose = "\
 services:
