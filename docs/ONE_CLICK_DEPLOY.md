@@ -86,6 +86,10 @@ stacker/  StackerConfig::from_str+validate_semantics   registry lookup → cloud
   volumes, strip SSH host keys / machine-id / cloud-init state) — hence `bake --ssh-key`.
 - These three queries use runtime `sqlx::query_as`, not the compile-time macros, so they
   need no `.sqlx` entry. Run `cargo sqlx prepare` after changing any *macro* query.
+- Bake is a manual CLI run today. Automating it - an admin endpoint
+  `POST /api/admin/bake { deployment_id, stack }` that needs no other input, a static
+  bake check of the contract, a smoke clone, and channel promotion via
+  `helpers/bake_registry.rs` - is planned in `config/docs/BAKE_PIPELINE_PLAN.md`.
 
 ### 3. `POST /api/v1/deploy/clone` (protected)
 - Request `{ stack, version, region, server_type, domain, admin_email, env{} }`.

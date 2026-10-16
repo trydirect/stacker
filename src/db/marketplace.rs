@@ -946,6 +946,90 @@ pub async fn update_metadata(
     Ok(res.rows_affected() > 0)
 }
 
+/// Update a template's metadata as an administrator, whatever its status.
+///
+/// `update_metadata` refuses anything outside draft/rejected/needs_changes and
+/// `update_metadata_for_resubmit` refuses draft/submitted/under_review, because
+/// both model an *author* editing their own listing through the review
+/// workflow. An admin correcting a published listing is not in that workflow,
+/// so the status gate does not apply - same reasoning as `admin_update_pricing`
+/// just below. Status itself still moves only through approve/reject/unapprove.
+#[allow(clippy::too_many_arguments)]
+pub async fn admin_update_metadata(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    name: Option<&str>,
+    short_description: Option<&str>,
+    long_description: Option<&str>,
+    category_code: Option<&str>,
+    tags: Option<serde_json::Value>,
+    tech_stack: Option<serde_json::Value>,
+    infrastructure_requirements: Option<serde_json::Value>,
+    price: Option<f64>,
+    billing_cycle: Option<&str>,
+    required_plan_name: Option<&str>,
+    currency: Option<&str>,
+    public_ports: Option<serde_json::Value>,
+    vendor_url: Option<&str>,
+) -> Result<bool, String> {
+    let query_span =
+        tracing::info_span!("marketplace_admin_update_metadata", template_id = %template_id);
+
+    if let Some(category_code) = category_code {
+        sqlx::query(r#"INSERT INTO stack_category (name) VALUES ($1) ON CONFLICT DO NOTHING"#)
+            .bind(category_code)
+            .execute(pool)
+            .instrument(query_span.clone())
+            .await
+            .map_err(|e| {
+                tracing::error!("admin_update_metadata category upsert error: {:?}", e);
+                "Internal Server Error".to_string()
+            })?;
+    }
+
+    let res = sqlx::query(
+        r#"UPDATE stack_template SET
+            name = COALESCE($2, name),
+            short_description = COALESCE($3, short_description),
+            long_description = COALESCE($4, long_description),
+            category_id = COALESCE((SELECT id FROM stack_category WHERE name = $5), category_id),
+            tags = COALESCE($6, tags),
+            tech_stack = COALESCE($7, tech_stack),
+            infrastructure_requirements = COALESCE($8, infrastructure_requirements),
+            price = COALESCE($9, price),
+            billing_cycle = COALESCE($10, billing_cycle),
+            required_plan_name = COALESCE($11, required_plan_name),
+            currency = COALESCE($12, currency),
+            public_ports = COALESCE($13, public_ports),
+            vendor_url = COALESCE($14, vendor_url),
+            updated_at = now()
+        WHERE id = $1::uuid"#,
+    )
+    .bind(template_id)
+    .bind(name)
+    .bind(short_description)
+    .bind(long_description)
+    .bind(category_code)
+    .bind(tags)
+    .bind(tech_stack)
+    .bind(infrastructure_requirements)
+    .bind(price)
+    .bind(billing_cycle)
+    .bind(required_plan_name)
+    .bind(currency)
+    .bind(public_ports)
+    .bind(vendor_url)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("admin_update_metadata error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(res.rows_affected() > 0)
+}
+
 pub async fn update_metadata_for_resubmit(
     pool: &PgPool,
     template_id: &uuid::Uuid,

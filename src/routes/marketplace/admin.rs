@@ -4,7 +4,7 @@ use crate::db;
 use crate::helpers::security_validator;
 use crate::helpers::JsonResponse;
 use crate::models;
-use actix_web::{get, patch, post, web, Responder, Result};
+use actix_web::{get, patch, post, put, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::Instrument;
@@ -585,6 +585,44 @@ pub struct AdminPricingRequest {
     pub daily_rate: Option<f64>,
     /// Monthly cap for deployment_daily billing (USD)
     pub monthly_cap: Option<f64>,
+}
+
+/// Edit any template's content and version payload as an administrator.
+///
+/// Deliberately the same write path as the author's own
+/// `PUT /api/v1/templates/{id}` (`creator::apply_template_update`), so an admin
+/// edit cannot slip past the config-contract validation or the stripping of
+/// author-declared generated secrets. The only difference is
+/// `UpdateAuthority::Admin`, which lifts the review-workflow status gate: the
+/// point of this route is correcting a listing that is already approved.
+///
+/// Ownership is not checked, by design - Casbin restricts the route to admin
+/// roles, and an admin editing someone else's listing is the feature. The edit
+/// is logged with the acting admin so the change is attributable.
+#[tracing::instrument(name = "Admin update template", skip_all)]
+#[put("/{id}")]
+pub async fn update_template_handler(
+    admin: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+    body: web::Json<crate::routes::marketplace::creator::UpdateTemplateRequest>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    tracing::info!(
+        admin_id = %admin.id,
+        template_id = %id,
+        "admin edits marketplace template"
+    );
+
+    crate::routes::marketplace::creator::apply_template_update(
+        pg_pool.get_ref(),
+        id,
+        body.into_inner(),
+        crate::routes::marketplace::creator::UpdateAuthority::Admin,
+    )
+    .await
 }
 
 #[tracing::instrument(name = "Admin update template pricing", skip_all)]

@@ -846,7 +846,38 @@ pub async fn update_handler(
         return Err(template_not_visible());
     }
 
-    let req = body.into_inner();
+    apply_template_update(
+        pg_pool.get_ref(),
+        id,
+        body.into_inner(),
+        UpdateAuthority::Author,
+    )
+    .await
+}
+
+/// Apply an `UpdateTemplateRequest` to a template the caller is already
+/// authorised for.
+///
+/// The creator route authorises by ownership, the admin route by role. The
+/// write itself lives here so the two cannot drift: an admin edit runs the
+/// same contract validation, the same generated-secret stripping and the same
+/// version upsert as the author's own edit.
+/// Who is editing, which decides whether the review-workflow status gate
+/// applies to the metadata write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UpdateAuthority {
+    /// The template's author: editable only in draft/rejected/needs_changes.
+    Author,
+    /// An administrator correcting a listing: any status.
+    Admin,
+}
+
+pub(crate) async fn apply_template_update(
+    pg_pool: &PgPool,
+    id: uuid::Uuid,
+    req: UpdateTemplateRequest,
+    authority: UpdateAuthority,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
     validate_config_contract(req.config_contract.as_ref())?;
     let infrastructure_requirements = req.infrastructure_requirements.clone();
 
@@ -856,24 +887,48 @@ pub async fn update_handler(
         _ => req.price,
     };
 
-    let updated = db::marketplace::update_metadata(
-        pg_pool.get_ref(),
-        &id,
-        req.name.as_deref(),
-        req.short_description.as_deref(),
-        req.long_description.as_deref(),
-        req.category_code.as_deref(),
-        req.tags,
-        req.tech_stack,
-        infrastructure_requirements,
-        price,
-        req.plan_type.as_deref(),
-        req.required_plan_name.as_deref(),
-        req.currency.as_deref(),
-        req.public_ports.clone(),
-        req.vendor_url.as_deref(),
-    )
-    .await
+    let updated = match authority {
+        UpdateAuthority::Author => {
+            db::marketplace::update_metadata(
+                pg_pool,
+                &id,
+                req.name.as_deref(),
+                req.short_description.as_deref(),
+                req.long_description.as_deref(),
+                req.category_code.as_deref(),
+                req.tags,
+                req.tech_stack,
+                infrastructure_requirements,
+                price,
+                req.plan_type.as_deref(),
+                req.required_plan_name.as_deref(),
+                req.currency.as_deref(),
+                req.public_ports.clone(),
+                req.vendor_url.as_deref(),
+            )
+            .await
+        }
+        UpdateAuthority::Admin => {
+            db::marketplace::admin_update_metadata(
+                pg_pool,
+                &id,
+                req.name.as_deref(),
+                req.short_description.as_deref(),
+                req.long_description.as_deref(),
+                req.category_code.as_deref(),
+                req.tags,
+                req.tech_stack,
+                infrastructure_requirements,
+                price,
+                req.plan_type.as_deref(),
+                req.required_plan_name.as_deref(),
+                req.currency.as_deref(),
+                req.public_ports.clone(),
+                req.vendor_url.as_deref(),
+            )
+            .await
+        }
+    }
     .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err))?;
 
     if req.stack_definition.is_some()
@@ -885,7 +940,7 @@ pub async fn update_handler(
         || req.post_deploy_hooks.is_some()
         || req.update_mode_capabilities.is_some()
     {
-        let latest_version = db::marketplace::get_latest_version_by_template(pg_pool.get_ref(), id)
+        let latest_version = db::marketplace::get_latest_version_by_template(pg_pool, id)
             .await
             .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err))?;
         let current_version = latest_version.unwrap_or_default();
@@ -930,7 +985,7 @@ pub async fn update_handler(
         // against the effective contract (this request's, else the stored one).
         let effective_contract = match req.config_contract.clone() {
             Some(cc) => cc,
-            None => db::marketplace::get_config_contract(pg_pool.get_ref(), id)
+            None => db::marketplace::get_config_contract(pg_pool, id)
                 .await
                 .unwrap_or(serde_json::Value::Null),
         };
@@ -938,7 +993,7 @@ pub async fn update_handler(
             strip_generated_field_values(&stack_definition, definition_format, &effective_contract);
 
         db::marketplace::upsert_latest_version(
-            pg_pool.get_ref(),
+            pg_pool,
             &id,
             if version.is_empty() {
                 "1.0.0"
@@ -959,13 +1014,13 @@ pub async fn update_handler(
     }
 
     if let Some(source_project_id) = req.source_project_id {
-        db::marketplace::set_source_project_id(pg_pool.get_ref(), &id, source_project_id)
+        db::marketplace::set_source_project_id(pg_pool, &id, source_project_id)
             .await
             .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
     }
 
     if let Some(config_contract) = req.config_contract.clone() {
-        db::marketplace::set_config_contract(pg_pool.get_ref(), &id, config_contract)
+        db::marketplace::set_config_contract(pg_pool, &id, config_contract)
             .await
             .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
     }

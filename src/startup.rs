@@ -473,6 +473,7 @@ pub async fn run(
                                      .service(crate::routes::marketplace::admin::security_scan_handler)
                                      .service(crate::routes::marketplace::admin::detect_secrets_handler)
                                      .service(crate::routes::marketplace::admin::pricing_handler)
+                                     .service(crate::routes::marketplace::admin::update_template_handler)
                                      .service(crate::routes::marketplace::admin::update_verifications_handler)
                                      .service(crate::routes::marketplace::admin::update_vendor_profile_handler),
                              )
