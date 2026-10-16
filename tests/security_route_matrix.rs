@@ -309,6 +309,12 @@ const ROUTES: &[(&str, &str, Kind, &str)] = &[
     ),
     (
         "POST",
+        "/api/internal/managed-usage/{deployment_hash}/stop",
+        Token,
+        "internal service key",
+    ),
+    (
+        "POST",
         "/api/v1/agent/login",
         Token,
         "user credentials, then deployment ownership",

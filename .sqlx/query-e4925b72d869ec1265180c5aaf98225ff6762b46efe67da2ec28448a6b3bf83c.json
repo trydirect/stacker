@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE managed_usage SET server_id = $2, updated_at = now() WHERE deployment_hash = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e4925b72d869ec1265180c5aaf98225ff6762b46efe67da2ec28448a6b3bf83c"
+}

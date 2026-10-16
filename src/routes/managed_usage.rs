@@ -79,6 +79,28 @@ pub async fn fail(
     )
 }
 
+/// `POST /api/internal/managed-usage/{deployment_hash}/stop`: the buyer deleted
+/// the deployment. Usage stops now; the response carries the Hetzner server id
+/// so the User Service can ask admins to delete the VM.
+#[post("/{deployment_hash}/stop")]
+pub async fn stop(
+    req: HttpRequest,
+    path: web::Path<String>,
+    pool: web::Data<PgPool>,
+) -> Result<HttpResponse> {
+    require_internal_key(&req)?;
+    let deployment_hash = path.into_inner();
+    Ok(match managed_usage::stop(&pool, &deployment_hash).await {
+        Ok(Some(row)) => HttpResponse::Ok().json(json!({
+            "deployment_hash": row.deployment_hash,
+            "status": row.status,
+            "server_id": row.server_id,
+        })),
+        Ok(None) => not_changed(&pool, &deployment_hash, "stop").await,
+        Err(err) => HttpResponse::InternalServerError().json(json!({ "error": err })),
+    })
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SuspendBody {
     #[serde(default)]

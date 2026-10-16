@@ -18,6 +18,7 @@ pub struct ManagedUsage {
     pub daily_rate_minor: i64,
     pub monthly_cap_minor: i64,
     pub currency: String,
+    pub server_id: Option<i64>,
     pub status: String,
     pub outcome: Option<String>,
     pub started_at: Option<DateTime<Utc>>,
@@ -224,15 +225,32 @@ pub async fn list_suspended_before(
     .map_err(|e| format!("managed_usage list_suspended_before: {e}"))
 }
 
-/// A suspended server was deleted for an unpaid invoice: suspended -> closed.
-pub async fn close_deleted_unpaid(
+/// Keep the Hetzner server id: admins delete the VM by hand from the alert.
+pub async fn set_server_id(
+    pool: &PgPool,
+    deployment_hash: &str,
+    server_id: i64,
+) -> Result<(), String> {
+    sqlx::query!(
+        "UPDATE managed_usage SET server_id = $2, updated_at = now() WHERE deployment_hash = $1",
+        deployment_hash,
+        server_id,
+    )
+    .execute(pool)
+    .await
+    .map(|_| ())
+    .map_err(|e| format!("managed_usage set_server_id: {e}"))
+}
+
+/// Suspended for 3 days: closed and handed to admins to delete the VM by hand.
+pub async fn mark_delete_due(
     pool: &PgPool,
     deployment_hash: &str,
 ) -> Result<Option<ManagedUsage>, String> {
     sqlx::query_as!(
         ManagedUsage,
         r#"UPDATE managed_usage
-           SET status = 'closed', outcome = 'server_deleted_unpaid',
+           SET status = 'closed', outcome = 'server_delete_due',
                stopped_at = now(), updated_at = now()
            WHERE deployment_hash = $1 AND status = 'suspended'
            RETURNING *"#,
@@ -240,5 +258,5 @@ pub async fn close_deleted_unpaid(
     )
     .fetch_optional(pool)
     .await
-    .map_err(|e| format!("managed_usage close_deleted_unpaid: {e}"))
+    .map_err(|e| format!("managed_usage mark_delete_due: {e}"))
 }

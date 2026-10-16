@@ -605,6 +605,14 @@ pub async fn clone_server(
         }
     };
 
+    // Keep the VM id for the admins: nothing deletes a Quick Deploy VM
+    // automatically; they delete it by hand from the alert.
+    if let Err(err) =
+        crate::db::managed_usage::set_server_id(&pg_pool, &deployment_hash, provisioned.id).await
+    {
+        tracing::warn!(error = %err, "failed to record the server id on managed usage");
+    }
+
     // Register the server in Stacker's inventory so secrets, agent, and
     // monitoring features can resolve it.  Non-fatal: the Hetzner server is
     // already created; a missing record only breaks Stacker-managed features.

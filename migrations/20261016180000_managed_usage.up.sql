@@ -11,8 +11,12 @@ CREATE TABLE IF NOT EXISTS managed_usage (
     daily_rate_minor      BIGINT       NOT NULL CHECK (daily_rate_minor > 0),
     monthly_cap_minor     BIGINT       NOT NULL CHECK (monthly_cap_minor > 0),
     currency              CHAR(3)      NOT NULL DEFAULT 'USD',
+    -- Hetzner server id, set when the clone creates the VM; admins delete the
+    -- VM by hand from the alert (nothing deletes it automatically).
+    server_id             BIGINT,
     -- pending: deploy running; active: billed daily; stopped: server deleted;
-    -- suspended: invoice unpaid; closed: deploy failed or deleted unpaid
+    -- suspended: invoice unpaid; closed: deploy failed, or unpaid and handed
+    -- to admins for deletion
     status                VARCHAR(16)  NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'active', 'stopped', 'suspended', 'closed')),
     outcome               VARCHAR(40),

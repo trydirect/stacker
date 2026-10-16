@@ -295,7 +295,8 @@ pub async fn run(
                         web::scope("/internal/managed-usage")
                             .service(crate::routes::managed_usage::suspend)
                             .service(crate::routes::managed_usage::start)
-                            .service(crate::routes::managed_usage::fail),
+                            .service(crate::routes::managed_usage::fail)
+                            .service(crate::routes::managed_usage::stop),
                     )
                     .service(
                         web::scope("/agreement")

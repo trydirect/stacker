@@ -51,7 +51,12 @@ async fn internal_calls_without_the_key_are_refused() {
     };
     set_key();
     pending(&app, "dep-nokey", "u-1").await;
-    for path in ["dep-nokey/start", "dep-nokey/fail", "suspend"] {
+    for path in [
+        "dep-nokey/start",
+        "dep-nokey/fail",
+        "dep-nokey/stop",
+        "suspend",
+    ] {
         let (status, _) = post(&app, path, None, json!({"user_id": "u-1"})).await;
         assert_eq!(status, 401, "{path} without a key");
         let (status, _) = post(&app, path, Some("wrong"), json!({"user_id": "u-1"})).await;
@@ -135,4 +140,27 @@ async fn suspend_stops_billing_every_active_server_of_the_buyer() {
 
     let (status, _) = post(&app, "suspend", Some(KEY), json!({})).await;
     assert_eq!(status, 400, "user_id is required");
+}
+
+#[tokio::test]
+async fn stop_ends_the_usage_of_a_deleted_deployment_and_returns_the_vm() {
+    let Some(app) = common::spawn_app().await else {
+        return;
+    };
+    set_key();
+    pending(&app, "dep-del", "u-1").await;
+    managed_usage::start(&app.db_pool, "dep-del").await.unwrap();
+    managed_usage::set_server_id(&app.db_pool, "dep-del", 777)
+        .await
+        .unwrap();
+
+    let (status, body) = post(&app, "dep-del/stop", Some(KEY), json!({})).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["status"], "stopped");
+    assert_eq!(body["server_id"], 777);
+
+    let (status, _) = post(&app, "dep-del/stop", Some(KEY), json!({})).await;
+    assert_eq!(status, 409, "stopping twice");
+    let (status, _) = post(&app, "dep-none/stop", Some(KEY), json!({})).await;
+    assert_eq!(status, 404);
 }

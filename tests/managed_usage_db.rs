@@ -227,10 +227,36 @@ async fn servers_suspended_for_3_days_are_listed_for_deletion() {
             .any(|r| r.deployment_hash == "dep-old")
     );
 
-    let closed = managed_usage::close_deleted_unpaid(&app.db_pool, "dep-old")
+    let closed = managed_usage::mark_delete_due(&app.db_pool, "dep-old")
         .await
         .expect("close")
         .expect("suspended row closed");
     assert_eq!(closed.status, "closed");
-    assert_eq!(closed.outcome.as_deref(), Some("server_deleted_unpaid"));
+    assert_eq!(closed.outcome.as_deref(), Some("server_delete_due"));
+    // Handed to admins once: not listed again.
+    assert!(
+        managed_usage::list_suspended_before(&app.db_pool, now + Duration::seconds(1))
+            .await
+            .expect("list")
+            .iter()
+            .all(|r| r.deployment_hash != "dep-old")
+    );
+}
+
+#[tokio::test]
+async fn the_hetzner_server_id_is_kept_for_the_admins() {
+    let Some(app) = common::spawn_app().await else {
+        return;
+    };
+    managed_usage::insert_pending(&app.db_pool, &new_usage("dep-vm", "u-1"))
+        .await
+        .expect("insert");
+    managed_usage::set_server_id(&app.db_pool, "dep-vm", 444002406)
+        .await
+        .expect("set server id");
+    let row = managed_usage::fetch_by_hash(&app.db_pool, "dep-vm")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.server_id, Some(444002406));
 }

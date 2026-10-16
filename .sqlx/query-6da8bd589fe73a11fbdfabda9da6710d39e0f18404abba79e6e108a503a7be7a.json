@@ -45,51 +45,56 @@
       },
       {
         "ordinal": 8,
+        "name": "server_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
         "name": "status",
         "type_info": "Varchar"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "outcome",
         "type_info": "Varchar"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "started_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "stopped_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "suspended_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "period_start",
         "type_info": "Date"
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "period_reported_minor",
         "type_info": "Int8"
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "last_reported_on",
         "type_info": "Date"
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -113,6 +118,7 @@
       false,
       false,
       false,
+      true,
       false,
       true,
       true,

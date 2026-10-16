@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE managed_usage\n           SET status = 'closed', outcome = 'server_deleted_unpaid',\n               stopped_at = now(), updated_at = now()\n           WHERE deployment_hash = $1 AND status = 'suspended'\n           RETURNING *",
+  "query": "UPDATE managed_usage\n           SET status = 'closed', outcome = 'server_delete_due',\n               stopped_at = now(), updated_at = now()\n           WHERE deployment_hash = $1 AND status = 'suspended'\n           RETURNING *",
   "describe": {
     "columns": [
       {
@@ -45,51 +45,56 @@
       },
       {
         "ordinal": 8,
+        "name": "server_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
         "name": "status",
         "type_info": "Varchar"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "outcome",
         "type_info": "Varchar"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "started_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "stopped_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "suspended_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "period_start",
         "type_info": "Date"
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "period_reported_minor",
         "type_info": "Int8"
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "last_reported_on",
         "type_info": "Date"
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -108,6 +113,7 @@
       false,
       false,
       false,
+      true,
       false,
       true,
       true,
@@ -120,5 +126,5 @@
       false
     ]
   },
-  "hash": "4ca2e4d714f1fa1ea608071cee66e81159d8af96c4a740ebb4aee6672c30d5f1"
+  "hash": "7418ec7d0de4d21713237fdfc5651505d376a777f3dd50c4a1c73a3ee14dd4df"
 }
