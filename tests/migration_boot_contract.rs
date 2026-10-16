@@ -53,11 +53,7 @@ fn stub_sqlx(bin_dir: &Path, log: &Path) -> PathBuf {
 }
 
 /// Run the entrypoint with the given command, returning (exit code, stub log).
-fn run_entrypoint(
-    workdir: &Path,
-    env: &[(&str, &str)],
-    args: &[&str],
-) -> (Option<i32>, String) {
+fn run_entrypoint(workdir: &Path, env: &[(&str, &str)], args: &[&str]) -> (Option<i32>, String) {
     let bin_dir = workdir.join("bin");
     let log = workdir.join("sqlx-invocations.log");
     stub_sqlx(&bin_dir, &log);
@@ -110,7 +106,8 @@ fn write_database_config_with_password(dir: &Path, password: &str) {
 }
 
 fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("stacker-entrypoint-{name}-{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("stacker-entrypoint-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("temp dir");
     dir
@@ -298,4 +295,34 @@ fn compose_files_do_not_boot_around_the_migration_entrypoint() {
             );
         }
     }
+}
+
+/// sqlx keys `_sqlx_migrations` by version: two migrations with one version
+/// make every fresh database fail with a duplicate key on
+/// `_sqlx_migrations_pkey`, and a database that applied one of them refuses the
+/// other at boot. 20261016120000 was used twice (baked_snapshot_server_type and
+/// casbin_admin_template_update).
+#[test]
+fn every_migration_version_is_used_once() {
+    let mut owners: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        Default::default();
+    for entry in std::fs::read_dir(manifest_path("migrations")).expect("migrations dir") {
+        let name = entry.unwrap().file_name().to_string_lossy().to_string();
+        let Some(stem) = name
+            .strip_suffix(".up.sql")
+            .or_else(|| name.strip_suffix(".down.sql"))
+        else {
+            continue;
+        };
+        let (version, description) = stem.split_once('_').unwrap_or((stem, ""));
+        owners
+            .entry(version.to_string())
+            .or_default()
+            .insert(description.to_string());
+    }
+    let duplicates: Vec<_> = owners.iter().filter(|(_, d)| d.len() > 1).collect();
+    assert!(
+        duplicates.is_empty(),
+        "migration versions used more than once: {duplicates:?}"
+    );
 }
