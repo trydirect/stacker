@@ -267,6 +267,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             None,
             config_contract,
             required_env_keys,
+            None,
         )
         .await
         .map_err(|e| e.to_string())?;
