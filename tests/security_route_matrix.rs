@@ -288,6 +288,25 @@ const ROUTES: &[(&str, &str, Kind, &str)] = &[
         Token,
         "internal service key",
     ),
+    // Managed server usage of a Quick Deploy, called by the User Service.
+    (
+        "POST",
+        "/api/internal/managed-usage/suspend",
+        Token,
+        "internal service key",
+    ),
+    (
+        "POST",
+        "/api/internal/managed-usage/{deployment_hash}/start",
+        Token,
+        "internal service key",
+    ),
+    (
+        "POST",
+        "/api/internal/managed-usage/{deployment_hash}/fail",
+        Token,
+        "internal service key",
+    ),
     (
         "POST",
         "/api/v1/agent/login",

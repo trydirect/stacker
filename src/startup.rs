@@ -292,6 +292,12 @@ pub async fn run(
             .service(
                 web::scope("/api")
                     .service(
+                        web::scope("/internal/managed-usage")
+                            .service(crate::routes::managed_usage::suspend)
+                            .service(crate::routes::managed_usage::start)
+                            .service(crate::routes::managed_usage::fail),
+                    )
+                    .service(
                         web::scope("/agreement")
                             .service(crate::routes::agreement::user_add_handler)
                             .service(crate::routes::agreement::get_by_name_handler)
