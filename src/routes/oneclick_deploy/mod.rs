@@ -287,6 +287,32 @@ deploy:
         "name: [unclosed"
     }
 
+    // local-ai-packaged starts its CPU Ollama unless OLLAMA_CPU_REPLICAS=0.
+    // Validate reads stacker.yml without filling ${VAR}, so the reference
+    // must be accepted as written.
+    #[actix_web::test]
+    async fn replicas_from_an_env_reference_is_valid() {
+        let yaml = r#"name: local-ai
+app:
+  type: custom
+  image: nginx:alpine
+services:
+  - name: ollama-cpu
+    image: ollama/ollama:0.40.4
+    deploy:
+      replicas: ${OLLAMA_CPU_REPLICAS}
+"#;
+        let app = actix_web::test::init_service(actix_web::App::new().service(validate)).await;
+        let req = test::TestRequest::post()
+            .uri("/validate")
+            .set_payload(yaml)
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        let status = resp.status();
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{body}");
+    }
+
     #[actix_web::test]
     async fn valid_config_returns_200_with_composition() {
         let app = actix_web::test::init_service(actix_web::App::new().service(validate)).await;

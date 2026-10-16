@@ -169,3 +169,84 @@ fn an_unknown_restart_value_is_refused() {
         "error names the allowed values: {err}"
     );
 }
+
+fn ollama_with_counts(count: &str) -> String {
+    format!(
+        r#"name: runtime-fields
+app:
+  type: custom
+  image: nginx:1.27
+services:
+  - name: ollama-cpu
+    image: ollama/ollama:0.40.4
+    deploy:
+      replicas: {count}
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: {count}
+              capabilities: [gpu]
+"#
+    )
+}
+
+/// local-ai-packaged writes `replicas: ${OLLAMA_CPU_REPLICAS}`. Read without
+/// filling variables (Quick Deploy validation, CLI commands that rewrite
+/// stacker.yml), the reference is kept and reaches the compose as written.
+#[test]
+fn a_count_written_as_a_variable_reference_is_kept() {
+    for reference in ["${OLLAMA_CPU_REPLICAS}", "${OLLAMA_CPU_REPLICAS:-1}"] {
+        let config = StackerConfig::from_str_raw(&ollama_with_counts(reference))
+            .unwrap_or_else(|e| panic!("{reference} must parse: {e}"));
+        let compose = ComposeDefinition::try_from(&config)
+            .expect("compose")
+            .render();
+        let doc: Value = serde_yaml::from_str(&compose).expect("rendered compose is YAML");
+        let deploy = &doc["services"]["ollama-cpu"]["deploy"];
+        assert_eq!(deploy["replicas"], json!(reference), "{compose}");
+        assert_eq!(
+            deploy["resources"]["reservations"]["devices"][0]["count"],
+            json!(reference),
+            "{compose}"
+        );
+
+        let written = serde_yaml::to_string(&config).expect("config serializes");
+        let reread: serde_yaml::Value = serde_yaml::from_str(&written).unwrap();
+        assert_eq!(
+            reread["services"][0]["deploy"]["replicas"],
+            serde_yaml::Value::String(reference.to_string()),
+            "{written}"
+        );
+    }
+}
+
+/// Filled from the environment, the value arrives as the string "0".
+#[test]
+fn a_filled_variable_reference_is_a_count() {
+    std::env::set_var("STACKER_TEST_OLLAMA_CPU_REPLICAS", "0");
+    let config =
+        StackerConfig::from_str(&ollama_with_counts("${STACKER_TEST_OLLAMA_CPU_REPLICAS}"))
+            .expect("filled reference parses");
+    let compose = ComposeDefinition::try_from(&config)
+        .expect("compose")
+        .render();
+    let doc: Value = serde_yaml::from_str(&compose).expect("rendered compose is YAML");
+    let deploy = &doc["services"]["ollama-cpu"]["deploy"];
+    assert_eq!(deploy["replicas"], json!(0), "{compose}");
+    assert_eq!(
+        deploy["resources"]["reservations"]["devices"][0]["count"],
+        json!(0),
+        "{compose}"
+    );
+}
+
+#[test]
+fn a_count_that_is_neither_a_number_nor_a_reference_is_refused() {
+    for bad in ["lots", "\"-1\"", "\"${}\"", "\"$1\""] {
+        let err = StackerConfig::from_str_raw(&ollama_with_counts(bad))
+            .err()
+            .unwrap_or_else(|| panic!("{bad} must be refused"));
+        assert!(err.to_string().contains("replicas must be"), "{bad}: {err}");
+    }
+}

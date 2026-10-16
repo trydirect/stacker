@@ -12,6 +12,7 @@
     "restart applies only when set. An unset restart keeps each path's existing default: unless-stopped from the CLI generator, always for a registered project app.",
     "aliases are added on every network the service joins, so other services reach it by the alias whichever network they share with it. A service that names no network joins `default`, and carries its aliases there.",
     "deploy.replicas: 0 keeps a service defined but not started. Together with profiles it lets one stack carry CPU and GPU variants of the same service: the CPU variant runs by default, the GPU variants only under their profile.",
+    "deploy.replicas and a device count may name a variable (${VAR}, ${VAR:-default}). When stacker.yml is read without filling variables - deploy validation, CLI commands that rewrite stacker.yml - the reference is kept and reaches the compose as written; filled, its value must be a whole number. A server-rendered compose (project_app, agent_render) only carries a known number.",
     "Each case gives a service as written in stacker.yml (as JSON) and the compose service it must produce. The compose subset is what a consumer must contain; other keys (labels, networks without aliases, environment) are left to each path."
   ],
   "version": "v1",
@@ -44,8 +45,10 @@
     },
     "deploy.replicas": {
       "status": "new",
-      "type": "integer",
-      "minimum": 0
+      "oneOf": [
+        {"type": "integer", "minimum": 0},
+        {"type": "string", "description": "${VAR} reference, e.g. ${OLLAMA_CPU_REPLICAS} or ${OLLAMA_CPU_REPLICAS:-1}"}
+      ]
     },
     "deploy.resources.reservations.devices": {
       "status": "new",
@@ -55,7 +58,7 @@
         "additionalProperties": false,
         "properties": {
           "driver": {"type": "string"},
-          "count": {"oneOf": [{"type": "integer", "minimum": 1}, {"const": "all"}]},
+          "count": {"oneOf": [{"type": "integer", "minimum": 1}, {"const": "all"}, {"type": "string", "description": "${VAR} reference"}]},
           "device_ids": {"type": "array", "items": {"type": "string"}},
           "capabilities": {"type": "array", "items": {"type": "string"}, "minItems": 1}
         },

@@ -244,7 +244,7 @@ pub struct AppSource {
     pub cap_add: Vec<String>,
     #[serde(default)]
     pub cap_drop: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_flag")]
     pub privileged: bool,
     #[serde(default)]
     pub platform: Option<String>,
@@ -300,7 +300,10 @@ pub struct ComposeHealthcheck {
     pub interval: String,
     #[serde(default = "default_health_timeout_compose")]
     pub timeout: String,
-    #[serde(default = "default_health_retries_compose")]
+    #[serde(
+        default = "default_health_retries_compose",
+        deserialize_with = "deserialize_number"
+    )]
     pub retries: u32,
 }
 
@@ -334,7 +337,7 @@ pub struct ServiceDefinition {
     pub cap_add: Vec<String>,
     #[serde(default)]
     pub cap_drop: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_flag")]
     pub privileged: bool,
     #[serde(default)]
     pub platform: Option<String>,
@@ -390,13 +393,14 @@ impl RestartPolicy {
 #[serde(deny_unknown_fields)]
 pub struct ServiceDeploy {
     /// `0` keeps the service defined but not started. Also read from a
-    /// `${VAR}` reference, which arrives as a string.
+    /// `${VAR}` reference: filled, it arrives as a string; read without
+    /// filling variables, the reference is kept as written.
     #[serde(
         default,
         deserialize_with = "deserialize_optional_count",
         skip_serializing_if = "Option::is_none"
     )]
-    pub replicas: Option<u32>,
+    pub replicas: Option<Count>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<ServiceResources>,
 }
@@ -429,17 +433,43 @@ pub struct DeviceRequest {
     pub capabilities: Vec<String>,
 }
 
-/// `count: 2` or `count: all`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A count: a whole number, or a `${VAR}` reference the deploy fills in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Count {
+    Value(u32),
+    Reference(String),
+}
+
+impl Count {
+    /// The number, when it is known before the deploy fills variables.
+    pub fn value(&self) -> Option<u32> {
+        match self {
+            Count::Value(n) => Some(*n),
+            Count::Reference(_) => None,
+        }
+    }
+}
+
+impl Serialize for Count {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Count::Value(n) => serializer.serialize_u32(*n),
+            Count::Reference(r) => serializer.serialize_str(r),
+        }
+    }
+}
+
+/// `count: 2`, `count: all` or `count: ${VAR}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceCount {
-    Count(u32),
+    Count(Count),
     All,
 }
 
 impl Serialize for DeviceCount {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            DeviceCount::Count(n) => serializer.serialize_u32(*n),
+            DeviceCount::Count(c) => c.serialize(serializer),
             DeviceCount::All => serializer.serialize_str("all"),
         }
     }
@@ -456,15 +486,113 @@ impl<'de> Deserialize<'de> for DeviceCount {
     }
 }
 
-fn count_from_value(value: &serde_yaml::Value) -> Option<u32> {
+fn count_from_value(value: &serde_yaml::Value) -> Option<Count> {
     match value {
-        serde_yaml::Value::Number(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()),
-        serde_yaml::Value::String(s) => s.trim().parse().ok(),
+        serde_yaml::Value::Number(n) => n
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .map(Count::Value),
+        serde_yaml::Value::String(s) if is_variable_reference(s.trim()) => {
+            Some(Count::Reference(s.trim().to_string()))
+        }
+        serde_yaml::Value::String(s) => s.trim().parse().ok().map(Count::Value),
         _ => None,
     }
 }
 
-fn deserialize_optional_count<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+/// A boolean, also read from the string a filled `${VAR}` leaves behind.
+fn deserialize_flag<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    match serde_yaml::Value::deserialize(deserializer)? {
+        serde_yaml::Value::Bool(b) => Ok(b),
+        serde_yaml::Value::String(s) if s.trim() == "true" => Ok(true),
+        serde_yaml::Value::String(s) if s.trim() == "false" => Ok(false),
+        other => Err(serde::de::Error::custom(format!(
+            "expected true or false, got {}",
+            scalar_text(&other)
+        ))),
+    }
+}
+
+/// A whole number, also read from the string a filled `${VAR}` leaves behind.
+fn number_from_value<T: TryFrom<u64>>(value: &serde_yaml::Value) -> Option<T> {
+    let n = match value {
+        serde_yaml::Value::Number(n) => n.as_u64()?,
+        serde_yaml::Value::String(s) => s.trim().parse().ok()?,
+        _ => return None,
+    };
+    T::try_from(n).ok()
+}
+
+fn deserialize_number<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: TryFrom<u64>,
+{
+    let value = serde_yaml::Value::deserialize(deserializer)?;
+    number_from_value(&value).ok_or_else(|| {
+        serde::de::Error::custom(format!(
+            "expected a whole number, got {}",
+            scalar_text(&value)
+        ))
+    })
+}
+
+fn deserialize_optional_number<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: TryFrom<u64>,
+{
+    match Option::<serde_yaml::Value>::deserialize(deserializer)? {
+        None | Some(serde_yaml::Value::Null) => Ok(None),
+        Some(value) => number_from_value(&value).map(Some).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "expected a whole number, got {}",
+                scalar_text(&value)
+            ))
+        }),
+    }
+}
+
+fn scalar_text(value: &serde_yaml::Value) -> String {
+    match value {
+        serde_yaml::Value::String(s) => format!("`{s}`"),
+        other => serde_yaml::to_string(other)
+            .map(|s| format!("`{}`", s.trim()))
+            .unwrap_or_else(|_| "a non-scalar value".to_string()),
+    }
+}
+
+/// `${NAME}`, `${NAME:-default}` (and the other compose modifiers) or `$NAME`.
+fn is_variable_reference(value: &str) -> bool {
+    let name = match value.strip_prefix("${") {
+        Some(rest) => match rest.strip_suffix('}') {
+            Some(inner) => {
+                let end = inner
+                    .find(|c: char| !(c == '_' || c.is_ascii_alphanumeric()))
+                    .unwrap_or(inner.len());
+                let modifier = &inner[end..];
+                if !(modifier.is_empty()
+                    || [":-", "-", ":?", "?", ":+", "+"]
+                        .iter()
+                        .any(|m| modifier.starts_with(m)))
+                {
+                    return false;
+                }
+                &inner[..end]
+            }
+            None => return false,
+        },
+        None => match value.strip_prefix('$') {
+            Some(name) => name,
+            None => return false,
+        },
+    };
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c == '_' || c.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+fn deserialize_optional_count<'de, D>(deserializer: D) -> Result<Option<Count>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -533,7 +661,7 @@ pub struct ProxyConfig {
     #[serde(rename = "type", default)]
     pub proxy_type: ProxyType,
 
-    #[serde(default = "default_auto_detect")]
+    #[serde(default = "default_auto_detect", deserialize_with = "deserialize_flag")]
     pub auto_detect: bool,
 
     #[serde(default)]
@@ -584,14 +712,30 @@ pub struct PipeSpec {
     #[serde(default = "default_pipe_trigger")]
     pub trigger: String,
     /// Poll interval (seconds) when trigger = poll.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_number"
+    )]
     pub poll_interval: Option<u32>,
     /// Max delivery retries (→ pipe config).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_number"
+    )]
     pub retry: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_number"
+    )]
     pub retry_backoff_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_number"
+    )]
     pub retry_backoff_max_ms: Option<u64>,
     /// Run another pipe (by name) on failure / success.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -880,7 +1024,7 @@ pub struct ServerConfig {
     #[serde(default)]
     pub ssh_key: Option<PathBuf>,
 
-    #[serde(default = "default_ssh_port")]
+    #[serde(default = "default_ssh_port", deserialize_with = "deserialize_number")]
     pub port: u16,
 }
 
@@ -914,7 +1058,7 @@ fn default_ai_timeout() -> u64 {
 /// AI/LLM assistant configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AiConfig {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_flag")]
     pub enabled: bool,
 
     #[serde(default)]
@@ -931,7 +1075,10 @@ pub struct AiConfig {
 
     /// Request timeout in seconds. Default: 300 (5 minutes).
     /// Can be overridden via `STACKER_AI_TIMEOUT` env var.
-    #[serde(default = "default_ai_timeout")]
+    #[serde(
+        default = "default_ai_timeout",
+        deserialize_with = "deserialize_number"
+    )]
     pub timeout: u64,
 
     #[serde(default)]
@@ -941,7 +1088,7 @@ pub struct AiConfig {
 /// Monitoring and health check configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MonitoringConfig {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_flag")]
     pub status_panel: bool,
 
     #[serde(default)]
@@ -961,12 +1108,15 @@ pub struct MonitoringConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AlertConfig {
     /// Poll interval in seconds for the watch loop (default 60).
-    #[serde(default = "default_alert_interval")]
+    #[serde(
+        default = "default_alert_interval",
+        deserialize_with = "deserialize_number"
+    )]
     pub interval: u64,
     /// Where to deliver the alert (required).
     pub target: AlertTarget,
     /// Also notify when containers recover to healthy (default true).
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "deserialize_flag")]
     pub on_recovery: bool,
 }
 
@@ -1030,10 +1180,10 @@ fn default_health_interval() -> String {
 /// Metrics collection settings.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MetricsConfig {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_flag")]
     pub enabled: bool,
 
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_flag")]
     pub telegraf: bool,
 }
 
@@ -1050,7 +1200,11 @@ pub struct HookConfig {
     pub on_failure: Option<PathBuf>,
 
     /// Send a terminal/desktop notification on deploy completion.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(
+        default,
+        skip_serializing_if = "is_false",
+        deserialize_with = "deserialize_flag"
+    )]
     pub notify: bool,
 }
 
@@ -2260,7 +2414,16 @@ fn validate_deploy_semantics(
             // dropped during cloud firewall provisioning. Bare numbers and
             // "port/proto" specs are both accepted.
             for port in &cloud.public_ports {
-                if let Err(err) = crate::forms::firewall::normalize_public_port(port) {
+                // A `${VAR}` port is only known once the deploy fills it; the
+                // protocol after it is still checked.
+                let checked = match port.split_once('/') {
+                    Some((number, protocol)) if is_variable_reference(number.trim()) => {
+                        format!("1/{protocol}")
+                    }
+                    None if is_variable_reference(port.trim()) => "1".to_string(),
+                    _ => port.clone(),
+                };
+                if let Err(err) = crate::forms::firewall::normalize_public_port(&checked) {
                     issues.push(ValidationIssue {
                         severity: Severity::Error,
                         code: "E005".to_string(),
@@ -2342,6 +2505,9 @@ fn load_env_file_vars_from_yaml(path: &Path, raw_content: &str) -> HashMap<Strin
 ///   `"127.0.0.1:80:80"` -> `"80"`, `"80:80/tcp"` -> `"80"`.
 /// Validate one numeric port, rejecting anything outside Docker's 1-65535.
 fn validate_port_number(value: &str) -> Result<(), String> {
+    if value == VARIABLE_MASK {
+        return Ok(());
+    }
     let parsed: u64 = value
         .parse()
         .map_err(|_| format!("'{value}' is not a port number"))?;
@@ -2352,6 +2518,25 @@ fn validate_port_number(value: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Stands in for a `${VAR}` while a port spec is checked.
+const VARIABLE_MASK: &str = "__variable__";
+
+/// Replace each `${...}` in `spec` with [`VARIABLE_MASK`].
+fn mask_variable_references(spec: &str) -> String {
+    let mut out = String::with_capacity(spec.len());
+    let mut rest = spec;
+    while let Some(start) = rest.find("${") {
+        let Some(len) = rest[start..].find('}') else {
+            break;
+        };
+        out.push_str(&rest[..start]);
+        out.push_str(VARIABLE_MASK);
+        rest = &rest[start + len + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Validate one side of a mapping, which may be a range (`8000-8010`).
@@ -2381,6 +2566,10 @@ fn validate_port_mapping(spec: &str) -> Result<(), String> {
     if spec.is_empty() {
         return Err("port mapping is empty".to_string());
     }
+    // A `${VAR}` part is only known once the deploy fills it, and its
+    // `:-default` would split like a mapping. Check the rest without it.
+    let masked = mask_variable_references(spec);
+    let spec = masked.as_str();
 
     let (mapping, protocol) = match spec.rsplit_once('/') {
         Some((mapping, proto)) => (mapping, Some(proto)),
