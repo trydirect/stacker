@@ -35,6 +35,11 @@ pub struct BakeRequest {
     pub stack: String,
     /// The stack's health endpoint on the build box.
     pub health_url: String,
+    /// The build box's Hetzner server id, as the `bake` binary takes it.
+    /// Needed when the project holds several server records - every
+    /// `deploy --force-new` adds one, and Hetzner reuses IPs.
+    #[serde(default)]
+    pub server_id: Option<i64>,
 }
 
 /// What the job needs, all resolved and checked before it starts.
@@ -66,21 +71,16 @@ async fn prepare(pool: &PgPool, form: &BakeRequest) -> Result<Prepared, actix_we
                 .map_or(false, |ip| !ip.trim().is_empty())
         })
         .collect();
-    let server = match servers.as_slice() {
-        [server] => server.clone(),
-        [] => {
-            return Err(JsonResponse::<()>::build()
-                .conflict("the deployment's project has no server with an IP"))
-        }
-        _ => {
-            return Err(JsonResponse::<()>::build().conflict(
-                "the deployment's project has more than one server; bake needs one build box",
-            ))
-        }
-    };
-    let server_ip = server.srv_ip.clone().unwrap_or_default();
-
-    check_health_url(&form.health_url, &server_ip).map_err(JsonResponse::bad_request)?;
+    if servers.is_empty() {
+        return Err(JsonResponse::<()>::build()
+            .conflict("the deployment's project has no server with an IP"));
+    }
+    if servers.len() > 1 && form.server_id.is_none() {
+        return Err(JsonResponse::<()>::build().conflict(
+            "the deployment's project has more than one server; pass server_id, the build \
+             box's Hetzner server id",
+        ));
+    }
 
     // The latest approved version: the contract describes it, so version and
     // contract cannot disagree.
@@ -113,21 +113,47 @@ async fn prepare(pool: &PgPool, form: &BakeRequest) -> Result<Prepared, actix_we
     let client = HetznerCloudClient::new(htz.base_url)
         .map_err(|e| JsonResponse::internal_server_error(e.to_string()))?;
     let connector: Arc<dyn HetznerCloudConnector> = Arc::new(client);
-    let target = HetznerSnapshotTarget {
-        provider_server_id: None,
-        server_name: None,
-        public_ip: Some(server_ip.clone()),
-    };
-    // Sanitizing removes SSH access, so a box Hetzner cannot match must be
-    // refused before anything on it changes.
-    let provider_server_id = connector
-        .resolve_snapshot_target(&token, &target)
-        .await
-        .map_err(|e| {
-            JsonResponse::<()>::build().conflict(format!(
-                "Hetzner does not know a server at {server_ip} in the platform's project: {e}"
-            ))
-        })?;
+
+    // Sanitizing removes SSH access, so the box must be the one Hetzner has at
+    // the record's IP - and, when server_id is given, that very server -
+    // before anything on it changes. Newest record first: an older record at
+    // the same IP belongs to a removed box.
+    let mut newest_first = servers.clone();
+    newest_first.sort_by_key(|s| std::cmp::Reverse(s.id));
+    let mut tried = BTreeSet::new();
+    let mut chosen = None;
+    for candidate in &newest_first {
+        let ip = candidate.srv_ip.clone().unwrap_or_default();
+        if !tried.insert(ip.clone()) {
+            continue;
+        }
+        let target = HetznerSnapshotTarget {
+            provider_server_id: None,
+            server_name: None,
+            public_ip: Some(ip.clone()),
+        };
+        match connector.resolve_snapshot_target(&token, &target).await {
+            Ok(id) if form.server_id.map_or(true, |wanted| wanted == id) => {
+                chosen = Some((candidate.clone(), id, target));
+                break;
+            }
+            Ok(_) => continue,
+            Err(e) if servers.len() == 1 => {
+                return Err(JsonResponse::<()>::build().conflict(format!(
+                    "Hetzner does not know a server at {ip} in the platform's project: {e}"
+                )))
+            }
+            Err(_) => continue,
+        }
+    }
+    let (server, provider_server_id, target) = chosen.ok_or_else(|| {
+        JsonResponse::<()>::build().conflict(format!(
+            "Hetzner server {} is not at the IP of any server of this deployment's project",
+            form.server_id.unwrap_or_default()
+        ))
+    })?;
+    let server_ip = server.srv_ip.clone().unwrap_or_default();
+    check_health_url(&form.health_url, &server_ip).map_err(JsonResponse::bad_request)?;
     let target = HetznerSnapshotTarget {
         provider_server_id: Some(provider_server_id),
         ..target
