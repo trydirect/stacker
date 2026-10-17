@@ -158,6 +158,13 @@ jobs:
       # `explain` too — a differently configured binary from the one the image
       # has always shipped. The second call is nearly free; only `console` and
       # the re-featured casbin dependency recompile.
+      # The tests and clippy above leave target/debug at a size where the
+      # release build below no longer fits on the runner's disk ("No space left
+      # on device" while compiling rustls). Nothing after this point reads the
+      # debug artifacts.
+      - name: Free debug artifacts before release build
+        run: rm -rf target/debug
+
       - name: Build release binaries
         run: |
           cargo build --release \
