@@ -516,3 +516,41 @@ failing validation — that is the point (loud now, broken later otherwise).
 If a softer landing is wanted, emit a `W00x: unknown key 'x' ignored` warning
 from a pre-pass over the raw YAML first, then turn on the hard error after the
 catalog is clean.
+
+## 11. 🟡 NOT CONFIRMED — Quick Deploy 404s when `stacker.yml` `version` differs from the baked snapshot's (found 2026-10-17)
+
+**Severity:** Medium - the stack cannot be deployed through its Quick Deploy
+link at all. **Files:** `src/routes/oneclick_deploy/clone.rs:122-145`,
+`src/db/baked_snapshot.rs` (`resolve`, `resolve_latest`).
+
+### Observed (dev, 2026-10-17)
+
+`stacker-projects/linkding/stacker.yml` declares `version: "1.27.0"` (the
+application's version). The only healthy baked snapshot for `linkding` /
+`hetzner` is recorded as version `1.0.0`. The clone request carries the
+`stacker.yml` version, so the clone answers:
+
+```
+404 {"error":"No baked snapshot found",
+     "details":"no healthy baked snapshot for stack 'linkding' (provider: hetzner) in the registry"}
+```
+
+Stacks whose `stacker.yml` has no `version` (`freshrss`, `mealie`,
+`stirling-pdf`, `floci`) take the `resolve_latest` path and are not affected.
+
+### Root cause (by reading, not yet confirmed by a test)
+
+When the request has a `version`, `clone.rs:124` calls
+`baked_snapshot::resolve(stack, version, provider)`, an exact match on
+`baked_snapshots.version`. The `stacker.yml` `version` and the bake's version
+are two different numbers with nothing keeping them in step, so any stack
+whose declared version differs from the recorded bake version 404s. The
+message also hides the cause: it does not say which version was asked for.
+
+### Open questions before a fix
+
+- Which number is the contract: the app version in `stacker.yml`, or a
+  separate bake/template version? Decide, then record bakes under it.
+- Should a missing exact version fall back to the latest healthy snapshot
+  (with a warning), or stay a hard error with the requested version in the
+  message?
