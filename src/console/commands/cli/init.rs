@@ -2001,7 +2001,8 @@ pub fn generator_shell_expression(
             Some(format!("openssl rand -base64 {bytes} | tr -d '\\n'"))
         }
         Some(FieldType::Alphanumeric) | None => {
-            let chars = policy.min_length.unwrap_or(32);
+            // `length` is the exact size; `min_length` alone gives that many.
+            let chars = policy.length.or(policy.min_length).unwrap_or(32);
             Some(format!(
                 "LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c {chars}"
             ))
@@ -2942,6 +2943,8 @@ mod tests {
                 display: None,
                 length: Some(32),
                 min_length: None,
+                max_length: None,
+                pattern: None,
                 values: Vec::new(),
                 signing_key: None,
                 claims: None,
@@ -2969,6 +2972,8 @@ mod tests {
                 display: None,
                 length: None,
                 min_length: Some(20),
+                max_length: None,
+                pattern: None,
                 values: Vec::new(),
                 signing_key: None,
                 claims: None,
@@ -2995,6 +3000,8 @@ mod tests {
                 display: None,
                 length: None,
                 min_length: None,
+                max_length: None,
+                pattern: None,
                 values: Vec::new(),
                 signing_key: None,
                 claims: None,
@@ -3021,6 +3028,8 @@ mod tests {
                 display: None,
                 length: None,
                 min_length: None,
+                max_length: None,
+                pattern: None,
                 values: Vec::new(),
                 signing_key: Some("auth.JWT_SECRET".to_string()),
                 claims: Some(serde_json::json!({"role": "anon"})),

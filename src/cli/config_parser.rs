@@ -1284,6 +1284,13 @@ pub struct FieldPolicy {
     pub length: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_length: Option<usize>,
+    /// Longest value accepted, in characters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<usize>,
+    /// Regular expression the whole value must match, checked by the platform
+    /// (blog form and User Service) - e.g. `^sk-[A-Za-z0-9_-]+$`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub values: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1316,6 +1323,10 @@ struct RawFieldPolicy {
     length: Option<usize>,
     #[serde(default)]
     min_length: Option<usize>,
+    #[serde(default)]
+    max_length: Option<usize>,
+    #[serde(default)]
+    pattern: Option<String>,
     #[serde(default)]
     values: Vec<String>,
     #[serde(default)]
@@ -1353,6 +1364,36 @@ impl<'de> Deserialize<'de> for FieldPolicy {
             ));
         }
 
+        // Limits nothing could satisfy: refuse them here rather than let every
+        // buyer value be rejected (or a generated one fail its own check).
+        let too_small = |what: &str, low: usize, high: usize| {
+            Err(serde::de::Error::custom(format!(
+                "field policy {what} ({low}) is larger than the length allowed ({high})"
+            )))
+        };
+        if let (Some(min), Some(len)) = (raw.min_length, raw.length) {
+            if min > len {
+                return too_small("min_length", min, len);
+            }
+        }
+        if let (Some(min), Some(max)) = (raw.min_length, raw.max_length) {
+            if min > max {
+                return too_small("min_length", min, max);
+            }
+        }
+        if let (Some(len), Some(max)) = (raw.length, raw.max_length) {
+            if len > max {
+                return too_small("length", len, max);
+            }
+        }
+        if let Some(pattern) = &raw.pattern {
+            if let Err(err) = regex::Regex::new(pattern) {
+                return Err(serde::de::Error::custom(format!(
+                    "field policy pattern {pattern:?} does not compile: {err}"
+                )));
+            }
+        }
+
         Ok(FieldPolicy {
             mutability: raw.mutability,
             required: raw.required,
@@ -1360,6 +1401,8 @@ impl<'de> Deserialize<'de> for FieldPolicy {
             display: raw.display,
             length: raw.length,
             min_length: raw.min_length,
+            max_length: raw.max_length,
+            pattern: raw.pattern,
             values: raw.values,
             signing_key: raw.signing_key,
             claims: raw.claims,
@@ -1379,6 +1422,8 @@ impl FieldPolicy {
             display: None,
             length: None,
             min_length: None,
+            max_length: None,
+            pattern: None,
             values: Vec::new(),
             signing_key: None,
             claims: None,
@@ -1397,6 +1442,8 @@ impl FieldPolicy {
             display: None,
             length: None,
             min_length: Some(32),
+            max_length: None,
+            pattern: None,
             values: Vec::new(),
             signing_key: None,
             claims: None,
@@ -1410,6 +1457,8 @@ impl FieldPolicy {
             && self.display.is_none()
             && self.length.is_none()
             && self.min_length.is_none()
+            && self.max_length.is_none()
+            && self.pattern.is_none()
             && self.values.is_empty()
             && self.signing_key.is_none()
             && self.claims.is_none()
@@ -1422,6 +1471,8 @@ impl FieldPolicy {
             && self.type_spec == Some(FieldType::Alphanumeric)
             && self.length.is_none()
             && self.min_length == Some(32)
+            && self.max_length.is_none()
+            && self.pattern.is_none()
             && self.values.is_empty()
             && self.signing_key.is_none()
             && self.claims.is_none()
