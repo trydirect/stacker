@@ -43,12 +43,22 @@
         "length": {
           "type": "integer",
           "minimum": 1,
-          "description": "Exact byte/char length. Used by hex/base64/uuid-adjacent fixed-length generators."
+          "description": "Exact length in characters (bytes for base64). Generators produce exactly this many; the platform refuses any other length."
         },
         "min_length": {
           "type": "integer",
           "minimum": 1,
-          "description": "Minimum length. Used by alphanumeric generators and editable string constraints."
+          "description": "Minimum length in characters (at least). An exact size is declared with length."
+        },
+        "max_length": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum length in characters."
+        },
+        "pattern": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Regular expression the whole value must match (anchor with ^ and $). Common subset of Rust regex, Python re and JavaScript RegExp: no lookaround, no backreferences. Checked by the platform (blog form and User Service /deploy/start), e.g. \"^sk-[A-Za-z0-9_-]+$\" for an OpenAI key."
         },
         "values": {
           "type": "array",
@@ -120,6 +130,10 @@
         "claims": { "role": "anon", "iss": "supabase" },
         "alg": "HS256"
       }
+    },
+    {
+      "OPENAI_API_KEY": { "mutability": "provided", "required": false, "pattern": "^sk-[A-Za-z0-9_-]+$", "min_length": 40, "max_length": 256 },
+      "REALTIME_DB_ENC_KEY": { "mutability": "generated", "type": "alphanumeric", "length": 16 }
     }
   ],
   "invalidExamples": [
@@ -149,6 +163,18 @@
           "mutability": "generated"
         }
       }
+    },
+    {
+      "reason": "pattern does not compile",
+      "fields": { "BAD_PATTERN": { "mutability": "provided", "pattern": "^(a" } }
+    },
+    {
+      "reason": "min_length over length",
+      "fields": { "MIN_OVER_LENGTH": { "mutability": "generated", "type": "alphanumeric", "length": 16, "min_length": 32 } }
+    },
+    {
+      "reason": "min_length over max_length",
+      "fields": { "MIN_OVER_MAX": { "mutability": "provided", "min_length": 300, "max_length": 256 } }
     }
   ]
 }
