@@ -175,12 +175,14 @@ pub async fn clone_server(
     // the app persisted on first-run (secrets written into its DB/volume) is
     // already frozen in the snapshot and needs a post-clone rotation step or a
     // "clean" bake taken before first-run materialization.
+    let mut optional = std::collections::BTreeSet::new();
     let (regen, regen_jwt) = match &snapshot.config_contract {
         Some(contract_json) => {
             match serde_json::from_value::<crate::cli::config_parser::ConfigContract>(
                 contract_json.clone(),
             ) {
                 Ok(contract) => {
+                    optional = optional_env_keys(&contract);
                     let cmds = regen_commands(&contract, &form.env);
                     let jwt = derived_jwt_commands(&contract, &form.env);
                     if !cmds.is_empty() || !jwt.is_empty() {
@@ -222,7 +224,7 @@ pub async fn clone_server(
         .chain(regen_jwt.iter().map(|spec| spec.target_key.clone()))
         .collect();
 
-    let missing = missing_required_env_keys(&snapshot.required_env_keys, &provided);
+    let missing = missing_required_env_keys(&snapshot.required_env_keys, &provided, &optional);
     if !missing.is_empty() {
         tracing::error!(
             stack = %form.stack,
@@ -742,9 +744,14 @@ fn classify_gate_lookup<T>(stack: &str, lookup: Result<Option<T>, String>) -> Ga
 /// `required` is `baked_snapshots.required_env_keys` — a JSON array recorded at
 /// bake time. `None` (a snapshot baked before that column) yields no misses, so
 /// existing images keep deploying unchanged rather than becoming undeployable.
+///
+/// A key the snapshot's contract marks `required: false` may stay empty: the
+/// build box ran with it empty too (prod 2026-10-19, local-ai-packaged's
+/// OPENAI_API_KEY and Supabase API keys).
 fn missing_required_env_keys(
     required: &Option<serde_json::Value>,
     provided: &std::collections::BTreeSet<String>,
+    optional: &std::collections::BTreeSet<String>,
 ) -> Vec<String> {
     let Some(serde_json::Value::Array(keys)) = required else {
         return Vec::new();
@@ -752,8 +759,21 @@ fn missing_required_env_keys(
 
     keys.iter()
         .filter_map(serde_json::Value::as_str)
-        .filter(|key| !provided.contains(*key))
+        .filter(|key| !provided.contains(*key) && !optional.contains(*key))
         .map(str::to_string)
+        .collect()
+}
+
+/// The fields a contract lets the buyer leave empty (`required: false`).
+fn optional_env_keys(
+    contract: &crate::cli::config_parser::ConfigContract,
+) -> std::collections::BTreeSet<String> {
+    contract
+        .services
+        .values()
+        .flat_map(|target| target.fields.iter())
+        .filter(|(_, policy)| !policy.required)
+        .map(|(key, _)| key.clone())
         .collect()
 }
 
@@ -849,7 +869,9 @@ fn derived_jwt_commands(
 
 #[cfg(test)]
 mod regen_tests {
-    use super::{derived_jwt_commands, missing_required_env_keys, regen_commands};
+    use super::{
+        derived_jwt_commands, missing_required_env_keys, optional_env_keys, regen_commands,
+    };
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -865,15 +887,67 @@ mod regen_tests {
                 .collect();
 
         assert_eq!(
-            missing_required_env_keys(&required, &provided),
+            missing_required_env_keys(&required, &provided, &Default::default()),
             vec!["BETA".to_string()]
         );
+    }
+
+    /// prod 2026-10-19 (local-ai-packaged): OPENAI_API_KEY and the Supabase
+    /// API keys are `provided, required: false` and were empty on the build
+    /// box, but the bake recorded them in required_env_keys, so every clone
+    /// without them was refused - a Quick Deploy was impossible unless the
+    /// buyer typed something into optional fields.
+    #[test]
+    fn a_key_the_contract_marks_optional_may_stay_empty() {
+        let required = Some(json!([
+            "OPENAI_API_KEY",
+            "SUPABASE_SECRET_KEY",
+            "POSTGRES_PASSWORD"
+        ]));
+        let provided: std::collections::BTreeSet<String> =
+            ["POSTGRES_PASSWORD".to_string()].into_iter().collect();
+        let optional: std::collections::BTreeSet<String> = [
+            "OPENAI_API_KEY".to_string(),
+            "SUPABASE_SECRET_KEY".to_string(),
+        ]
+        .into_iter()
+        .collect();
+
+        assert!(missing_required_env_keys(&required, &provided, &optional).is_empty());
+    }
+
+    #[test]
+    fn a_required_key_is_still_reported_next_to_optional_ones() {
+        let required = Some(json!(["OPENAI_API_KEY", "POSTGRES_PASSWORD"]));
+        let optional: std::collections::BTreeSet<String> =
+            ["OPENAI_API_KEY".to_string()].into_iter().collect();
+
+        assert_eq!(
+            missing_required_env_keys(&required, &Default::default(), &optional),
+            vec!["POSTGRES_PASSWORD".to_string()]
+        );
+    }
+
+    #[test]
+    fn optional_keys_come_from_the_snapshot_contract() {
+        let contract: crate::cli::config_parser::ConfigContract = serde_json::from_value(json!({
+            "services": {"studio": {"fields": {
+                "OPENAI_API_KEY": {"mutability": "provided", "required": false},
+                "POSTGRES_PASSWORD": {"mutability": "generated", "type": "alphanumeric", "min_length": 32}
+            }}}
+        }))
+        .expect("contract parses");
+        let optional = optional_env_keys(&contract);
+        assert!(optional.contains("OPENAI_API_KEY"));
+        assert!(!optional.contains("POSTGRES_PASSWORD"));
     }
 
     /// Snapshots baked before the column must stay deployable.
     #[test]
     fn missing_required_env_keys_is_empty_for_legacy_snapshots() {
-        assert!(missing_required_env_keys(&None, &std::collections::BTreeSet::new()).is_empty());
+        assert!(
+            missing_required_env_keys(&None, &Default::default(), &Default::default()).is_empty()
+        );
     }
 
     #[test]
@@ -881,7 +955,7 @@ mod regen_tests {
         let required = Some(json!(["POSTGRES_PASSWORD"]));
         let provided: std::collections::BTreeSet<String> =
             ["POSTGRES_PASSWORD".to_string()].into_iter().collect();
-        assert!(missing_required_env_keys(&required, &provided).is_empty());
+        assert!(missing_required_env_keys(&required, &provided, &Default::default()).is_empty());
     }
 
     #[test]
@@ -1110,7 +1184,10 @@ mod tests {
     async fn gate_lookup_error_blocks_the_clone_with_503() {
         match classify_gate_lookup::<()>("paid-kit", Err("db timeout".to_string())) {
             GateLookup::Block(resp) => {
-                assert_eq!(resp.status(), actix_web::http::StatusCode::SERVICE_UNAVAILABLE)
+                assert_eq!(
+                    resp.status(),
+                    actix_web::http::StatusCode::SERVICE_UNAVAILABLE
+                )
             }
             _ => panic!("a failed catalog lookup must block the clone, not continue"),
         }
