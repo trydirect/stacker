@@ -180,6 +180,32 @@ pub async fn acting_user(
     })
 }
 
+/// The member's address when a member deploys as the owner, so the deployment
+/// reports reach them as well as the owner.
+pub fn initiator_email(user: &models::User, access: Access) -> Option<String> {
+    (access != Access::Owner).then(|| user.email.clone())
+}
+
+/// The member to send the deployment report to as well as the owner, when the
+/// owner turned on server access for members. The report carries the server's
+/// SSH key and passwords, so a lookup failure means no.
+pub async fn report_initiator(
+    pool: &PgPool,
+    project: &models::Project,
+    user: &models::User,
+    access: Access,
+) -> Option<String> {
+    initiator_email(user, access)?;
+    match db::project::members_server_access(pool, project.id).await {
+        Ok(true) => initiator_email(user, access),
+        Ok(false) => None,
+        Err(err) => {
+            tracing::warn!("Server access lookup failed, the report goes to the owner only: {err}");
+            None
+        }
+    }
+}
+
 /// The owner's address from the User Service internal user lookup.
 async fn owner_email(user_service_url: &str, owner_id: &str) -> Result<String, String> {
     let key = std::env::var("INTERNAL_SERVICES_ACCESS_KEY").unwrap_or_default();
@@ -216,6 +242,25 @@ async fn owner_email(user_service_url: &str, owner_id: &str) -> Result<String, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_member_deploy_has_a_separate_initiator() {
+        let member = models::User {
+            id: "member-1".to_string(),
+            first_name: String::new(),
+            last_name: String::new(),
+            email: "member@example.com".to_string(),
+            role: "group_user".to_string(),
+            email_confirmed: true,
+            mfa_verified: false,
+            access_token: None,
+        };
+        assert_eq!(
+            initiator_email(&member, Access::Member).as_deref(),
+            Some("member@example.com")
+        );
+        assert_eq!(initiator_email(&member, Access::Owner), None);
+    }
 
     #[test]
     fn roles_allow_what_the_team_decisions_say() {

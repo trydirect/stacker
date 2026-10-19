@@ -154,6 +154,7 @@ pub fn import_plan_from_compose_str(
         has_mail_server_shape |= looks_like_mail_server(source_name, &image, &ports);
 
         services.push(ServiceDefinition {
+            runtime: Default::default(),
             name: destination_name.clone(),
             image: image.clone(),
             ports: ports.clone(),

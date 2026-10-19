@@ -32,6 +32,7 @@ fn project_scope(path: &str) -> actix_web::Scope {
         .service(crate::routes::project::invitation::list)
         .service(crate::routes::project::invitation::revoke)
         .service(crate::routes::project::invitation::seats)
+        .service(crate::routes::project::clouds::list)
         .service(crate::routes::project::compose::add)
         .service(crate::routes::project::get::list)
         .service(crate::routes::project::get::shared_list)
@@ -41,6 +42,7 @@ fn project_scope(path: &str) -> actix_web::Scope {
         .service(crate::routes::project::sync::item)
         .service(crate::routes::project::delete::item)
         .service(crate::routes::project::protection::toggle)
+        .service(crate::routes::project::member::set_server_access)
         .service(crate::routes::project::app::list_apps)
         .service(crate::routes::project::app::create_app)
         .service(crate::routes::project::app::get_app)
@@ -125,6 +127,13 @@ pub async fn run(
         api_pool.get_ref().clone(),
         user_service_connector.get_ref().clone(),
         settings.per_install_billing_enabled,
+    );
+    // Reports each running day of a Quick Deploy Managed server to the
+    // Stripe meter through the User Service, and hands servers unpaid for 3
+    // days of suspension to the admins. Without it the servers are not billed.
+    crate::services::managed_usage_sweeper::spawn(
+        api_pool.get_ref().clone(),
+        user_service_connector.get_ref().clone(),
     );
     // Deletes container rows retired more than a month ago. Housekeeping only:
     // it touches nothing the dashboard shows, and skipping it costs a slowly
@@ -290,8 +299,16 @@ pub async fn run(
             .service(
                 web::scope("/api")
                     .service(
+                        web::scope("/internal/managed-usage")
+                            .service(crate::routes::managed_usage::suspend)
+                            .service(crate::routes::managed_usage::start)
+                            .service(crate::routes::managed_usage::fail)
+                            .service(crate::routes::managed_usage::stop),
+                    )
+                    .service(
                         web::scope("/agreement")
                             .service(crate::routes::agreement::user_add_handler)
+                            .service(crate::routes::agreement::get_by_name_handler)
                             .service(crate::routes::agreement::get_handler)
                             .service(crate::routes::agreement::accept_handler),
                     )
@@ -387,6 +404,7 @@ pub async fn run(
                     .service(
                         web::scope("/v1/deployments")
                             .service(routes::deployment::capabilities_handler)
+                            .service(routes::deployment::member_access_handler)
                             .service(routes::deployment::events_handler)
                             .service(routes::deployment::list_handler)
                             .service(routes::deployment::plan_handler)
@@ -455,6 +473,11 @@ pub async fn run(
                     .service(
                         web::scope("/admin")
                             .service(
+                                web::scope("/bake")
+                                    .service(crate::routes::admin_bake::start_handler)
+                                    .service(crate::routes::admin_bake::status_handler),
+                            )
+                            .service(
                                 web::scope("/templates")
                                     .service(
                                         crate::routes::marketplace::admin::list_submitted_handler,
@@ -469,6 +492,7 @@ pub async fn run(
                                      .service(crate::routes::marketplace::admin::security_scan_handler)
                                      .service(crate::routes::marketplace::admin::detect_secrets_handler)
                                      .service(crate::routes::marketplace::admin::pricing_handler)
+                                     .service(crate::routes::marketplace::admin::update_template_handler)
                                      .service(crate::routes::marketplace::admin::update_verifications_handler)
                                      .service(crate::routes::marketplace::admin::update_vendor_profile_handler),
                              )
@@ -488,6 +512,10 @@ pub async fn run(
                                          crate::routes::admin_notifications::unread_count_handler,
                                      )
                                      .service(crate::routes::admin_notifications::update_handler),
+                             )
+                             .service(
+                                 web::scope("/chat")
+                                     .service(crate::routes::chat::admin::recent),
                              ),
                     )
                     .service(

@@ -40,3 +40,19 @@ pub async fn accept_handler(
             None => Err(JsonResponse::not_found("not found")),
         })
 }
+
+#[tracing::instrument(name = "Get agreement by name.", skip_all)]
+#[get("/name/{name}")]
+pub async fn get_by_name_handler(
+    _user: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    db::agreement::fetch_by_name(pg_pool.get_ref(), &path.0)
+        .await
+        .map_err(|err| JsonResponse::internal_server_error(err))
+        .and_then(|item| match item {
+            Some(item) => Ok(JsonResponse::build().set_item(Some(item)).ok("OK")),
+            None => Err(JsonResponse::not_found("not found")),
+        })
+}

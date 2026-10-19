@@ -27,6 +27,7 @@ impl InstallServiceConnector for MockInstallServiceConnector {
         _server_public_key: Option<String>,
         _server_private_key: Option<String>,
         _proxy_domains: Option<serde_json::Value>,
+        _initiator_email: Option<String>,
     ) -> Result<i32, String> {
         Ok(project_id)
     }

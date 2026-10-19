@@ -158,12 +158,20 @@ jobs:
       # `explain` too — a differently configured binary from the one the image
       # has always shipped. The second call is nearly free; only `console` and
       # the re-featured casbin dependency recompile.
+      # The tests and clippy above leave target/debug at a size where the
+      # release build below no longer fits on the runner's disk ("No space left
+      # on device" while compiling rustls). Nothing after this point reads the
+      # debug artifacts.
+      - name: Free debug artifacts before release build
+        run: rm -rf target/debug
+
       - name: Build release binaries
         run: |
           cargo build --release \
             --bin server \
             --bin cleanup-notify \
-            --bin backfill_field_policy
+            --bin backfill_field_policy \
+            --bin bake
           cargo build --release --bin console --features explain
 
       - name: Set up Node.js
@@ -202,6 +210,7 @@ jobs:
           cp target/release/console app/stacker/console
           cp target/release/cleanup-notify app/stacker/cleanup-notify
           cp target/release/backfill_field_policy app/stacker/backfill_field_policy
+          cp target/release/bake app/stacker/bake
           if [ -d web/dist ]; then cp -a web/dist/. app/stacker; fi
           cp Dockerfile app/Dockerfile
           cp access_control.conf.dist app/access_control.conf.dist
@@ -248,8 +257,8 @@ jobs:
           tar -xzf app.tar.gz -C "${{ runner.temp }}/prebuilt"
           cd "${{ runner.temp }}/prebuilt"
           mv stacker/server stacker/console stacker/cleanup-notify \
-             stacker/backfill_field_policy .
-          chmod +x server console cleanup-notify backfill_field_policy
+             stacker/backfill_field_policy stacker/bake .
+          chmod +x server console cleanup-notify backfill_field_policy bake
           rm -f "${GITHUB_WORKSPACE}/app.tar.gz"
 
       -

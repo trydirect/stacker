@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE managed_usage\n           SET period_start = $2, period_reported_minor = $3, last_reported_on = $4,\n               updated_at = now()\n           WHERE id = $1 AND (last_reported_on IS NULL OR last_reported_on < $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Date",
+        "Int8",
+        "Date"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "837a91d5f0131bba50d2edce48c125367dfeda8042c0315a7754e42e649ab4a9"
+}

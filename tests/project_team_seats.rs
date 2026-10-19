@@ -224,6 +224,7 @@ impl App {
             "GET" => self.client.get(&url),
             "POST" => self.client.post(&url),
             "PUT" => self.client.put(&url),
+            "PATCH" => self.client.patch(&url),
             "DELETE" => self.client.delete(&url),
             other => panic!("unsupported verb {other}"),
         };
@@ -1280,4 +1281,200 @@ async fn the_owner_sees_who_the_members_are() {
     };
     assert_eq!(email_of(COLLEAGUE.id), json!("colleague@try.direct"));
     assert_eq!(email_of("legacy_viewer_id"), Value::Null);
+}
+
+// ── The project's servers ──
+
+#[tokio::test]
+async fn a_member_sees_the_projects_servers_to_deploy_to() {
+    let Some(app) = App::spawn().await else {
+        return;
+    };
+    let project = app.project(TEAM).await;
+    let server = common::create_test_server(&app.pool, TEAM.id, project, "ssh", None).await;
+    app.add_member(project, COLLEAGUE.id, "member").await;
+
+    let (status, body) = app
+        .call(Some(COLLEAGUE), "GET", &format!("/server/project/{project}"), None)
+        .await;
+    assert_eq!(status, 200, "member: {body}");
+    let ids: Vec<i64> = body["list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["id"].as_i64())
+        .collect();
+    assert_eq!(ids, vec![server as i64]);
+}
+
+#[tokio::test]
+async fn a_viewer_and_an_outsider_do_not_get_the_projects_servers() {
+    let Some(app) = App::spawn().await else {
+        return;
+    };
+    let project = app.project(TEAM).await;
+    common::create_test_server(&app.pool, TEAM.id, project, "ssh", None).await;
+    app.add_member(project, COLLEAGUE.id, "viewer").await;
+
+    let (status, _) = app
+        .call(Some(COLLEAGUE), "GET", &format!("/server/project/{project}"), None)
+        .await;
+    assert_eq!(status, 403, "viewer");
+    let (status, _) = app
+        .call(Some(PRO), "GET", &format!("/server/project/{project}"), None)
+        .await;
+    assert_eq!(status, 404, "outsider");
+}
+
+// ── The owner's saved clouds ──
+
+#[tokio::test]
+async fn a_member_picks_from_the_owners_saved_clouds_without_seeing_credentials() {
+    let Some(app) = App::spawn().await else {
+        return;
+    };
+    let project = app.project(TEAM).await;
+    let cloud = common::create_test_cloud(&app.pool, TEAM.id, "acme-htz", "htz").await;
+    common::create_test_cloud(&app.pool, COLLEAGUE.id, "colleague-own", "htz").await;
+    app.add_member(project, COLLEAGUE.id, "member").await;
+
+    for who in [COLLEAGUE, TEAM] {
+        let (status, body) = app
+            .call(Some(who), "GET", &format!("/project/{project}/clouds"), None)
+            .await;
+        assert_eq!(status, 200, "{}: {body}", who.email);
+        let list = body["list"].as_array().unwrap();
+        assert_eq!(list.len(), 1, "only the owner's clouds: {body}");
+        assert_eq!(list[0]["id"], cloud);
+        assert_eq!(list[0]["name"], "acme-htz");
+        assert_eq!(list[0]["provider"], "htz");
+        let text = body.to_string();
+        for field in ["cloud_token", "cloud_key", "cloud_secret", "test-cloud-token"] {
+            assert!(!text.contains(field), "{field} leaked: {text}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_viewer_and_an_outsider_do_not_get_the_owners_clouds() {
+    let Some(app) = App::spawn().await else {
+        return;
+    };
+    let project = app.project(TEAM).await;
+    common::create_test_cloud(&app.pool, TEAM.id, "acme-htz", "htz").await;
+    app.add_member(project, COLLEAGUE.id, "viewer").await;
+
+    let (status, _) = app
+        .call(Some(COLLEAGUE), "GET", &format!("/project/{project}/clouds"), None)
+        .await;
+    assert_eq!(status, 403, "viewer");
+    let (status, _) = app
+        .call(Some(PRO), "GET", &format!("/project/{project}/clouds"), None)
+        .await;
+    assert_eq!(status, 404, "outsider");
+}
+
+// ── Server access for members ──
+//
+// The deployment report carries the server's SSH key and passwords. A member
+// who deploys gets it only when the owner turned on server access for members.
+
+async fn server_access(app: &App, project: i32) -> bool {
+    let (status, body) = app
+        .call(
+            Some(TEAM),
+            "GET",
+            &format!("/project/{project}/seats"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "seats: {body}");
+    body["item"]["members_server_access"].as_bool().unwrap()
+}
+
+#[tokio::test]
+async fn the_owner_decides_whether_members_get_server_access() {
+    let Some(app) = App::spawn().await else {
+        return;
+    };
+    let project = app.project(TEAM).await;
+    app.add_member(project, COLLEAGUE.id, "member").await;
+    assert!(!server_access(&app, project).await, "off by default");
+
+    let route = format!("/project/{project}/server-access");
+    let (status, body) = app
+        .call(
+            Some(TEAM),
+            "PATCH",
+            &route,
+            Some(json!({ "enabled": true })),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(server_access(&app, project).await);
+
+    let (status, _) = app
+        .call(
+            Some(COLLEAGUE),
+            "PATCH",
+            &route,
+            Some(json!({ "enabled": false })),
+        )
+        .await;
+    assert_eq!(status, 403, "a member cannot change it");
+    assert!(server_access(&app, project).await);
+
+    let (status, _) = app
+        .call(
+            Some(TEAM),
+            "PATCH",
+            &route,
+            Some(json!({ "enabled": false })),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert!(!server_access(&app, project).await);
+}
+
+#[tokio::test]
+async fn a_member_gets_the_deployment_report_only_with_server_access() {
+    use stacker::routes::access::{report_initiator, Access};
+
+    let Some(app) = App::spawn().await else {
+        return;
+    };
+    let project_id = app.project(TEAM).await;
+    let project = stacker::db::project::fetch(&app.pool, project_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let member = stacker::models::User {
+        id: COLLEAGUE.id.to_string(),
+        first_name: String::new(),
+        last_name: String::new(),
+        email: COLLEAGUE.email.to_string(),
+        role: "group_user".to_string(),
+        email_confirmed: true,
+        mfa_verified: false,
+        access_token: None,
+    };
+
+    assert_eq!(
+        report_initiator(&app.pool, &project, &member, Access::Member).await,
+        None
+    );
+
+    stacker::db::project::set_members_server_access(&app.pool, project_id, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        report_initiator(&app.pool, &project, &member, Access::Member)
+            .await
+            .as_deref(),
+        Some(COLLEAGUE.email)
+    );
+    assert_eq!(
+        report_initiator(&app.pool, &project, &member, Access::Owner).await,
+        None
+    );
 }

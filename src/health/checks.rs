@@ -321,7 +321,7 @@ impl HealthChecker {
         let vault_address = &self.settings.vault.address;
         let health_url = format!("{}/v1/sys/health", vault_address);
 
-        match reqwest::Client::builder()
+        match crate::helpers::vault::http_client_builder(&self.settings.vault)
             .timeout(Duration::from_secs(5))
             .build()
         {

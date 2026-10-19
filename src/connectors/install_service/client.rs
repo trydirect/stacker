@@ -107,6 +107,7 @@ impl InstallServiceConnector for InstallServiceClient {
         server_public_key: Option<String>,
         server_private_key: Option<String>,
         proxy_domains: Option<serde_json::Value>,
+        initiator_email: Option<String>,
     ) -> Result<i32, String> {
         // Build payload for the install service
         let mut payload = crate::forms::project::Payload::try_from(project)
@@ -140,6 +141,7 @@ impl InstallServiceConnector for InstallServiceClient {
             payload.common_domain = stack_var_string(&form_stack.vars, "commonDomain");
         }
         payload.user_token = Some(user_id);
+        payload.initiator_email = initiator_email.filter(|email| *email != user_email);
         payload.user_email = Some(user_email);
         payload.docker_compose = Some(compress(fc.as_str()));
         payload.registry = registry;

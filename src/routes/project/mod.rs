@@ -1,6 +1,7 @@
 pub mod access;
 pub mod add;
 pub mod app;
+pub mod clouds;
 pub(crate) mod compose;
 pub(crate) mod delete;
 pub mod deploy;

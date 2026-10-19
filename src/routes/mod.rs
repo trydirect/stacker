@@ -1,3 +1,4 @@
+pub(crate) mod admin_bake;
 pub(crate) mod admin_notifications;
 pub(crate) mod agent;
 pub mod audit;
@@ -8,6 +9,7 @@ pub(crate) mod dockerhub;
 pub(crate) mod handoff;
 pub mod health_checks;
 pub(crate) mod legacy_installations;
+pub(crate) mod managed_usage;
 pub(crate) mod oneclick_deploy;
 pub(crate) mod rating;
 pub(crate) mod test;

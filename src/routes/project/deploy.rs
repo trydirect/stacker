@@ -1536,6 +1536,7 @@ async fn execute_deployment(
             new_public_key,
             new_private_key,
             form.proxy_domains.clone(),
+            form.initiator_email.clone(),
         )
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
@@ -1856,6 +1857,9 @@ pub async fn item(
         "not found",
     )
     .await?;
+    let mut form = form.into_inner();
+    form.initiator_email =
+        access::report_initiator(pg_pool.get_ref(), &project, &user, access).await;
     let user = Arc::new(
         access::acting_user(&project, user.as_ref(), access, &sets.user_service_url).await?,
     );
@@ -1863,7 +1867,7 @@ pub async fn item(
     let (project_id, deployment_id) = deploy_project(
         user.as_ref(),
         project,
-        form.into_inner(),
+        form,
         pg_pool.get_ref(),
         mq_manager.get_ref(),
         sets.get_ref(),
@@ -1917,6 +1921,8 @@ pub async fn saved_item(
         "Project not found",
     )
     .await?;
+    form.initiator_email =
+        access::report_initiator(pg_pool.get_ref(), &project, &user, access).await;
     let user = Arc::new(
         access::acting_user(&project, user.as_ref(), access, &sets.user_service_url).await?,
     );
@@ -2155,6 +2161,8 @@ pub async fn rollback(
         "Project not found",
     )
     .await?;
+    let initiator_email =
+        access::report_initiator(pg_pool.get_ref(), &project, &user, access).await;
     let user = Arc::new(
         access::acting_user(&project, user.as_ref(), access, &sets.user_service_url).await?,
     );
@@ -2227,7 +2235,8 @@ pub async fn rollback(
     let (metadata, template_stack_code) =
         build_rollback_project_payload(target_version.stack_definition.clone())
             .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
-    let deploy_form = build_rollback_deploy_form(template_stack_code);
+    let mut deploy_form = build_rollback_deploy_form(template_stack_code);
+    deploy_form.initiator_email = initiator_email;
 
     validate_reused_cloud_server(&cloud, &server)
         .await
@@ -3058,5 +3067,94 @@ mod tests {
             }
         });
         assert!(embedded_marketplace_compose(&metadata).is_none());
+    }
+}
+
+/// Contract across the CLI and the server for host-local ports.
+///
+/// The loopback handling broke more than once because each half was tested
+/// alone: the CLI parser was pinned to drop the host IP (`127.0.0.1:1025:25` ->
+/// `1025`), while the server expects the IP to arrive with the mapping and
+/// skips such ports. Together they opened databases bound to 127.0.0.1 to the
+/// internet: the firewall rule allowed 5432/6379 from anywhere and the compose
+/// file published them on every interface. This test runs a stacker.yml
+/// through the CLI's payload builder and then through what the server does
+/// with it.
+#[cfg(test)]
+mod loopback_ports_contract {
+    use super::derive_public_ports_from_metadata;
+    use crate::cli::config_parser::StackerConfig;
+    use crate::cli::stacker_client::build_project_body;
+
+    const STACKER_YML: &str = r#"
+name: loopback-contract
+app:
+  type: custom
+  image: example/web:1.0
+  ports:
+    - "8000:8000"
+    - "127.0.0.1:8025:8025"
+services:
+  - name: postgres
+    image: postgres:16
+    ports:
+      - "127.0.0.1:5432:5432"
+  - name: redis
+    image: redis:7
+    ports:
+      - "127.0.0.1:6379:6379/tcp"
+  - name: proxy
+    image: nginx:alpine
+    ports:
+      - "443:443"
+"#;
+
+    fn shared_ports(body: &serde_json::Value) -> Vec<serde_json::Value> {
+        ["web", "service", "feature"]
+            .iter()
+            .filter_map(|group| body["custom"][group].as_array())
+            .flatten()
+            .filter_map(|app| app["shared_ports"].as_array())
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn ports_bound_to_loopback_in_stacker_yml_are_not_opened_to_the_internet() {
+        let config = StackerConfig::from_str(STACKER_YML).expect("stacker.yml parses");
+        let body = build_project_body(&config);
+
+        let mut public = derive_public_ports_from_metadata(&body);
+        public.sort();
+        assert_eq!(
+            public,
+            vec!["443/tcp".to_string(), "8000/tcp".to_string()],
+            "only the ports not bound to 127.0.0.1 may reach the firewall"
+        );
+    }
+
+    #[test]
+    fn ports_bound_to_loopback_in_stacker_yml_stay_on_loopback_in_compose() {
+        let config = StackerConfig::from_str(STACKER_YML).expect("stacker.yml parses");
+        let body = build_project_body(&config);
+
+        let mut loopback_published = Vec::new();
+        for raw in shared_ports(&body) {
+            let port: crate::forms::project::Port =
+                serde_json::from_value(raw.clone()).expect("shared port");
+            let dc: docker_compose_types::Port = (&port).try_into().expect("compose port");
+            if let Some(docker_compose_types::PublishedPort::Single(p)) = dc.published {
+                if dc.host_ip.as_deref() == Some("127.0.0.1") {
+                    loopback_published.push(p);
+                }
+            }
+        }
+        loopback_published.sort();
+        assert_eq!(
+            loopback_published,
+            vec![5432, 6379, 8025],
+            "compose must publish these on 127.0.0.1 only"
+        );
     }
 }

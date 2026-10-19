@@ -1,8 +1,10 @@
 pub mod agent;
 pub mod agent_audit_log;
 pub(crate) mod agreement;
+pub mod bake_job;
 pub mod baked_snapshot;
 pub mod chat;
+pub mod chat_admin;
 pub mod chat_session;
 pub mod client;
 pub(crate) mod cloud;
@@ -11,6 +13,7 @@ pub mod dag;
 pub(crate) mod deployment;
 pub mod deployment_container;
 pub mod marketplace;
+pub mod managed_usage;
 pub mod marketplace_billing;
 pub mod pipe;
 pub mod product;

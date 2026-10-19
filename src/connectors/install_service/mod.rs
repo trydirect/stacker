@@ -53,6 +53,7 @@ pub trait InstallServiceConnector: Send + Sync {
         server_public_key: Option<String>,
         server_private_key: Option<String>,
         proxy_domains: Option<serde_json::Value>,
+        initiator_email: Option<String>,
     ) -> Result<i32, String>;
 
     async fn configure_cloud_firewall(

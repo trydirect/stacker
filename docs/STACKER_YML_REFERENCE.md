@@ -410,8 +410,16 @@ Additional containers deployed alongside your main application — databases, ca
 | `environment` | `map<string, string>` | no | `{}` | Environment variables |
 | `volumes` | `string[]` | no | `[]` | Volume mounts (`"name:/path"` or `"./host:/container"`) |
 | `depends_on` | `string[]` | no | `[]` | Services this depends on (started first) |
-| `command` | `string` | no | — | Override the container's default command / entrypoint |
+| `command` | `string` | no | — | Override the container's default command |
+| `entrypoint` | `string` | no | — | Override the image's entrypoint |
 | `healthcheck` | `object` | no | — | Docker health check for this service |
+| `restart` | `string` | no | `unless-stopped` | `no`, `always`, `unless-stopped` or `on-failure` |
+| `cap_add`, `cap_drop` | `string[]` | no | `[]` | Linux capabilities to add or drop |
+| `devices` | `string[]` | no | `[]` | Host devices to map (`/dev/dri`) |
+| `profiles` | `string[]` | no | `[]` | Start the service only when one of these compose profiles is active |
+| `aliases` | `string[]` | no | `[]` | Other names the service answers to, on every network it joins |
+| `deploy.replicas` | `integer` | no | `1` | `0` keeps the service defined but not started |
+| `deploy.resources.reservations.devices` | `object[]` | no | `[]` | Devices to reserve, e.g. a GPU |
 
 #### `services[].command`
 
@@ -499,6 +507,45 @@ services:
 
 > **Note:** Stacker detects port conflicts across services during validation.
 > If two services bind the same host port, you'll get a warning (`W001`).
+
+#### One-shot jobs, profiles and GPUs
+
+`restart: "no"` keeps a job that runs once from being restarted after it
+finishes. `profiles`, `aliases` and `deploy` let one stack carry a CPU and a GPU
+variant of the same service: the CPU variant runs by default, the GPU variant
+only under its profile, and both answer to the same name.
+
+```yaml
+services:
+  - name: ollama-cpu
+    image: ollama/ollama:0.40.4
+    aliases: [ollama]
+    deploy:
+      replicas: ${OLLAMA_CPU_REPLICAS}   # 0 on a GPU machine
+
+  - name: ollama-gpu
+    image: ollama/ollama:0.40.4
+    profiles: [gpu-nvidia]
+    aliases: [ollama]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  - name: model-pull
+    image: ollama/ollama:0.40.4
+    restart: "no"
+    entrypoint: /bin/sh
+    command: -c "ollama pull nomic-embed-text"
+```
+
+On a GPU machine set `OLLAMA_CPU_REPLICAS=0` and `COMPOSE_PROFILES=gpu-nvidia`.
+These settings reach every compose stacker writes from the service: the one the
+CLI deploys, the author's own compose (`deploy.compose_file`), the one the
+server renders from the project, and the one the status-panel agent applies.
 
 ---
 

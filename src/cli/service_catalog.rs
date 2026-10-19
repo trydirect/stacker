@@ -139,6 +139,7 @@ impl ServiceCatalog {
                     if let Some(services) = stack_def.get("services") {
                         if let Some(first_svc) = services.as_array().and_then(|arr| arr.first()) {
                             let service = ServiceDefinition {
+                                runtime: Default::default(),
                                 name: first_svc["name"].as_str().unwrap_or(slug).to_string(),
                                 image: first_svc["image"].as_str().unwrap_or("").to_string(),
                                 ports: first_svc["ports"]
@@ -282,6 +283,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "database".into(),
             description: "Reliable open-source relational database".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "postgres".into(),
                 image: "postgres:16-alpine".into(),
                 ports: vec!["5432:5432".into()],
@@ -308,6 +310,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "database".into(),
             description: "Popular open-source relational database".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "mysql".into(),
                 image: "mysql:8.0".into(),
                 ports: vec!["3306:3306".into()],
@@ -338,6 +341,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "database".into(),
             description: "Document-oriented NoSQL database".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "mongodb".into(),
                 image: "mongo:7".into(),
                 ports: vec!["27017:27017".into()],
@@ -369,6 +373,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "cache".into(),
             description: "In-memory data store for caching and message broker".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "redis".into(),
                 image: "redis:7-alpine".into(),
                 ports: vec!["6379:6379".into()],
@@ -391,6 +396,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "cache".into(),
             description: "High-performance distributed memory caching system".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "memcached".into(),
                 image: "memcached:1.6-alpine".into(),
                 ports: vec!["11211:11211".into()],
@@ -414,6 +420,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "queue".into(),
             description: "Advanced message broker with management UI".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "rabbitmq".into(),
                 image: "rabbitmq:3-management-alpine".into(),
                 ports: vec!["5672:5672".into(), "15672:15672".into()],
@@ -443,6 +450,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "proxy".into(),
             description: "Cloud-native reverse proxy with automatic SSL".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "traefik".into(),
                 image: "traefik:v3.0".into(),
                 ports: vec!["80:80".into(), "443:443".into()],
@@ -468,6 +476,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "proxy".into(),
             description: "High-performance web server and reverse proxy".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "nginx".into(),
                 image: "nginx:1.25-alpine".into(),
                 ports: vec!["80:80".into(), "443:443".into()],
@@ -490,6 +499,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "proxy".into(),
             description: "Web UI for managing Nginx reverse proxy with SSL".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "nginx_proxy_manager".into(),
                 image: "jc21/nginx-proxy-manager:latest".into(),
                 ports: vec!["80:80".into(), "443:443".into(), "81:81".into()],
@@ -516,6 +526,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "web".into(),
             description: "Popular CMS and blogging platform".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "wordpress".into(),
                 image: "wordpress:latest".into(),
                 ports: vec!["8080:80".into()],
@@ -547,6 +558,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "search".into(),
             description: "Distributed search and analytics engine".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "elasticsearch".into(),
                 image: "elasticsearch:8.12.0".into(),
                 ports: vec!["9200:9200".into()],
@@ -573,6 +585,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "search".into(),
             description: "Visualization dashboard for Elasticsearch".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "kibana".into(),
                 image: "kibana:8.12.0".into(),
                 ports: vec!["5601:5601".into()],
@@ -599,6 +612,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "database".into(),
             description: "Vector similarity search engine for AI applications".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "qdrant".into(),
                 image: "qdrant/qdrant:latest".into(),
                 ports: vec!["6333:6333".into(), "6334:6334".into()],
@@ -622,6 +636,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "monitoring".into(),
             description: "Agent for collecting and reporting metrics".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "telegraf".into(),
                 image: "telegraf:1.30-alpine".into(),
                 ports: vec![],
@@ -645,6 +660,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "devtool".into(),
             description: "Web-based MySQL database management (development)".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "phpmyadmin".into(),
                 image: "phpmyadmin:latest".into(),
                 ports: vec!["8081:80".into()],
@@ -671,6 +687,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             description: "Attachable SMTP companion app for local delivery and relay testing"
                 .into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "smtp".into(),
                 image: "trydirect/smtp".into(),
                 ports: vec!["1025:25".into()],
@@ -699,6 +716,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "devtool".into(),
             description: "Email testing tool — catches all outgoing mail (development)".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "mailhog".into(),
                 image: "mailhog/mailhog:latest".into(),
                 ports: vec!["1025:1025".into(), "8025:8025".into()],
@@ -722,6 +740,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "storage".into(),
             description: "S3-compatible object storage".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "minio".into(),
                 image: "minio/minio:latest".into(),
                 ports: vec!["9000:9000".into(), "9001:9001".into()],
@@ -751,6 +770,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "devtool".into(),
             description: "Docker container management web UI".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "portainer".into(),
                 image: "portainer/portainer-ce:latest".into(),
                 ports: vec!["9443:9443".into()],
@@ -777,6 +797,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             category: "ai".into(),
             description: "Personal AI assistant with multi-channel gateway".into(),
             service: ServiceDefinition {
+                runtime: Default::default(),
                 name: "openclaw".into(),
                 image: "ghcr.io/openclaw/openclaw:latest".into(),
                 ports: vec!["18789:18789".into()],

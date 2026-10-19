@@ -16,6 +16,8 @@ pub mod handoff;
 pub mod install_authorization_sweeper;
 pub mod log_cache;
 pub mod marketplace_access;
+pub mod managed_usage;
+pub mod managed_usage_sweeper;
 pub mod marketplace_assets;
 pub mod payout_provider;
 pub mod project;

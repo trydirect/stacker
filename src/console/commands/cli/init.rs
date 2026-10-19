@@ -1118,6 +1118,7 @@ fn compose_service_to_definition(
     };
 
     Some(ServiceDefinition {
+        runtime: Default::default(),
         name: service.name.clone(),
         image,
         ports: service
@@ -1609,6 +1610,7 @@ fn convert_compose_to_stacker(ai_output: &str, repo_name: &str) -> Option<Stacke
         if let Some(ref img) = image {
             if is_infra_image(img) {
                 infra_services.push(ServiceDefinition {
+                    runtime: Default::default(),
                     name,
                     image: img.clone(),
                     ports: extract_yaml_strings(svc.get("ports")),
@@ -3196,6 +3198,7 @@ mod tests {
                 ..Default::default()
             },
             services: vec![crate::cli::config_parser::ServiceDefinition {
+                runtime: Default::default(),
                 name: "myapp".to_string(),
                 image: "redis:7".to_string(),
                 ports: vec![],
@@ -3241,6 +3244,7 @@ mod tests {
                 ..Default::default()
             },
             services: vec![crate::cli::config_parser::ServiceDefinition {
+                runtime: Default::default(),
                 name: "app".to_string(),
                 image: "myorg/myapp:latest".to_string(),
                 ports: vec![],

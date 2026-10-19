@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod delete;
 pub mod get;
 pub mod sessions;

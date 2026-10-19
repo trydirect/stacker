@@ -375,13 +375,56 @@ fn service_to_compose_value(
             serde_yaml::Value::String(platform.clone()),
         );
     }
-    if !project_networks.is_empty() {
-        insert_string_sequence(&mut map, "networks", project_networks);
+    let runtime = &service.runtime;
+    if runtime.aliases.is_empty() {
+        if !project_networks.is_empty() {
+            insert_string_sequence(&mut map, "networks", project_networks);
+        }
+    } else {
+        // Aliases need the long form, on every network the service joins.
+        let default_network = ["default".to_string()];
+        let networks = if project_networks.is_empty() {
+            &default_network[..]
+        } else {
+            project_networks
+        };
+        let mut settings = serde_yaml::Mapping::new();
+        insert_string_sequence(&mut settings, "aliases", &runtime.aliases);
+        let networks: serde_yaml::Mapping = networks
+            .iter()
+            .map(|n| {
+                (
+                    serde_yaml::Value::String(n.clone()),
+                    serde_yaml::Value::Mapping(settings.clone()),
+                )
+            })
+            .collect();
+        map.insert(
+            serde_yaml::Value::String("networks".to_string()),
+            serde_yaml::Value::Mapping(networks),
+        );
     }
     map.insert(
         serde_yaml::Value::String("restart".to_string()),
-        serde_yaml::Value::String("unless-stopped".to_string()),
+        serde_yaml::Value::String(
+            runtime
+                .restart
+                .map_or("unless-stopped", |r| r.as_str())
+                .to_string(),
+        ),
     );
+    if let Some(entrypoint) = &runtime.entrypoint {
+        map.insert(
+            serde_yaml::Value::String("entrypoint".to_string()),
+            serde_yaml::Value::String(entrypoint.clone()),
+        );
+    }
+    insert_string_sequence(&mut map, "profiles", &runtime.profiles);
+    if let Some(deploy) = &runtime.deploy {
+        if let Ok(value) = serde_yaml::to_value(deploy) {
+            map.insert(serde_yaml::Value::String("deploy".to_string()), value);
+        }
+    }
     serde_yaml::Value::Mapping(map)
 }
 
@@ -732,6 +775,7 @@ mod tests {
                 config: None,
             },
             services: vec![ServiceDefinition {
+                runtime: Default::default(),
                 name: service_name.to_string(),
                 image: "myapp:latest".to_string(),
                 ports: vec!["3000:3000".to_string()],
@@ -787,6 +831,7 @@ mod tests {
         // proxy points to "api" but we are syncing "smtp"
         let mut config = npm_stacker_config(dir.path(), "api");
         config.services = vec![ServiceDefinition {
+            runtime: Default::default(),
             name: "smtp".to_string(),
             image: "trydirect/smtp".to_string(),
             ports: vec![],
@@ -852,6 +897,7 @@ volumes:
                 ..Default::default()
             },
             services: vec![ServiceDefinition {
+                runtime: Default::default(),
                 name: "smtp".to_string(),
                 image: "trydirect/smtp".to_string(),
                 ports: vec!["1025:25".to_string()],

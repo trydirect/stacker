@@ -88,6 +88,7 @@ const ROUTES: &[(&str, &str, Kind, &str)] = &[
     ("GET", "/rating/{id}", Public, "visible rating"),
     ("GET", "/agreement/{id}", Public, "agreement text"),
     ("GET", "/api/agreement/{id}", Public, "agreement text"),
+    ("GET", "/api/agreement/name/{name}", Public, "agreement text"),
     (
         "GET",
         "/dockerhub/namespaces",
@@ -264,6 +265,12 @@ const ROUTES: &[(&str, &str, Kind, &str)] = &[
         "internal service key",
     ),
     (
+        "GET",
+        "/api/v1/deployments/{deployment_hash}/member-access",
+        Token,
+        "internal service key; a user's role for the User Service",
+    ),
+    (
         "POST",
         "/api/v1/marketplace/payouts/webhook",
         Token,
@@ -278,6 +285,31 @@ const ROUTES: &[(&str, &str, Kind, &str)] = &[
     (
         "POST",
         "/api/v1/agent/register",
+        Token,
+        "internal service key",
+    ),
+    // Managed server usage of a Quick Deploy, called by the User Service.
+    (
+        "POST",
+        "/api/internal/managed-usage/suspend",
+        Token,
+        "internal service key",
+    ),
+    (
+        "POST",
+        "/api/internal/managed-usage/{deployment_hash}/start",
+        Token,
+        "internal service key",
+    ),
+    (
+        "POST",
+        "/api/internal/managed-usage/{deployment_hash}/fail",
+        Token,
+        "internal service key",
+    ),
+    (
+        "POST",
+        "/api/internal/managed-usage/{deployment_hash}/stop",
         Token,
         "internal service key",
     ),
