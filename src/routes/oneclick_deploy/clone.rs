@@ -1184,10 +1184,7 @@ mod tests {
     async fn gate_lookup_error_blocks_the_clone_with_503() {
         match classify_gate_lookup::<()>("paid-kit", Err("db timeout".to_string())) {
             GateLookup::Block(resp) => {
-                assert_eq!(
-                    resp.status(),
-                    actix_web::http::StatusCode::SERVICE_UNAVAILABLE
-                )
+                assert_eq!(resp.status(), actix_web::http::StatusCode::SERVICE_UNAVAILABLE)
             }
             _ => panic!("a failed catalog lookup must block the clone, not continue"),
         }
