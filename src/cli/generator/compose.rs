@@ -1162,15 +1162,63 @@ pub fn parameterize_embedded_secret_values(
     // Longest first, so a value that contains another is replaced whole.
     substitutions.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(&b.0)));
 
-    Ok(rewrite_environment_lines(compose_content, |line| {
+    // Environment blocks and the other fields that carry values a container
+    // runs with - command, entrypoint, healthcheck: a secret there would
+    // otherwise ship in the snapshot as the author's literal. Compose
+    // interpolates `${KEY}` in those fields too. image, volumes, ports and the
+    // rest are left as they are.
+    let mut result = String::with_capacity(compose_content.len());
+    for (line, carries_values) in value_bearing_lines(compose_content) {
         let mut rewritten = line.to_string();
-        for (value, key) in &substitutions {
-            if rewritten.contains(value.as_str()) {
-                rewritten = rewritten.replace(value.as_str(), &format!("${{{key}}}"));
+        if carries_values {
+            for (value, key) in &substitutions {
+                if rewritten.contains(value.as_str()) {
+                    rewritten = rewritten.replace(value.as_str(), &format!("${{{key}}}"));
+                }
             }
         }
-        rewritten
-    }))
+        result.push_str(&rewritten);
+        result.push('\n');
+    }
+    Ok(result)
+}
+
+/// Service keys whose values a container runs with.
+const VALUE_BEARING_KEYS: [&str; 4] = ["environment", "command", "entrypoint", "healthcheck"];
+
+/// Pair every line with whether it holds a value of one of
+/// [`VALUE_BEARING_KEYS`]: the key's own line when the value is inline
+/// (`command: redis-server ...`), and every line of its block, which ends at
+/// the first non-blank line indented at or above the key.
+fn value_bearing_lines(compose_content: &str) -> Vec<(&str, bool)> {
+    let mut block_indent: Option<usize> = None;
+    let mut out = Vec::new();
+
+    for line in compose_content.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+
+        if let Some(start) = block_indent {
+            if !trimmed.is_empty() && indent <= start {
+                block_indent = None;
+            }
+        }
+        if block_indent.is_some() {
+            out.push((line, true));
+            continue;
+        }
+
+        let key = trimmed.split(':').next().unwrap_or("");
+        if trimmed.contains(':') && VALUE_BEARING_KEYS.contains(&key) {
+            block_indent = Some(indent);
+            let inline = trimmed[key.len() + 1..].trim();
+            out.push((line, !inline.is_empty()));
+            continue;
+        }
+        out.push((line, false));
+    }
+
+    out
 }
 
 /// The literal `KEY: value` pairs declared in service `environment:` blocks.
@@ -2879,6 +2927,50 @@ services:
         );
         assert!(
             !result.contains("0123456789abcdef0123456789abcdef"),
+            "no literal left:\n{result}"
+        );
+    }
+
+    /// BUGS (2026-10-15): only environment blocks were rewritten, so a secret
+    /// in a command or a healthcheck (Langfuse's redis `--requirepass`,
+    /// realtime's `Authorization: Bearer <ANON_KEY>`) shipped in the snapshot
+    /// as the author's literal - every buyer got the same value.
+    #[test]
+    fn a_secret_outside_environment_blocks_is_parameterized_too() {
+        let compose = "\
+services:
+  redis:
+    command: redis-server --requirepass 0123456789abcdef0123456789abcdef
+    healthcheck:
+      test: [\"CMD\", \"redis-cli\", \"-a\", \"0123456789abcdef0123456789abcdef\", \"ping\"]
+  realtime:
+    entrypoint: [\"sh\", \"-c\", \"curl -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.anon' http://x\"]
+";
+        let env = env_map(&[
+            ("REDIS_AUTH", "0123456789abcdef0123456789abcdef"),
+            ("ANON_KEY", "eyJhbGciOiJIUzI1NiJ9.anon"),
+        ]);
+        let result = parameterize_embedded_secret_values(
+            compose,
+            &env,
+            &key_set(&["REDIS_AUTH", "ANON_KEY"]),
+        )
+        .expect("no conflict");
+
+        assert!(
+            result.contains("--requirepass ${REDIS_AUTH}"),
+            "command parameterized:\n{result}"
+        );
+        assert!(
+            result.contains("\"-a\", \"${REDIS_AUTH}\""),
+            "healthcheck parameterized:\n{result}"
+        );
+        assert!(
+            result.contains("Bearer ${ANON_KEY}"),
+            "entrypoint parameterized:\n{result}"
+        );
+        assert!(
+            !result.contains("0123456789abcdef0123456789abcdef") && !result.contains(".anon'"),
             "no literal left:\n{result}"
         );
     }
