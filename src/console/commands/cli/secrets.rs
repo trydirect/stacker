@@ -1528,6 +1528,7 @@ mod tests {
             proxy: Default::default(),
             deploy: Default::default(),
             install: Default::default(),
+            marketplace: Default::default(),
             environments: Default::default(),
             ai: Default::default(),
             monitoring: Default::default(),

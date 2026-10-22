@@ -27,6 +27,13 @@ use tokio::sync::OnceCell;
 // is per test. Same pattern as the other suites in this directory.
 static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
 
+/// Replacement long description for the resubmit flow test. Long enough for
+/// the submit gate (`models::validate_listing_descriptions`, 100-5000 chars) —
+/// review rejects shorter ones.
+const UPDATED_LONG_DESCRIPTION: &str = "Updated long description covering the template's \
+use cases, requirements and customisation options in enough detail for the marketplace \
+listing page and the review checklist.";
+
 async fn app() -> common::TestApp {
     common::get_or_init_app_fresh(&APP_CONFIG)
         .await
@@ -576,7 +583,7 @@ async fn admin_detail_lists_extended_version_contract_for_resubmitted_templates(
         .json(&json!({
             "name": "Admin Contract Mirror Template v2",
             "short_description": "Updated short description",
-            "long_description": "Updated long description",
+            "long_description": UPDATED_LONG_DESCRIPTION,
             "category_code": "developer-tools",
             "version": "1.1.0",
             "stack_definition": {
@@ -665,7 +672,7 @@ async fn admin_detail_lists_extended_version_contract_for_resubmitted_templates(
         detail_body["item"]["short_description"]
     );
     assert_eq!(
-        json!("Updated long description"),
+        json!(UPDATED_LONG_DESCRIPTION),
         detail_body["item"]["long_description"]
     );
     assert_eq!(
@@ -798,6 +805,8 @@ async fn resubmit_same_version_updates_latest_version_in_place() {
         .json(&json!({
             "name": "Same Version Resubmit Template",
             "slug": "same-version-resubmit-template",
+            "short_description": "Listing metadata for the same-version resubmit flow.",
+            "long_description": UPDATED_LONG_DESCRIPTION,
             "version": "1.0.0",
             "source_project_id": project_id,
             "stack_definition": {

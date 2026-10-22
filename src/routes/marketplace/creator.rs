@@ -466,6 +466,20 @@ fn ensure_no_secrets_confirmation(confirmed: Option<bool>) -> Result<(), actix_w
     }
 }
 
+/// Listing descriptions are a marketplace review requirement
+/// (`docs/MARKETPLACE_PUBLISH.md` "Required metadata"): review rejects
+/// templates whose descriptions are missing or too short, so submissions are
+/// refused here before they burn a review cycle. Drafts stay editable — the
+/// gate runs at submit/resubmit time on the *effective* (merged) values.
+fn ensure_listing_descriptions(
+    short_description: Option<&str>,
+    long_description: Option<&str>,
+) -> Result<(), actix_web::Error> {
+    models::validate_listing_descriptions(short_description, long_description).map_err(
+        |violation| JsonResponse::<serde_json::Value>::build().bad_request(violation.message),
+    )
+}
+
 /// Deployment statuses that count as "this project has actually run" for the
 /// publish gate below. Mirrors the vocabulary set elsewhere in the deploy
 /// pipeline (e.g. `force_complete.rs` sets `"completed"`; agents report
@@ -1214,6 +1228,15 @@ pub async fn submit_handler(
 
     ensure_no_secrets_confirmation(body.into_inner().confirm_no_secrets)?;
 
+    let stored_template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(template_not_visible)?;
+    ensure_listing_descriptions(
+        stored_template.short_description.as_deref(),
+        stored_template.long_description.as_deref(),
+    )?;
+
     let source_project_id = db::marketplace::get_source_project_id(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
@@ -1354,6 +1377,21 @@ pub async fn resubmit_handler(
     let req = body.into_inner();
     validate_config_contract(req.config_contract.as_ref())?;
     ensure_no_secrets_confirmation(req.confirm_no_secrets)?;
+
+    let stored_template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(template_not_visible)?;
+    // `resubmit_with_new_version` COALESCEs the request values over the stored
+    // ones, so the listing check must see that merged result.
+    ensure_listing_descriptions(
+        req.short_description
+            .as_deref()
+            .or(stored_template.short_description.as_deref()),
+        req.long_description
+            .as_deref()
+            .or(stored_template.long_description.as_deref()),
+    )?;
 
     let existing_source_project_id = db::marketplace::get_source_project_id(pg_pool.get_ref(), id)
         .await

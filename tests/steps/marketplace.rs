@@ -39,8 +39,8 @@ fn template_create_body(slug: &str, source_project_id: i32) -> serde_json::Value
     json!({
         "name": format!("BDD Test Template {}", slug),
         "slug": slug,
-        "short_description": "A BDD test template",
-        "long_description": "This template is created for BDD testing purposes.",
+        "short_description": "BDD marketplace template listing description.",
+        "long_description": "This template is created for BDD testing purposes and carries a listing description long enough for the marketplace review checklist and the submit gate.",
         "category_code": "Dev Tools",
         "tags": ["bdd", "test"],
         "version": "1.0.0",

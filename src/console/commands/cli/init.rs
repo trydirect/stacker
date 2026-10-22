@@ -1670,6 +1670,7 @@ fn convert_compose_to_stacker(ai_output: &str, repo_name: &str) -> Option<Stacke
             ..Default::default()
         },
         install: crate::cli::config_parser::InstallConfig::default(),
+        marketplace: crate::cli::config_parser::MarketplacePublishConfig::default(),
         environments: BTreeMap::new(),
         ai: crate::cli::config_parser::AiConfig::default(),
         monitoring: crate::cli::config_parser::MonitoringConfig {

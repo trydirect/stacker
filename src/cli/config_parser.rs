@@ -971,6 +971,118 @@ pub struct InstallConfig {
     pub inputs: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Marketplace listing metadata (`marketplace:` block in stacker.yml).
+///
+/// Only read at publish time (`stacker submit`) — ignored by deploy. See
+/// `docs/MARKETPLACE_PUBLISH.md` for the review requirements these fields feed.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct MarketplacePublishConfig {
+    /// Explicit opt-in switch. `false` makes `stacker submit` refuse.
+    pub publish: Option<bool>,
+
+    /// Listing name override; defaults to the project `name`.
+    pub display_name: Option<String>,
+
+    /// One-sentence listing summary (20-200 characters).
+    pub short_description: Option<String>,
+
+    /// Markdown listing body (100-5000 characters).
+    pub long_description: Option<String>,
+
+    /// Marketplace category code (e.g. `ai-agents`).
+    #[serde(alias = "category_code")]
+    pub category: Option<String>,
+
+    /// Search/discovery tags.
+    pub tags: Vec<String>,
+
+    /// License shorthand (`free`, `paid`, `subscription`). `paid` maps to a
+    /// one-time plan when `pricing.plan_type` is absent.
+    pub license: Option<String>,
+
+    /// Pricing terms for paid listings.
+    pub pricing: Option<MarketplacePricing>,
+
+    /// Public support/docs URL for buyers.
+    pub support_url: Option<String>,
+
+    /// The author's confirmation that the stack carries no secrets. Must stay
+    /// `true` to submit.
+    pub no_secrets_confirmation: Option<bool>,
+}
+
+/// Pricing terms inside the `marketplace:` block.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct MarketplacePricing {
+    /// `free`, `one_time`, or `subscription`.
+    pub plan_type: Option<String>,
+
+    /// Price amount in `currency`; ignored for free plans.
+    pub price: Option<f64>,
+
+    /// ISO 4217 currency code (default `USD`).
+    pub currency: Option<String>,
+}
+
+impl MarketplacePublishConfig {
+    /// Whether no marketplace metadata was configured at all.
+    pub fn is_empty(&self) -> bool {
+        self.publish.is_none()
+            && self.display_name.is_none()
+            && self.short_description.is_none()
+            && self.long_description.is_none()
+            && self.category.is_none()
+            && self.tags.is_empty()
+            && self.license.is_none()
+            && self.pricing.is_none()
+            && self.support_url.is_none()
+            && self.no_secrets_confirmation.is_none()
+    }
+
+    /// Effective pricing plan (`free`, `one_time`, `subscription`), mapping the
+    /// documented `license: paid` shorthand to `one_time`. An explicit
+    /// `pricing.plan_type` wins over `license`; `Ok(None)` means "not
+    /// specified" — `stacker submit` then defaults to `free`.
+    pub fn resolved_plan_type(&self) -> Result<Option<String>, String> {
+        let pricing_plan = self
+            .pricing
+            .as_ref()
+            .and_then(|pricing| pricing.plan_type.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(plan_type) = pricing_plan {
+            return match plan_type {
+                "free" | "one_time" | "subscription" => Ok(Some(plan_type.to_string())),
+                other => Err(format!(
+                    "marketplace.pricing.plan_type '{other}' is not valid (expected 'free', \
+                     'one_time' or 'subscription')"
+                )),
+            };
+        }
+
+        let license = self
+            .license
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(license) = license {
+            return match license {
+                "free" => Ok(Some("free".to_string())),
+                "paid" => Ok(Some("one_time".to_string())),
+                "subscription" => Ok(Some("subscription".to_string())),
+                other => Err(format!(
+                    "marketplace.license '{other}' is not valid (expected 'free', 'paid' or \
+                     'subscription')"
+                )),
+            };
+        }
+
+        Ok(None)
+    }
+}
+
 /// Cloud provider settings for cloud deployments.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloudConfig {
@@ -1827,6 +1939,11 @@ pub struct StackerConfig {
     #[serde(default)]
     pub install: InstallConfig,
 
+    /// Marketplace listing metadata for `stacker submit`. Absent → empty, so
+    /// projects that never publish are unaffected.
+    #[serde(default, skip_serializing_if = "MarketplacePublishConfig::is_empty")]
+    pub marketplace: MarketplacePublishConfig,
+
     #[serde(default)]
     pub environments: BTreeMap<String, EnvironmentConfig>,
 
@@ -2306,6 +2423,42 @@ impl StackerConfig {
                         self.proxy.proxy_type
                     ),
                     field: Some("proxy.type".to_string()),
+                });
+            }
+        }
+
+        // W004 — marketplace listing metadata (`docs/MARKETPLACE_PUBLISH.md`
+        // "Required metadata"). A warning, not an error: this block is publish
+        // metadata and must never block `stacker deploy`. `stacker submit` and
+        // the marketplace submit API reject bad listings outright.
+        if !self.marketplace.is_empty() {
+            for violation in crate::models::listing_description_violations(
+                self.marketplace.short_description.as_deref(),
+                self.marketplace.long_description.as_deref(),
+            ) {
+                issues.push(ValidationIssue {
+                    severity: Severity::Warning,
+                    code: "W004".to_string(),
+                    message: violation.message,
+                    field: Some(format!("marketplace.{}", violation.field)),
+                });
+            }
+            if let Err(message) = self.marketplace.resolved_plan_type() {
+                issues.push(ValidationIssue {
+                    severity: Severity::Warning,
+                    code: "W004".to_string(),
+                    message,
+                    field: Some("marketplace.license".to_string()),
+                });
+            }
+            if self.marketplace.no_secrets_confirmation == Some(false) {
+                issues.push(ValidationIssue {
+                    severity: Severity::Warning,
+                    code: "W004".to_string(),
+                    message: "marketplace.no_secrets_confirmation is false; `stacker submit` \
+                              requires it to be true before a template enters review"
+                        .to_string(),
+                    field: Some("marketplace.no_secrets_confirmation".to_string()),
                 });
             }
         }
@@ -3042,6 +3195,7 @@ impl ConfigBuilder {
                 targets: BTreeMap::new(),
             },
             install: InstallConfig::default(),
+            marketplace: MarketplacePublishConfig::default(),
             environments: BTreeMap::new(),
             ai: self.ai.unwrap_or_default(),
             monitoring: self.monitoring.unwrap_or_default(),
@@ -3627,6 +3781,159 @@ deploy:
             config.install.inputs.get("admin_email"),
             Some(&serde_json::json!("admin@example.com"))
         );
+    }
+
+    #[test]
+    fn test_parse_marketplace_publish_block() {
+        let yaml = r#"
+name: ai-helpdesk-starter
+marketplace:
+  publish: true
+  display_name: "Internal AI Helpdesk"
+  short_description: "Self-hosted AI helpdesk with n8n workflows and Ollama."
+  long_description: |
+    Deploy a complete internal AI helpdesk stack: n8n handles ticket routing
+    and workflow automation while Ollama serves the local LLM.
+  category: ai-agents
+  tags: [n8n, ollama, helpdesk]
+  license: paid
+  pricing:
+    plan_type: one_time
+    price: 49
+    currency: USD
+  support_url: https://github.com/your-org/ai-helpdesk-starter
+  no_secrets_confirmation: true
+"#;
+
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let marketplace = &config.marketplace;
+        assert_eq!(marketplace.publish, Some(true));
+        assert_eq!(
+            marketplace.display_name.as_deref(),
+            Some("Internal AI Helpdesk")
+        );
+        assert!(marketplace
+            .long_description
+            .as_deref()
+            .unwrap()
+            .contains("ticket routing"));
+        assert_eq!(marketplace.category.as_deref(), Some("ai-agents"));
+        assert_eq!(marketplace.tags, vec!["n8n", "ollama", "helpdesk"]);
+        assert_eq!(marketplace.license.as_deref(), Some("paid"));
+        let pricing = marketplace.pricing.as_ref().unwrap();
+        assert_eq!(pricing.plan_type.as_deref(), Some("one_time"));
+        assert_eq!(pricing.price, Some(49.0));
+        assert_eq!(pricing.currency.as_deref(), Some("USD"));
+        assert_eq!(
+            marketplace.support_url.as_deref(),
+            Some("https://github.com/your-org/ai-helpdesk-starter")
+        );
+        assert_eq!(marketplace.no_secrets_confirmation, Some(true));
+        assert_eq!(
+            marketplace.resolved_plan_type().unwrap().as_deref(),
+            Some("one_time")
+        );
+        assert!(config
+            .validate_semantics()
+            .iter()
+            .all(|issue| issue.code != "W004"));
+    }
+
+    /// A typo in the `marketplace:` block must fail parsing loudly — silently
+    /// dropping the key is how listing metadata went missing in review.
+    #[test]
+    fn test_parse_unknown_marketplace_key_is_rejected() {
+        let yaml = r#"
+name: my-stack
+marketplace:
+  short_description: "A short description of the stack."
+  long_descrption: "A typo'd key must fail loudly, not be silently ignored."
+"#;
+        let err = StackerConfig::from_str(yaml).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unknown field `long_descrption`"),
+            "expected unknown-field error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_marketplace_block_absent_is_empty() {
+        let config = StackerConfig::from_str("name: my-stack\n").unwrap();
+        assert!(config.marketplace.is_empty());
+        assert!(config.marketplace.resolved_plan_type().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_validate_semantics_warns_on_incomplete_marketplace_listing() {
+        let yaml = r#"
+name: my-stack
+marketplace:
+  publish: true
+  short_description: "Too short"
+  long_description: "Missing long description"
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let w004: Vec<_> = config
+            .validate_semantics()
+            .into_iter()
+            .filter(|issue| issue.code == "W004")
+            .collect();
+        assert!(
+            w004.len() >= 2,
+            "expected warnings for both descriptions: {w004:?}"
+        );
+        assert!(w004
+            .iter()
+            .any(|issue| issue.field.as_deref() == Some("marketplace.short_description")));
+        assert!(w004
+            .iter()
+            .any(|issue| issue.field.as_deref() == Some("marketplace.long_description")));
+    }
+
+    #[test]
+    fn test_marketplace_license_and_plan_type_resolution() {
+        let paid = StackerConfig::from_str(
+            r#"
+name: my-stack
+marketplace:
+  license: paid
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            paid.marketplace.resolved_plan_type().unwrap().as_deref(),
+            Some("one_time")
+        );
+
+        let subscription = StackerConfig::from_str(
+            r#"
+name: my-stack
+marketplace:
+  license: paid
+  pricing:
+    plan_type: subscription
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            subscription
+                .marketplace
+                .resolved_plan_type()
+                .unwrap()
+                .as_deref(),
+            Some("subscription")
+        );
+
+        let invalid = StackerConfig::from_str(
+            r#"
+name: my-stack
+marketplace:
+  license: commercial
+"#,
+        )
+        .unwrap();
+        assert!(invalid.marketplace.resolved_plan_type().is_err());
     }
 
     #[test]
