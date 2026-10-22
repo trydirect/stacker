@@ -554,3 +554,30 @@ message also hides the cause: it does not say which version was asked for.
 - Should a missing exact version fall back to the latest healthy snapshot
   (with a warning), or stay a hard error with the requested version in the
   message?
+
+## 12. 🟠 OPEN — `stacker install <template>` writes no `.env`, so `${VAR}` defaults from `.env.example` are missing (found 2026-10-19)
+
+**Severity:** Medium - a marketplace template whose `stacker.yml` reads a
+plain (non-secret) value through `${VAR}` cannot be deployed after
+`stacker install`.
+
+### Reproduced (2026-10-19, CLI `1cd524e`)
+
+```console
+$ stacker install local-ai-packaged --domain local-ai-packaged.try.direct --key <key> --region fsn1 --file ./stacker.yml --force
+OK: stacker.yml written
+$ stacker deploy --target cloud --key <key> --force-new --no-hooks
+✗ Environment variable not found: $FLOWISE_USERNAME
+```
+
+`FLOWISE_USERNAME=admin` lives only in the template's `.env.example`; the
+install writes `stacker.yml` and nothing else, so every `${VAR}` whose value
+is a default in `.env.example` (not a contract-generated secret) is unset.
+Deploying from the template's own directory (with `.env` created from
+`.env.example`) works.
+
+### Expected
+
+`stacker install` materializes the template's `.env.example` defaults (and
+the contract's generated values) into `.env`, or the deploy treats a
+`.env.example` default as the value.
