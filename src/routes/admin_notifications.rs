@@ -20,7 +20,7 @@
 //! incoming admin-ui request's query string or body. Do not change that.
 
 use crate::models;
-use actix_web::{get, patch, web, HttpResponse, Responder, Result};
+use actix_web::{get, patch, post, web, HttpResponse, Responder, Result};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -125,6 +125,29 @@ pub async fn unread_count_handler(admin: web::ReqData<Arc<models::User>>) -> imp
 #[derive(Deserialize)]
 pub struct UpdateNotificationRequest {
     pub is_read: bool,
+}
+
+#[tracing::instrument(name = "Admin notification bell: mark all read", skip_all)]
+#[post("/mark-all-read")]
+pub async fn mark_all_read_handler(admin: web::ReqData<Arc<models::User>>) -> impl Responder {
+    let result = async {
+        let base_url = user_service_base_url()?;
+        let key = internal_service_key()?;
+
+        http_client()
+            .post(format!(
+                "{}/notifications/mark-all-read",
+                base_url.trim_end_matches('/')
+            ))
+            .header("X-Internal-Service-Key", key)
+            .query(&[("admin_email", admin.email.clone())])
+            .send()
+            .await
+            .map_err(|e| format!("request to User Service failed: {}", e))
+    }
+    .await;
+
+    relay(result).await
 }
 
 #[tracing::instrument(name = "Admin notification bell: mark read", skip_all)]

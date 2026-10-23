@@ -511,6 +511,11 @@ pub async fn run(
                                      .service(
                                          crate::routes::admin_notifications::unread_count_handler,
                                      )
+                                     // literal paths before /{id}, which would
+                                     // otherwise match them as an id first
+                                     .service(
+                                         crate::routes::admin_notifications::mark_all_read_handler,
+                                     )
                                      .service(crate::routes::admin_notifications::update_handler),
                              )
                              .service(
