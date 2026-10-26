@@ -120,9 +120,68 @@ pub fn check_health_url(url: &str, server_ip: &str) -> Result<(), String> {
     }
 }
 
+/// GET the build box's health URL (already checked by [`check_health_url`]);
+/// any 2xx passes. Redirects are not followed: the box chooses where they
+/// point, and the backend would call that address for it.
+pub async fn probe_health(health_url: &str) -> Result<(), String> {
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?
+        .get(health_url)
+        .send()
+        .await
+        .map_err(|e| format!("health check: {health_url} unreachable: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "health check: {health_url} returned {}",
+            response.status()
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn the_health_probe_does_not_follow_a_redirect_off_the_box() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        // The checked URL is on the box; what the box answers is not ours.
+        // Following its redirect would make the backend call any address,
+        // e.g. an internal service, on the box's behalf.
+        let elsewhere = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&elsewhere)
+            .await;
+        let the_box = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("Location", format!("{}/internal", elsewhere.uri()).as_str()),
+            )
+            .mount(&the_box)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/ok"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&the_box)
+            .await;
+
+        assert!(probe_health(&format!("{}/ok", the_box.uri())).await.is_ok());
+        assert!(probe_health(&format!("{}/health", the_box.uri()))
+            .await
+            .is_err());
+        assert!(
+            elsewhere.received_requests().await.unwrap().is_empty(),
+            "the redirect target must not be called"
+        );
+    }
 
     const PLATFORM: &[&str] = &[
         "/home/trydirect/statuspanel",
