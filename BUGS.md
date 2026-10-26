@@ -657,3 +657,19 @@ script) cannot connect.
 
 Write the saved key path into the lock. Test: after a cloud deploy, the lock's
 `ssh_key` points to an existing key file.
+
+## 17. 🟠 NOT CONFIRMED — a bake reports `done` and offers the snapshot while the Hetzner image is still `creating` (found 2026-10-26)
+
+### Observed (2026-10-26)
+
+`GET /api/admin/bake/{id}` returned `done` with an `image_id`. A Quick Deploy started
+right after failed; the clone call answered 502 "Hetzner clone failed" with Hetzner
+422 `image not yet available`, and the Hetzner API showed the image in status
+`creating`. The buyer-facing message was only "Deploy failed: 400: Bad Request".
+
+### Fix direction
+
+Mark the bake `done` (and the snapshot resolvable for clone) only after the image is
+`available`, or have clone answer a clear "snapshot still being prepared, retry in a
+few minutes" instead of a generic failure. Test: a snapshot whose image is
+`creating` is not offered to clone.
