@@ -621,3 +621,39 @@ regenerated independently per buyer", which holds for `generated` keys only.
   should bake still refuse but say why (the template author used one value for
   two buyer inputs)?
 - At minimum the message should not claim regeneration for `provided` keys.
+
+## 15. 🟠 NOT CONFIRMED — clone defaults to `cpx11`, which Hetzner no longer offers in fsn1/nbg1/hel1 (found 2026-10-26)
+
+### Observed (2026-10-26)
+
+`POST /api/v1/deploy/clone` without `server_type` failed with Hetzner 422
+"unsupported location for server type". The Hetzner API lists `cpx11` as
+deprecated and unavailable in fsn1, nbg1, hel1 and sin (available only in ash and
+hil). The same request with `server_type: cpx22` succeeded.
+
+### Root cause (by reading)
+
+`default_server_type()` in `src/routes/oneclick_deploy/clone.rs` returns
+`"cpx11"`, and `default_region()` returns `"fsn1"`, so the two defaults together
+can no longer create a server.
+
+### Fix direction
+
+Default to the server type the snapshot was baked on (or the stack's
+`deploy.cloud.size`), not a fixed name. Test: a clone request without
+`server_type` uses the snapshot's type.
+
+## 16. 🟡 NOT CONFIRMED — the cloud deployment lock records `ssh_key: null` (found 2026-10-26)
+
+### Observed (2026-10-26)
+
+After `stacker deploy --target cloud --key <saved cloud>`, the
+`.stacker/deployment-cloud.lock` had `ssh_key: null`, although the CLI had just
+saved the server's key to `~/.config/stacker/ssh/server-<id>_ed25519` and that
+key logs in. Tools that read the lock to reach the server (for example a bake
+script) cannot connect.
+
+### Fix direction
+
+Write the saved key path into the lock. Test: after a cloud deploy, the lock's
+`ssh_key` points to an existing key file.
