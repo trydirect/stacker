@@ -581,3 +581,43 @@ Deploying from the template's own directory (with `.env` created from
 `stacker install` materializes the template's `.env.example` defaults (and
 the contract's generated values) into `.env`, or the deploy treats a
 `.env.example` default as the value.
+## 13. 🟠 NOT CONFIRMED — bake finalize drops the build box's volumes before it checks for secret conflicts (found 2026-10-26)
+
+### Observed (2026-10-26)
+
+`POST /api/admin/bake` on a healthy build box failed with "the same secret value
+is declared under 2 protected fields (EMBEDDING_BINDING_API_KEY,
+LLM_BINDING_API_KEY)". The report said the stack was already stopped and its data
+volumes dropped, so the box could not be baked again and a new one had to be
+deployed.
+
+### Root cause (by reading `src/helpers/bake_finalize.rs`, not yet confirmed by a test)
+
+`finalize_build_box` runs the volume reset (stage 2, around line 484) before
+`parameterize_embedded_secret_values` (stage 3), which is where the conflict is
+detected. The conflict depends only on the compose and `.env` already read in
+stage 1, so it could be checked before anything destructive runs.
+
+### Fix direction
+
+Run the conflict check (and the other checks that need only the files read in
+stage 1) before the teardown, and keep the stage 3 rewrite where it is. Test:
+a build box whose `.env` has two protected keys with one value fails without
+running any volume reset command.
+
+## 14. 🟡 NOT CONFIRMED — the secret-conflict check also rejects `provided` keys that share a value (found 2026-10-26)
+
+### Observed (2026-10-26)
+
+Same bake as #13. Both keys are `mutability: provided`: the buyer enters them on
+Quick Deploy, and nothing regenerates them. A buyer can reasonably use one OpenAI
+key for both the LLM and the embedding endpoint. The message says "each is
+regenerated independently per buyer", which holds for `generated` keys only.
+
+### Open questions before a fix
+
+- For `provided` keys, the bake parameterizes embedded copies by value. When two
+  `provided` keys share a value, should the embedded copy go to either key, or
+  should bake still refuse but say why (the template author used one value for
+  two buyer inputs)?
+- At minimum the message should not claim regeneration for `provided` keys.
