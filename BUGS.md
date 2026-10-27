@@ -723,3 +723,21 @@ answered normally. The redeploy itself worked; only its status says it did not.
 Exclude the containers of the stack being deployed (same compose project) when
 checking whether its ports are taken. Test: redeploying a running stack with
 unchanged ports does not report a port conflict.
+
+## 21. 🟠 NOT CONFIRMED — a bake of a `--target server` deployment records no server type, so Quick Deploy offers the default size (found 2026-10-27)
+
+### Observed (2026-10-27)
+
+n8n 2.0.0 was baked from a build box created as a Hetzner `cpx22`, but redeployed
+with `stacker deploy --target server` before the bake. Quick Deploy prepare then
+offered `cpx32` ($26/mo) instead of `cpx22`. `admin_bake.rs` records the snapshot's
+`server_type` from the deployment's server row (`p.server.server`); the consumer
+falls back to its default (`cpx32`) when it is empty. Guess, not checked in the
+DB: the server row of a server-target deployment has no type.
+
+### Fix direction
+
+Take the snapshot's server type from the provider (the Hetzner server the image was
+made from), not from the deployment's server row, or refuse a bake whose server
+type is unknown. Test: a bake of a box with no recorded type stores the provider's
+type.
