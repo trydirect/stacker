@@ -691,3 +691,19 @@ rule either: patterns compile with the `regex` crate, which has no look-ahead
 A `password` generated type that guarantees one character of each class (with a
 configurable symbol set), so stacks with complexity rules can generate the admin
 password per clone. Test: 1000 generated values all match the four classes.
+
+## 19. 🟡 NOT CONFIRMED — a cloud deploy uploads project files without their executable bit (found 2026-10-27)
+
+### Observed (2026-10-27)
+
+`scripts/n8n-entrypoint.sh` is `-rwxr-xr-x` in git and locally. After
+`stacker deploy --target cloud` it was `-rw-r--r--` in
+`/home/trydirect/project/scripts/` on the server, so a container that bind-mounts
+it and execs it directly crash-looped with
+`exec /docker-entrypoint.sh failed: Permission denied`.
+
+### Fix direction
+
+Keep the source file mode when uploading project files (at least the owner
+execute bit). Test: an executable file in the project arrives executable on the
+server.
