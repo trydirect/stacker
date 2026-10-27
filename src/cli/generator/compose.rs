@@ -913,18 +913,61 @@ pub fn parameterize_compose_env_vars(
 /// `${VAR}` counts, since a value that merely embeds a variable (a DSN, a URL)
 /// cannot be replaced by a single reference.
 pub fn env_reference_aliases(raw_stacker_yml: &str) -> std::collections::HashMap<String, String> {
-    let mut aliases = std::collections::HashMap::new();
-    let re = regex::Regex::new(
-        r#"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*"?\$\{([A-Za-z_][A-Za-z0-9_]*)\}"?\s*$"#,
-    )
-    .expect("valid regex");
+    // Per service ("service/KEY"), and by KEY alone only where every service
+    // that declares KEY references the same variable: one name may reference
+    // different variables in two services (deployment #1363, Supabase's db and
+    // Langfuse's postgres both set POSTGRES_PASSWORD).
+    let reference = regex::Regex::new(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$").expect("valid regex");
+    let doc: serde_yaml::Value = serde_yaml::from_str(raw_stacker_yml).unwrap_or_default();
 
-    for line in raw_stacker_yml.lines() {
-        if let Some(caps) = re.captures(line) {
-            let key = caps[1].to_string();
-            let var = caps[2].to_string();
-            if key != var {
-                aliases.insert(key, var);
+    let mut declared: Vec<(String, String, String)> = Vec::new(); // (service, key, referenced)
+    let mut collect = |service: &str, env: Option<&serde_yaml::Value>| {
+        let Some(serde_yaml::Value::Mapping(map)) = env else {
+            return;
+        };
+        for (key, value) in map {
+            let (Some(key), Some(value)) = (key.as_str(), value.as_str()) else {
+                continue;
+            };
+            let referenced = reference
+                .captures(value.trim())
+                .map(|caps| caps[1].to_string())
+                .unwrap_or_default();
+            declared.push((service.to_string(), key.to_string(), referenced));
+        }
+    };
+    collect("app", doc.get("app").and_then(|app| app.get("environment")));
+    // The top-level `env:` is file-wide: no compose service is named "*", so it
+    // only counts towards the by-KEY aliases, as every reference did before.
+    collect("*", doc.get("env"));
+    if let Some(serde_yaml::Value::Sequence(services)) = doc.get("services") {
+        for svc in services {
+            if let Some(name) = svc.get("name").and_then(serde_yaml::Value::as_str) {
+                collect(name, svc.get("environment"));
+            }
+        }
+    }
+
+    let mut aliases = std::collections::HashMap::new();
+    let mut by_key: std::collections::HashMap<&str, std::collections::BTreeSet<&str>> =
+        std::collections::HashMap::new();
+    for (service, key, referenced) in &declared {
+        // A literal value or an embedded reference counts as "itself" here.
+        let target = if referenced.is_empty() {
+            key.as_str()
+        } else {
+            referenced.as_str()
+        };
+        by_key.entry(key.as_str()).or_default().insert(target);
+        if !referenced.is_empty() && referenced != key {
+            aliases.insert(format!("{service}/{key}"), referenced.clone());
+        }
+    }
+    for (key, targets) in by_key {
+        if targets.len() == 1 {
+            let target = targets.into_iter().next().unwrap_or(key);
+            if target != key {
+                aliases.insert(key.to_string(), target.to_string());
             }
         }
     }
@@ -946,10 +989,26 @@ pub fn parameterize_compose_env_vars_with_aliases(
     let mut in_environment = false;
     let mut env_indent = 0usize;
     let mut result = String::with_capacity(compose_content.len());
+    // The compose service the current line belongs to (`  name:` under
+    // `services:`), so a service's own reference wins over the file-wide one.
+    let mut in_services = false;
+    let mut service = String::new();
+    let lookup = |service: &str, key: &str| -> Option<String> {
+        aliases
+            .get(&format!("{service}/{key}"))
+            .or_else(|| aliases.get(key))
+            .cloned()
+    };
 
     for line in compose_content.lines() {
         let trimmed = line.trim_start();
         let indent = line.len() - trimmed.len();
+
+        if indent == 0 && !trimmed.is_empty() {
+            in_services = trimmed == "services:";
+        } else if in_services && indent == 2 && trimmed.ends_with(':') {
+            service = trimmed.trim_end_matches(':').to_string();
+        }
 
         // Track whether we're inside an `environment:` block belonging to a
         // service.  The block ends when we hit a line at the same or shallower
@@ -979,12 +1038,12 @@ pub fn parameterize_compose_env_vars_with_aliases(
                 if let Some((key, _value)) = entry.split_once('=') {
                     let key = key.trim();
                     if is_env_identifier(key) && env_keys.contains(key) {
-                        let reference = aliases.get(key).map(String::as_str).unwrap_or(key);
+                        let reference = lookup(&service, key).unwrap_or_else(|| key.to_string());
                         result.push_str(&line[..indent]);
                         result.push_str("- ");
                         result.push_str(key);
                         result.push_str("=${");
-                        result.push_str(reference);
+                        result.push_str(&reference);
                         result.push_str("}\n");
                         continue;
                     }
@@ -993,13 +1052,13 @@ pub fn parameterize_compose_env_vars_with_aliases(
                 // Match "      KEY: value" — the key must be a valid env identifier.
                 let key = key.trim();
                 if is_env_identifier(key) && env_keys.contains(key) {
-                    let reference = aliases.get(key).map(String::as_str).unwrap_or(key);
+                    let reference = lookup(&service, key).unwrap_or_else(|| key.to_string());
                     // Preserve the original indent and replace the value.
                     let prefix = &line[..indent + key.len()];
                     // Find where the value starts (after "KEY: ").
                     result.push_str(prefix);
                     result.push_str(": ${");
-                    result.push_str(reference);
+                    result.push_str(&reference);
                     result.push_str("}\n");
                     continue;
                 }
@@ -1103,15 +1162,63 @@ pub fn parameterize_embedded_secret_values(
     // Longest first, so a value that contains another is replaced whole.
     substitutions.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(&b.0)));
 
-    Ok(rewrite_environment_lines(compose_content, |line| {
+    // Environment blocks and the other fields that carry values a container
+    // runs with - command, entrypoint, healthcheck: a secret there would
+    // otherwise ship in the snapshot as the author's literal. Compose
+    // interpolates `${KEY}` in those fields too. image, volumes, ports and the
+    // rest are left as they are.
+    let mut result = String::with_capacity(compose_content.len());
+    for (line, carries_values) in value_bearing_lines(compose_content) {
         let mut rewritten = line.to_string();
-        for (value, key) in &substitutions {
-            if rewritten.contains(value.as_str()) {
-                rewritten = rewritten.replace(value.as_str(), &format!("${{{key}}}"));
+        if carries_values {
+            for (value, key) in &substitutions {
+                if rewritten.contains(value.as_str()) {
+                    rewritten = rewritten.replace(value.as_str(), &format!("${{{key}}}"));
+                }
             }
         }
-        rewritten
-    }))
+        result.push_str(&rewritten);
+        result.push('\n');
+    }
+    Ok(result)
+}
+
+/// Service keys whose values a container runs with.
+const VALUE_BEARING_KEYS: [&str; 4] = ["environment", "command", "entrypoint", "healthcheck"];
+
+/// Pair every line with whether it holds a value of one of
+/// [`VALUE_BEARING_KEYS`]: the key's own line when the value is inline
+/// (`command: redis-server ...`), and every line of its block, which ends at
+/// the first non-blank line indented at or above the key.
+fn value_bearing_lines(compose_content: &str) -> Vec<(&str, bool)> {
+    let mut block_indent: Option<usize> = None;
+    let mut out = Vec::new();
+
+    for line in compose_content.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+
+        if let Some(start) = block_indent {
+            if !trimmed.is_empty() && indent <= start {
+                block_indent = None;
+            }
+        }
+        if block_indent.is_some() {
+            out.push((line, true));
+            continue;
+        }
+
+        let key = trimmed.split(':').next().unwrap_or("");
+        if trimmed.contains(':') && VALUE_BEARING_KEYS.contains(&key) {
+            block_indent = Some(indent);
+            let inline = trimmed[key.len() + 1..].trim();
+            out.push((line, !inline.is_empty()));
+            continue;
+        }
+        out.push((line, false));
+    }
+
+    out
 }
 
 /// The literal `KEY: value` pairs declared in service `environment:` blocks.
@@ -2620,6 +2727,65 @@ services:
         );
     }
 
+    /// Deployment #1363 (local-ai-packaged, 2026-10-15): Supabase's `db` and
+    /// Langfuse's `postgres` both declare POSTGRES_PASSWORD, referencing
+    /// different variables. One map for the whole file gave Supabase's db the
+    /// Langfuse password, and auth/rest/storage restarted forever.
+    #[test]
+    fn one_env_name_keeps_each_services_own_reference() {
+        let raw = r#"
+services:
+  - name: db
+    environment:
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+  - name: postgres
+    environment:
+      POSTGRES_PASSWORD: "${LANGFUSE_POSTGRES_PASSWORD}"
+  - name: auth
+    environment:
+      DB_PASS: ${POSTGRES_PASSWORD}
+"#;
+        let compose = "\
+services:
+  db:
+    environment:
+      POSTGRES_PASSWORD: placeholder-value # pragma: allowlist secret
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: placeholder-value # pragma: allowlist secret
+  auth:
+    environment:
+      - DB_PASS=placeholder-value # pragma: allowlist secret
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("POSTGRES_PASSWORD".to_string());
+        keys.insert("DB_PASS".to_string());
+
+        let result =
+            parameterize_compose_env_vars_with_aliases(compose, &keys, &env_reference_aliases(raw));
+
+        let db = result.split("  postgres:").next().unwrap();
+        let postgres = result
+            .split("  postgres:")
+            .nth(1)
+            .unwrap()
+            .split("  auth:")
+            .next()
+            .unwrap();
+        assert!(
+            db.contains("POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}"),
+            "{result}"
+        );
+        assert!(
+            postgres.contains("POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD}"),
+            "{result}"
+        );
+        assert!(
+            result.contains("- DB_PASS=${POSTGRES_PASSWORD}"),
+            "{result}"
+        );
+    }
+
     #[test]
     fn aliases_are_read_from_the_unresolved_stacker_yml() {
         let raw = r#"
@@ -2761,6 +2927,50 @@ services:
         );
         assert!(
             !result.contains("0123456789abcdef0123456789abcdef"),
+            "no literal left:\n{result}"
+        );
+    }
+
+    /// BUGS (2026-10-15): only environment blocks were rewritten, so a secret
+    /// in a command or a healthcheck (Langfuse's redis `--requirepass`,
+    /// realtime's `Authorization: Bearer <ANON_KEY>`) shipped in the snapshot
+    /// as the author's literal - every buyer got the same value.
+    #[test]
+    fn a_secret_outside_environment_blocks_is_parameterized_too() {
+        let compose = "\
+services:
+  redis:
+    command: redis-server --requirepass 0123456789abcdef0123456789abcdef
+    healthcheck:
+      test: [\"CMD\", \"redis-cli\", \"-a\", \"0123456789abcdef0123456789abcdef\", \"ping\"]
+  realtime:
+    entrypoint: [\"sh\", \"-c\", \"curl -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.anon' http://x\"]
+";
+        let env = env_map(&[
+            ("REDIS_AUTH", "0123456789abcdef0123456789abcdef"),
+            ("ANON_KEY", "eyJhbGciOiJIUzI1NiJ9.anon"),
+        ]);
+        let result = parameterize_embedded_secret_values(
+            compose,
+            &env,
+            &key_set(&["REDIS_AUTH", "ANON_KEY"]),
+        )
+        .expect("no conflict");
+
+        assert!(
+            result.contains("--requirepass ${REDIS_AUTH}"),
+            "command parameterized:\n{result}"
+        );
+        assert!(
+            result.contains("\"-a\", \"${REDIS_AUTH}\""),
+            "healthcheck parameterized:\n{result}"
+        );
+        assert!(
+            result.contains("Bearer ${ANON_KEY}"),
+            "entrypoint parameterized:\n{result}"
+        );
+        assert!(
+            !result.contains("0123456789abcdef0123456789abcdef") && !result.contains(".anon'"),
             "no literal left:\n{result}"
         );
     }

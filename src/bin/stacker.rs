@@ -219,6 +219,7 @@ enum StackerCommands {
         handoff: String,
     },
     /// Submit current stack to the marketplace for review
+    #[command(visible_alias = "publish")]
     Submit {
         /// Path to stacker.yml (default: ./stacker.yml)
         #[arg(long, value_name = "FILE")]
@@ -229,9 +230,17 @@ enum StackerCommands {
         /// Unique marketplace slug (defaults to a slug derived from the stack name)
         #[arg(long)]
         slug: Option<String>,
-        /// Short description for marketplace listing
+        /// Short description for marketplace listing (20-200 chars; or set
+        /// marketplace.short_description in stacker.yml)
         #[arg(long)]
         description: Option<String>,
+        /// Long description for marketplace listing (markdown, 100-5000 chars;
+        /// or set marketplace.long_description in stacker.yml)
+        #[arg(long)]
+        long_description: Option<String>,
+        /// Read the long description from a file (markdown)
+        #[arg(long, value_name = "FILE")]
+        long_description_file: Option<String>,
         /// Category code (e.g. ai-agents, data-pipelines, saas-starter)
         #[arg(long)]
         category: Option<String>,
@@ -644,9 +653,17 @@ enum MarketplaceCommands {
         /// Unique marketplace slug (defaults to a slug derived from the stack name)
         #[arg(long)]
         slug: Option<String>,
-        /// Short description for marketplace listing
+        /// Short description for marketplace listing (20-200 chars; or set
+        /// marketplace.short_description in stacker.yml)
         #[arg(long)]
         description: Option<String>,
+        /// Long description for marketplace listing (markdown, 100-5000 chars;
+        /// or set marketplace.long_description in stacker.yml)
+        #[arg(long)]
+        long_description: Option<String>,
+        /// Read the long description from a file (markdown)
+        #[arg(long, value_name = "FILE")]
+        long_description_file: Option<String>,
         /// Category code (e.g. ai-agents, data-pipelines, saas-starter)
         #[arg(long)]
         category: Option<String>,
@@ -2995,6 +3012,8 @@ fn get_command(
             version,
             slug,
             description,
+            long_description,
+            long_description_file,
             category,
             plan_type,
             price,
@@ -3003,6 +3022,8 @@ fn get_command(
             version,
             slug,
             description,
+            long_description,
+            long_description_file,
             category,
             plan_type,
             price,
@@ -3056,6 +3077,8 @@ fn get_command(
                 version,
                 slug,
                 description,
+                long_description,
+                long_description_file,
                 category,
                 plan_type,
                 price,
@@ -3064,6 +3087,8 @@ fn get_command(
                 version,
                 slug,
                 description,
+                long_description,
+                long_description_file,
                 category,
                 plan_type,
                 price,

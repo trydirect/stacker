@@ -262,3 +262,54 @@ async fn unread_count_surfaces_upstream_failure_instead_of_a_fake_200() {
 
     assert_ne!(StatusCode::OK, response.status());
 }
+
+#[tokio::test]
+async fn mark_all_read_forwards_the_jwt_email_and_internal_key() {
+    let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let app = app().await;
+    let mock_user_service = MockServer::start().await;
+    let _url_server_user = EnvGuard::set("URL_SERVER_USER", &mock_user_service.uri());
+    let _user_service_url = EnvGuard::set("USER_SERVICE_URL", &mock_user_service.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/notifications/mark-all-read"))
+        .and(query_param("admin_email", "ops@test.com"))
+        .and(header("X-Internal-Service-Key", common::TEST_INTERNAL_KEY))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"updated": 7})))
+        .mount(&mock_user_service)
+        .await;
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/api/admin/notifications/mark-all-read",
+            app.address
+        ))
+        .header(
+            "Authorization",
+            format!("Bearer {}", create_admin_jwt("ops@test.com")),
+        )
+        .send()
+        .await
+        .expect("Failed to call the proxy");
+
+    assert_eq!(StatusCode::OK, response.status());
+    let body: serde_json::Value = response.json().await.expect("valid JSON");
+    assert_eq!(7, body["updated"]);
+}
+
+#[tokio::test]
+async fn mark_all_read_without_a_token_is_rejected() {
+    let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let app = app().await;
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/api/admin/notifications/mark-all-read",
+            app.address
+        ))
+        .send()
+        .await
+        .expect("Failed to call the proxy");
+
+    assert_ne!(StatusCode::OK, response.status());
+}

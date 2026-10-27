@@ -843,6 +843,8 @@ async fn submit_template_sends_template_submitted_webhook() {
         json!({
             "name": "Submit Notification Template",
             "slug": "submit-notification-template",
+            "short_description": VALID_SHORT_DESCRIPTION,
+            "long_description": VALID_LONG_DESCRIPTION,
             "source_project_id": project_id,
             "stack_definition": { "services": {} }
         }),
@@ -1413,6 +1415,8 @@ async fn submit_template_without_source_project_id_is_rejected() {
         json!({
             "name": "No Source Project Template",
             "slug": "no-source-project-template",
+            "short_description": VALID_SHORT_DESCRIPTION,
+            "long_description": VALID_LONG_DESCRIPTION,
             "stack_definition": { "services": {} }
         }),
     )
@@ -1457,6 +1461,8 @@ async fn submit_template_with_source_project_but_no_successful_deployment_is_rej
         json!({
             "name": "Undeployed Source Project Template",
             "slug": "undeployed-source-project-template",
+            "short_description": VALID_SHORT_DESCRIPTION,
+            "long_description": VALID_LONG_DESCRIPTION,
             "source_project_id": project_id,
             "stack_definition": { "services": {} }
         }),
@@ -1509,6 +1515,8 @@ async fn submit_template_with_successful_deployment_is_accepted() {
         json!({
             "name": "Deployed Source Project Template",
             "slug": "deployed-source-project-template",
+            "short_description": VALID_SHORT_DESCRIPTION,
+            "long_description": VALID_LONG_DESCRIPTION,
             "source_project_id": project_id,
             "stack_definition": { "services": {} }
         }),
@@ -1561,6 +1569,8 @@ async fn submit_template_with_undeclared_secret_shaped_field_is_rejected() {
         json!({
             "name": "Undeclared Secret Template",
             "slug": "undeclared-secret-template",
+            "short_description": VALID_SHORT_DESCRIPTION,
+            "long_description": VALID_LONG_DESCRIPTION,
             "source_project_id": project_id,
             "stack_definition": {
                 "services": {
@@ -1626,6 +1636,8 @@ async fn submit_template_with_generated_policy_for_secret_field_is_accepted() {
         json!({
             "name": "Declared Secret Template",
             "slug": "declared-secret-template",
+            "short_description": VALID_SHORT_DESCRIPTION,
+            "long_description": VALID_LONG_DESCRIPTION,
             "source_project_id": project_id,
             "stack_definition": {
                 "services": {
@@ -1726,7 +1738,9 @@ async fn create_handler_updates_approved_template_metadata() {
         .expect("Update response should be valid JSON");
     assert_eq!(
         "Approved Metadata Template v2",
-        body["item"]["name"].as_str().expect("name should be a string"),
+        body["item"]["name"]
+            .as_str()
+            .expect("name should be a string"),
         "Template name should be updated"
     );
 }
@@ -1849,6 +1863,8 @@ async fn resubmit_approved_template_with_new_version_preserves_source_project_id
         json!({
             "name": "Resubmit Version Template",
             "slug": "resubmit-version-template",
+            "short_description": VALID_SHORT_DESCRIPTION,
+            "long_description": VALID_LONG_DESCRIPTION,
             "source_project_id": project_id,
             "version": "1.0.0",
             "stack_definition": { "services": { "web": { "image": "nginx:1.27" } } }
@@ -1907,12 +1923,281 @@ async fn resubmit_approved_template_with_new_version_preserves_source_project_id
         "source_project_id should be persisted on the new version after resubmit"
     );
 
-    let template_status: String = sqlx::query_scalar(
-        r#"SELECT status FROM stack_template WHERE id = $1::uuid"#,
+    let template_status: String =
+        sqlx::query_scalar(r#"SELECT status FROM stack_template WHERE id = $1::uuid"#)
+            .bind(Uuid::parse_str(&template_id).expect("Template id should be a UUID"))
+            .fetch_one(&app.db_pool)
+            .await
+            .expect("Failed to query template status");
+    assert_eq!(
+        "submitted", template_status,
+        "Template should be in submitted status after resubmit"
+    );
+}
+
+/// Listing descriptions accepted by the marketplace review checklist
+/// (`docs/MARKETPLACE_PUBLISH.md` "Required metadata"): short 20-200 chars,
+/// long 100-5000 chars. The submit gate rejects anything outside those ranges.
+const VALID_SHORT_DESCRIPTION: &str =
+    "Self-hosted invoicing stack for small teams and freelancers.";
+const VALID_LONG_DESCRIPTION: &str =
+    "Deploy a complete self-hosted invoicing platform: invoicing, \
+recurring billing, client portal and email notifications come pre-wired with a database and \
+background workers, ready for production use on a fresh server.";
+
+async fn create_listing_template(app: &common::TestApp, body: Value) -> String {
+    let client = Client::new();
+    let create_response =
+        create_template_with_body(&client, &app.address, "test-bearer-token", body).await;
+    assert_eq!(StatusCode::CREATED, create_response.status());
+    create_response
+        .json::<Value>()
+        .await
+        .expect("Create response should be valid JSON")["item"]["id"]
+        .as_str()
+        .expect("Created template should include an id")
+        .to_string()
+}
+
+async fn submit_template_for_review(
+    client: &Client,
+    address: &str,
+    template_id: &str,
+) -> reqwest::Response {
+    client
+        .post(format!("{}/api/templates/{}/submit", address, template_id))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({ "confirm_no_secrets": true }))
+        .send()
+        .await
+        .expect("Failed to submit template for review")
+}
+
+#[tokio::test]
+async fn submit_template_without_listing_descriptions_is_rejected() {
+    let _env_lock = env_lock().lock().expect("env lock should be available");
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+    common::create_test_deployment(
+        &app.db_pool,
+        "test_user_id",
+        project_id,
+        &format!("dpl-{}", Uuid::new_v4()),
+    )
+    .await;
+
+    let template_id = create_listing_template(
+        &app,
+        json!({
+            "name": "No Listing Description Template",
+            "slug": "no-listing-description-template",
+            "source_project_id": project_id,
+            "stack_definition": { "services": {} }
+        }),
+    )
+    .await;
+
+    let submit_response = submit_template_for_review(&client, &app.address, &template_id).await;
+    assert_eq!(
+        StatusCode::BAD_REQUEST,
+        submit_response.status(),
+        "Submitting without listing descriptions must be rejected before review"
+    );
+    let body: Value = submit_response
+        .json()
+        .await
+        .expect("Bad request response should be valid JSON");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("description"),
+        "Rejection message should name the missing description: {message}"
+    );
+}
+
+#[tokio::test]
+async fn submit_template_with_too_short_listing_descriptions_is_rejected() {
+    let _env_lock = env_lock().lock().expect("env lock should be available");
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+    common::create_test_deployment(
+        &app.db_pool,
+        "test_user_id",
+        project_id,
+        &format!("dpl-{}", Uuid::new_v4()),
+    )
+    .await;
+
+    let template_id = create_listing_template(
+        &app,
+        json!({
+            "name": "Short Listing Description Template",
+            "slug": "short-listing-description-template",
+            "source_project_id": project_id,
+            "short_description": "AI helpdesk",
+            "long_description": "Missing long description",
+            "stack_definition": { "services": {} }
+        }),
+    )
+    .await;
+
+    let submit_response = submit_template_for_review(&client, &app.address, &template_id).await;
+    assert_eq!(
+        StatusCode::BAD_REQUEST,
+        submit_response.status(),
+        "Submitting with too-short listing descriptions must be rejected before review"
+    );
+    let body: Value = submit_response
+        .json()
+        .await
+        .expect("Bad request response should be valid JSON");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("too short"),
+        "Rejection message should say the description is too short: {message}"
+    );
+}
+
+#[tokio::test]
+async fn resubmit_without_descriptions_keeps_stored_ones() {
+    let _env_lock = env_lock().lock().expect("env lock should be available");
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+    common::create_test_deployment(
+        &app.db_pool,
+        "test_user_id",
+        project_id,
+        &format!("dpl-{}", Uuid::new_v4()),
+    )
+    .await;
+
+    let template_id = create_listing_template(
+        &app,
+        json!({
+            "name": "Resubmit Keeps Descriptions Template",
+            "slug": "resubmit-keeps-descriptions-template",
+            "source_project_id": project_id,
+            "version": "1.0.0",
+            "short_description": VALID_SHORT_DESCRIPTION,
+            "long_description": VALID_LONG_DESCRIPTION,
+            "stack_definition": { "services": { "web": { "image": "nginx:1.27" } } }
+        }),
+    )
+    .await;
+
+    sqlx::query(
+        r#"UPDATE stack_template SET status = 'approved', approved_at = NOW() WHERE id = $1"#,
     )
     .bind(Uuid::parse_str(&template_id).expect("Template id should be a UUID"))
-    .fetch_one(&app.db_pool)
+    .execute(&app.db_pool)
     .await
-    .expect("Failed to query template status");
-    assert_eq!("submitted", template_status, "Template should be in submitted status after resubmit");
+    .expect("Failed to mark template approved");
+
+    let resubmit_response = client
+        .post(format!(
+            "{}/api/templates/{}/resubmit",
+            app.address, template_id
+        ))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({
+            "version": "1.1.0",
+            "stack_definition": { "services": { "web": { "image": "nginx:1.28" } } },
+            "confirm_no_secrets": true,
+            "source_project_id": project_id
+        }))
+        .send()
+        .await
+        .expect("Failed to resubmit template");
+    assert_eq!(
+        StatusCode::OK,
+        resubmit_response.status(),
+        "Resubmit without description fields must fall back to the stored listing descriptions"
+    );
+}
+
+#[tokio::test]
+async fn resubmit_with_too_short_long_description_is_rejected() {
+    let _env_lock = env_lock().lock().expect("env lock should be available");
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+    common::create_test_deployment(
+        &app.db_pool,
+        "test_user_id",
+        project_id,
+        &format!("dpl-{}", Uuid::new_v4()),
+    )
+    .await;
+
+    let template_id = create_listing_template(
+        &app,
+        json!({
+            "name": "Resubmit Short Long Description Template",
+            "slug": "resubmit-short-long-description-template",
+            "source_project_id": project_id,
+            "version": "1.0.0",
+            "short_description": VALID_SHORT_DESCRIPTION,
+            "long_description": VALID_LONG_DESCRIPTION,
+            "stack_definition": { "services": { "web": { "image": "nginx:1.27" } } }
+        }),
+    )
+    .await;
+
+    sqlx::query(
+        r#"UPDATE stack_template SET status = 'approved', approved_at = NOW() WHERE id = $1"#,
+    )
+    .bind(Uuid::parse_str(&template_id).expect("Template id should be a UUID"))
+    .execute(&app.db_pool)
+    .await
+    .expect("Failed to mark template approved");
+
+    let resubmit_response = client
+        .post(format!(
+            "{}/api/templates/{}/resubmit",
+            app.address, template_id
+        ))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({
+            "version": "1.1.0",
+            "short_description": VALID_SHORT_DESCRIPTION,
+            "long_description": "Missing long description",
+            "stack_definition": { "services": { "web": { "image": "nginx:1.28" } } },
+            "confirm_no_secrets": true,
+            "source_project_id": project_id
+        }))
+        .send()
+        .await
+        .expect("Failed to resubmit template");
+    assert_eq!(
+        StatusCode::BAD_REQUEST,
+        resubmit_response.status(),
+        "Resubmit must not shrink the long description below the review minimum"
+    );
+    let body: Value = resubmit_response
+        .json()
+        .await
+        .expect("Bad request response should be valid JSON");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("too short"),
+        "Rejection message should say the description is too short: {message}"
+    );
 }

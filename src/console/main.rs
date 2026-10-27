@@ -64,6 +64,14 @@ enum DebugCommands {
         #[arg(long)]
         json: String,
     },
+    /// Apply category_mapping.csv: merge duplicate categories, re-file
+    /// templates, rewrite tags
+    Recategorize {
+        #[arg(long)]
+        map: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -398,6 +406,9 @@ fn get_command(
             )),
             DebugCommands::Dockerhub { json } => Ok(Box::new(
                 stacker::console::commands::debug::DockerhubCommand::new(json),
+            )),
+            DebugCommands::Recategorize { map, dry_run } => Ok(Box::new(
+                stacker::console::commands::debug::RecategorizeCommand::new(map, dry_run),
             )),
         },
         Commands::MQ { command } => match command {
