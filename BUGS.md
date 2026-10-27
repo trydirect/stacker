@@ -673,3 +673,21 @@ Mark the bake `done` (and the snapshot resolvable for clone) only after the imag
 `available`, or have clone answer a clear "snapshot still being prepared, retry in a
 few minutes" instead of a generic failure. Test: a snapshot whose image is
 `creating` is not offered to clone.
+
+## 18. 🟡 NOT CONFIRMED — no generated secret type can satisfy a "must contain a symbol" password rule (found 2026-10-27)
+
+### Observed (2026-10-27)
+
+PipesHub refuses an admin password without an uppercase letter, a lowercase letter,
+a digit and one of `#?!@$%^&*-`. `generator_shell_expression`
+(`src/console/commands/cli/init.rs`) offers `hex`, `base64` (`+/=` only) and
+`alphanumeric`, none of which guarantees those classes, so the password has to be
+`provided` by the buyer instead of generated. A field `pattern` cannot express the
+rule either: patterns compile with the `regex` crate, which has no look-ahead
+("look-around ... is not supported").
+
+### Fix direction
+
+A `password` generated type that guarantees one character of each class (with a
+configurable symbol set), so stacks with complexity rules can generate the admin
+password per clone. Test: 1000 generated values all match the four classes.
