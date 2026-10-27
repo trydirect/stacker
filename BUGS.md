@@ -741,3 +741,21 @@ Take the snapshot's server type from the provider (the Hetzner server the image 
 made from), not from the deployment's server row, or refuse a bake whose server
 type is unknown. Test: a bake of a box with no recorded type stores the provider's
 type.
+
+## 22. 🟡 NOT CONFIRMED — the CLI finds a project by downloading every project of the account under a 30 s timeout (found 2026-10-27)
+
+### Observed (2026-10-27)
+
+`stacker deploy --target cloud` failed twice at "Resolving project" with
+"request or response body error: operation timed out". `find_project_by_name`
+(`src/cli/stacker_client.rs`) calls `list_projects()` and filters locally. For an
+account with 367 projects the response is 4.9 MB (single projects up to 0.7 MB);
+it took 3 s once and was still streaming after 120 s another time, against the
+client's 30 s timeout. No server was created by the failed runs.
+
+### Fix direction
+
+Look the project up by name on the server (a filtered endpoint, or the lock's
+`project_id` when present) instead of listing the whole account, and keep list
+responses free of full project bodies. Test: resolving a project does not fetch
+other projects.
