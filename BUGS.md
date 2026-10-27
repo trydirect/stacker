@@ -707,3 +707,19 @@ it and execs it directly crash-looped with
 Keep the source file mode when uploading project files (at least the owner
 execute bit). Test: an executable file in the project arrives executable on the
 server.
+
+## 20. 🟡 NOT CONFIRMED — a redeploy to the same server ends `paused [port_conflict]` on the stack's own port (found 2026-10-27)
+
+### Observed (2026-10-27)
+
+`stacker deploy --target server` of a changed stack onto the server it already
+ran on: deployments #1513 and #1514 both ended `paused [port_conflict]`. Right
+after #1514 the stack's own new container held the port (`Up 36 seconds
+(healthy)`, `0.0.0.0:5678->5678`), no other container used it, and the app
+answered normally. The redeploy itself worked; only its status says it did not.
+
+### Fix direction
+
+Exclude the containers of the stack being deployed (same compose project) when
+checking whether its ports are taken. Test: redeploying a running stack with
+unchanged ports does not report a port conflict.
