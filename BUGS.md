@@ -765,36 +765,6 @@ Look the project up by name on the server (a filtered endpoint, or the lock's
 responses free of full project bodies. Test: resolving a project does not fetch
 other projects.
 
-## 23. 🔴 NOT CONFIRMED — resubmitting an approved template with a new version keeps the old version's contract, and bakes use it (found 2026-10-28)
+## 23. ❌ WITHDRAWN - "resubmit keeps the old version's contract"
 
-### Observed (2026-10-28)
-
-`stacker submit --slug n8n` with `version: "2.0.0"` (new contract and definition)
-printed "Resubmitting approved template for marketplace review..." and exited 0.
-`stacker marketplace status` then showed `n8n 2.0.0 approved`, but
-`GET /api/templates/n8n` returned `latest_version.version = 1.0.0` (created
-2026-10-09) with the old definition (`n8nio/n8n:1.64.0`) and the old contract
-(`DB_POSTGRESDB_PASSWORD`, `N8N_BASIC_AUTH_*` generated). No new review appeared in
-`stacker marketplace logs n8n`.
-
-`admin_bake` takes the contract from the latest version
-(`get_config_contract`, `is_latest = true`) and the version label from the
-template, so:
-
-- a bake of a box running the 2.0.0 stack recorded snapshot `n8n 2.0.0` with the
-  1.0.0 contract;
-- from the code (not checked on the image): finalize scrubbed only the old
-  contract's keys, so the new `ADMIN_PASSWORD` / `N8N_ENCRYPTION_KEY` stay in the
-  image's `.env`, and clone regenerates only the old keys - every buyer would get
-  the build box's owner password and encryption key;
-- the next bake of a 2.0.0 box failed after dropping its volumes: the old
-  contract makes `DB_POSTGRESDB_PASSWORD` and `POSTGRES_PASSWORD` two protected
-  fields with one value (see #13).
-
-### Fix direction
-
-A submit whose version differs from the latest stored version must create that
-version (with its definition and contract) and put it through review, and a bake
-must refuse when the template's version label and the latest version disagree.
-Test: resubmit of an approved template with a bumped version stores the new
-contract; bake with mismatched version and contract is refused before finalize.
+Not a bug. The resubmit was refused (400, `MARKETPLACE_CONFIG_CONTRACT_SECRET_POLICY_REQUIRED`), so no new version was created and the bake used the only stored one. The refusal was hidden by an output filter on the reporter's side.
