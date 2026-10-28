@@ -718,6 +718,11 @@ after #1514 the stack's own new container held the port (`Up 36 seconds
 (healthy)`, `0.0.0.0:5678->5678`), no other container used it, and the app
 answered normally. The redeploy itself worked; only its status says it did not.
 
+2026-10-28: the same on a fresh cloud deploy (#1517, new Hetzner server, no
+earlier stack on it): `paused [port_conflict]`, while the stack was up and
+healthy on its port and nothing else held it. The lock also recorded
+`server_ip: null` although the CLI printed the IP.
+
 ### Fix direction
 
 Exclude the containers of the stack being deployed (same compose project) when
