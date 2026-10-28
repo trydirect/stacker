@@ -45,6 +45,10 @@ pub struct CloneRequest {
     pub admin_email: String,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Only `unstable`, and only for an admin: the bake harness's smoke clone of
+    /// a bake not yet promoted. Buyers omit it and get `latest`/`stable`.
+    #[serde(default)]
+    pub channel: Option<String>,
 }
 
 fn default_provider() -> String {
@@ -120,7 +124,27 @@ pub async fn clone_server(
     }
 
     // Resolve the baked snapshot image_id.
-    let snapshot = match if let Some(version) = &form.version {
+    let snapshot = match if let Some(channel) = &form.channel {
+        if channel != crate::helpers::bake_registry::CHANNEL_UNSTABLE {
+            return HttpResponse::BadRequest().json(json!({
+                "error": "Unknown channel",
+                "details": format!("channel '{channel}' cannot be cloned; omit it, or use 'unstable'"),
+            }));
+        }
+        if user.role != "group_admin" {
+            return HttpResponse::Forbidden().json(json!({
+                "error": "Forbidden",
+                "details": "only an admin can clone a bake that has not been promoted",
+            }));
+        }
+        crate::db::baked_snapshot::resolve_unstable(
+            &pg_pool,
+            &form.stack,
+            form.version.as_deref(),
+            &form.provider,
+        )
+        .await
+    } else if let Some(version) = &form.version {
         crate::db::baked_snapshot::resolve(&pg_pool, &form.stack, version, &form.provider).await
     } else {
         crate::db::baked_snapshot::resolve_latest(&pg_pool, &form.stack, &form.provider).await

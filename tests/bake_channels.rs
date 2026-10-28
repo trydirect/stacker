@@ -206,3 +206,105 @@ async fn the_harness_promotes_a_finished_bake_by_its_job_id() {
     let (status, _) = promote_job(&app, &uuid::Uuid::new_v4().to_string(), &admin_jwt()).await;
     assert_eq!(status, 404);
 }
+
+// The smoke clone has to reach the bake it checks, which buyers cannot see yet.
+
+#[tokio::test]
+async fn the_smoke_clone_finds_the_unpromoted_bake() {
+    let Some(app) = common::spawn_app().await else {
+        return;
+    };
+    let pool = &app.db_pool;
+    let stack = "chan-smoke-resolve";
+    legacy(pool, stack, "1.0.0", 100).await;
+    baked(pool, stack, "1.1.0", 200).await;
+
+    let unstable = |version: Option<&'static str>| async move {
+        baked_snapshot::resolve_unstable(pool, stack, version, PROVIDER)
+            .await
+            .expect("resolve unstable")
+            .map(|s| s.image_id)
+    };
+    assert_eq!(unstable(None).await, Some(200));
+    assert_eq!(unstable(Some("1.1.0")).await, Some(200));
+    assert_eq!(
+        unstable(Some("1.0.0")).await,
+        None,
+        "a version that is not the unstable bake is not a fallback"
+    );
+    assert_eq!(
+        served(pool, stack).await,
+        Some(100),
+        "buyers still get 1.0.0"
+    );
+}
+
+async fn spawn_admin_app() -> Option<common::TestApp> {
+    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+    let auth = MockServer::start().await;
+    let user = stacker::forms::user::User {
+        id: common::USER_A_ID.to_string(),
+        email: common::USER_A_EMAIL.to_string(),
+        role: "group_admin".to_string(),
+        email_confirmed: true,
+        ..Default::default()
+    };
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(stacker::forms::user::UserForm { user }),
+        )
+        .mount(&auth)
+        .await;
+    let mut configuration =
+        stacker::configuration::get_configuration().expect("Failed to get configuration");
+    configuration.auth_url = format!("{}/me", auth.uri());
+    // The mock must outlive the app, which lives for the rest of the test.
+    std::mem::forget(auth);
+    common::spawn_app_with_configuration(configuration).await
+}
+
+async fn clone_on_channel(app: &common::TestApp, stack: &str, channel: &str) -> (u16, Value) {
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/deploy/clone", app.address))
+        .bearer_auth("user-token")
+        .json(&json!({
+            "stack": stack,
+            "domain": format!("{stack}-smoke.example.com"),
+            "channel": channel,
+        }))
+        .send()
+        .await
+        .expect("request");
+    let status = resp.status().as_u16();
+    (status, resp.json().await.unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn only_an_admin_may_clone_an_unpromoted_bake() {
+    let Some(app) = common::spawn_app().await else {
+        return;
+    };
+    let stack = "chan-smoke-buyer";
+    baked(&app.db_pool, stack, "1.0.0", 100).await;
+
+    let (status, body) = clone_on_channel(&app, stack, "unstable").await;
+    assert_eq!(
+        status, 403,
+        "a buyer cannot clone an unreleased bake: {body}"
+    );
+}
+
+#[tokio::test]
+async fn an_admin_smoke_clone_does_not_fall_back_to_the_released_snapshot() {
+    let Some(app) = spawn_admin_app().await else {
+        return;
+    };
+    let stack = "chan-smoke-admin";
+    legacy(&app.db_pool, stack, "1.0.0", 100).await;
+
+    let (status, body) = clone_on_channel(&app, stack, "unstable").await;
+    assert_eq!(status, 404, "no unstable bake, so nothing to smoke: {body}");
+
+    let (status, body) = clone_on_channel(&app, stack, "nightly").await;
+    assert_eq!(status, 400, "an unknown channel is refused: {body}");
+}

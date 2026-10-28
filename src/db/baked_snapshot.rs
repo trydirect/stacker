@@ -55,6 +55,31 @@ pub async fn resolve_latest(
     .map_err(|e| format!("Failed to resolve latest baked snapshot: {e}"))
 }
 
+/// The bake a stack's `unstable` channel points at: what the smoke clone checks
+/// before promotion. `version`, when given, must be that bake's version; there
+/// is no fallback to a released snapshot.
+pub async fn resolve_unstable(
+    pool: &PgPool,
+    stack: &str,
+    version: Option<&str>,
+    provider: &str,
+) -> Result<Option<BakedSnapshot>, String> {
+    sqlx::query_as::<_, BakedSnapshot>(
+        r#"
+        SELECT s.* FROM baked_snapshot_channels c
+        JOIN baked_snapshots s ON s.id = c.snapshot_id
+        WHERE c.stack = $1 AND c.provider = $2 AND c.channel = 'unstable'
+          AND s.healthy = TRUE AND ($3::TEXT IS NULL OR s.version = $3)
+        "#,
+    )
+    .bind(stack)
+    .bind(provider)
+    .bind(version)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("Failed to resolve the unstable baked snapshot: {e}"))
+}
+
 /// Record a published bake. Returns the new row. The snapshot is served at
 /// once (ungated): the `bake` binary's path.
 #[allow(clippy::too_many_arguments)]
