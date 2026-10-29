@@ -112,7 +112,7 @@ fn try_extract_token(authentication: String) -> Result<String, String> {
     Ok(token.unwrap().into())
 }
 
-#[tracing::instrument(name = "Authenticate with bearer token")]
+#[tracing::instrument(name = "Authenticate with bearer token", skip_all)]
 pub async fn try_oauth(req: &mut ServiceRequest) -> Result<bool, String> {
     let authentication = get_header::<String>(&req, "authorization")?;
     if authentication.is_none() {

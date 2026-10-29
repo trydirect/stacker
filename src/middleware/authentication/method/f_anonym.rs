@@ -1,7 +1,7 @@
 use actix_web::dev::ServiceRequest;
 use actix_web::HttpMessage;
 
-#[tracing::instrument(name = "authenticate as anonym")]
+#[tracing::instrument(name = "authenticate as anonym", skip_all)]
 pub fn anonym(req: &mut ServiceRequest) -> Result<bool, String> {
     let accesscontrol_vals = actix_casbin_auth::CasbinVals {
         subject: "anonym".to_string(),
