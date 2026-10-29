@@ -123,6 +123,10 @@ async fn configure_database(config: &DatabaseSettings) -> Result<PgPool, sqlx::E
     connection
         .execute(format!(r#"CREATE DATABASE "{}""#, config.database_name).as_str())
         .await?;
+    crate::test_databases::drop_at_exit(
+        &config.connection_string_without_db(),
+        &config.database_name,
+    );
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(32)
         .acquire_timeout(std::time::Duration::from_secs(120))
