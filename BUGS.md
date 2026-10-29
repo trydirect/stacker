@@ -581,3 +581,190 @@ Deploying from the template's own directory (with `.env` created from
 `stacker install` materializes the template's `.env.example` defaults (and
 the contract's generated values) into `.env`, or the deploy treats a
 `.env.example` default as the value.
+## 13. 🟠 NOT CONFIRMED — bake finalize drops the build box's volumes before it checks for secret conflicts (found 2026-10-26)
+
+### Observed (2026-10-26)
+
+`POST /api/admin/bake` on a healthy build box failed with "the same secret value
+is declared under 2 protected fields (EMBEDDING_BINDING_API_KEY,
+LLM_BINDING_API_KEY)". The report said the stack was already stopped and its data
+volumes dropped, so the box could not be baked again and a new one had to be
+deployed.
+
+### Root cause (by reading `src/helpers/bake_finalize.rs`, not yet confirmed by a test)
+
+`finalize_build_box` runs the volume reset (stage 2, around line 484) before
+`parameterize_embedded_secret_values` (stage 3), which is where the conflict is
+detected. The conflict depends only on the compose and `.env` already read in
+stage 1, so it could be checked before anything destructive runs.
+
+### Fix direction
+
+Run the conflict check (and the other checks that need only the files read in
+stage 1) before the teardown, and keep the stage 3 rewrite where it is. Test:
+a build box whose `.env` has two protected keys with one value fails without
+running any volume reset command.
+
+## 14. 🟡 NOT CONFIRMED — the secret-conflict check also rejects `provided` keys that share a value (found 2026-10-26)
+
+### Observed (2026-10-26)
+
+Same bake as #13. Both keys are `mutability: provided`: the buyer enters them on
+Quick Deploy, and nothing regenerates them. A buyer can reasonably use one OpenAI
+key for both the LLM and the embedding endpoint. The message says "each is
+regenerated independently per buyer", which holds for `generated` keys only.
+
+### Open questions before a fix
+
+- For `provided` keys, the bake parameterizes embedded copies by value. When two
+  `provided` keys share a value, should the embedded copy go to either key, or
+  should bake still refuse but say why (the template author used one value for
+  two buyer inputs)?
+- At minimum the message should not claim regeneration for `provided` keys.
+
+## 15. 🟠 NOT CONFIRMED — clone defaults to `cpx11`, which Hetzner no longer offers in fsn1/nbg1/hel1 (found 2026-10-26)
+
+### Observed (2026-10-26)
+
+`POST /api/v1/deploy/clone` without `server_type` failed with Hetzner 422
+"unsupported location for server type". The Hetzner API lists `cpx11` as
+deprecated and unavailable in fsn1, nbg1, hel1 and sin (available only in ash and
+hil). The same request with `server_type: cpx22` succeeded.
+
+### Root cause (by reading)
+
+`default_server_type()` in `src/routes/oneclick_deploy/clone.rs` returns
+`"cpx11"`, and `default_region()` returns `"fsn1"`, so the two defaults together
+can no longer create a server.
+
+### Fix direction
+
+Default to the server type the snapshot was baked on (or the stack's
+`deploy.cloud.size`), not a fixed name. Test: a clone request without
+`server_type` uses the snapshot's type.
+
+## 16. 🟡 NOT CONFIRMED — the cloud deployment lock records `ssh_key: null` (found 2026-10-26)
+
+### Observed (2026-10-26)
+
+After `stacker deploy --target cloud --key <saved cloud>`, the
+`.stacker/deployment-cloud.lock` had `ssh_key: null`, although the CLI had just
+saved the server's key to `~/.config/stacker/ssh/server-<id>_ed25519` and that
+key logs in. Tools that read the lock to reach the server (for example a bake
+script) cannot connect.
+
+### Fix direction
+
+Write the saved key path into the lock. Test: after a cloud deploy, the lock's
+`ssh_key` points to an existing key file.
+
+## 17. 🟠 NOT CONFIRMED — a bake reports `done` and offers the snapshot while the Hetzner image is still `creating` (found 2026-10-26)
+
+### Observed (2026-10-26)
+
+`GET /api/admin/bake/{id}` returned `done` with an `image_id`. A Quick Deploy started
+right after failed; the clone call answered 502 "Hetzner clone failed" with Hetzner
+422 `image not yet available`, and the Hetzner API showed the image in status
+`creating`. The buyer-facing message was only "Deploy failed: 400: Bad Request".
+
+### Fix direction
+
+Mark the bake `done` (and the snapshot resolvable for clone) only after the image is
+`available`, or have clone answer a clear "snapshot still being prepared, retry in a
+few minutes" instead of a generic failure. Test: a snapshot whose image is
+`creating` is not offered to clone.
+
+## 18. 🟡 NOT CONFIRMED — no generated secret type can satisfy a "must contain a symbol" password rule (found 2026-10-27)
+
+### Observed (2026-10-27)
+
+PipesHub refuses an admin password without an uppercase letter, a lowercase letter,
+a digit and one of `#?!@$%^&*-`. `generator_shell_expression`
+(`src/console/commands/cli/init.rs`) offers `hex`, `base64` (`+/=` only) and
+`alphanumeric`, none of which guarantees those classes, so the password has to be
+`provided` by the buyer instead of generated. A field `pattern` cannot express the
+rule either: patterns compile with the `regex` crate, which has no look-ahead
+("look-around ... is not supported").
+
+### Fix direction
+
+A `password` generated type that guarantees one character of each class (with a
+configurable symbol set), so stacks with complexity rules can generate the admin
+password per clone. Test: 1000 generated values all match the four classes.
+
+## 19. 🟡 NOT CONFIRMED — a cloud deploy uploads project files without their executable bit (found 2026-10-27)
+
+### Observed (2026-10-27)
+
+`scripts/n8n-entrypoint.sh` is `-rwxr-xr-x` in git and locally. After
+`stacker deploy --target cloud` it was `-rw-r--r--` in
+`/home/trydirect/project/scripts/` on the server, so a container that bind-mounts
+it and execs it directly crash-looped with
+`exec /docker-entrypoint.sh failed: Permission denied`.
+
+### Fix direction
+
+Keep the source file mode when uploading project files (at least the owner
+execute bit). Test: an executable file in the project arrives executable on the
+server.
+
+## 20. 🟡 NOT CONFIRMED — a redeploy to the same server ends `paused [port_conflict]` on the stack's own port (found 2026-10-27)
+
+### Observed (2026-10-27)
+
+`stacker deploy --target server` of a changed stack onto the server it already
+ran on: deployments #1513 and #1514 both ended `paused [port_conflict]`. Right
+after #1514 the stack's own new container held the port (`Up 36 seconds
+(healthy)`, `0.0.0.0:5678->5678`), no other container used it, and the app
+answered normally. The redeploy itself worked; only its status says it did not.
+
+2026-10-28: the same on a fresh cloud deploy (#1517, new Hetzner server, no
+earlier stack on it): `paused [port_conflict]`, while the stack was up and
+healthy on its port and nothing else held it. The lock also recorded
+`server_ip: null` although the CLI printed the IP.
+
+### Fix direction
+
+Exclude the containers of the stack being deployed (same compose project) when
+checking whether its ports are taken. Test: redeploying a running stack with
+unchanged ports does not report a port conflict.
+
+## 21. 🟠 NOT CONFIRMED — a bake of a `--target server` deployment records no server type, so Quick Deploy offers the default size (found 2026-10-27)
+
+### Observed (2026-10-27)
+
+n8n 2.0.0 was baked from a build box created as a Hetzner `cpx22`, but redeployed
+with `stacker deploy --target server` before the bake. Quick Deploy prepare then
+offered `cpx32` ($26/mo) instead of `cpx22`. `admin_bake.rs` records the snapshot's
+`server_type` from the deployment's server row (`p.server.server`); the consumer
+falls back to its default (`cpx32`) when it is empty. Guess, not checked in the
+DB: the server row of a server-target deployment has no type.
+
+### Fix direction
+
+Take the snapshot's server type from the provider (the Hetzner server the image was
+made from), not from the deployment's server row, or refuse a bake whose server
+type is unknown. Test: a bake of a box with no recorded type stores the provider's
+type.
+
+## 22. 🟡 NOT CONFIRMED — the CLI finds a project by downloading every project of the account under a 30 s timeout (found 2026-10-27)
+
+### Observed (2026-10-27)
+
+`stacker deploy --target cloud` failed twice at "Resolving project" with
+"request or response body error: operation timed out". `find_project_by_name`
+(`src/cli/stacker_client.rs`) calls `list_projects()` and filters locally. For an
+account with 367 projects the response is 4.9 MB (single projects up to 0.7 MB);
+it took 3 s once and was still streaming after 120 s another time, against the
+client's 30 s timeout. No server was created by the failed runs.
+
+### Fix direction
+
+Look the project up by name on the server (a filtered endpoint, or the lock's
+`project_id` when present) instead of listing the whole account, and keep list
+responses free of full project bodies. Test: resolving a project does not fetch
+other projects.
+
+## 23. ❌ WITHDRAWN - "resubmit keeps the old version's contract"
+
+Not a bug. The resubmit was refused (400, `MARKETPLACE_CONFIG_CONTRACT_SECRET_POLICY_REQUIRED`), so no new version was created and the bake used the only stored one. The refusal was hidden by an output filter on the reporter's side.
