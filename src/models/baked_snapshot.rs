@@ -33,6 +33,10 @@ pub struct BakedSnapshot {
     /// baked before this column existed — the default type applies.
     #[sqlx(default)]
     pub server_type: Option<String>,
+    /// Baked through the API: reaches buyers only once a channel (`latest` or
+    /// `stable`) points at it. `false` for older rows and the `bake` binary's.
+    #[sqlx(default)]
+    pub gated: bool,
     pub created_at: DateTime<Utc>,
 }
 

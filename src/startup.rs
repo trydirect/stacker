@@ -475,7 +475,8 @@ pub async fn run(
                             .service(
                                 web::scope("/bake")
                                     .service(crate::routes::admin_bake::start_handler)
-                                    .service(crate::routes::admin_bake::status_handler),
+                                    .service(crate::routes::admin_bake::status_handler)
+                                    .service(crate::routes::admin_bake::promote_handler),
                             )
                             .service(
                                 web::scope("/templates")
