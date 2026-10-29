@@ -24,7 +24,7 @@ services:
     image: trydirect/agent-gateway:${AGENT_GATEWAY_TAG:-feature-agent-gateway}
     working_dir: /app
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgres://postgres:postgres@stackerdb:5432/stacker}
+      DATABASE_URL: ${DATABASE_URL:-postgres://USER:PASSWORD@stackerdb:5432/stacker}
     entrypoint: ["/bin/sh", "-c"]
     command: ["sqlx migrate run"]
     restart: "no"
