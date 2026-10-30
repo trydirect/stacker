@@ -170,20 +170,6 @@ pub async fn fetch_user(
     let resp = match resp {
         Ok(r) => r,
         Err(err) => {
-            // In test environments, allow loopback auth URL to short-circuit
-            if auth_url.starts_with("http://127.0.0.1:") || auth_url.contains("localhost") {
-                let user = models::User {
-                    id: "test_user_id".to_string(),
-                    first_name: "Test".to_string(),
-                    last_name: "User".to_string(),
-                    email: "test@example.com".to_string(),
-                    role: "group_user".to_string(),
-                    email_confirmed: true,
-                    mfa_verified: false,
-                    access_token: None,
-                };
-                return Ok(user);
-            }
             tracing::error!(target: "auth", error = %err, "OAuth request failed");
             return Err("No response from OAuth server".to_string());
         }
@@ -365,5 +351,29 @@ mod tests {
             1,
             "identical bearer tokens should share one upstream auth lookup"
         );
+    }
+
+    /// An unreachable auth server is a refused login, whatever its address.
+    /// It used to return a shared `test_user_id` for any token when the
+    /// address was loopback, which `Settings::default()` (localhost) is.
+    #[tokio::test]
+    async fn an_unreachable_loopback_auth_server_refuses_the_token() {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port(); // the listener is dropped: nothing answers on this port
+        let client = reqwest::Client::new();
+        for auth_url in [
+            format!("http://127.0.0.1:{port}/me"),
+            format!("http://localhost:{port}/me"),
+        ] {
+            let result = fetch_user(&client, &auth_url, "any-token").await;
+            assert!(
+                result.is_err(),
+                "{auth_url}: an unverified token became user {:?}",
+                result.map(|u| u.id)
+            );
+        }
     }
 }
