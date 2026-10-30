@@ -198,8 +198,10 @@ async fn creator_patch_vendor_public_profile_creates_profile_when_missing() {
     assert_eq!("acme-cloud", profile["public_slug"]);
     assert_eq!("Acme Cloud", profile["display_name"]);
     assert_eq!("We build stacks.", profile["bio"]);
+    // Avatar is derived from the account email via Gravatar; the
+    // client-supplied avatar_url must never be stored.
     assert_eq!(
-        "https://acme-cloud.example.com/avatar.png",
+        "https://www.gravatar.com/avatar/55502f40dc8b7c769880b10874abc9d0?s=230&d=identicon&r=pg",
         profile["avatar_url"]
     );
     assert_eq!("https://acme-cloud.example.com", profile["website_url"]);
@@ -228,7 +230,8 @@ async fn creator_patch_vendor_public_profile_updates_existing_profile() {
     .await
     .expect("Failed to seed vendor profile");
 
-    // Update only display_name and bio — slug and URLs should be preserved via COALESCE
+    // Update only display_name and bio — slug and website_url are preserved
+    // via COALESCE, while avatar_url is re-derived from the account email.
     let response = reqwest::Client::new()
         .patch(format!("{}/api/templates/mine/vendor-profile", app.address))
         .bearer_auth(USER_TOKEN)
@@ -259,7 +262,11 @@ async fn creator_patch_vendor_public_profile_updates_existing_profile() {
     assert_eq!("old-slug", profile["public_slug"]);
     assert_eq!("New Name", profile["display_name"]);
     assert_eq!("New bio", profile["bio"]);
-    assert_eq!("https://old.example.com/avatar.png", profile["avatar_url"]);
+    // The legacy external avatar is replaced with the derived Gravatar URL.
+    assert_eq!(
+        "https://www.gravatar.com/avatar/55502f40dc8b7c769880b10874abc9d0?s=230&d=identicon&r=pg",
+        profile["avatar_url"]
+    );
     assert_eq!("https://old.example.com", profile["website_url"]);
 }
 
@@ -281,6 +288,104 @@ async fn creator_patch_vendor_public_profile_rejects_invalid_slug() {
         .expect("Failed to PATCH vendor public profile with invalid slug");
 
     assert_eq!(StatusCode::BAD_REQUEST, response.status());
+}
+
+#[tokio::test]
+async fn creator_patch_vendor_public_profile_ignores_client_supplied_avatar_url() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+
+    // Regression: the client-supplied avatar_url must never be stored or
+    // served — vendor avatars are always derived via Gravatar from the
+    // account email so public pages cannot load arbitrary external images.
+    let response = reqwest::Client::new()
+        .patch(format!("{}/api/templates/mine/vendor-profile", app.address))
+        .bearer_auth(USER_TOKEN)
+        .json(&json!({
+            "display_name": "Acme Cloud",
+            "avatar_url": "https://evil.example/track.png",
+            "public_slug": "acme-cloud"
+        }))
+        .send()
+        .await
+        .expect("Failed to PATCH vendor public profile");
+
+    assert_eq!(StatusCode::OK, response.status());
+
+    let get_response = reqwest::Client::new()
+        .get(format!("{}/api/templates/mine/vendor-profile", app.address))
+        .bearer_auth(USER_TOKEN)
+        .send()
+        .await
+        .expect("Failed to GET self vendor profile after PATCH");
+
+    let body: Value = get_response
+        .json()
+        .await
+        .expect("response should be valid JSON");
+
+    let profile = &body["item"]["vendor_profile"];
+    assert_eq!(
+        "https://www.gravatar.com/avatar/55502f40dc8b7c769880b10874abc9d0?s=230&d=identicon&r=pg",
+        profile["avatar_url"]
+    );
+
+    // The same must hold on the public vendor page.
+    let public_response = reqwest::Client::new()
+        .get(format!("{}/api/vendors/acme-cloud", app.address))
+        .send()
+        .await
+        .expect("Failed to GET public vendor profile");
+
+    assert_eq!(StatusCode::OK, public_response.status());
+
+    let public_body: Value = public_response
+        .json()
+        .await
+        .expect("public response should be valid JSON");
+
+    assert_eq!(
+        "https://www.gravatar.com/avatar/55502f40dc8b7c769880b10874abc9d0?s=230&d=identicon&r=pg",
+        public_body["item"]["vendor"]["avatar_url"]
+    );
+}
+
+#[tokio::test]
+async fn creator_patch_vendor_public_profile_rejects_non_http_website_url() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+
+    // website_url is rendered into an <a href> on the public page, so only
+    // http(s) URLs may be stored.
+    for malicious in ["javascript:alert(1)", "data:text/html,<script>", "vbscript:msgbox(1)"] {
+        let response = reqwest::Client::new()
+            .patch(format!("{}/api/templates/mine/vendor-profile", app.address))
+            .bearer_auth(USER_TOKEN)
+            .json(&json!({
+                "website_url": malicious
+            }))
+            .send()
+            .await
+            .expect("Failed to PATCH vendor public profile");
+
+        assert_eq!(StatusCode::BAD_REQUEST, response.status(), "url: {malicious}");
+    }
+
+    let response = reqwest::Client::new()
+        .patch(format!("{}/api/templates/mine/vendor-profile", app.address))
+        .bearer_auth(USER_TOKEN)
+        .json(&json!({
+            "website_url": "https://acme-cloud.example.com"
+        }))
+        .send()
+        .await
+        .expect("Failed to PATCH vendor public profile");
+
+    assert_eq!(StatusCode::OK, response.status());
 }
 
 #[tokio::test]

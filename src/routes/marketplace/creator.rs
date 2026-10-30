@@ -1695,7 +1695,6 @@ pub struct UpdateVendorPublicProfileRequest {
     pub public_slug: Option<String>,
     pub display_name: Option<String>,
     pub bio: Option<String>,
-    pub avatar_url: Option<String>,
     pub website_url: Option<String>,
 }
 
@@ -1722,13 +1721,24 @@ pub async fn update_vendor_public_profile_handler(
         }
     }
 
+    if let Some(ref website_url) = req.website_url {
+        if !website_url.is_empty() && !crate::helpers::gravatar::is_http_url(website_url) {
+            return Err(JsonResponse::<serde_json::Value>::build()
+                .bad_request("website_url must be an http(s) URL"));
+        }
+    }
+
+    // Avatar is always derived from the account email via Gravatar; the
+    // client cannot supply an arbitrary external image URL.
+    let avatar_url = crate::helpers::gravatar::gravatar_url(&user.email);
+
     db::marketplace::update_vendor_public_profile(
         pg_pool.get_ref(),
         &user.id,
         req.public_slug.as_deref(),
         req.display_name.as_deref(),
         req.bio.as_deref(),
-        req.avatar_url.as_deref(),
+        Some(&avatar_url),
         req.website_url.as_deref(),
     )
     .await
