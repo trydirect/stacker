@@ -240,12 +240,16 @@ async fn the_smoke_clone_finds_the_unpromoted_bake() {
 }
 
 async fn spawn_admin_app() -> Option<common::TestApp> {
+    spawn_app_as("group_admin").await
+}
+
+async fn spawn_app_as(role: &str) -> Option<common::TestApp> {
     use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
     let auth = MockServer::start().await;
     let user = stacker::forms::user::User {
         id: common::USER_A_ID.to_string(),
         email: common::USER_A_EMAIL.to_string(),
-        role: "group_admin".to_string(),
+        role: role.to_string(),
         email_confirmed: true,
         ..Default::default()
     };
@@ -307,4 +311,21 @@ async fn an_admin_smoke_clone_does_not_fall_back_to_the_released_snapshot() {
 
     let (status, body) = clone_on_channel(&app, stack, "nightly").await;
     assert_eq!(status, 400, "an unknown channel is refused: {body}");
+}
+
+#[tokio::test]
+async fn a_root_admin_may_smoke_clone_an_unpromoted_bake() {
+    // `root` inherits `group_admin` in Casbin: the admin bake routes accept it,
+    // so the smoke clone of the same admin's bake must too.
+    let Some(app) = spawn_app_as("root").await else {
+        return;
+    };
+    let stack = "chan-smoke-root";
+    legacy(&app.db_pool, stack, "1.0.0", 100).await;
+
+    let (status, body) = clone_on_channel(&app, stack, "unstable").await;
+    assert_eq!(
+        status, 404,
+        "past the admin check, no unstable bake: {body}"
+    );
 }

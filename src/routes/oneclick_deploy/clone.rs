@@ -131,7 +131,8 @@ pub async fn clone_server(
                 "details": format!("channel '{channel}' cannot be cloned; omit it, or use 'unstable'"),
             }));
         }
-        if user.role != "group_admin" {
+        // `root` inherits `group_admin` in Casbin, as for the admin bake routes.
+        if !matches!(user.role.as_str(), "group_admin" | "root") {
             return HttpResponse::Forbidden().json(json!({
                 "error": "Forbidden",
                 "details": "only an admin can clone a bake that has not been promoted",
