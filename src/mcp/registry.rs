@@ -195,6 +195,7 @@ const MFA_REQUIRED_TOOLS: &[&str] = &[
     "activate_pipe",
     "deactivate_pipe",
     "trigger_pipe",
+    "deploy_ephemeral",
 ];
 
 /// Trait for tool handlers
@@ -218,6 +219,22 @@ impl ToolRegistry {
         let mut registry = Self {
             handlers: HashMap::new(),
         };
+
+        // Agent ground-truth + verification tools (all working, no infra/auth)
+        registry.register(
+            "resolve_image",
+            Box::new(crate::mcp::tools::resolve_image::ResolveImageTool),
+        );
+        registry.register("audit_compose", Box::new(crate::mcp::tools::audit_tools::AuditComposeTool));
+        registry.register("audit_dockerfile", Box::new(crate::mcp::tools::audit_tools::AuditDockerfileTool));
+        registry.register("audit_exposure", Box::new(crate::mcp::tools::audit_tools::AuditExposureTool));
+        registry.register("audit_readiness", Box::new(crate::mcp::tools::audit_tools::AuditReadinessTool));
+        registry.register("estimate_cost", Box::new(crate::mcp::tools::audit_tools::EstimateCostTool));
+        // Execution tool (beta — provisioning is stubbed until M3)
+        registry.register(
+            "deploy_ephemeral",
+            Box::new(crate::mcp::tools::deploy_ephemeral::DeployEphemeralTool),
+        );
 
         // Project management tools
         registry.register("list_projects", Box::new(ListProjectsTool));
