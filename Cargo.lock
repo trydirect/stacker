@@ -7085,6 +7085,7 @@ dependencies = [
  "indicatif",
  "lapin",
  "lazy_static",
+ "md-5",
  "mockito",
  "pipe-adapter-mail",
  "pipe-adapter-sdk",
