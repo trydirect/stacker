@@ -607,9 +607,6 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
     // Load environment variables from .env file
     dotenvy::dotenv().ok();
 
-    // Start with defaults
-    let mut config = Settings::default();
-
     // Prefer real config, fall back to dist samples; layer multiple formats
     let settings = config::Config::builder()
         // Primary local config
@@ -622,10 +619,26 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
         .add_source(config::File::with_name("configuration.dist").required(false))
         .build()?;
 
-    // Try to convert the configuration values it read into our Settings type
-    if let Ok(loaded) = settings.try_deserialize::<Settings>() {
-        config = loaded;
-    }
+    settings_from(settings)
+}
+
+/// The settings a loaded configuration describes, with the environment
+/// overlays applied.
+fn settings_from(settings: config::Config) -> Result<Settings, config::ConfigError> {
+    // No configuration file at all runs on the defaults (CI and the test
+    // harness rely on it). A configuration that is there but does not parse is
+    // an error, not a reason to run on the defaults: auth at localhost, the
+    // database at 127.0.0.1.
+    let found = !settings
+        .clone()
+        .try_deserialize::<std::collections::HashMap<String, config::Value>>()
+        .map(|values| values.is_empty())
+        .unwrap_or(false);
+    let mut config = if found {
+        settings.try_deserialize::<Settings>()?
+    } else {
+        Settings::default()
+    };
 
     // Overlay Vault settings with environment variables if present
     config.vault = config.vault.overlay_env();
@@ -714,6 +727,31 @@ mod tests {
         assert!(!parse_bool_env("no"));
         assert!(!parse_bool_env("True")); // Case-sensitive
         assert!(!parse_bool_env("invalid"));
+    }
+
+    /// A configuration that does not parse must stop the service. Running on
+    /// `Settings::default()` instead points auth at localhost and the database
+    /// at 127.0.0.1, with only a missing log line to show for it.
+    #[test]
+    fn a_configuration_that_does_not_parse_is_an_error() {
+        let broken = config::Config::builder()
+            .add_source(config::File::from_str(
+                "app_port: not-a-port\nauth_url: https://auth.example/me\n",
+                config::FileFormat::Yaml,
+            ))
+            .build()
+            .unwrap();
+        assert!(
+            settings_from(broken).is_err(),
+            "fell back to the default settings"
+        );
+    }
+
+    #[test]
+    fn no_configuration_at_all_runs_on_the_defaults() {
+        let empty = config::Config::builder().build().unwrap();
+        let settings = settings_from(empty).expect("defaults");
+        assert_eq!(settings.app_port, Settings::default().app_port);
     }
 
     #[test]
