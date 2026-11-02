@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed — Marketplace vendor profile safety
+
+- The public vendor profile derives `avatar_url` from the account email via Gravatar (identicon) and ignores the client-supplied value; a migration clears stored non-Gravatar URLs.
+- `website_url` on a vendor profile now rejects non-http(s) schemes before it is rendered into a link.
+
+### Fixed — Fail-closed configuration and OAuth
+
+- A configuration file that does not parse stops the service instead of silently starting on defaults; with no configuration file at all, defaults still apply.
+- OAuth refuses the token when the auth server is unreachable, at any address — the loopback/localhost test-user fallback is gone.
+
+### Fixed — Quick Deploy clone
+
+- A root admin may smoke-clone an unpromoted bake (`channel: "unstable"`), matching the access that already allowed `POST /api/admin/bake`.
+
 ## [0.3.5] — 2026-10-19
 
 ### Added — Managed server billing
