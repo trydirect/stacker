@@ -103,6 +103,26 @@ pub fn build_config_bundle(
 
     let compose_content = std::fs::read_to_string(&compose_canonical)?;
     let mut compose_yaml: serde_yaml::Value = serde_yaml::from_str(&compose_content)?;
+
+    // Drop platform-managed services (e.g. the nginx-proxy-manager ingress)
+    // from the compose that ships to the remote host. Platform-managed
+    // services are deployed by their own install-service Ansible role into
+    // their own directory (`/home/trydirect/<service>/`), NOT inside the
+    // project compose. Leaving them here too would deploy the same container
+    // twice and collide on the ingress host ports (80/443/81) — the
+    // "duplicate runtime ownership" that the scope convention in
+    // docs/APP_DEPLOYMENT.md exists to prevent. This runs only when building
+    // the remote bundle, so the local `.stacker/docker-compose.yml` keeps the
+    // proxy service (a local deploy has no install-service role to run it).
+    let stripped_platform_services = strip_platform_managed_services(&mut compose_yaml);
+    if !stripped_platform_services.is_empty() {
+        eprintln!(
+            "  Excluding platform-managed service(s) from the remote compose \
+             (installed separately by their own role): {}",
+            stripped_platform_services.join(", ")
+        );
+    }
+
     let mut collected = BTreeMap::<PathBuf, CollectedFile>::new();
 
     let selected_env_file = if let Some(env_file) = env_file {
@@ -133,6 +153,9 @@ pub fn build_config_bundle(
 
     let rewritten_compose = serde_yaml::to_string(&compose_yaml)
         .map_err(|err| validation_error(format!("failed to write remote compose: {err}")))?;
+    // serde_yaml drops the quotes around port mappings; Docker reads YAML 1.1
+    // and turns the bare `2222:22` back into 133342. See helpers::compose_yaml.
+    let rewritten_compose = crate::helpers::compose_yaml::quote_port_entries(&rewritten_compose);
     std::fs::write(&remote_compose_path, &rewritten_compose)?;
 
     let mut files: Vec<ConfigBundleFile> = collected
@@ -169,6 +192,10 @@ pub fn build_config_bundle(
         "group": "root"
     }));
 
+    // Track the canonical path of the explicitly-added env file so we can
+    // skip it in the collected-files loop below (avoids duplicating .env).
+    let mut skip_env_canonical: Option<std::path::PathBuf> = None;
+
     if let Some(selected_env_file) = selected_env_file.as_ref() {
         let canonical = selected_env_file.canonicalize()?;
         let collected_env_file = collected
@@ -190,9 +217,21 @@ pub fn build_config_bundle(
             "owner": "root",
             "group": "root"
         }));
+        skip_env_canonical = Some(canonical);
     }
 
     for file in collected.values() {
+        // Skip the selected env file — already added above with destination_path ".env"
+        if let Some(ref skip) = skip_env_canonical {
+            if std::path::Path::new(&file.source_path)
+                .canonicalize()
+                .ok()
+                .as_ref()
+                == Some(skip)
+            {
+                continue;
+            }
+        }
         let content = String::from_utf8(file.bytes.clone()).map_err(|_| {
             validation_error(format!(
                 "config file '{}' must be UTF-8 text to upload in the deploy payload",
@@ -642,6 +681,109 @@ fn mapping_mut(value: &mut serde_yaml::Value) -> Option<&mut serde_yaml::Mapping
     }
 }
 
+/// Remove `services` entries carrying the `my.stacker.scope: platform` label
+/// from a parsed compose document, returning the removed service names.
+///
+/// Platform-managed services (the nginx-proxy-manager ingress today; see
+/// `PLATFORM_MANAGED_APP_CODES`) are installed by their own Ansible role in
+/// their own directory, so they must not also appear in the project compose
+/// — otherwise the container is deployed twice and the ingress ports collide.
+/// User-declared services are labeled `scope: project` (or unlabeled) and are
+/// left untouched, so a user's own reverse-proxy service is never dropped.
+fn strip_platform_managed_services(compose: &mut serde_yaml::Value) -> Vec<String> {
+    let scope_key = serde_yaml::Value::String(crate::helpers::stacker_labels::SCOPE.to_string());
+    let Some(services) = mapping_mut(compose)
+        .and_then(|root| root.get_mut(serde_yaml::Value::String("services".to_string())))
+        .and_then(mapping_mut)
+    else {
+        return Vec::new();
+    };
+
+    let to_remove: Vec<serde_yaml::Value> = services
+        .iter()
+        .filter(|(_, definition)| {
+            definition
+                .get("labels")
+                .and_then(|labels| labels.as_mapping())
+                .and_then(|labels| labels.get(&scope_key))
+                .and_then(|scope| scope.as_str())
+                .map(|scope| scope == crate::helpers::stacker_labels::SCOPE_PLATFORM)
+                .unwrap_or(false)
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    // Collect the named volumes the doomed services referenced, so we can prune
+    // any that become orphaned once those services are gone (e.g. Caddy's
+    // caddy_data/caddy_config, which would otherwise linger as unused top-level
+    // volume declarations in the remote compose).
+    let mut candidate_volumes: Vec<String> = Vec::new();
+    for name in &to_remove {
+        if let Some(def) = services.get(name) {
+            candidate_volumes.extend(named_volume_sources(def));
+        }
+    }
+
+    let mut removed = Vec::with_capacity(to_remove.len());
+    for name in to_remove {
+        services.remove(&name);
+        if let serde_yaml::Value::String(name) = name {
+            removed.push(name);
+        }
+    }
+
+    // A candidate volume is orphaned only if no *remaining* service still mounts
+    // it. Re-borrow services immutably to check, then prune the top-level map.
+    if !candidate_volumes.is_empty() {
+        let still_referenced: std::collections::HashSet<String> = mapping_mut(compose)
+            .and_then(|root| root.get_mut(serde_yaml::Value::String("services".to_string())))
+            .and_then(mapping_mut)
+            .map(|services| services.values().flat_map(named_volume_sources).collect())
+            .unwrap_or_default();
+
+        if let Some(volumes) = mapping_mut(compose)
+            .and_then(|root| root.get_mut(serde_yaml::Value::String("volumes".to_string())))
+            .and_then(mapping_mut)
+        {
+            for vol in candidate_volumes {
+                if !still_referenced.contains(&vol) {
+                    volumes.remove(&serde_yaml::Value::String(vol));
+                }
+            }
+        }
+    }
+
+    removed
+}
+
+/// Extract the *named* volume sources a service mounts (e.g. `caddy_data` from
+/// `caddy_data:/data`, or `source: caddy_data` in long syntax). Bind mounts
+/// (sources containing `/` or starting with `.`) are host paths, not named
+/// volumes, and are ignored.
+fn named_volume_sources(service_def: &serde_yaml::Value) -> Vec<String> {
+    let Some(serde_yaml::Value::Sequence(volumes)) = service_def.get("volumes") else {
+        return Vec::new();
+    };
+    let is_named = |src: &str| !src.is_empty() && !src.contains('/') && !src.starts_with('.');
+    volumes
+        .iter()
+        .filter_map(|vol| match vol {
+            // Short syntax: "name:/container/path[:opts]"
+            serde_yaml::Value::String(s) => {
+                let src = s.split(':').next().unwrap_or("");
+                is_named(src).then(|| src.to_string())
+            }
+            // Long syntax: { type: volume, source: name, target: ... }
+            serde_yaml::Value::Mapping(_) => vol
+                .get("source")
+                .and_then(|s| s.as_str())
+                .filter(|src| is_named(src))
+                .map(|src| src.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn validation_error(message: impl Into<String>) -> CliError {
     CliError::ConfigValidation(message.into())
 }
@@ -650,6 +792,77 @@ fn validation_error(message: impl Into<String>) -> CliError {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// End-to-end regression for the GitLab deploy that died on the target host
+    /// with:
+    ///
+    /// ```text
+    /// docker compose -f /home/trydirect/project/docker-compose.yml up -d
+    /// stderr: "invalid containerPort: 133342"
+    /// ```
+    ///
+    /// The compose that shipped had lost a port. Its `ports:` list read:
+    ///
+    /// ```yaml
+    /// ports:
+    /// - 8082:80
+    /// - 133342      # <- authored as "2222:22"
+    /// ```
+    ///
+    /// `2222 * 60 + 22 == 133342`. The CLI generator quotes port mappings, but
+    /// `build_config_bundle` parses that compose and re-serializes it with
+    /// `serde_yaml`, which emits YAML 1.2 and sees no reason to quote a plain
+    /// string. Docker Compose's reader is YAML 1.1, where an unquoted
+    /// `2222:22` is a *sexagesimal* (base-60) integer. The quotes were the only
+    /// thing holding it together, and the round-trip removed them.
+    ///
+    /// `8082:80` came through unharmed because `80` is not a valid base-60
+    /// digit (0-59) — which is why exactly one of two ports broke and the
+    /// failure looked arbitrary.
+    ///
+    /// The assertion is deliberately on the emitted *text*, not on a re-parse.
+    /// `serde_yaml` is a YAML 1.2 reader and hands `2222:22` back as a string
+    /// either way, so a round-trip assertion passes with the bug still present.
+    /// Only the quotes in the file distinguish the two, and only a 1.1 reader
+    /// (Docker's) can tell the difference.
+    #[test]
+    fn remote_compose_keeps_port_mappings_quoted_for_yaml_1_1_readers() {
+        let dir = TempDir::new().unwrap();
+        let project_root = dir.path();
+        std::fs::create_dir_all(project_root.join(".stacker")).unwrap();
+        let compose_path = project_root.join(".stacker/docker-compose.yml");
+
+        // Exactly what the CLI generator writes for the GitLab stack.
+        std::fs::write(
+            &compose_path,
+            "services:\n  app:\n    image: gitlab/gitlab-ce:18.10.1-ce.0\n    ports:\n      - \"8082:80\"\n      - \"2222:22\"\n",
+        )
+        .unwrap();
+
+        let artifacts = build_config_bundle(
+            project_root,
+            "production",
+            &compose_path,
+            None,
+            project_root,
+            false,
+        )
+        .unwrap();
+
+        let remote = std::fs::read_to_string(&artifacts.remote_compose_path).unwrap();
+
+        assert!(
+            remote.contains(r#"- "2222:22""#),
+            "2222:22 must stay quoted or Docker reads it as 133342:\n{remote}"
+        );
+        assert!(
+            remote.contains(r#"- "8082:80""#),
+            "8082:80 must stay quoted too:\n{remote}"
+        );
+
+        // Belt and braces: 2222 * 60 + 22 is the number from the deploy log.
+        assert_eq!(2222 * 60 + 22, 133342);
+    }
 
     #[test]
     fn build_config_bundle_collects_env_file_and_file_mounts_for_environment() {
@@ -993,5 +1206,154 @@ services:
         assert_eq!(metadata["config_files"][0]["content_hidden"], true);
         assert_eq!(metadata["config_files"][1]["content_hidden"], false);
         assert!(metadata["config_files"][0].get("content").is_none());
+    }
+
+    #[test]
+    fn build_config_bundle_strips_platform_managed_services_from_remote_compose() {
+        // A `proxy: type: nginx-proxy-manager` deploy synthesizes a
+        // platform-scoped `proxy-manager` service into the compose. The
+        // install-service deploys NPM separately via its own role, so the
+        // remote bundle must NOT also carry it (double-deploy / port collision).
+        // A user's own reverse-proxy declared as a normal service is
+        // project-scoped and must be preserved.
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("docker-compose.yml"),
+            r#"
+services:
+  app:
+    image: myapp:latest
+    labels:
+      my.stacker.scope: "project"
+  proxy-manager:
+    image: jc21/nginx-proxy-manager:latest
+    ports:
+      - "80:80"
+      - "443:443"
+      - "81:81"
+    labels:
+      my.stacker.scope: "platform"
+      my.stacker.service: "nginx_proxy_manager"
+  my-own-traefik:
+    image: traefik:v2.10
+    labels:
+      my.stacker.scope: "project"
+"#,
+        )
+        .unwrap();
+
+        let artifacts = build_config_bundle(
+            dir.path(),
+            "default",
+            &dir.path().join("docker-compose.yml"),
+            None,
+            dir.path(),
+            false,
+        )
+        .expect("bundle should be built");
+
+        let compose_content = artifacts
+            .config_files
+            .iter()
+            .find(|file| file["name"] == "docker-compose.yml")
+            .and_then(|file| file["content"].as_str())
+            .expect("remote bundle contains the compose file");
+
+        // Assert on the scope *label* (the contract), not the generated
+        // service name: no `scope: platform` service may survive in the
+        // remote compose, while project-scoped services are preserved.
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(compose_content).expect("remote compose is valid yaml");
+        let services = parsed
+            .get("services")
+            .and_then(|services| services.as_mapping())
+            .expect("remote compose has a services map");
+
+        let scope_key =
+            serde_yaml::Value::String(crate::helpers::stacker_labels::SCOPE.to_string());
+        let service_scope = |name: &str| -> Option<String> {
+            services
+                .get(name)?
+                .get("labels")?
+                .as_mapping()?
+                .get(&scope_key)?
+                .as_str()
+                .map(str::to_string)
+        };
+
+        // No platform-scoped service remains anywhere in the shipped compose …
+        let has_platform_scoped = services.values().any(|definition| {
+            definition
+                .get("labels")
+                .and_then(|labels| labels.as_mapping())
+                .and_then(|labels| labels.get(&scope_key))
+                .and_then(|scope| scope.as_str())
+                == Some(crate::helpers::stacker_labels::SCOPE_PLATFORM)
+        });
+        assert!(
+            !has_platform_scoped,
+            "no `scope: platform` service should survive in the remote compose:\n{compose_content}"
+        );
+
+        // … while the app and the user's own project-scoped proxy are kept.
+        assert_eq!(
+            service_scope("app").as_deref(),
+            Some(crate::helpers::stacker_labels::SCOPE_PROJECT)
+        );
+        assert_eq!(
+            service_scope("my-own-traefik").as_deref(),
+            Some(crate::helpers::stacker_labels::SCOPE_PROJECT),
+            "a user's own project-scoped proxy must not be stripped:\n{compose_content}"
+        );
+    }
+
+    #[test]
+    fn strip_platform_managed_services_prunes_orphaned_named_volumes() {
+        // Stripping the platform proxy must also drop the named volumes only it
+        // used (Caddy's caddy_data/caddy_config), while keeping volumes still
+        // referenced by a surviving service and untouched bind mounts.
+        let mut compose: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+services:
+  app:
+    image: myapp:latest
+    volumes:
+      - app_data:/data
+    labels:
+      my.stacker.scope: "project"
+  caddy:
+    image: caddy:2-alpine
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - app_data:/shared
+    labels:
+      my.stacker.scope: "platform"
+volumes:
+  app_data: {}
+  caddy_data: {}
+  caddy_config: {}
+"#,
+        )
+        .unwrap();
+
+        let removed = strip_platform_managed_services(&mut compose);
+        assert_eq!(removed, vec!["caddy".to_string()]);
+
+        let volumes = compose
+            .get("volumes")
+            .and_then(|v| v.as_mapping())
+            .expect("top-level volumes map");
+        let has = |name: &str| volumes.contains_key(serde_yaml::Value::String(name.to_string()));
+
+        // Orphaned (only caddy used them) → pruned.
+        assert!(!has("caddy_data"), "caddy_data should be pruned");
+        assert!(!has("caddy_config"), "caddy_config should be pruned");
+        // Still used by the surviving `app` service → kept.
+        assert!(
+            has("app_data"),
+            "app_data is still referenced and must stay"
+        );
     }
 }

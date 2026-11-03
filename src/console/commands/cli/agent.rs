@@ -9,6 +9,7 @@
 //! The CLI never connects to the agent directly. All communication is mediated
 //! by the Stacker server.
 
+use crate::cli::compose_service_sync::upsert_external_network;
 use crate::cli::config_bundle::{build_config_bundle, ConfigBundleArtifacts};
 use crate::cli::config_parser::StackerConfig;
 use crate::cli::debug::cli_debug_enabled;
@@ -32,90 +33,13 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// Default poll interval (seconds).
 const DEFAULT_POLL_INTERVAL_SECS: u64 = 2;
 
-/// Resolve a deployment hash from explicit flag, active project agent, or deployment lock.
+/// Resolve a deployment hash for agent commands.
 ///
-/// Resolution order:
-/// 1. Explicit `--deployment` flag value
-/// 2. `stacker.yml` project name → API project lookup → active agent hash (most reliable)
-/// 3. `.stacker/deployment.lock` → `deployment_id` → API lookup for hash (fallback)
-pub(crate) fn resolve_deployment_hash(
-    explicit: &Option<String>,
-    ctx: &CliRuntime,
-) -> Result<String, CliError> {
-    // 1. Explicit flag
-    if let Some(hash) = explicit {
-        if !hash.is_empty() {
-            return Ok(hash.clone());
-        }
-    }
-
-    let project_dir = std::env::current_dir().map_err(CliError::Io)?;
-    let config_path = project_dir.join("stacker.yml");
-
-    // 2. stacker.yml deploy.deployment_hash — written by `stacker agent install`
-    // and `stacker deploy` after a successful remote deploy.
-    if config_path.exists() {
-        if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path)
-            .and_then(|c| c.with_resolved_deploy_target(None))
-        {
-            if let Some(ref hash) = config.deploy.deployment_hash {
-                if !hash.trim().is_empty() {
-                    return Ok(hash.clone());
-                }
-            }
-
-            // 3. stacker.yml project identity → active agent
-            // Falls back to config.name when project.identity is null.
-            let project_name = config
-                .project
-                .identity
-                .clone()
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| config.name.clone());
-
-            if !project_name.trim().is_empty() {
-                if let Ok(Some(proj)) = ctx.block_on(ctx.client.find_project_by_name(&project_name))
-                {
-                    match ctx.block_on(ctx.client.agent_snapshot_by_project(proj.id)) {
-                        Ok((_, hash)) => {
-                            eprintln!(
-                                "\x1b[2mℹ No --deployment specified — using active agent for project '{}': {}\x1b[0m",
-                                project_name, hash
-                            );
-                            return Ok(hash);
-                        }
-                        Err(_) => {}
-                    }
-
-                    // No active agent yet; try most recent deployment for the project
-                    if let Ok(deployments) =
-                        ctx.block_on(ctx.client.list_deployments(Some(proj.id), Some(1)))
-                    {
-                        if let Some(dep) = deployments.into_iter().next() {
-                            return Ok(dep.deployment_hash);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // 4. Deployment lock → integer ID → API lookup
-    if let Some(lock) = crate::cli::deployment_lock::DeploymentLock::load(&project_dir)? {
-        if let Some(dep_id) = lock.deployment_id {
-            let info = ctx.block_on(ctx.client.get_deployment_status(dep_id as i32))?;
-            if let Some(info) = info {
-                return Ok(info.deployment_hash);
-            }
-        }
-    }
-
-    Err(CliError::ConfigValidation(
-        "Cannot determine deployment hash.\n\
-         Use --deployment <HASH>, or run from a directory with a deployment lock or stacker.yml."
-            .to_string(),
-    ))
-}
+/// Agent commands always talk to a remote agent, so a local placement never
+/// blocks them: the pinned `deploy.deployment_hash` and the API hash chain
+/// stay reachable even when the active target is `local`. Shared
+/// implementation lives in [`crate::cli::deployment_context`].
+pub(crate) use crate::cli::deployment_context::resolve_agent_deployment_hash as resolve_deployment_hash;
 
 pub(crate) fn resolve_registry_auth_for_agent_deploy(
     project_dir: &Path,
@@ -1196,7 +1120,8 @@ fn merge_compose_service(
                 "app-local compose does not define service '{app_code}'"
             ))
         })?;
-    let should_merge_networks = !project_service_networks(&project_doc).is_empty();
+    let project_networks = project_service_networks(&project_doc);
+    let should_merge_networks = !project_networks.is_empty();
     align_service_networks_with_project(&mut app_service, &project_doc);
 
     let project_services = project_doc
@@ -1210,6 +1135,14 @@ fn merge_compose_service(
 
     if should_merge_networks {
         merge_compose_top_level_mapping(&mut project_doc, &app_doc, "networks");
+        // `app_doc` may not itself know about a network that the project's
+        // *existing* services already reference (e.g. a per-app override
+        // compose that predates `default_network` being added elsewhere).
+        // Declare any such name as `external: true` so the merged compose
+        // never ends up with a service referencing an undeclared network.
+        for network in &project_networks {
+            upsert_external_network(&mut project_doc, network);
+        }
     }
     merge_compose_top_level_mapping(&mut project_doc, &app_doc, "volumes");
 
@@ -1744,11 +1677,15 @@ impl CallableTrait for AgentStatusCommand {
                         n_apps,
                     ),
                 );
-                let live_containers = match fetch_live_containers(&ctx, &hash) {
-                    Ok(list) => list,
-                    Err(err) => {
-                        eprintln!("Warning: failed to fetch live containers: {}", err);
-                        None
+                let live_containers = if agent_status == "offline" {
+                    None
+                } else {
+                    match fetch_live_containers(&ctx, &hash) {
+                        Ok(list) => list,
+                        Err(err) => {
+                            eprintln!("Warning: failed to fetch live containers: {}", err);
+                            None
+                        }
                     }
                 };
 
@@ -2250,10 +2187,32 @@ fn run_logs_command(
     )
 }
 
-fn fetch_live_containers(
+/// Returns `true` if the agent for the given deployment is offline.
+///
+/// Fetches a lightweight snapshot to check status before attempting
+/// any agent commands that would hang waiting for an unreachable agent.
+fn is_agent_offline(ctx: &CliRuntime, deployment_hash: &str) -> bool {
+    let snapshot = ctx.block_on(ctx.client.agent_snapshot(deployment_hash));
+    match snapshot {
+        Ok(snap) => {
+            let item = snap.get("item").unwrap_or(&snap);
+            item.get("agent")
+                .and_then(|a| a.get("status"))
+                .and_then(|s| s.as_str())
+                == Some("offline")
+        }
+        Err(_) => false, // If we can't fetch snapshot, let the caller try
+    }
+}
+
+pub(crate) fn fetch_live_containers(
     ctx: &CliRuntime,
     deployment_hash: &str,
 ) -> Result<Option<Vec<serde_json::Value>>, CliError> {
+    if is_agent_offline(ctx, deployment_hash) {
+        return Ok(None);
+    }
+
     let params = crate::forms::status_panel::ListContainersCommandRequest {
         include_health: true,
         include_logs: false,
@@ -2703,6 +2662,53 @@ fn add_agent_install_scope_contract(deploy_form: &mut serde_json::Value) {
     }));
 }
 
+/// Pick the server record `stacker agent install`'s cloud-install path
+/// should target, out of every server the Stacker backend has on file for
+/// this project.
+///
+/// When `configured_server` is `Some` (the user has `deploy.server` set
+/// locally, i.e. they have a specific existing server in mind), the match
+/// must be by IP, not just by project id — a project can accumulate more
+/// than one server record over time (e.g. an earlier `--target cloud`
+/// attempt before switching to an existing server), and blindly taking the
+/// first project-matching server silently installed against/created a
+/// deployment for an unrelated server instead of the one in stacker.yml.
+/// See GH issue #223.
+fn select_server_for_agent_install(
+    servers: Vec<crate::cli::stacker_client::ServerInfo>,
+    project_id: i32,
+    configured_server: Option<&crate::cli::config_parser::ServerConfig>,
+    project_name: &str,
+    target_label: &str,
+) -> Result<crate::cli::stacker_client::ServerInfo, CliError> {
+    let matching_by_project: Vec<_> = servers
+        .into_iter()
+        .filter(|s| s.project_id == project_id)
+        .collect();
+
+    if let Some(server_cfg) = configured_server {
+        matching_by_project
+            .into_iter()
+            .find(|s| s.srv_ip.as_deref() == Some(server_cfg.host.as_str()))
+            .ok_or_else(|| {
+                CliError::ConfigValidation(format!(
+                    "deploy.server.host ({}) is configured in stacker.yml, but no matching \
+                     server was found on the Stacker server for project '{}' (id={}).\n\
+                     Deploy to this server first with: stacker deploy --target {}",
+                    server_cfg.host, project_name, project_id, target_label
+                ))
+            })
+    } else {
+        matching_by_project.into_iter().next().ok_or_else(|| {
+            CliError::ConfigValidation(format!(
+                "No server found for project '{}' (id={}).\n\
+                 Deploy the project first with: stacker deploy --target {}",
+                project_name, project_id, target_label
+            ))
+        })
+    }
+}
+
 fn build_agent_install_deploy_request(
     config: &crate::cli::config_parser::StackerConfig,
     server: &crate::cli::stacker_client::ServerInfo,
@@ -2859,8 +2865,12 @@ impl CallableTrait for AgentInstallCommand {
                 )
             })?;
 
-            let stacker_url = std::env::var("STACKER_URL")
-                .unwrap_or_else(|_| stacker_client::DEFAULT_STACKER_URL.to_string());
+            let stacker_url = ctx
+                .creds
+                .server_url
+                .clone()
+                .or_else(|| std::env::var("STACKER_URL").ok())
+                .unwrap_or_else(|| stacker_client::DEFAULT_STACKER_URL.to_string());
 
             eprintln!(
                 "Server {} is on a private network — using local SSH to install agent.",
@@ -2871,18 +2881,47 @@ impl CallableTrait for AgentInstallCommand {
 
             // Find the deployment hash for this project
             let pb = progress::spinner("Resolving deployment...");
+            let lock_for_local =
+                crate::cli::deployment_lock::DeploymentLock::load_active(&project_dir)?;
             let deployment_hash: Result<String, CliError> = ctx.block_on(async {
-                let project = ctx
-                    .client
-                    .find_project_by_name(&project_name)
-                    .await?
-                    .ok_or_else(|| {
-                        CliError::ConfigValidation(format!(
-                            "Project '{}' not found on the Stacker server.\n\
-                             Deploy the project first with: stacker deploy --target server",
-                            project_name
-                        ))
-                    })?;
+                let project = if let Some(lock) = lock_for_local.as_ref() {
+                    if let Some(pid) = lock.project_id {
+                        ctx.client
+                            .list_projects()
+                            .await?
+                            .into_iter()
+                            .find(|p| p.id == pid as i32)
+                            .ok_or_else(|| {
+                                CliError::ConfigValidation(format!(
+                                    "Project ID {} from lock file not found.\n\
+                                     Deploy the project first with: stacker deploy --target server",
+                                    pid
+                                ))
+                            })?
+                    } else {
+                        ctx.client
+                            .find_project_by_name(&project_name)
+                            .await?
+                            .ok_or_else(|| {
+                                CliError::ConfigValidation(format!(
+                                    "Project '{}' not found on the Stacker server.\n\
+                                     Deploy the project first with: stacker deploy --target server",
+                                    project_name
+                                ))
+                            })?
+                    }
+                } else {
+                    ctx.client
+                        .find_project_by_name(&project_name)
+                        .await?
+                        .ok_or_else(|| {
+                            CliError::ConfigValidation(format!(
+                                "Project '{}' not found on the Stacker server.\n\
+                                 Deploy the project first with: stacker deploy --target server",
+                                project_name
+                            ))
+                        })?
+                };
 
                 let deployments = ctx
                     .client
@@ -2934,35 +2973,63 @@ impl CallableTrait for AgentInstallCommand {
         // ── Cloud install path (public-IP servers) ────────────────────────────
         let pb = progress::spinner("Installing Status Panel agent");
 
+        // Load deployment lock to get the correct project_id (avoids name collision)
+        let lock = crate::cli::deployment_lock::DeploymentLock::load_active(&project_dir)?;
+
         let result: Result<stacker_client::DeployResponse, CliError> = ctx.block_on(async {
             let target_label = config.deploy.target.to_string();
-            // 1. Find the project
+            // 1. Find the project — prefer lock file project_id over name lookup
             progress::update_message(&pb, "Finding project...");
-            let project = ctx
-                .client
-                .find_project_by_name(&project_name)
-                .await?
-                .ok_or_else(|| {
-                    CliError::ConfigValidation(format!(
-                        "Project '{}' not found on the Stacker server.\n\
-                     Deploy the project first with: stacker deploy --target {}",
-                        project_name, target_label
-                    ))
-                })?;
+            let project = if let Some(lock) = lock.as_ref() {
+                if let Some(pid) = lock.project_id {
+                    // Fetch project by ID via list_projects and filter
+                    ctx.client
+                        .list_projects()
+                        .await?
+                        .into_iter()
+                        .find(|p| p.id == pid as i32)
+                        .ok_or_else(|| {
+                            CliError::ConfigValidation(format!(
+                                "Project ID {} from lock file not found.\n\
+                                 Deploy the project first with: stacker deploy --target {}",
+                                pid, target_label
+                            ))
+                        })?
+                } else {
+                    ctx.client
+                        .find_project_by_name(&project_name)
+                        .await?
+                        .ok_or_else(|| {
+                            CliError::ConfigValidation(format!(
+                                "Project '{}' not found on the Stacker server.\n\
+                             Deploy the project first with: stacker deploy --target {}",
+                                project_name, target_label
+                            ))
+                        })?
+                }
+            } else {
+                ctx.client
+                    .find_project_by_name(&project_name)
+                    .await?
+                    .ok_or_else(|| {
+                        CliError::ConfigValidation(format!(
+                            "Project '{}' not found on the Stacker server.\n\
+                         Deploy the project first with: stacker deploy --target {}",
+                            project_name, target_label
+                        ))
+                    })?
+            };
 
             // 2. Find the server for this project
             progress::update_message(&pb, "Finding server...");
             let servers = ctx.client.list_servers().await?;
-            let server = servers
-                .into_iter()
-                .find(|s| s.project_id == project.id)
-                .ok_or_else(|| {
-                    CliError::ConfigValidation(format!(
-                        "No server found for project '{}' (id={}).\n\
-                     Deploy the project first with: stacker deploy --target {}",
-                        project_name, project.id, target_label
-                    ))
-                })?;
+            let server = select_server_for_agent_install(
+                servers,
+                project.id,
+                config.deploy.server.as_ref(),
+                &project_name,
+                &target_label,
+            )?;
 
             // 3. Build a minimal deploy form with only the statuspanel feature
             progress::update_message(&pb, "Preparing deploy payload...");
@@ -3029,6 +3096,52 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    // Regression test for GH issue #211: `merge_compose_service` attaches a
+    // network name to the newly-merged app service (copied from the
+    // *existing* project services via `align_service_networks_with_project`)
+    // that the app's own local compose (`app_doc`) never declared. Without
+    // also declaring it on `project_doc` directly, this produced "service X
+    // refers to undefined network default_network: invalid compose project"
+    // on `docker compose`.
+    #[test]
+    fn test_merge_compose_service_declares_network_inherited_from_project() {
+        // Existing remote project compose: "db" already joined
+        // `default_network` (e.g. it's NPM-proxied), but for whatever reason
+        // (hand-edited file, partial prior sync, backend-rendered compose)
+        // the top-level `networks:` mapping was never declared.
+        let project_compose =
+            "services:\n  db:\n    image: postgres:16\n    networks: [default_network]\n";
+        // App-local compose (e.g. a per-app override file) — has no idea
+        // about `default_network` at all.
+        let app_compose = "services:\n  app:\n    image: myorg/app:latest\n";
+
+        let merged = merge_compose_service(project_compose, app_compose, "app")
+            .expect("merge should succeed");
+        let doc: serde_yaml::Value = serde_yaml::from_str(&merged).unwrap();
+
+        let app_networks: Vec<&str> = doc["services"]["app"]["networks"]
+            .as_sequence()
+            .expect("app service should have networks copied from the project")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            app_networks.contains(&"default_network"),
+            "app service should reference default_network like the rest of the project: {merged}"
+        );
+
+        let declares_default_network = doc
+            .get("networks")
+            .and_then(|n| n.as_mapping())
+            .map(|m| m.contains_key(serde_yaml::Value::String("default_network".to_string())))
+            .unwrap_or(false);
+        assert!(
+            declares_default_network,
+            "app service references default_network but the top-level networks: mapping \
+             never declares it, producing an invalid compose file:\n{merged}"
+        );
+    }
+
     fn label_value<'a>(labels: &'a serde_yaml::Mapping, key: &str) -> Option<&'a str> {
         labels
             .get(serde_yaml::Value::String(key.to_string()))
@@ -3055,6 +3168,78 @@ mod tests {
             connection_mode: "ssh".to_string(),
             key_status: "uploaded".to_string(),
         }
+    }
+
+    // Regression tests for GH issue #223: `stacker agent install` picked
+    // the first server matching the project id, without checking it was
+    // actually the server configured in stacker.yml's `deploy.server` —
+    // installing against/creating a deployment for a stale/unrelated
+    // server left over from an earlier deploy attempt.
+    #[test]
+    fn select_server_for_agent_install_matches_configured_host() {
+        let servers = vec![
+            crate::cli::stacker_client::ServerInfo {
+                srv_ip: Some("198.51.100.1".to_string()),
+                ..sample_server_info()
+            },
+            crate::cli::stacker_client::ServerInfo {
+                srv_ip: Some("203.0.113.10".to_string()),
+                ..sample_server_info()
+            },
+        ];
+        let server_cfg = crate::cli::config_parser::ServerConfig {
+            host: "203.0.113.10".to_string(),
+            user: "root".to_string(),
+            ssh_key: None,
+            port: 22,
+        };
+
+        let selected =
+            select_server_for_agent_install(servers, 42, Some(&server_cfg), "demo", "server")
+                .expect("should find the matching server");
+
+        assert_eq!(selected.srv_ip.as_deref(), Some("203.0.113.10"));
+    }
+
+    #[test]
+    fn select_server_for_agent_install_fails_clearly_when_no_server_matches_configured_host() {
+        let servers = vec![crate::cli::stacker_client::ServerInfo {
+            srv_ip: Some("198.51.100.1".to_string()),
+            ..sample_server_info()
+        }];
+        let server_cfg = crate::cli::config_parser::ServerConfig {
+            host: "203.0.113.10".to_string(),
+            user: "root".to_string(),
+            ssh_key: None,
+            port: 22,
+        };
+
+        let err = select_server_for_agent_install(servers, 42, Some(&server_cfg), "demo", "server")
+            .expect_err("should not silently pick an unrelated server");
+
+        let message = err.to_string();
+        assert!(message.contains("203.0.113.10"));
+        assert!(message.contains("stacker deploy --target server"));
+    }
+
+    #[test]
+    fn select_server_for_agent_install_falls_back_to_project_match_without_configured_server() {
+        let servers = vec![sample_server_info()];
+
+        let selected = select_server_for_agent_install(servers, 42, None, "demo", "cloud")
+            .expect("should fall back to the project-matching server");
+
+        assert_eq!(selected.project_id, 42);
+    }
+
+    #[test]
+    fn select_server_for_agent_install_fails_when_no_server_for_project() {
+        let servers = vec![sample_server_info()];
+
+        let err = select_server_for_agent_install(servers, 999, None, "demo", "cloud")
+            .expect_err("no server should match an unrelated project id");
+
+        assert!(err.to_string().contains("No server found for project"));
     }
 
     fn stack_var_value<'a>(deploy_form: &'a serde_json::Value, key: &str) -> Option<&'a str> {
@@ -4105,5 +4290,120 @@ monitoring:
             Some(value) => std::env::set_var("STACKER_DOCKER_REGISTRY", value),
             None => std::env::remove_var("STACKER_DOCKER_REGISTRY"),
         }
+    }
+
+    // ── Agent status snapshot parsing ────────────────────────────────────
+
+    #[test]
+    fn extract_agent_status_from_snapshot_offline() {
+        let snap = serde_json::json!({
+            "item": {
+                "agent": { "status": "offline", "version": "1.0.0" },
+                "apps": []
+            }
+        });
+        let item = snapshot_item(&snap);
+        let status = item
+            .get("agent")
+            .and_then(|a| a.get("status"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("unknown");
+        assert_eq!(status, "offline");
+    }
+
+    #[test]
+    fn extract_agent_status_from_snapshot_online() {
+        let snap = serde_json::json!({
+            "item": {
+                "agent": { "status": "online", "version": "1.0.0" },
+                "apps": []
+            }
+        });
+        let item = snapshot_item(&snap);
+        let status = item
+            .get("agent")
+            .and_then(|a| a.get("status"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("unknown");
+        assert_eq!(status, "online");
+    }
+
+    #[test]
+    fn extract_agent_status_missing_defaults_unknown() {
+        let snap = serde_json::json!({ "item": { "apps": [] } });
+        let item = snapshot_item(&snap);
+        let status = item
+            .get("agent")
+            .and_then(|a| a.get("status"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("unknown");
+        assert_eq!(status, "unknown");
+    }
+
+    #[test]
+    fn snapshot_item_prefers_item_key() {
+        let snap = serde_json::json!({
+            "item": { "agent": { "status": "online" } },
+            "agent": { "status": "offline" }
+        });
+        let item = snapshot_item(&snap);
+        assert_eq!(item["agent"]["status"], "online");
+    }
+
+    #[test]
+    fn snapshot_item_falls_back_to_root() {
+        let snap = serde_json::json!({ "agent": { "status": "offline" } });
+        let item = snapshot_item(&snap);
+        assert_eq!(item["agent"]["status"], "offline");
+    }
+}
+
+// ── rotate-token ────────────────────────────────────────────────────────────
+
+/// Reissue the agent's bearer token.
+///
+/// The recovery path when an agent cannot authenticate — after the move to
+/// stored digests, an agent whose `token_hash` was never provisioned fails
+/// closed and shows as offline, because a heartbeat is only recorded after a
+/// successful authentication.
+///
+/// This lives in the CLI rather than the `console` binary because it is an
+/// operator action, and `console` is built only with the `explain` feature: on
+/// a release image the one command that restores a locked-out agent was not
+/// there at all.
+pub struct AgentRotateTokenCommand {
+    pub json: bool,
+    pub deployment: Option<String>,
+}
+
+impl AgentRotateTokenCommand {
+    pub fn new(json: bool, deployment: Option<String>) -> Self {
+        Self { json, deployment }
+    }
+}
+
+impl CallableTrait for AgentRotateTokenCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = CliRuntime::new("agent rotate-token")?;
+        let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+
+        let response = ctx.block_on(ctx.client.rotate_agent_token(&hash))?;
+
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&response)?);
+            return Ok(());
+        }
+
+        println!("✓ Agent token rotated for {}", hash);
+        println!(
+            "  The agent reads the new value from Vault on its next refresh \
+             (about a minute); no reinstall is needed."
+        );
+        println!(
+            "  The token is not printed: the agent's only source is Vault, so \
+             nothing here needs a copy of it."
+        );
+
+        Ok(())
     }
 }

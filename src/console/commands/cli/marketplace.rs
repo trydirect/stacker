@@ -8,6 +8,7 @@ use crate::cli::stacker_client::{
     StackerClient,
 };
 use crate::console::commands::CallableTrait;
+use chrono::Utc;
 use dialoguer::Confirm;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
@@ -475,7 +476,70 @@ impl CallableTrait for MarketplaceInstallCommand {
                 "Installed '{}' as project #{} and started deployment #{}.",
                 response.template.slug, response.project.id, deployment_id
             );
-            println!("Track with: stacker deployment state");
+
+            // Fetch deployment hash — the install response may not include it
+            // (older servers), so resolve it client-side via the project ID.
+            let deployment_hash = if response.deployment_hash.is_some() {
+                response.deployment_hash.clone()
+            } else {
+                let fetched = ctx.block_on(async {
+                    ctx.client
+                        .get_deployment_status_by_project(response.project.id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|d| d.deployment_hash)
+                });
+                eprintln!("[debug] client-side fetch result: {:?}", fetched);
+                fetched
+            };
+
+            if let Some(ref hash) = deployment_hash {
+                // Update stacker.yml with the deployment hash
+                if self.file.exists() {
+                    let hash_clone = hash.clone();
+                    let _ = DeploymentLock::edit_config_value(&self.file, |root| {
+                        let deploy = root
+                            .entry(serde_yaml::Value::String("deploy".to_string()))
+                            .or_insert_with(|| {
+                                serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+                            });
+                        if let Some(deploy_map) = deploy.as_mapping_mut() {
+                            deploy_map.insert(
+                                serde_yaml::Value::String("deployment_hash".to_string()),
+                                serde_yaml::Value::String(hash_clone),
+                            );
+                        }
+                        Ok(())
+                    });
+                }
+                // Create deployment lock file
+                let project_dir = self
+                    .file
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."));
+                let lock = DeploymentLock {
+                    target: "cloud".to_string(),
+                    server_ip: None,
+                    ssh_user: None,
+                    ssh_port: None,
+                    ssh_key: None,
+                    server_name: None,
+                    deployment_id: Some(deployment_id as i64),
+                    project_id: Some(response.project.id as i64),
+                    cloud_id: None,
+                    project_name: Some(response.project.name.clone()),
+                    stacker_email: None,
+                    deployed_at: chrono::Utc::now().to_rfc3339(),
+                };
+                let _ = lock.save(project_dir);
+
+                println!("Track with: stacker deployment state --deployment {}", hash);
+            } else {
+                // Fallback: use project name to find latest deployment
+                println!("Track with: stacker deployment state");
+            }
             return Ok(());
         }
 
@@ -965,7 +1029,10 @@ impl CallableTrait for MarketplaceStatusCommand {
         let cred_manager = CredentialsManager::with_default_store();
         let creds = cred_manager.require_valid_token("marketplace status")?;
         let base_url = crate::cli::install_runner::normalize_stacker_server_url(
-            crate::cli::stacker_client::DEFAULT_STACKER_URL,
+            creds
+                .server_url
+                .as_deref()
+                .unwrap_or(crate::cli::stacker_client::DEFAULT_STACKER_URL),
         );
 
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -1067,7 +1134,10 @@ impl CallableTrait for MarketplaceLogsCommand {
         let cred_manager = CredentialsManager::with_default_store();
         let creds = cred_manager.require_valid_token("marketplace logs")?;
         let base_url = crate::cli::install_runner::normalize_stacker_server_url(
-            crate::cli::stacker_client::DEFAULT_STACKER_URL,
+            creds
+                .server_url
+                .as_deref()
+                .unwrap_or(crate::cli::stacker_client::DEFAULT_STACKER_URL),
         );
 
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -1231,6 +1301,29 @@ mod tests {
         assert!(!inputs.contains_key("base_domain"));
     }
 
+    /// Mirrors the dual-key shape of the migrated templates (e.g.
+    /// stacker-projects/huly/stacker.yml): `install.inputs` carries both the
+    /// pre-existing `commonDomain` and a `domain` entry moved over from the
+    /// removed `config_contract.inputs` block. The existing `commonDomain`
+    /// must win, `domain` is folded away, and empty-string secret defaults
+    /// survive verbatim.
+    #[test]
+    fn install_inputs_existing_common_domain_wins_over_migrated_domain() {
+        let mut config_inputs = Map::new();
+        config_inputs.insert("commonDomain".to_string(), json!("huly.example.com"));
+        config_inputs.insert("domain".to_string(), json!("huly.try.direct"));
+        config_inputs.insert("huly-database-password".to_string(), json!(""));
+        config_inputs.insert("huly-auth-secret".to_string(), json!(""));
+
+        let inputs =
+            resolve_install_inputs(config_inputs, None, &[]).expect("inputs should resolve");
+
+        assert_eq!(inputs.get("commonDomain"), Some(&json!("huly.example.com")));
+        assert!(!inputs.contains_key("domain"));
+        assert_eq!(inputs.get("huly-database-password"), Some(&json!("")));
+        assert_eq!(inputs.get("huly-auth-secret"), Some(&json!("")));
+    }
+
     #[test]
     fn apply_install_inputs_replaces_existing_vars() {
         let mut inputs = Map::new();
@@ -1321,6 +1414,7 @@ mod tests {
             template: marketplace_template("dify"),
             latest_version,
             deployment_id: None,
+            deployment_hash: None,
             authorization: None,
             idempotency_key: None,
         }

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO project_member (project_id, user_id, role, created_by, created_at, updated_at)\n        VALUES ($1, $2, $3, $4, NOW() at time zone 'utc', NOW() at time zone 'utc')\n        ON CONFLICT (project_id, user_id) DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text",
+        "Varchar",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "73cf3a994e4d3535c23ea362d3f3cfb2511c7b83c469cb01e7b92586912fdb44"
+}

@@ -17,20 +17,28 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::connectors::user_service::UserServiceDeploymentResolver;
 use crate::db;
 use crate::forms::status_panel::{ConfigureFirewallCommandRequest, FirewallPortRule};
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
+use crate::mcp::tools::OwnedDeploymentResolver;
 use crate::models::{Command, CommandPriority};
 use crate::services::{DeploymentIdentifier, DeploymentResolver};
 
 /// Execution method for firewall commands
+///
+/// `snake_case`, not `lowercase`: this tool's own JSON schema advertises
+/// `["status_panel", "ssh"]` with `status_panel` as the default, but
+/// `rename_all = "lowercase"` accepted only `statuspanel`, so a client that
+/// followed the schema got "Invalid arguments: unknown variant `status_panel`".
+/// The old spelling stays as an alias so anything already sending it keeps
+/// working.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum FirewallExecutionMethod {
     /// Execute via Status Panel agent (preferred - runs directly on target)
     #[default]
+    #[serde(alias = "statuspanel")]
     StatusPanel,
     /// Execute via SSH (fallback for servers without Status Panel)
     Ssh,
@@ -75,10 +83,7 @@ impl ToolHandler for ConfigureFirewallTool {
             params.deployment_id,
         )?;
 
-        let resolver = UserServiceDeploymentResolver::from_context(
-            &context.settings.user_service_url,
-            context.user.access_token.as_deref(),
-        );
+        let resolver = OwnedDeploymentResolver::new(context);
         let deployment_hash = resolver.resolve(&identifier).await?;
 
         // Build firewall request
@@ -149,26 +154,21 @@ impl ToolHandler for ConfigureFirewallTool {
                     text: serde_json::to_string(&result).unwrap(),
                 })
             }
-            FirewallExecutionMethod::Ssh => {
-                // For SSH method, we would need to execute via Ansible
-                // This requires the deploy_role infrastructure
-                // For now, return a placeholder indicating SSH method
-
-                let result = json!({
-                    "status": "pending",
-                    "execution_method": "ssh",
-                    "deployment_hash": deployment_hash,
-                    "action": params.action,
-                    "public_ports": params.public_ports,
-                    "private_ports": params.private_ports,
-                    "message": "SSH execution method selected. Use deploy_role tool with 'firewall' role for Ansible-based execution.",
-                    "note": "Prefer 'status_panel' execution_method when Status Panel agent is available on target."
-                });
-
-                Ok(ToolContent::Text {
-                    text: serde_json::to_string(&result).unwrap(),
-                })
-            }
+            // Refuses, like `deploy_role`.
+            //
+            // This branch never configured a firewall. It answered
+            // {"status":"pending"} without queueing anything, and pointed at
+            // `deploy_role`, which did not deploy either. An AI client cannot
+            // tell "pending" from work that is really on its way, so it would
+            // report the ports as configured and move on — which, for a
+            // firewall, means reporting a server as locked down when it is
+            // untouched. Refusing is the safe answer.
+            FirewallExecutionMethod::Ssh => Err(
+                "execution_method 'ssh' is not implemented: no firewall rules were applied and \
+                 nothing was queued. Use execution_method 'status_panel', which requires the \
+                 Status Panel agent on the target server."
+                    .to_string(),
+            ),
         }
     }
 
@@ -176,8 +176,9 @@ impl ToolHandler for ConfigureFirewallTool {
         Tool {
             name: "configure_firewall".to_string(),
             description: "Configure iptables firewall rules on a deployment target server. \
-                Supports two execution methods: 'status_panel' (preferred, runs directly on target) \
-                or 'ssh' (fallback for Ansible-based deployments). \
+                Only execution_method 'status_panel' works; it runs directly on the target and \
+                requires the Status Panel agent. 'ssh' is NOT IMPLEMENTED and returns an error, \
+                so do not use it and do not report a firewall as configured through it. \
                 Public ports are opened to all IPs (0.0.0.0/0). \
                 Private ports are restricted to specified source IPs/networks."
                 .to_string(),
@@ -271,10 +272,7 @@ impl ToolHandler for ListFirewallRulesTool {
             params.deployment_id,
         )?;
 
-        let resolver = UserServiceDeploymentResolver::from_context(
-            &context.settings.user_service_url,
-            context.user.access_token.as_deref(),
-        );
+        let resolver = OwnedDeploymentResolver::new(context);
         let deployment_hash = resolver.resolve(&identifier).await?;
 
         // Queue a list command
@@ -384,10 +382,7 @@ impl ToolHandler for ConfigureFirewallFromRoleTool {
             params.deployment_id,
         )?;
 
-        let resolver = UserServiceDeploymentResolver::from_context(
-            &context.settings.user_service_url,
-            context.user.access_token.as_deref(),
-        );
+        let resolver = OwnedDeploymentResolver::new(context);
         let deployment_hash = resolver.resolve(&identifier).await?;
 
         // Fetch role info from database to get ports

@@ -2,6 +2,16 @@ mod common;
 
 use common::{USER_A_TOKEN, USER_B_TOKEN};
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TwoUserTestApp {
+    common::get_or_init_two_user_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 /// Admin endpoints (/admin/*) are protected by Casbin RBAC.
 /// Mock users have role "group_user" which has no admin policies.
 /// Requests should be denied with 403 Forbidden.

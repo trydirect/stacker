@@ -2,6 +2,7 @@ use crate::db;
 use crate::helpers::project::builder::DcBuilder;
 use crate::helpers::JsonResponse;
 use crate::models;
+use crate::routes::project::access::{self, Need};
 use actix_web::{get, web, web::Data, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -18,12 +19,17 @@ pub async fn add(
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
         .and_then(|project| match project {
-            Some(project) if project.user_id != user.id => {
-                Err(JsonResponse::<models::Project>::build().not_found("not found"))
-            }
             Some(project) => Ok(project),
             None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
         })?;
+    access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::View,
+        "not found",
+    )
+    .await?;
 
     DcBuilder::new(project)
         .build()

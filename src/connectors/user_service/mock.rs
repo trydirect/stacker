@@ -3,8 +3,9 @@ use uuid::Uuid;
 use crate::connectors::errors::ConnectorError;
 
 use super::{
-    AuthorizationHandle, BillingCapability, CategoryInfo, PlanDefinition, ProductInfo,
-    StackResponse, UserPlanInfo, UserProduct, UserProfile, UserServiceConnector,
+    AuthorizationHandle, BillingCapability, CategoryInfo, ManagedBillingEvent, ManagedUsageReport,
+    PlanDefinition, ProductInfo, StackResponse, UserPlanInfo, UserProduct, UserProfile,
+    UserServiceConnector,
 };
 
 /// Mock User Service for testing - always succeeds
@@ -295,6 +296,38 @@ impl UserServiceConnector for MockUserServiceConnector {
         _auth_token: &str,
         _authorization_id: &str,
         _reason: &str,
+    ) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    async fn daily_capture_install_charge(
+        &self,
+        _auth_token: &str,
+        _authorization_id: &str,
+        _amount_minor: i64,
+        _deployment_hash: &str,
+    ) -> Result<AuthorizationHandle, ConnectorError> {
+        Ok(AuthorizationHandle {
+            authorization_id: "mock-auth-id".to_string(),
+            amount_minor: 0,
+            currency: "USD".to_string(),
+            expires_at: None,
+            status: "captured".to_string(),
+        })
+    }
+
+    async fn report_managed_usage(
+        &self,
+        _service_token: &str,
+        _usage: &ManagedUsageReport,
+    ) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    async fn record_managed_billing_event(
+        &self,
+        _service_token: &str,
+        _event: &ManagedBillingEvent,
     ) -> Result<(), ConnectorError> {
         Ok(())
     }

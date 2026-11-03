@@ -81,6 +81,7 @@ pub enum ProxyType {
     Nginx,
     NginxProxyManager,
     Traefik,
+    Caddy,
     None,
 }
 
@@ -90,6 +91,7 @@ impl fmt::Display for ProxyType {
             Self::Nginx => write!(f, "nginx"),
             Self::NginxProxyManager => write!(f, "nginx-proxy-manager"),
             Self::Traefik => write!(f, "traefik"),
+            Self::Caddy => write!(f, "caddy"),
             Self::None => write!(f, "none"),
         }
     }
@@ -191,7 +193,14 @@ impl fmt::Display for CloudProvider {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Application source configuration.
+///
+/// `deny_unknown_fields`: a typo or an unsupported key under `app:` used to be
+/// dropped silently by serde, so the config validated green and the setting
+/// never reached the compose (the `cap_add`/`privileged`/`platform`/`devices`
+/// family, and typos like `priveleged:` / `porst:`). Unknown keys are now a
+/// hard error naming the offending key and the valid alternatives.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct AppSource {
     #[serde(rename = "type", default)]
     pub app_type: AppType,
@@ -229,6 +238,29 @@ pub struct AppSource {
     /// Docker compose healthcheck for this service.
     #[serde(default)]
     pub healthcheck: Option<ComposeHealthcheck>,
+
+    /// Docker runtime permissions and host integration for the app container.
+    #[serde(default)]
+    pub cap_add: Vec<String>,
+    #[serde(default)]
+    pub cap_drop: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_flag")]
+    pub privileged: bool,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub devices: Vec<String>,
+    /// Compose service dependencies (e.g. the database service) — the app
+    /// container starts only after these are up. Previously present in
+    /// templates but silently dropped.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    /// Container `/dev/shm` size (e.g. `"256m"`). Maps to compose `shm_size`.
+    #[serde(default)]
+    pub shm_size: Option<String>,
+    /// Container `user:` (e.g. `"0:0"` or `"1000:1000"`).
+    #[serde(default)]
+    pub user: Option<String>,
 }
 
 fn default_app_path() -> PathBuf {
@@ -261,14 +293,17 @@ fn default_health_retries_compose() -> u32 {
 ///
 /// This is distinct from `MonitoringConfig::healthcheck`, which is an
 /// app-level HTTP endpoint polling configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ComposeHealthcheck {
     pub test: String,
     #[serde(default = "default_health_interval")]
     pub interval: String,
     #[serde(default = "default_health_timeout_compose")]
     pub timeout: String,
-    #[serde(default = "default_health_retries_compose")]
+    #[serde(
+        default = "default_health_retries_compose",
+        deserialize_with = "deserialize_number"
+    )]
     pub retries: u32,
 }
 
@@ -297,6 +332,276 @@ pub struct ServiceDefinition {
     /// Docker compose healthcheck for this service.
     #[serde(default)]
     pub healthcheck: Option<ComposeHealthcheck>,
+
+    #[serde(default)]
+    pub cap_add: Vec<String>,
+    #[serde(default)]
+    pub cap_drop: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_flag")]
+    pub privileged: bool,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub devices: Vec<String>,
+
+    /// restart, entrypoint, profiles, aliases, deploy.
+    #[serde(flatten)]
+    pub runtime: ServiceRuntime,
+}
+
+/// How a service runs, beyond its image and wiring. Each maps to the compose
+/// key of the same name (`aliases` to `networks.<network>.aliases`); left
+/// unset, the compose keeps its defaults.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ServiceRuntime {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart: Option<RestartPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<String>,
+    /// The service starts only when one of these compose profiles is active.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<String>,
+    /// Other names the service answers to on every network it joins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deploy: Option<ServiceDeploy>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RestartPolicy {
+    No,
+    Always,
+    UnlessStopped,
+    OnFailure,
+}
+
+impl RestartPolicy {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RestartPolicy::No => "no",
+            RestartPolicy::Always => "always",
+            RestartPolicy::UnlessStopped => "unless-stopped",
+            RestartPolicy::OnFailure => "on-failure",
+        }
+    }
+}
+
+/// The subset of compose `deploy:` a single host honours.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceDeploy {
+    /// `0` keeps the service defined but not started. Also read from a
+    /// `${VAR}` reference: filled, it arrives as a string; read without
+    /// filling variables, the reference is kept as written.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_count",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub replicas: Option<Count>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<ServiceResources>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceResources {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reservations: Option<ServiceReservations>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceReservations {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<DeviceRequest>,
+}
+
+/// A device the container reserves, e.g. an NVIDIA GPU:
+/// `{driver: nvidia, count: 1, capabilities: [gpu]}`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<DeviceCount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub device_ids: Vec<String>,
+    pub capabilities: Vec<String>,
+}
+
+/// A count: a whole number, or a `${VAR}` reference the deploy fills in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Count {
+    Value(u32),
+    Reference(String),
+}
+
+impl Count {
+    /// The number, when it is known before the deploy fills variables.
+    pub fn value(&self) -> Option<u32> {
+        match self {
+            Count::Value(n) => Some(*n),
+            Count::Reference(_) => None,
+        }
+    }
+}
+
+impl Serialize for Count {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Count::Value(n) => serializer.serialize_u32(*n),
+            Count::Reference(r) => serializer.serialize_str(r),
+        }
+    }
+}
+
+/// `count: 2`, `count: all` or `count: ${VAR}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceCount {
+    Count(Count),
+    All,
+}
+
+impl Serialize for DeviceCount {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            DeviceCount::Count(c) => c.serialize(serializer),
+            DeviceCount::All => serializer.serialize_str("all"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DeviceCount {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match serde_yaml::Value::deserialize(deserializer)? {
+            serde_yaml::Value::String(s) if s == "all" => Ok(DeviceCount::All),
+            other => count_from_value(&other)
+                .map(DeviceCount::Count)
+                .ok_or_else(|| serde::de::Error::custom("count must be a number or `all`")),
+        }
+    }
+}
+
+fn count_from_value(value: &serde_yaml::Value) -> Option<Count> {
+    match value {
+        serde_yaml::Value::Number(n) => n
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .map(Count::Value),
+        serde_yaml::Value::String(s) if is_variable_reference(s.trim()) => {
+            Some(Count::Reference(s.trim().to_string()))
+        }
+        serde_yaml::Value::String(s) => s.trim().parse().ok().map(Count::Value),
+        _ => None,
+    }
+}
+
+/// A boolean, also read from the string a filled `${VAR}` leaves behind.
+fn deserialize_flag<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    match serde_yaml::Value::deserialize(deserializer)? {
+        serde_yaml::Value::Bool(b) => Ok(b),
+        serde_yaml::Value::String(s) if s.trim() == "true" => Ok(true),
+        serde_yaml::Value::String(s) if s.trim() == "false" => Ok(false),
+        other => Err(serde::de::Error::custom(format!(
+            "expected true or false, got {}",
+            scalar_text(&other)
+        ))),
+    }
+}
+
+/// A whole number, also read from the string a filled `${VAR}` leaves behind.
+fn number_from_value<T: TryFrom<u64>>(value: &serde_yaml::Value) -> Option<T> {
+    let n = match value {
+        serde_yaml::Value::Number(n) => n.as_u64()?,
+        serde_yaml::Value::String(s) => s.trim().parse().ok()?,
+        _ => return None,
+    };
+    T::try_from(n).ok()
+}
+
+fn deserialize_number<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: TryFrom<u64>,
+{
+    let value = serde_yaml::Value::deserialize(deserializer)?;
+    number_from_value(&value).ok_or_else(|| {
+        serde::de::Error::custom(format!(
+            "expected a whole number, got {}",
+            scalar_text(&value)
+        ))
+    })
+}
+
+fn deserialize_optional_number<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: TryFrom<u64>,
+{
+    match Option::<serde_yaml::Value>::deserialize(deserializer)? {
+        None | Some(serde_yaml::Value::Null) => Ok(None),
+        Some(value) => number_from_value(&value).map(Some).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "expected a whole number, got {}",
+                scalar_text(&value)
+            ))
+        }),
+    }
+}
+
+fn scalar_text(value: &serde_yaml::Value) -> String {
+    match value {
+        serde_yaml::Value::String(s) => format!("`{s}`"),
+        other => serde_yaml::to_string(other)
+            .map(|s| format!("`{}`", s.trim()))
+            .unwrap_or_else(|_| "a non-scalar value".to_string()),
+    }
+}
+
+/// `${NAME}`, `${NAME:-default}` (and the other compose modifiers) or `$NAME`.
+fn is_variable_reference(value: &str) -> bool {
+    let name = match value.strip_prefix("${") {
+        Some(rest) => match rest.strip_suffix('}') {
+            Some(inner) => {
+                let end = inner
+                    .find(|c: char| !(c == '_' || c.is_ascii_alphanumeric()))
+                    .unwrap_or(inner.len());
+                let modifier = &inner[end..];
+                if !(modifier.is_empty()
+                    || [":-", "-", ":?", "?", ":+", "+"]
+                        .iter()
+                        .any(|m| modifier.starts_with(m)))
+                {
+                    return false;
+                }
+                &inner[..end]
+            }
+            None => return false,
+        },
+        None => match value.strip_prefix('$') {
+            Some(name) => name,
+            None => return false,
+        },
+    };
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c == '_' || c.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+fn deserialize_optional_count<'de, D>(deserializer: D) -> Result<Option<Count>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<serde_yaml::Value>::deserialize(deserializer)? {
+        None | Some(serde_yaml::Value::Null) => Ok(None),
+        Some(value) => count_from_value(&value)
+            .map(Some)
+            .ok_or_else(|| serde::de::Error::custom("replicas must be a whole number, 0 or more")),
+    }
 }
 
 fn deserialize_services<'de, D>(deserializer: D) -> Result<Vec<ServiceDefinition>, D::Error>
@@ -356,7 +661,7 @@ pub struct ProxyConfig {
     #[serde(rename = "type", default)]
     pub proxy_type: ProxyType,
 
-    #[serde(default = "default_auto_detect")]
+    #[serde(default = "default_auto_detect", deserialize_with = "deserialize_flag")]
     pub auto_detect: bool,
 
     #[serde(default)]
@@ -379,6 +684,96 @@ pub struct DomainConfig {
     pub ssl: SslMode,
 
     pub upstream: String,
+}
+
+/// A declaratively-defined pipe (`pipes:` block in stacker.yml). This is the
+/// committable source of truth reconciled by `stacker pipe apply` / `pipe diff`
+/// against the deployed templates+instances. Fields mirror the `pipe create`
+/// flags so the imperative and declarative surfaces stay 1:1.
+///
+/// See `config/docs/PIPE_IAC_AND_RESILIENCE_PLAN.md` §5.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PipeSpec {
+    /// Unique pipe name (identity for reconcile).
+    pub name: String,
+    /// Source app code (container/service selector).
+    pub source: String,
+    /// Target app code.
+    pub target: String,
+    /// Source endpoint "METHOD /path".
+    pub source_endpoint: String,
+    /// Target endpoint "METHOD /path".
+    pub target_endpoint: String,
+    #[serde(default)]
+    pub source_fields: Vec<String>,
+    #[serde(default)]
+    pub target_fields: Vec<String>,
+    /// Trigger mode: manual | webhook | poll (default webhook, matching the CLI).
+    #[serde(default = "default_pipe_trigger")]
+    pub trigger: String,
+    /// Poll interval (seconds) when trigger = poll.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_number"
+    )]
+    pub poll_interval: Option<u32>,
+    /// Max delivery retries (→ pipe config).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_number"
+    )]
+    pub retry: Option<u32>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_number"
+    )]
+    pub retry_backoff_ms: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_number"
+    )]
+    pub retry_backoff_max_ms: Option<u64>,
+    /// Run another pipe (by name) on failure / success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_failure: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_success: Option<String>,
+}
+
+fn default_pipe_trigger() -> String {
+    "webhook".to_string()
+}
+
+impl PipeSpec {
+    /// Build the typed resilience/lifecycle config for this pipe (empty when no
+    /// retry/handler was declared, so it round-trips cleanly).
+    pub fn to_pipe_config(&self) -> crate::models::pipe_config::PipeConfig {
+        use crate::models::agent_protocol::RetryPolicy;
+        use crate::models::pipe_config::{HandlerRef, PipeConfig};
+
+        let d = RetryPolicy::default();
+        let retry = if self.retry.is_some()
+            || self.retry_backoff_ms.is_some()
+            || self.retry_backoff_max_ms.is_some()
+        {
+            Some(RetryPolicy {
+                max_retries: self.retry.unwrap_or(d.max_retries),
+                backoff_base_ms: self.retry_backoff_ms.unwrap_or(d.backoff_base_ms),
+                backoff_max_ms: self.retry_backoff_max_ms.unwrap_or(d.backoff_max_ms),
+            })
+        } else {
+            None
+        };
+        PipeConfig {
+            retry,
+            on_failure: self.on_failure.clone().map(HandlerRef::Pipe),
+            on_success: self.on_success.clone().map(HandlerRef::Pipe),
+        }
+    }
 }
 
 /// Docker registry credentials for pulling private images during deployment.
@@ -576,6 +971,118 @@ pub struct InstallConfig {
     pub inputs: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Marketplace listing metadata (`marketplace:` block in stacker.yml).
+///
+/// Only read at publish time (`stacker submit`) — ignored by deploy. See
+/// `docs/MARKETPLACE_PUBLISH.md` for the review requirements these fields feed.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct MarketplacePublishConfig {
+    /// Explicit opt-in switch. `false` makes `stacker submit` refuse.
+    pub publish: Option<bool>,
+
+    /// Listing name override; defaults to the project `name`.
+    pub display_name: Option<String>,
+
+    /// One-sentence listing summary (20-200 characters).
+    pub short_description: Option<String>,
+
+    /// Markdown listing body (100-5000 characters).
+    pub long_description: Option<String>,
+
+    /// Marketplace category code (e.g. `ai-agents`).
+    #[serde(alias = "category_code")]
+    pub category: Option<String>,
+
+    /// Search/discovery tags.
+    pub tags: Vec<String>,
+
+    /// License shorthand (`free`, `paid`, `subscription`). `paid` maps to a
+    /// one-time plan when `pricing.plan_type` is absent.
+    pub license: Option<String>,
+
+    /// Pricing terms for paid listings.
+    pub pricing: Option<MarketplacePricing>,
+
+    /// Public support/docs URL for buyers.
+    pub support_url: Option<String>,
+
+    /// The author's confirmation that the stack carries no secrets. Must stay
+    /// `true` to submit.
+    pub no_secrets_confirmation: Option<bool>,
+}
+
+/// Pricing terms inside the `marketplace:` block.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct MarketplacePricing {
+    /// `free`, `one_time`, or `subscription`.
+    pub plan_type: Option<String>,
+
+    /// Price amount in `currency`; ignored for free plans.
+    pub price: Option<f64>,
+
+    /// ISO 4217 currency code (default `USD`).
+    pub currency: Option<String>,
+}
+
+impl MarketplacePublishConfig {
+    /// Whether no marketplace metadata was configured at all.
+    pub fn is_empty(&self) -> bool {
+        self.publish.is_none()
+            && self.display_name.is_none()
+            && self.short_description.is_none()
+            && self.long_description.is_none()
+            && self.category.is_none()
+            && self.tags.is_empty()
+            && self.license.is_none()
+            && self.pricing.is_none()
+            && self.support_url.is_none()
+            && self.no_secrets_confirmation.is_none()
+    }
+
+    /// Effective pricing plan (`free`, `one_time`, `subscription`), mapping the
+    /// documented `license: paid` shorthand to `one_time`. An explicit
+    /// `pricing.plan_type` wins over `license`; `Ok(None)` means "not
+    /// specified" — `stacker submit` then defaults to `free`.
+    pub fn resolved_plan_type(&self) -> Result<Option<String>, String> {
+        let pricing_plan = self
+            .pricing
+            .as_ref()
+            .and_then(|pricing| pricing.plan_type.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(plan_type) = pricing_plan {
+            return match plan_type {
+                "free" | "one_time" | "subscription" => Ok(Some(plan_type.to_string())),
+                other => Err(format!(
+                    "marketplace.pricing.plan_type '{other}' is not valid (expected 'free', \
+                     'one_time' or 'subscription')"
+                )),
+            };
+        }
+
+        let license = self
+            .license
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(license) = license {
+            return match license {
+                "free" => Ok(Some("free".to_string())),
+                "paid" => Ok(Some("one_time".to_string())),
+                "subscription" => Ok(Some("subscription".to_string())),
+                other => Err(format!(
+                    "marketplace.license '{other}' is not valid (expected 'free', 'paid' or \
+                     'subscription')"
+                )),
+            };
+        }
+
+        Ok(None)
+    }
+}
+
 /// Cloud provider settings for cloud deployments.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloudConfig {
@@ -629,7 +1136,7 @@ pub struct ServerConfig {
     #[serde(default)]
     pub ssh_key: Option<PathBuf>,
 
-    #[serde(default = "default_ssh_port")]
+    #[serde(default = "default_ssh_port", deserialize_with = "deserialize_number")]
     pub port: u16,
 }
 
@@ -641,6 +1148,20 @@ fn default_ssh_port() -> u16 {
     22
 }
 
+impl Default for ServerConfig {
+    /// An empty-host skeleton with the same field defaults serde applies
+    /// (`user = root`, `port = 22`). Used when building a server config from
+    /// CLI flags (`--server-host/--server-user/--server-ssh-key`).
+    fn default() -> Self {
+        Self {
+            host: String::new(),
+            user: default_ssh_user(),
+            ssh_key: None,
+            port: default_ssh_port(),
+        }
+    }
+}
+
 /// Default AI request timeout in seconds.
 fn default_ai_timeout() -> u64 {
     300
@@ -649,7 +1170,7 @@ fn default_ai_timeout() -> u64 {
 /// AI/LLM assistant configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AiConfig {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_flag")]
     pub enabled: bool,
 
     #[serde(default)]
@@ -666,7 +1187,10 @@ pub struct AiConfig {
 
     /// Request timeout in seconds. Default: 300 (5 minutes).
     /// Can be overridden via `STACKER_AI_TIMEOUT` env var.
-    #[serde(default = "default_ai_timeout")]
+    #[serde(
+        default = "default_ai_timeout",
+        deserialize_with = "deserialize_number"
+    )]
     pub timeout: u64,
 
     #[serde(default)]
@@ -676,7 +1200,7 @@ pub struct AiConfig {
 /// Monitoring and health check configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MonitoringConfig {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_flag")]
     pub status_panel: bool,
 
     #[serde(default)]
@@ -684,6 +1208,67 @@ pub struct MonitoringConfig {
 
     #[serde(default)]
     pub metrics: Option<MetricsConfig>,
+
+    /// Container-down alerting for `stacker monitor`. Absent → no alarm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alerts: Option<AlertConfig>,
+}
+
+/// Config for the `stacker monitor` container-health alarm (§10 of the PIPE
+/// IaC/resilience plan). Reuses `HandlerRef` as the notification target, so an
+/// alert can hit a webhook (ntfy/Slack) or, later, run a pipe.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AlertConfig {
+    /// Poll interval in seconds for the watch loop (default 60).
+    #[serde(
+        default = "default_alert_interval",
+        deserialize_with = "deserialize_number"
+    )]
+    pub interval: u64,
+    /// Where to deliver the alert (required).
+    pub target: AlertTarget,
+    /// Also notify when containers recover to healthy (default true).
+    #[serde(default = "default_true", deserialize_with = "deserialize_flag")]
+    pub on_recovery: bool,
+}
+
+/// Alert delivery target — a YAML-friendly, untagged view (distinguished by the
+/// `url` vs `pipe` key) that maps onto the shared `HandlerRef` for dispatch:
+///
+/// ```yaml
+/// target: { terminal: true }                                  # terminal + desktop
+/// target: { url: "https://ntfy.example.com/alerts", method: POST }   # webhook
+/// target: { pipe: oncall-notify }                             # run a pipe
+/// ```
+///
+/// (A dedicated type, rather than reusing `HandlerRef` directly, because
+/// `serde_yaml` renders externally-tagged enums as `!tag` — awkward in a config
+/// file — whereas this untagged form reads naturally.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AlertTarget {
+    /// Terminal + desktop notification (OS notification, terminal bell, stderr).
+    Terminal { terminal: bool },
+    /// HTTP webhook (ntfy/Slack/…). `method` defaults to POST.
+    Webhook {
+        url: String,
+        #[serde(default = "default_notify_method_alert")]
+        method: String,
+    },
+    /// Run a declared pipe by name.
+    Pipe { pipe: String },
+}
+
+fn default_notify_method_alert() -> String {
+    "POST".to_string()
+}
+
+fn default_alert_interval() -> u64 {
+    60
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Healthcheck settings.
@@ -707,10 +1292,10 @@ fn default_health_interval() -> String {
 /// Metrics collection settings.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MetricsConfig {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_flag")]
     pub enabled: bool,
 
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_flag")]
     pub telegraf: bool,
 }
 
@@ -725,6 +1310,19 @@ pub struct HookConfig {
 
     #[serde(default)]
     pub on_failure: Option<PathBuf>,
+
+    /// Send a terminal/desktop notification on deploy completion.
+    #[serde(
+        default,
+        skip_serializing_if = "is_false",
+        deserialize_with = "deserialize_flag"
+    )]
+    pub notify: bool,
+}
+
+/// Serde helper: skip serializing when `false`.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Project identity metadata.
@@ -736,21 +1334,545 @@ pub struct ProjectConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigContract {
     #[serde(default)]
     pub services: BTreeMap<String, TargetConfigContract>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// Who controls a declared field's final value at install time.
+///
+/// Mirrors `shared-fixtures/api-contracts/marketplace-field-policy.json`
+/// (`stacker/tests/contracts/marketplace-field-policy.contract.json`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mutability {
+    /// Author's value is baked in; never exposed to an installer.
+    Fixed,
+    /// Author's value is only a default; an installer's override can replace it.
+    Editable,
+    /// The installer must provide the value; the author's value is never shipped.
+    Provided,
+    /// The system produces a fresh value per install; the installer never enters it.
+    Generated,
+}
+
+/// Generator/validation shape for a field's value, selected via `type:`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldType {
+    Hex,
+    Base64,
+    Alphanumeric,
+    Uuid,
+    Enum,
+    DerivedJwt,
+}
+
+/// UI rendering hint for a field, selected via `display:`.
+///
+/// When present, tells the frontend which input widget to render.
+/// Independent from `FieldType` — a field can have both a generation
+/// type (`type: base64`) and a display hint (`display: password`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayType {
+    Boolean,
+    String,
+    Number,
+    Password,
+}
+
+/// Declared policy for one `config_contract.services.<service>.fields.<NAME>` entry.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FieldPolicy {
+    pub mutability: Mutability,
+    pub required: bool,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub type_spec: Option<FieldType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display: Option<DisplayType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub length: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<usize>,
+    /// Longest value accepted, in characters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<usize>,
+    /// Regular expression the whole value must match, checked by the platform
+    /// (blog form and User Service) - e.g. `^sk-[A-Za-z0-9_-]+$`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signing_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claims: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alg: Option<String>,
+}
+
+fn default_field_required() -> bool {
+    true
+}
+
+/// Wire shape used to deserialize a `FieldPolicy`, before the conditional
+/// validation below (generated needs a type; derived_jwt needs its signing
+/// trio; enum needs a value set) — matches the shared contract's `allOf`/`if`
+/// rules, since plain serde derives can't express those.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+struct RawFieldPolicy {
+    mutability: Mutability,
+    #[serde(default = "default_field_required")]
+    required: bool,
+    #[serde(rename = "type", default)]
+    type_spec: Option<FieldType>,
+    #[serde(default)]
+    display: Option<DisplayType>,
+    #[serde(default)]
+    length: Option<usize>,
+    #[serde(default)]
+    min_length: Option<usize>,
+    #[serde(default)]
+    max_length: Option<usize>,
+    #[serde(default)]
+    pattern: Option<String>,
+    #[serde(default)]
+    values: Vec<String>,
+    #[serde(default)]
+    signing_key: Option<String>,
+    #[serde(default)]
+    claims: Option<serde_json::Value>,
+    #[serde(default)]
+    alg: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for FieldPolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawFieldPolicy::deserialize(deserializer)?;
+
+        if raw.mutability == Mutability::Generated && raw.type_spec.is_none() {
+            return Err(serde::de::Error::custom(
+                "field policy with mutability: generated must declare a type",
+            ));
+        }
+
+        if raw.type_spec == Some(FieldType::DerivedJwt)
+            && (raw.signing_key.is_none() || raw.claims.is_none() || raw.alg.is_none())
+        {
+            return Err(serde::de::Error::custom(
+                "field policy with type: derived_jwt must declare signing_key, claims, and alg",
+            ));
+        }
+
+        if raw.type_spec == Some(FieldType::Enum) && raw.values.is_empty() {
+            return Err(serde::de::Error::custom(
+                "field policy with type: enum must declare a non-empty values list",
+            ));
+        }
+
+        // Limits nothing could satisfy: refuse them here rather than let every
+        // buyer value be rejected (or a generated one fail its own check).
+        let too_small = |what: &str, low: usize, high: usize| {
+            Err(serde::de::Error::custom(format!(
+                "field policy {what} ({low}) is larger than the length allowed ({high})"
+            )))
+        };
+        if let (Some(min), Some(len)) = (raw.min_length, raw.length) {
+            if min > len {
+                return too_small("min_length", min, len);
+            }
+        }
+        if let (Some(min), Some(max)) = (raw.min_length, raw.max_length) {
+            if min > max {
+                return too_small("min_length", min, max);
+            }
+        }
+        if let (Some(len), Some(max)) = (raw.length, raw.max_length) {
+            if len > max {
+                return too_small("length", len, max);
+            }
+        }
+        if let Some(pattern) = &raw.pattern {
+            if let Err(err) = regex::Regex::new(pattern) {
+                return Err(serde::de::Error::custom(format!(
+                    "field policy pattern {pattern:?} does not compile: {err}"
+                )));
+            }
+        }
+
+        Ok(FieldPolicy {
+            mutability: raw.mutability,
+            required: raw.required,
+            type_spec: raw.type_spec,
+            display: raw.display,
+            length: raw.length,
+            min_length: raw.min_length,
+            max_length: raw.max_length,
+            pattern: raw.pattern,
+            values: raw.values,
+            signing_key: raw.signing_key,
+            claims: raw.claims,
+            alg: raw.alg,
+        })
+    }
+}
+
+impl FieldPolicy {
+    /// A `mutability: fixed` policy with no generator/validation constraints —
+    /// the shape a legacy `required:`/`optional:` list entry maps to.
+    pub fn fixed(required: bool) -> Self {
+        FieldPolicy {
+            mutability: Mutability::Fixed,
+            required,
+            type_spec: None,
+            display: None,
+            length: None,
+            min_length: None,
+            max_length: None,
+            pattern: None,
+            values: Vec::new(),
+            signing_key: None,
+            claims: None,
+            alg: None,
+        }
+    }
+
+    /// The default generator a legacy `secret:` list entry maps to: a
+    /// 32-char alphanumeric value, matching `generate_secret()`'s convention
+    /// (`console/commands/cli/service.rs`).
+    pub fn default_generated_secret() -> Self {
+        FieldPolicy {
+            mutability: Mutability::Generated,
+            required: true,
+            type_spec: Some(FieldType::Alphanumeric),
+            display: None,
+            length: None,
+            min_length: Some(32),
+            max_length: None,
+            pattern: None,
+            values: Vec::new(),
+            signing_key: None,
+            claims: None,
+            alg: None,
+        }
+    }
+
+    fn is_plain_fixed(&self) -> bool {
+        self.mutability == Mutability::Fixed
+            && self.type_spec.is_none()
+            && self.display.is_none()
+            && self.length.is_none()
+            && self.min_length.is_none()
+            && self.max_length.is_none()
+            && self.pattern.is_none()
+            && self.values.is_empty()
+            && self.signing_key.is_none()
+            && self.claims.is_none()
+            && self.alg.is_none()
+    }
+
+    fn is_default_generated_secret(&self) -> bool {
+        self.mutability == Mutability::Generated
+            && self.required
+            && self.type_spec == Some(FieldType::Alphanumeric)
+            && self.length.is_none()
+            && self.min_length == Some(32)
+            && self.max_length.is_none()
+            && self.pattern.is_none()
+            && self.values.is_empty()
+            && self.signing_key.is_none()
+            && self.claims.is_none()
+            && self.alg.is_none()
+            // The legacy `secret:` list cannot carry a display hint, so a field
+            // that has one must stay in `fields:` or the hint is dropped — and
+            // the buyer's form renders a text input for a password.
+            && self.display.is_none()
+    }
+}
+
+/// Declared policy for one `config_contract.services.<service>.volumes.<NAME>`
+/// entry — the second kind a service block can carry, after `fields`.
+///
+/// A volume holds *state*, not a value, so only two of the four mutabilities
+/// mean anything:
+///
+/// * `fixed` — the author's content ships inside the image and is identical for
+///   every buyer. Correct for expensive, credential-free content: model weights,
+///   embeddings.
+/// * `generated` — the volume is dropped before the snapshot, so the buyer's
+///   machine initialises it from scratch with the buyer's own values.
+///
+/// `provided` and `editable` describe who *types* a value; there is nothing to
+/// type here, and accepting them would leave the bake guessing. They are
+/// rejected at parse time.
+///
+/// An undeclared volume behaves as `generated`. The error direction is
+/// deliberate: forgetting a declaration costs a rebuild, while the opposite
+/// default would hand the author's credentials to every buyer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct VolumePolicy {
+    pub mutability: Mutability,
+}
+
+impl<'de> Deserialize<'de> for VolumePolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            mutability: Mutability,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+
+        // Matched exhaustively on purpose: a fifth `Mutability` variant must be
+        // a compile error here, forcing a decision about what it means for a
+        // volume. A catch-all arm would compile and then panic inside a
+        // deserializer — aborting the CLI on a config file instead of reporting
+        // an error.
+        let rejected = match raw.mutability {
+            Mutability::Fixed | Mutability::Generated => {
+                return Ok(VolumePolicy {
+                    mutability: raw.mutability,
+                })
+            }
+            Mutability::Provided => "provided",
+            Mutability::Editable => "editable",
+        };
+
+        Err(serde::de::Error::custom(format!(
+            "`mutability: {rejected}` is not meaningful for a volume — a volume \
+             holds state, not a value somebody types. Use `fixed` to ship the \
+             author's content in the image, or `generated` to have the buyer's \
+             machine create it from scratch."
+        )))
+    }
+}
+
+/// Per-service field policy declarations.
+///
+/// Backed by a single `fields: HashMap<String, FieldPolicy>`. Accepts and
+/// still emits the legacy `required`/`optional`/`secret` plain-string-list
+/// shape (mapped to `fixed`/`fixed`/`generated` policies respectively) so
+/// existing `stacker.yml` files keep parsing unchanged; new contracts can use
+/// the richer `fields:` map directly.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct TargetConfigContract {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub required: Vec<String>,
+    pub fields: HashMap<String, FieldPolicy>,
+    /// Volumes this service owns, and whether each survives the bake.
+    /// Absent means every volume resets — see [`VolumePolicy`].
+    pub volumes: HashMap<String, VolumePolicy>,
+}
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub optional: Vec<String>,
+impl TargetConfigContract {
+    /// Build a contract from the legacy three-list shape, used by
+    /// `stacker config suggest-contract` and any other code still producing
+    /// the plain required/optional/secret form.
+    pub fn from_legacy_lists(
+        required: Vec<String>,
+        optional: Vec<String>,
+        secret: Vec<String>,
+    ) -> Self {
+        let mut fields = HashMap::new();
+        // `secret` wins when a key appears in both lists (a key can be both
+        // required and secret in the legacy shape) — process it first with
+        // an overwriting insert so a later required/optional entry for the
+        // same key can't demote it back to `fixed`.
+        for key in secret {
+            fields.insert(key, FieldPolicy::default_generated_secret());
+        }
+        for key in required {
+            fields
+                .entry(key)
+                .or_insert_with(|| FieldPolicy::fixed(true));
+        }
+        for key in optional {
+            fields
+                .entry(key)
+                .or_insert_with(|| FieldPolicy::fixed(false));
+        }
+        // The legacy three-list shape predates volumes and never declared any.
+        TargetConfigContract {
+            fields,
+            volumes: HashMap::new(),
+        }
+    }
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub secret: Vec<String>,
+    fn keys_where(&self, predicate: impl Fn(&FieldPolicy) -> bool) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .fields
+            .iter()
+            .filter(|(_, policy)| predicate(policy))
+            .map(|(name, _)| name.clone())
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    /// Fields declared `required: true`, regardless of mutability — a
+    /// `generated` field can also be `required` (it must resolve to a value
+    /// even though the installer never types it in). Used by `stacker config
+    /// check`'s "must be present locally" semantics, which is orthogonal to
+    /// who controls the value.
+    pub fn required_keys(&self) -> Vec<String> {
+        self.keys_where(|p| p.required)
+    }
+
+    /// Fields declared `required: false`, regardless of mutability.
+    pub fn optional_keys(&self) -> Vec<String> {
+        self.keys_where(|p| !p.required)
+    }
+
+    /// Fields declared `mutability: generated` — the ones a marketplace
+    /// install must produce a fresh value for.
+    pub fn secret_keys(&self) -> Vec<String> {
+        self.keys_where(|p| p.mutability == Mutability::Generated)
+    }
+
+    /// Fields whose author values must never be shipped to marketplace buyers.
+    pub fn protected_keys(&self) -> Vec<String> {
+        self.keys_where(|p| matches!(p.mutability, Mutability::Generated | Mutability::Provided))
+    }
+
+    /// Fields declared `mutability: editable` — the ones an installer's
+    /// form/env can override, with the author's value as the default.
+    pub fn editable_keys(&self) -> Vec<String> {
+        self.keys_where(|p| p.mutability == Mutability::Editable)
+    }
+
+    /// Volumes declared `mutability: fixed` — the ones whose content survives
+    /// into the image. Everything else, declared or not, is dropped before the
+    /// snapshot so the buyer's machine starts it clean.
+    pub fn fixed_volumes(&self) -> Vec<String> {
+        self.volumes
+            .iter()
+            .filter(|(_, policy)| policy.mutability == Mutability::Fixed)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct RawTargetConfigContract {
+    required: Vec<String>,
+    optional: Vec<String>,
+    secret: Vec<String>,
+    fields: HashMap<String, FieldPolicy>,
+    volumes: HashMap<String, VolumePolicy>,
+}
+
+impl<'de> Deserialize<'de> for TargetConfigContract {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawTargetConfigContract::deserialize(deserializer)?;
+        // Explicit `fields:` entries take precedence; among the legacy lists,
+        // `secret` wins when a key appears in both `secret` and
+        // `required`/`optional` (a key can be both required and secret).
+        let mut fields = raw.fields;
+
+        for key in raw.secret {
+            fields
+                .entry(key)
+                .or_insert_with(FieldPolicy::default_generated_secret);
+        }
+        for key in raw.required {
+            fields
+                .entry(key)
+                .or_insert_with(|| FieldPolicy::fixed(true));
+        }
+        for key in raw.optional {
+            fields
+                .entry(key)
+                .or_insert_with(|| FieldPolicy::fixed(false));
+        }
+
+        // A block that declares nothing is meaningless — a service with no
+        // policy is simply left out. In practice it means a declaration was
+        // dropped somewhere between the file and here, which is what an older
+        // CLI did with `volumes:` before that kind reached `Serialize`: the
+        // submit succeeded, the stored contract held `"my-service": {}`, and
+        // the bake reset a volume the author had asked to keep.
+        if fields.is_empty() && raw.volumes.is_empty() {
+            return Err(serde::de::Error::custom(
+                "declares neither `fields:` nor `volumes:`. A service with no policy \
+                 does not need a block at all — an empty one usually means a \
+                 declaration was lost, so it is refused rather than silently ignored.",
+            ));
+        }
+
+        Ok(TargetConfigContract {
+            fields,
+            volumes: raw.volumes,
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct SerializedTargetConfigContract {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    required: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    optional: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    secret: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    fields: BTreeMap<String, FieldPolicy>,
+    /// Sorted, so a submitted contract is byte-stable across runs.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    volumes: BTreeMap<String, VolumePolicy>,
+}
+
+impl Serialize for TargetConfigContract {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut required = Vec::new();
+        let mut optional = Vec::new();
+        let mut secret = Vec::new();
+        let mut fields = BTreeMap::new();
+
+        let mut sorted: Vec<_> = self.fields.iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(b.0));
+
+        for (name, policy) in sorted {
+            if policy.is_plain_fixed() {
+                if policy.required {
+                    required.push(name.clone());
+                } else {
+                    optional.push(name.clone());
+                }
+            } else if policy.is_default_generated_secret() {
+                secret.push(name.clone());
+            } else {
+                fields.insert(name.clone(), policy.clone());
+            }
+        }
+
+        SerializedTargetConfigContract {
+            required,
+            optional,
+            secret,
+            fields,
+            volumes: self
+                .volumes
+                .iter()
+                .map(|(name, policy)| (name.clone(), *policy))
+                .collect(),
+        }
+        .serialize(serializer)
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -817,6 +1939,11 @@ pub struct StackerConfig {
     #[serde(default)]
     pub install: InstallConfig,
 
+    /// Marketplace listing metadata for `stacker submit`. Absent → empty, so
+    /// projects that never publish are unaffected.
+    #[serde(default, skip_serializing_if = "MarketplacePublishConfig::is_empty")]
+    pub marketplace: MarketplacePublishConfig,
+
     #[serde(default)]
     pub environments: BTreeMap<String, EnvironmentConfig>,
 
@@ -837,6 +1964,11 @@ pub struct StackerConfig {
 
     #[serde(default)]
     pub config_contract: ConfigContract,
+
+    /// Declaratively-defined pipes reconciled by `stacker pipe apply` / `diff`.
+    /// Absent → empty, so existing configs are unaffected.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pipes: Vec<PipeSpec>,
 
     /// Provenance of this config. Not serialized — computed at load time.
     ///
@@ -874,6 +2006,29 @@ impl StackerConfig {
     /// config and write it back to disk, use [`from_file_raw`] instead so
     /// that `${VAR}` placeholders are preserved.
     pub fn from_file(path: &Path) -> Result<Self, CliError> {
+        Self::from_file_for_target(path, None)
+    }
+
+    /// Load config from a file path like [`from_file`], but skip `${VAR}`
+    /// resolution inside whichever of `deploy.server` / `deploy.cloud` is
+    /// **not** the active target — determined by `target_override` (e.g.
+    /// the CLI's `--target` flag) or, absent that, the literal
+    /// `deploy.target` value in the file.
+    ///
+    /// A project commonly defines both `deploy.server` and `deploy.cloud`
+    /// (see the dual-target pattern) so it can be pointed at either without
+    /// editing `stacker.yml`. Without this, `stacker deploy --target cloud`
+    /// would fail on a missing `${EXISTING_SERVER_HOST}` even though the
+    /// server section is never used for a cloud deploy — see GH #239.
+    ///
+    /// When the effective target can't be determined (no override, no
+    /// literal `deploy.target` in the file, or a multi-target `deploy.targets`
+    /// config), both sections are resolved as before — this only skips a
+    /// section when we're confident it's inactive.
+    pub fn from_file_for_target(
+        path: &Path,
+        target_override: Option<&str>,
+    ) -> Result<Self, CliError> {
         if !path.exists() {
             return Err(CliError::ConfigNotFound {
                 path: path.to_path_buf(),
@@ -884,7 +2039,14 @@ impl StackerConfig {
         let origin = detect_origin_from_raw(&raw_content);
         let mut parsed: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
         let env_file_vars = load_env_file_vars_from_yaml(path, &raw_content);
-        resolve_env_placeholders_in_value(&mut parsed, &env_file_vars)?;
+
+        let (skip_server, skip_cloud) = inactive_deploy_sections(&parsed, target_override);
+        resolve_env_placeholders_in_value_skipping_deploy(
+            &mut parsed,
+            &env_file_vars,
+            skip_server,
+            skip_cloud,
+        )?;
         let app_present = parsed.get("app").is_some();
         let mut config = deserialize_config_value(parsed)?;
         config.origin = origin;
@@ -908,6 +2070,21 @@ impl StackerConfig {
         let raw_content = std::fs::read_to_string(path)?;
         let origin = detect_origin_from_raw(&raw_content);
         let parsed: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
+        let app_present = parsed.get("app").is_some();
+        let mut config = deserialize_config_value(parsed)?;
+        config.origin = origin;
+        config.app_present = app_present;
+        Ok(config)
+    }
+
+    /// Load config from a YAML string **without** resolving `${VAR}` placeholders.
+    ///
+    /// Use this for validation/preview where referenced variables (e.g.
+    /// config_contract install inputs) are not yet known. `${VAR}` references
+    /// are kept as-is so a missing variable does not fail the parse.
+    pub fn from_str_raw(yaml: &str) -> Result<Self, CliError> {
+        let origin = detect_origin_from_raw(yaml);
+        let parsed: serde_yaml::Value = serde_yaml::from_str(yaml)?;
         let app_present = parsed.get("app").is_some();
         let mut config = deserialize_config_value(parsed)?;
         config.origin = origin;
@@ -1070,15 +2247,46 @@ impl StackerConfig {
             });
         }
 
-        // Port conflict detection across services
+        // E007 — every port mapping must be a real port. Checked here so a bad
+        // value fails at `stacker config validate` rather than on the target
+        // host after the server is already provisioned.
+        for (field_name, port_str) in self
+            .app
+            .ports
+            .iter()
+            .map(|p| ("app.ports".to_string(), p))
+            .chain(self.services.iter().flat_map(|svc| {
+                svc.ports
+                    .iter()
+                    .map(move |p| (format!("services.{}.ports", svc.name), p))
+            }))
+        {
+            if let Err(err) = validate_port_mapping(port_str) {
+                issues.push(ValidationIssue {
+                    severity: Severity::Error,
+                    code: "E007".to_string(),
+                    message: format!("Invalid port mapping '{port_str}': {err}."),
+                    field: Some(field_name),
+                });
+            }
+        }
+
+        // Port conflict detection across services, keyed by the *published
+        // host port*. Only services that publish a fixed host port can collide;
+        // the container-only form (no host port) is skipped. `host_port_binding`
+        // correctly handles the `ip:host:container` form — extracting the host
+        // port, not the leading IP — so two loopback services on different
+        // ports (e.g. `127.0.0.1:5432:5432` and `127.0.0.1:6379:6379`) are no
+        // longer misreported as sharing a port.
         let mut port_map: HashMap<String, Vec<String>> = HashMap::new();
         for svc in &self.services {
             for port_str in &svc.ports {
-                let host_port = extract_host_port(port_str);
-                port_map
-                    .entry(host_port.clone())
-                    .or_default()
-                    .push(svc.name.clone());
+                if let Some(host_port) = host_port_binding(port_str) {
+                    port_map
+                        .entry(host_port)
+                        .or_default()
+                        .push(svc.name.clone());
+                }
             }
         }
         for (port, services) in &port_map {
@@ -1092,6 +2300,165 @@ impl StackerConfig {
                         services.join(", ")
                     ),
                     field: Some("services.ports".to_string()),
+                });
+            }
+        }
+
+        // E008 — a proxy that is switched on must be given everything it needs
+        // to route. A routing entry with no domain is not a route: NPM rejects
+        // a proxy host with no name, nginx and caddy have no server_name to
+        // match on, and traefik's Host() rule matches nothing. It used to reach
+        // the target anyway, where the NPM role answered with a censored 4xx
+        // and took the whole deploy with it — after the server was already
+        // provisioned. The usual cause is an unset `${commonDomain}`: an
+        // `env_file` line like `commonDomain=` resolves to the empty string
+        // instead of failing, so the blank travels all the way to Ansible.
+        //
+        // Checked for every proxy type but `none`, since all of them route by
+        // name. An empty `domains:` list is not an error — a proxy can be
+        // deployed to be configured through its own UI later.
+        if self.proxy.proxy_type != ProxyType::None {
+            for (index, domain_config) in self.proxy.domains.iter().enumerate() {
+                let field = format!("proxy.domains[{index}]");
+
+                if domain_config.domain.trim().is_empty() {
+                    issues.push(ValidationIssue {
+                        severity: Severity::Error,
+                        code: "E008".to_string(),
+                        message: format!(
+                            "proxy.domains[{index}] has an empty domain, but proxy.type is \
+                             '{}'. A reverse proxy routes by name, so a blank domain cannot be \
+                             configured and the deploy fails on the target. If the domain comes \
+                             from a variable such as ${{commonDomain}}, set it in the env_file or \
+                             the environment; if this route is not needed yet, remove the entry.",
+                            self.proxy.proxy_type
+                        ),
+                        field: Some(format!("{field}.domain")),
+                    });
+                }
+
+                if domain_config.upstream.trim().is_empty() {
+                    issues.push(ValidationIssue {
+                        severity: Severity::Error,
+                        code: "E008".to_string(),
+                        message: format!(
+                            "proxy.domains[{index}] has an empty upstream. The proxy needs a \
+                             target to forward to, in the form 'service:port' (e.g. 'app:8080')."
+                        ),
+                        field: Some(format!("{field}.upstream")),
+                    });
+                } else if let Some((host, port)) = domain_config.upstream.rsplit_once(':') {
+                    // The port half is only a port when the upstream is written
+                    // `host:port`; a bare hostname is accepted and defaults to 80.
+                    if host.trim().is_empty() {
+                        issues.push(ValidationIssue {
+                            severity: Severity::Error,
+                            code: "E008".to_string(),
+                            message: format!(
+                                "proxy.domains[{index}] upstream '{}' has no host before the \
+                                 port. Expected 'service:port', e.g. 'app:8080'.",
+                                domain_config.upstream
+                            ),
+                            field: Some(format!("{field}.upstream")),
+                        });
+                    } else if let Err(err) = validate_port_number(port) {
+                        issues.push(ValidationIssue {
+                            severity: Severity::Error,
+                            code: "E008".to_string(),
+                            message: format!(
+                                "proxy.domains[{index}] upstream '{}' has an invalid port: {err}.",
+                                domain_config.upstream
+                            ),
+                            field: Some(format!("{field}.upstream")),
+                        });
+                    }
+                }
+            }
+        }
+
+        // W003 — a `proxy:` block deploys a *platform-managed* reverse proxy
+        // that owns the ingress host ports on the target. Any app/service that
+        // also publishes one of those host ports collides with it: the managed
+        // proxy takes precedence and the user's binding is shadowed. Detect by
+        // host-port overlap (not by image name) so it also catches a plain app
+        // accidentally bound to :80, not only a rival proxy.
+        if self.proxy.proxy_type != ProxyType::None {
+            let ingress_ports: &[&str] = match self.proxy.proxy_type {
+                ProxyType::NginxProxyManager => &["80", "443", "81"],
+                ProxyType::Nginx | ProxyType::Traefik | ProxyType::Caddy => &["80", "443"],
+                ProxyType::None => &[],
+            };
+
+            let mut published: Vec<(String, String)> = Vec::new();
+            for port in &self.app.ports {
+                if let Some(host_port) = host_port_binding(port) {
+                    published.push(("app".to_string(), host_port));
+                }
+            }
+            for svc in &self.services {
+                for port in &svc.ports {
+                    if let Some(host_port) = host_port_binding(port) {
+                        published.push((svc.name.clone(), host_port));
+                    }
+                }
+            }
+
+            let mut conflicts: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for (service, host_port) in published {
+                if ingress_ports.contains(&host_port.as_str()) {
+                    conflicts.entry(service).or_default().push(host_port);
+                }
+            }
+            for (service, ports) in conflicts {
+                issues.push(ValidationIssue {
+                    severity: Severity::Warning,
+                    code: "W003".to_string(),
+                    message: format!(
+                        "Service '{service}' publishes host port(s) {} that the platform-managed \
+                         '{}' proxy (configured via the proxy: block) also claims on the deploy \
+                         target. The managed proxy takes precedence, so '{service}' is ignored on \
+                         those ports. Remove the proxy: block to keep your own service there, or \
+                         change its host port.",
+                        ports.join(", "),
+                        self.proxy.proxy_type
+                    ),
+                    field: Some("proxy.type".to_string()),
+                });
+            }
+        }
+
+        // W004 — marketplace listing metadata (`docs/MARKETPLACE_PUBLISH.md`
+        // "Required metadata"). A warning, not an error: this block is publish
+        // metadata and must never block `stacker deploy`. `stacker submit` and
+        // the marketplace submit API reject bad listings outright.
+        if !self.marketplace.is_empty() {
+            for violation in crate::models::listing_description_violations(
+                self.marketplace.short_description.as_deref(),
+                self.marketplace.long_description.as_deref(),
+            ) {
+                issues.push(ValidationIssue {
+                    severity: Severity::Warning,
+                    code: "W004".to_string(),
+                    message: violation.message,
+                    field: Some(format!("marketplace.{}", violation.field)),
+                });
+            }
+            if let Err(message) = self.marketplace.resolved_plan_type() {
+                issues.push(ValidationIssue {
+                    severity: Severity::Warning,
+                    code: "W004".to_string(),
+                    message,
+                    field: Some("marketplace.license".to_string()),
+                });
+            }
+            if self.marketplace.no_secrets_confirmation == Some(false) {
+                issues.push(ValidationIssue {
+                    severity: Severity::Warning,
+                    code: "W004".to_string(),
+                    message: "marketplace.no_secrets_confirmation is false; `stacker submit` \
+                              requires it to be true before a template enters review"
+                        .to_string(),
+                    field: Some("marketplace.no_secrets_confirmation".to_string()),
                 });
             }
         }
@@ -1225,12 +2592,42 @@ fn validate_deploy_semantics(
                 }
             }
 
+            // A key under deploy.server is silently dropped on a cloud deploy:
+            // only deploy.cloud.ssh_key is ever authorized on the VM, so the
+            // machine comes up with the Vault-managed key alone and the user's
+            // own key is missing from authorized_keys. Say so rather than
+            // ignoring the field.
+            if cloud.ssh_key.is_none() {
+                if let Some(server_key) = deploy.server.as_ref().and_then(|s| s.ssh_key.as_ref()) {
+                    issues.push(ValidationIssue {
+                        severity: Severity::Warning,
+                        code: "W003".to_string(),
+                        message: format!(
+                            "deploy.server.ssh_key ({}) is ignored when target is cloud. \
+                             Set deploy.cloud.ssh_key instead, or this key will not be \
+                             installed in authorized_keys on the new VM.",
+                            server_key.display()
+                        ),
+                        field: Some(field("cloud.ssh_key")),
+                    });
+                }
+            }
+
             // Validate public_ports format up front so invalid entries are
             // surfaced by `stacker config validate` instead of being silently
             // dropped during cloud firewall provisioning. Bare numbers and
             // "port/proto" specs are both accepted.
             for port in &cloud.public_ports {
-                if let Err(err) = crate::forms::firewall::normalize_public_port(port) {
+                // A `${VAR}` port is only known once the deploy fills it; the
+                // protocol after it is still checked.
+                let checked = match port.split_once('/') {
+                    Some((number, protocol)) if is_variable_reference(number.trim()) => {
+                        format!("1/{protocol}")
+                    }
+                    None if is_variable_reference(port.trim()) => "1".to_string(),
+                    _ => port.clone(),
+                };
+                if let Err(err) = crate::forms::firewall::normalize_public_port(&checked) {
                     issues.push(ValidationIssue {
                         severity: Severity::Error,
                         code: "E005".to_string(),
@@ -1305,14 +2702,223 @@ fn load_env_file_vars_from_yaml(path: &Path, raw_content: &str) -> HashMap<Strin
 }
 
 /// Extract the host port from a port mapping string like "8080:80" → "8080".
-fn extract_host_port(port_str: &str) -> String {
-    port_str.split(':').next().unwrap_or(port_str).to_string()
+/// Extract the *published host* port from a compose port spec, or `None` when
+/// the spec publishes no host port (container-only form). Handles the protocol
+/// suffix and all three binding forms:
+///   `"80"` -> None (ephemeral), `"80:80"` -> `"80"`,
+///   `"127.0.0.1:80:80"` -> `"80"`, `"80:80/tcp"` -> `"80"`.
+/// Validate one numeric port, rejecting anything outside Docker's 1-65535.
+fn validate_port_number(value: &str) -> Result<(), String> {
+    if value == VARIABLE_MASK {
+        return Ok(());
+    }
+    let parsed: u64 = value
+        .parse()
+        .map_err(|_| format!("'{value}' is not a port number"))?;
+    if parsed == 0 || parsed > u16::MAX as u64 {
+        return Err(format!(
+            "port {value} is out of range, must be 1-{}",
+            u16::MAX
+        ));
+    }
+    Ok(())
+}
+
+/// Stands in for a `${VAR}` while a port spec is checked.
+const VARIABLE_MASK: &str = "__variable__";
+
+/// Replace each `${...}` in `spec` with [`VARIABLE_MASK`].
+fn mask_variable_references(spec: &str) -> String {
+    let mut out = String::with_capacity(spec.len());
+    let mut rest = spec;
+    while let Some(start) = rest.find("${") {
+        let Some(len) = rest[start..].find('}') else {
+            break;
+        };
+        out.push_str(&rest[..start]);
+        out.push_str(VARIABLE_MASK);
+        rest = &rest[start + len + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Validate one side of a mapping, which may be a range (`8000-8010`).
+fn validate_port_segment(segment: &str) -> Result<(), String> {
+    match segment.split_once('-') {
+        Some((low, high)) => {
+            validate_port_number(low)?;
+            validate_port_number(high)
+        }
+        None => validate_port_number(segment),
+    }
+}
+
+/// Validate a docker-compose short-form port mapping.
+///
+/// Accepts every shape Compose does — `container`, `host:container`,
+/// `ip:host:container` (including bracketed IPv6), ranges on either side, and
+/// an optional `/tcp`, `/udp` or `/sctp` suffix.
+///
+/// Without this, `app.ports` and `services[].ports` reached the generated
+/// compose verbatim and were only rejected on the target host, *after*
+/// provisioning: a bare out-of-range entry like `"133342"` is read by Docker
+/// as a container port and fails the deploy with "invalid containerPort".
+/// `deploy.cloud.public_ports` was already checked (E005); these were not.
+fn validate_port_mapping(spec: &str) -> Result<(), String> {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return Err("port mapping is empty".to_string());
+    }
+    // A `${VAR}` part is only known once the deploy fills it, and its
+    // `:-default` would split like a mapping. Check the rest without it.
+    let masked = mask_variable_references(spec);
+    let spec = masked.as_str();
+
+    let (mapping, protocol) = match spec.rsplit_once('/') {
+        Some((mapping, proto)) => (mapping, Some(proto)),
+        None => (spec, None),
+    };
+
+    if let Some(proto) = protocol {
+        if !matches!(proto, "tcp" | "udp" | "sctp") {
+            return Err(format!(
+                "unknown protocol '{proto}', expected tcp, udp or sctp"
+            ));
+        }
+    }
+
+    // A bracketed IPv6 host IP (`[::1]:8080:80`) is full of colons, so strip it
+    // before splitting on `:` — otherwise every hextet looks like a port.
+    let mapping = match mapping.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((_ip, remainder)) => remainder.strip_prefix(':').unwrap_or(remainder),
+            None => return Err(format!("'{spec}' has an unterminated IPv6 address")),
+        },
+        None => mapping,
+    };
+
+    let parts: Vec<&str> = mapping.split(':').collect();
+    let port_parts: &[&str] = match parts.len() {
+        // "container", "host:container"
+        1 | 2 => &parts,
+        // "ip:host:container" — the leading segment is a host IP, not a port.
+        3 => &parts[1..],
+        _ => return Err(format!("'{spec}' is not a valid port mapping")),
+    };
+
+    for segment in port_parts {
+        validate_port_segment(segment)?;
+    }
+
+    Ok(())
+}
+
+fn host_port_binding(port_str: &str) -> Option<String> {
+    let spec = port_str.split('/').next().unwrap_or(port_str);
+    let parts: Vec<&str> = spec.split(':').collect();
+    match parts.as_slice() {
+        [_container] => None,
+        [host, _container] => Some((*host).to_string()),
+        [_ip, host, _container] => Some((*host).to_string()),
+        _ => None,
+    }
 }
 
 /// Resolve `${VAR_NAME}` references in a string using process environment.
 #[allow(dead_code)]
 fn resolve_env_vars(content: &str) -> Result<String, CliError> {
     resolve_env_vars_with_fallback(content, &HashMap::new())
+}
+
+/// Decide which of `deploy.server` / `deploy.cloud` (legacy single-block
+/// form) is inactive for the effective target, so env-var resolution can
+/// skip it entirely. Returns `(skip_server, skip_cloud)`.
+///
+/// Only acts when the effective target is confidently known — from
+/// `target_override` (e.g. `--target`) or a literal (non-templated)
+/// `deploy.target` in the file. Multi-target `deploy.targets.<name>`
+/// configs are left untouched: each named profile already carries only
+/// its own `server` or `cloud`, so there's no ambiguity to resolve.
+fn inactive_deploy_sections(
+    parsed: &serde_yaml::Value,
+    target_override: Option<&str>,
+) -> (bool, bool) {
+    let Some(root) = parsed.as_mapping() else {
+        return (false, false);
+    };
+    let Some(deploy) = root
+        .get(serde_yaml::Value::String("deploy".to_string()))
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return (false, false);
+    };
+
+    let has_named_targets = deploy
+        .get(serde_yaml::Value::String("targets".to_string()))
+        .and_then(serde_yaml::Value::as_mapping)
+        .map(|m| !m.is_empty())
+        .unwrap_or(false);
+    if has_named_targets {
+        return (false, false);
+    }
+
+    let effective_target = target_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase)
+        .or_else(|| {
+            deploy
+                .get(serde_yaml::Value::String("target".to_string()))
+                .and_then(serde_yaml::Value::as_str)
+                .filter(|s| !s.contains("${")) // don't trust an unresolved literal
+                .map(|s| s.trim().to_lowercase())
+        });
+
+    match effective_target.as_deref() {
+        Some("cloud") => (true, false),
+        Some("server") => (false, true),
+        Some("local") => (true, true),
+        _ => (false, false),
+    }
+}
+
+/// Like [`resolve_env_placeholders_in_value`], but leaves `deploy.server`
+/// and/or `deploy.cloud` completely untouched (placeholders and all) when
+/// `skip_server`/`skip_cloud` say that section is inactive for this deploy.
+fn resolve_env_placeholders_in_value_skipping_deploy(
+    value: &mut serde_yaml::Value,
+    fallback_vars: &HashMap<String, String>,
+    skip_server: bool,
+    skip_cloud: bool,
+) -> Result<(), CliError> {
+    if !skip_server && !skip_cloud {
+        return resolve_env_placeholders_in_value(value, fallback_vars);
+    }
+
+    let Some(root) = value.as_mapping_mut() else {
+        return resolve_env_placeholders_in_value(value, fallback_vars);
+    };
+
+    for (key, map_value) in root.iter_mut() {
+        if key.as_str() != Some("deploy") {
+            resolve_env_placeholders_in_value(map_value, fallback_vars)?;
+            continue;
+        }
+        let Some(deploy_map) = map_value.as_mapping_mut() else {
+            continue;
+        };
+        for (deploy_key, deploy_value) in deploy_map.iter_mut() {
+            let skip = (deploy_key.as_str() == Some("server") && skip_server)
+                || (deploy_key.as_str() == Some("cloud") && skip_cloud);
+            if skip {
+                continue;
+            }
+            resolve_env_placeholders_in_value(deploy_value, fallback_vars)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn resolve_env_placeholders_in_value(
@@ -1388,10 +2994,12 @@ pub struct ConfigBuilder {
     app_image: Option<String>,
     app_dockerfile: Option<PathBuf>,
     app_volumes: Vec<String>,
+    app_ports: Vec<String>,
     build_args: HashMap<String, String>,
     services: Vec<ServiceDefinition>,
     proxy: Option<ProxyConfig>,
     deploy_target: Option<DeployTarget>,
+    deployment_hash: Option<String>,
     cloud: Option<CloudConfig>,
     server: Option<ServerConfig>,
     registry: Option<RegistryConfig>,
@@ -1447,6 +3055,11 @@ impl ConfigBuilder {
         self
     }
 
+    pub fn app_ports(mut self, ports: Vec<String>) -> Self {
+        self.app_ports = ports;
+        self
+    }
+
     pub fn app_volumes(mut self, volumes: Vec<String>) -> Self {
         self.app_volumes = volumes;
         self
@@ -1469,6 +3082,11 @@ impl ConfigBuilder {
 
     pub fn deploy_target(mut self, target: DeployTarget) -> Self {
         self.deploy_target = Some(target);
+        self
+    }
+
+    pub fn deployment_hash<S: Into<String>>(mut self, hash: S) -> Self {
+        self.deployment_hash = Some(hash.into());
         self
     }
 
@@ -1524,6 +3142,7 @@ impl ConfigBuilder {
             || self.app_image.is_some()
             || self.app_dockerfile.is_some()
             || !self.app_volumes.is_empty()
+            || !self.app_ports.is_empty()
             || !self.build_args.is_empty();
 
         let build_config = if self.build_args.is_empty() {
@@ -1548,11 +3167,19 @@ impl ConfigBuilder {
                 dockerfile: self.app_dockerfile,
                 image: self.app_image,
                 build: build_config,
-                ports: Vec::new(),
+                ports: self.app_ports,
                 volumes: self.app_volumes,
                 environment: HashMap::new(),
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
+                depends_on: Vec::new(),
+                shm_size: None,
+                user: None,
             },
             services: self.services,
             proxy: self.proxy.unwrap_or_default(),
@@ -1560,7 +3187,7 @@ impl ConfigBuilder {
                 target: self.deploy_target.unwrap_or_default(),
                 environment: None,
                 compose_file: None,
-                deployment_hash: None,
+                deployment_hash: self.deployment_hash,
                 cloud: self.cloud,
                 server: self.server,
                 registry: self.registry,
@@ -1568,6 +3195,7 @@ impl ConfigBuilder {
                 targets: BTreeMap::new(),
             },
             install: InstallConfig::default(),
+            marketplace: MarketplacePublishConfig::default(),
             environments: BTreeMap::new(),
             ai: self.ai.unwrap_or_default(),
             monitoring: self.monitoring.unwrap_or_default(),
@@ -1575,6 +3203,7 @@ impl ConfigBuilder {
             env_file: self.env_file,
             env: self.env,
             config_contract: ConfigContract::default(),
+            pipes: Vec::new(),
             origin: ConfigOrigin::UserAuthored,
             app_present,
         })
@@ -1593,6 +3222,482 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn field_policy_legacy_required_list_maps_to_fixed_required() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      required:
+        - POSTGRES_HOST
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let auth = &config.config_contract.services["auth"];
+        assert_eq!(auth.required_keys(), vec!["POSTGRES_HOST".to_string()]);
+        let policy = &auth.fields["POSTGRES_HOST"];
+        assert_eq!(policy.mutability, Mutability::Fixed);
+        assert!(policy.required);
+    }
+
+    #[test]
+    fn field_policy_legacy_optional_list_maps_to_fixed_not_required() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      optional:
+        - LOG_LEVEL
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let auth = &config.config_contract.services["auth"];
+        assert_eq!(auth.optional_keys(), vec!["LOG_LEVEL".to_string()]);
+        let policy = &auth.fields["LOG_LEVEL"];
+        assert_eq!(policy.mutability, Mutability::Fixed);
+        assert!(!policy.required);
+    }
+
+    #[test]
+    fn field_policy_legacy_secret_list_maps_to_generated_default() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      secret:
+        - JWT_SECRET
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let auth = &config.config_contract.services["auth"];
+        assert_eq!(auth.secret_keys(), vec!["JWT_SECRET".to_string()]);
+        let policy = &auth.fields["JWT_SECRET"];
+        assert_eq!(policy.mutability, Mutability::Generated);
+        assert!(policy.required);
+        assert_eq!(policy.type_spec, Some(FieldType::Alphanumeric));
+        assert_eq!(policy.min_length, Some(32));
+    }
+
+    #[test]
+    fn field_policy_full_form_parses_hex_editable_and_derived_jwt() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      fields:
+        JWT_SECRET:
+          mutability: generated
+          type: hex
+          length: 32
+        LOG_LEVEL:
+          mutability: editable
+          required: false
+          type: enum
+          values: [debug, info, warn, error]
+    storage:
+      fields:
+        ANON_KEY:
+          mutability: generated
+          type: derived_jwt
+          signing_key: auth.JWT_SECRET
+          claims:
+            role: anon
+            iss: supabase
+          alg: HS256
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+
+        let auth = &config.config_contract.services["auth"];
+        let jwt_secret = &auth.fields["JWT_SECRET"];
+        assert_eq!(jwt_secret.mutability, Mutability::Generated);
+        assert_eq!(jwt_secret.type_spec, Some(FieldType::Hex));
+        assert_eq!(jwt_secret.length, Some(32));
+
+        let log_level = &auth.fields["LOG_LEVEL"];
+        assert_eq!(log_level.mutability, Mutability::Editable);
+        assert!(!log_level.required);
+        assert_eq!(
+            log_level.values,
+            vec!["debug", "info", "warn", "error"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(auth.editable_keys(), vec!["LOG_LEVEL".to_string()]);
+
+        let storage = &config.config_contract.services["storage"];
+        let anon_key = &storage.fields["ANON_KEY"];
+        assert_eq!(anon_key.mutability, Mutability::Generated);
+        assert_eq!(anon_key.type_spec, Some(FieldType::DerivedJwt));
+        assert_eq!(anon_key.signing_key.as_deref(), Some("auth.JWT_SECRET"));
+        assert_eq!(anon_key.alg.as_deref(), Some("HS256"));
+    }
+
+    #[test]
+    fn field_policy_generated_without_type_is_rejected() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      fields:
+        JWT_SECRET:
+          mutability: generated
+"#;
+        let err = StackerConfig::from_str(yaml).unwrap_err();
+        assert!(format!("{err}").contains("must declare a type"));
+    }
+
+    #[test]
+    fn field_policy_derived_jwt_missing_signing_key_is_rejected() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    storage:
+      fields:
+        ANON_KEY:
+          mutability: generated
+          type: derived_jwt
+          claims:
+            role: anon
+          alg: HS256
+"#;
+        let err = StackerConfig::from_str(yaml).unwrap_err();
+        assert!(format!("{err}").contains("derived_jwt"));
+    }
+
+    // ── volume policy ──────────────────────────────────────────────────────
+
+    /// A volume is the second kind a service block can declare, after `fields`.
+    /// `fixed` means the author's content ships in the image as-is; `generated`
+    /// means the buyer's machine creates it from scratch.
+    #[test]
+    fn volume_policy_parses_fixed_and_generated() {
+        let yaml = r#"
+name: stackpilot
+config_contract:
+  services:
+    stackpilot-ollama:
+      volumes:
+        stackpilot_ollama:
+          mutability: fixed
+    stackpilot-db:
+      fields:
+        POSTGRES_PASSWORD:
+          mutability: generated
+          type: alphanumeric
+      volumes:
+        stackpilot_pgdata:
+          mutability: generated
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let ollama = &config.config_contract.services["stackpilot-ollama"];
+        assert_eq!(
+            ollama.volumes["stackpilot_ollama"].mutability,
+            Mutability::Fixed
+        );
+
+        let db = &config.config_contract.services["stackpilot-db"];
+        assert_eq!(
+            db.volumes["stackpilot_pgdata"].mutability,
+            Mutability::Generated
+        );
+        // Fields and volumes coexist in one service block.
+        assert_eq!(
+            db.fields["POSTGRES_PASSWORD"].mutability,
+            Mutability::Generated
+        );
+    }
+
+    /// `fixed_volumes()` is what the bake asks for: the volumes that survive.
+    #[test]
+    fn fixed_volumes_lists_only_the_ones_that_survive() {
+        let yaml = r#"
+name: kb
+config_contract:
+  services:
+    worker:
+      volumes:
+        kb_ollama: { mutability: fixed }
+        kb_qdrant: { mutability: fixed }
+        kb_pgdata: { mutability: generated }
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let mut kept = config.config_contract.services["worker"].fixed_volumes();
+        kept.sort();
+        assert_eq!(kept, vec!["kb_ollama".to_string(), "kb_qdrant".to_string()]);
+    }
+
+    /// `provided` and `editable` describe who types a *value*; a volume has no
+    /// value to type. Accepting them would leave the bake guessing.
+    /// Parsing is only half of it: the contract is serialized back out when
+    /// `stacker submit` sends it to the marketplace. A declaration that parses
+    /// but does not survive serialization never reaches the registry, and the
+    /// bake then resets the volume it was meant to keep — silently, because
+    /// everything else about the submit looks fine.
+    /// `display` is a UI hint with no legacy equivalent: the `secret:` shorthand
+    /// cannot express it. Collapsing a field into that list therefore loses it,
+    /// and the buyer's form renders a plain text input for a password.
+    ///
+    /// This travels further than the marketplace — `stacker sync` serializes the
+    /// contract onto every app of a project through the same code.
+    #[test]
+    fn a_display_hint_is_not_lost_to_the_legacy_shorthand() {
+        let yaml = r#"
+name: s
+config_contract:
+  services:
+    app:
+      fields:
+        ADMIN_PASSWORD:
+          mutability: generated
+          type: alphanumeric
+          min_length: 32
+          display: password
+"#;
+        let parsed = StackerConfig::from_str(yaml).unwrap();
+        let json = serde_json::to_value(&parsed.config_contract).unwrap();
+
+        assert_eq!(
+            json["services"]["app"]["fields"]["ADMIN_PASSWORD"]["display"], "password",
+            "the hint must survive: {json}"
+        );
+    }
+
+    /// A service block that declares nothing is almost always a declaration
+    /// that got lost on the way out — which is exactly what an older CLI did
+    /// with `volumes:` before it was added to `Serialize`. The submit
+    /// succeeded, the stored contract had `"my-service": {}`, and the bake
+    /// then reset a volume the author had asked to keep. Nothing complained.
+    ///
+    /// An empty block is also meaningless on its own: a service with no policy
+    /// simply goes unmentioned.
+    #[test]
+    fn an_empty_service_block_is_rejected() {
+        let yaml = r#"
+name: s
+config_contract:
+  services:
+    my-service: {}
+"#;
+        let err = StackerConfig::from_str(yaml).expect_err("an empty block means nothing");
+        assert!(
+            err.to_string().contains("my-service"),
+            "the error should name the service: {err}"
+        );
+    }
+
+    #[test]
+    fn volume_policy_survives_a_round_trip() {
+        let yaml = r#"
+name: stackpilot
+config_contract:
+  services:
+    stackpilot-ollama:
+      volumes:
+        stackpilot_ollama:
+          mutability: fixed
+"#;
+        let parsed = StackerConfig::from_str(yaml).unwrap();
+        let json = serde_json::to_value(&parsed.config_contract).unwrap();
+
+        assert_eq!(
+            json["services"]["stackpilot-ollama"]["volumes"]["stackpilot_ollama"]["mutability"],
+            "fixed",
+            "the declaration must still be there after serializing: {json}"
+        );
+
+        // And it must come back identically on the far side.
+        let round_tripped: ConfigContract = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            round_tripped.services["stackpilot-ollama"].fixed_volumes(),
+            vec!["stackpilot_ollama".to_string()]
+        );
+    }
+
+    /// The legacy three-list shape predates volumes. It must keep round-tripping
+    /// untouched — a contract written before this kind existed is still valid,
+    /// and must not grow an empty `volumes:` key on the way through.
+    #[test]
+    fn a_legacy_contract_round_trips_without_gaining_a_volumes_key() {
+        let yaml = r#"
+name: old-stack
+config_contract:
+  services:
+    app:
+      secret: [API_KEY]
+      required: [HOST]
+"#;
+        let parsed = StackerConfig::from_str(yaml).unwrap();
+        let json = serde_json::to_value(&parsed.config_contract).unwrap();
+
+        let app = &json["services"]["app"];
+        assert!(app.get("secret").is_some(), "legacy shape preserved: {app}");
+        assert!(
+            app.get("volumes").is_none(),
+            "an empty kind must not be emitted: {app}"
+        );
+
+        let _: ConfigContract = serde_json::from_value(json).expect("still parses");
+    }
+
+    /// A service can declare only volumes — no fields at all. It must survive
+    /// the round trip rather than collapsing into an empty block, which is
+    /// exactly how the serialization defect showed up in production.
+    #[test]
+    fn a_service_with_only_volumes_survives_serialization() {
+        let yaml = r#"
+name: s
+config_contract:
+  services:
+    ollama:
+      volumes:
+        app_ollama: { mutability: fixed }
+"#;
+        let parsed = StackerConfig::from_str(yaml).unwrap();
+        let json = serde_json::to_value(&parsed.config_contract).unwrap();
+
+        assert!(
+            !json["services"]["ollama"]
+                .as_object()
+                .expect("service block is an object")
+                .is_empty(),
+            "the service block must not serialize to {{}}: {json}"
+        );
+    }
+
+    #[test]
+    fn volume_policy_rejects_mutabilities_that_make_no_sense_for_state() {
+        for mutability in ["provided", "editable"] {
+            let yaml = format!(
+                r#"
+name: s
+config_contract:
+  services:
+    app:
+      volumes:
+        app_data:
+          mutability: {mutability}
+"#
+            );
+            assert!(
+                StackerConfig::from_str(&yaml).is_err(),
+                "`mutability: {mutability}` is meaningless for a volume and must be rejected"
+            );
+        }
+    }
+
+    /// An undeclared volume resets. Losing rebuildable content costs time;
+    /// keeping a credential-bearing one leaks the author's secrets.
+    #[test]
+    fn a_service_with_no_volume_block_keeps_nothing() {
+        let yaml = r#"
+name: s
+config_contract:
+  services:
+    app:
+      fields:
+        SECRET_KEY: { mutability: generated, type: hex }
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert!(config.config_contract.services["app"]
+            .fixed_volumes()
+            .is_empty());
+    }
+
+    /// The service block is a closed set of kinds — a typo must not be ignored.
+    #[test]
+    fn an_unknown_kind_in_a_service_block_is_rejected() {
+        let yaml = r#"
+name: s
+config_contract:
+  services:
+    app:
+      volumez:
+        app_data: { mutability: fixed }
+"#;
+        assert!(StackerConfig::from_str(yaml).is_err());
+    }
+
+    #[test]
+    fn field_policy_unknown_mutability_is_rejected() {
+        let yaml = r#"
+name: my-site
+config_contract:
+  services:
+    auth:
+      fields:
+        SOME_FIELD:
+          mutability: readonly
+"#;
+        assert!(StackerConfig::from_str(yaml).is_err());
+    }
+
+    #[test]
+    fn field_policy_provided_is_accepted_without_a_generator_type() {
+        let yaml = r#"
+name: aws-stack
+config_contract:
+  services:
+    app:
+      fields:
+        AWS_ACCESS_KEY_ID:
+          mutability: provided
+        AWS_SECRET_ACCESS_KEY:
+          mutability: provided
+          required: true
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let fields = &config.config_contract.services["app"].fields;
+        assert_eq!(fields["AWS_ACCESS_KEY_ID"].mutability, Mutability::Provided);
+        assert_eq!(
+            fields["AWS_SECRET_ACCESS_KEY"].mutability,
+            Mutability::Provided
+        );
+    }
+
+    #[test]
+    fn field_policy_rejects_whitespace_variant_of_required_key() {
+        let contract = serde_json::json!({
+            "services": {
+                "app": {
+                    "fields": {
+                        "API_KEY": {
+                            "mutability": "generated",
+                            "type": "alphanumeric",
+                            "required ": true
+                        }
+                    }
+                }
+            }
+        });
+        assert!(serde_json::from_value::<ConfigContract>(contract).is_err());
+    }
+
+    #[test]
+    fn field_policy_round_trips_through_legacy_yaml_shape() {
+        let contract = TargetConfigContract::from_legacy_lists(
+            vec!["POSTGRES_HOST".to_string()],
+            vec!["LOG_LEVEL".to_string()],
+            vec!["JWT_SECRET".to_string()],
+        );
+        let yaml = serde_yaml::to_string(&contract).unwrap();
+        assert!(yaml.contains("required:"));
+        assert!(yaml.contains("- POSTGRES_HOST"));
+        assert!(yaml.contains("optional:"));
+        assert!(yaml.contains("- LOG_LEVEL"));
+        assert!(yaml.contains("secret:"));
+        assert!(yaml.contains("- JWT_SECRET"));
+        assert!(!yaml.contains("fields:"));
+
+        let reparsed: TargetConfigContract = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(reparsed.required_keys(), contract.required_keys());
+        assert_eq!(reparsed.optional_keys(), contract.optional_keys());
+        assert_eq!(reparsed.secret_keys(), contract.secret_keys());
+    }
+
+    #[test]
     fn test_parse_minimal_config() {
         let yaml = r#"
 name: my-site
@@ -1609,6 +3714,49 @@ app:
         assert_eq!(config.deploy.target, DeployTarget::Local);
         assert!(!config.ai.enabled);
         assert!(!config.monitoring.status_panel);
+    }
+
+    /// `app.depends_on` / `app.shm_size` / `app.user` used to be accepted by
+    /// templates but silently dropped by serde (unknown-key family). They must
+    /// now parse and reach the config.
+    #[test]
+    fn test_parse_app_runtime_fields() {
+        let yaml = r#"
+name: my-site
+app:
+  type: static
+  shm_size: 256m
+  user: "0:0"
+  depends_on:
+    - postgres
+services:
+  - name: postgres
+    image: postgres:16
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert_eq!(config.app.shm_size.as_deref(), Some("256m"));
+        assert_eq!(config.app.user.as_deref(), Some("0:0"));
+        assert_eq!(config.app.depends_on, vec!["postgres".to_string()]);
+    }
+
+    /// A typo under `app:` (or any unsupported key) must fail validation with
+    /// the offending key named — not validate green with the setting dropped.
+    #[test]
+    fn test_parse_unknown_app_key_is_rejected() {
+        let yaml = r#"
+name: my-site
+app:
+  type: static
+  priveleged: true
+  porst:
+    - "9000:80"
+"#;
+        let err = StackerConfig::from_str(yaml).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unknown field `priveleged`"),
+            "expected unknown-field error, got: {msg}"
+        );
     }
 
     #[test]
@@ -1633,6 +3781,159 @@ deploy:
             config.install.inputs.get("admin_email"),
             Some(&serde_json::json!("admin@example.com"))
         );
+    }
+
+    #[test]
+    fn test_parse_marketplace_publish_block() {
+        let yaml = r#"
+name: ai-helpdesk-starter
+marketplace:
+  publish: true
+  display_name: "Internal AI Helpdesk"
+  short_description: "Self-hosted AI helpdesk with n8n workflows and Ollama."
+  long_description: |
+    Deploy a complete internal AI helpdesk stack: n8n handles ticket routing
+    and workflow automation while Ollama serves the local LLM.
+  category: ai-agents
+  tags: [n8n, ollama, helpdesk]
+  license: paid
+  pricing:
+    plan_type: one_time
+    price: 49
+    currency: USD
+  support_url: https://github.com/your-org/ai-helpdesk-starter
+  no_secrets_confirmation: true
+"#;
+
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let marketplace = &config.marketplace;
+        assert_eq!(marketplace.publish, Some(true));
+        assert_eq!(
+            marketplace.display_name.as_deref(),
+            Some("Internal AI Helpdesk")
+        );
+        assert!(marketplace
+            .long_description
+            .as_deref()
+            .unwrap()
+            .contains("ticket routing"));
+        assert_eq!(marketplace.category.as_deref(), Some("ai-agents"));
+        assert_eq!(marketplace.tags, vec!["n8n", "ollama", "helpdesk"]);
+        assert_eq!(marketplace.license.as_deref(), Some("paid"));
+        let pricing = marketplace.pricing.as_ref().unwrap();
+        assert_eq!(pricing.plan_type.as_deref(), Some("one_time"));
+        assert_eq!(pricing.price, Some(49.0));
+        assert_eq!(pricing.currency.as_deref(), Some("USD"));
+        assert_eq!(
+            marketplace.support_url.as_deref(),
+            Some("https://github.com/your-org/ai-helpdesk-starter")
+        );
+        assert_eq!(marketplace.no_secrets_confirmation, Some(true));
+        assert_eq!(
+            marketplace.resolved_plan_type().unwrap().as_deref(),
+            Some("one_time")
+        );
+        assert!(config
+            .validate_semantics()
+            .iter()
+            .all(|issue| issue.code != "W004"));
+    }
+
+    /// A typo in the `marketplace:` block must fail parsing loudly — silently
+    /// dropping the key is how listing metadata went missing in review.
+    #[test]
+    fn test_parse_unknown_marketplace_key_is_rejected() {
+        let yaml = r#"
+name: my-stack
+marketplace:
+  short_description: "A short description of the stack."
+  long_descrption: "A typo'd key must fail loudly, not be silently ignored."
+"#;
+        let err = StackerConfig::from_str(yaml).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unknown field `long_descrption`"),
+            "expected unknown-field error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_marketplace_block_absent_is_empty() {
+        let config = StackerConfig::from_str("name: my-stack\n").unwrap();
+        assert!(config.marketplace.is_empty());
+        assert!(config.marketplace.resolved_plan_type().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_validate_semantics_warns_on_incomplete_marketplace_listing() {
+        let yaml = r#"
+name: my-stack
+marketplace:
+  publish: true
+  short_description: "Too short"
+  long_description: "Missing long description"
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let w004: Vec<_> = config
+            .validate_semantics()
+            .into_iter()
+            .filter(|issue| issue.code == "W004")
+            .collect();
+        assert!(
+            w004.len() >= 2,
+            "expected warnings for both descriptions: {w004:?}"
+        );
+        assert!(w004
+            .iter()
+            .any(|issue| issue.field.as_deref() == Some("marketplace.short_description")));
+        assert!(w004
+            .iter()
+            .any(|issue| issue.field.as_deref() == Some("marketplace.long_description")));
+    }
+
+    #[test]
+    fn test_marketplace_license_and_plan_type_resolution() {
+        let paid = StackerConfig::from_str(
+            r#"
+name: my-stack
+marketplace:
+  license: paid
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            paid.marketplace.resolved_plan_type().unwrap().as_deref(),
+            Some("one_time")
+        );
+
+        let subscription = StackerConfig::from_str(
+            r#"
+name: my-stack
+marketplace:
+  license: paid
+  pricing:
+    plan_type: subscription
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            subscription
+                .marketplace
+                .resolved_plan_type()
+                .unwrap()
+                .as_deref(),
+            Some("subscription")
+        );
+
+        let invalid = StackerConfig::from_str(
+            r#"
+name: my-stack
+marketplace:
+  license: commercial
+"#,
+        )
+        .unwrap();
+        assert!(invalid.marketplace.resolved_plan_type().is_err());
     }
 
     #[test]
@@ -1911,6 +4212,184 @@ deploy:
         assert_eq!(config.app.image.as_deref(), Some("node:14-alpine"));
     }
 
+    // Regression tests for GH #239: `stacker deploy --target cloud` failed
+    // on a missing `${EXISTING_SERVER_HOST}` even though `deploy.server` is
+    // never used for a cloud deploy — env-var resolution walked the whole
+    // file unconditionally, including the inactive dual-target section.
+    fn dual_target_yaml() -> &'static str {
+        r#"
+name: dual-target-app
+app:
+    type: custom
+    path: .
+    image: myorg/myapp:latest
+deploy:
+    target: server
+    server:
+        host: ${EXISTING_SERVER_HOST}
+        user: ${EXISTING_SERVER_USER}
+        ssh_key: /tmp/id_ed25519
+    cloud:
+        provider: hetzner
+        region: fsn1
+        size: cpx22
+        public_ports: ["3579"]
+"#
+    }
+
+    #[test]
+    fn test_from_file_for_target_cloud_skips_missing_server_vars() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        fs::write(&config_path, dual_target_yaml()).unwrap();
+
+        // No EXISTING_SERVER_HOST/USER anywhere (env or .env) — must not
+        // fail, since --target cloud never touches deploy.server.
+        let config = StackerConfig::from_file_for_target(&config_path, Some("cloud")).unwrap();
+        let resolved = config.with_resolved_deploy_target(Some("cloud")).unwrap();
+        assert_eq!(resolved.deploy.target, DeployTarget::Cloud);
+        assert!(resolved.deploy.cloud.is_some());
+    }
+
+    #[test]
+    fn test_from_file_for_target_server_skips_cloud_section() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        // Cloud section left var-free here on purpose — this test only
+        // asserts the server branch resolves independent of cloud content.
+        fs::write(
+            &config_path,
+            r#"
+name: dual-target-app
+app:
+    type: custom
+    path: .
+    image: myorg/myapp:latest
+deploy:
+    target: server
+    server:
+        host: 203.0.113.5
+        user: deployer
+        ssh_key: /tmp/id_ed25519
+    cloud:
+        provider: hetzner
+        region: ${UNSET_REGION_VAR}
+"#,
+        )
+        .unwrap();
+
+        let config = StackerConfig::from_file_for_target(&config_path, Some("server")).unwrap();
+        assert_eq!(
+            config.deploy.server.as_ref().map(|s| s.host.as_str()),
+            Some("203.0.113.5")
+        );
+    }
+
+    #[test]
+    fn test_cloud_ssh_key_is_left_unresolved_when_the_file_target_is_server() {
+        // Deployment 14125. With `target: server` written in the file,
+        // deploy.cloud is the *inactive* section, so its ${VAR}s are
+        // deliberately left untouched. deploy.cloud.ssh_key then stays the
+        // literal "${BASE_PATH}/..." — the .pub lookup in
+        // configured_user_public_key() misses, and the key is never authorized,
+        // so it never reaches authorized_keys. Passing --target cloud resolves
+        // the section and the key is found.
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        fs::write(dir.path().join(".env"), "BASE_PATH=/keys\n").unwrap();
+        fs::write(
+            &config_path,
+            r#"
+name: vikunja
+app:
+    type: custom
+    path: .
+    image: vikunja/vikunja:latest
+env_file: .env
+deploy:
+    target: server
+    server:
+        host: 203.0.113.5
+        user: root
+    cloud:
+        provider: hetzner
+        region: fsn1
+        ssh_key: ${BASE_PATH}/stacker-project-test
+"#,
+        )
+        .unwrap();
+
+        let cloud_key = |cfg: &StackerConfig| -> Option<String> {
+            cfg.deploy
+                .cloud
+                .as_ref()
+                .and_then(|c| c.ssh_key.as_ref())
+                .map(|p| p.display().to_string())
+        };
+
+        // no override: the file says `server`, so cloud keeps its placeholder
+        let from_file = StackerConfig::from_file_for_target(&config_path, None).unwrap();
+        assert_eq!(
+            cloud_key(&from_file).as_deref(),
+            Some("${BASE_PATH}/stacker-project-test"),
+            "cloud.ssh_key should still be an unresolved placeholder"
+        );
+
+        // --target cloud: the section is active and the path resolves
+        let as_cloud = StackerConfig::from_file_for_target(&config_path, Some("cloud")).unwrap();
+        assert_eq!(
+            cloud_key(&as_cloud).as_deref(),
+            Some("/keys/stacker-project-test"),
+            "--target cloud should resolve the key path"
+        );
+    }
+
+    #[test]
+    fn test_from_file_for_target_falls_back_to_literal_deploy_target_in_file() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        fs::write(&config_path, dual_target_yaml()).unwrap();
+
+        // No override passed — `deploy.target: server` in the file is a
+        // plain literal, so it should still be trusted as the effective
+        // target and fail exactly like before (this isn't a behavior
+        // change for callers that already relied on the file's own target).
+        let result = StackerConfig::from_file_for_target(&config_path, None);
+        assert!(
+            result.is_err(),
+            "server section is active, so its missing vars must still error"
+        );
+    }
+
+    #[test]
+    fn test_from_file_for_target_unresolvable_target_resolves_both_sections_as_before() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        fs::write(&config_path, dual_target_yaml()).unwrap();
+
+        // Override doesn't match a known target keyword — falls back to
+        // resolving everything, matching the pre-fix strict behavior.
+        let result = StackerConfig::from_file_for_target(&config_path, Some("bogus"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_validate_respects_target_override() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        fs::write(&config_path, dual_target_yaml()).unwrap();
+
+        let path_str = config_path.to_string_lossy().to_string();
+        assert!(
+            crate::console::commands::cli::config::run_validate(&path_str, Some("cloud")).is_ok(),
+            "config validate --target cloud must not fail on unset server vars"
+        );
+        assert!(
+            crate::console::commands::cli::config::run_validate(&path_str, None).is_err(),
+            "without an override, the file's own deploy.target: server is still active"
+        );
+    }
+
     #[test]
     fn test_parse_invalid_app_type_returns_error() {
         let yaml = r#"
@@ -2018,6 +4497,67 @@ proxy:
         assert_eq!(config.proxy.domains[0].ssl, SslMode::Auto);
         assert_eq!(config.proxy.domains[0].upstream, "app:3000");
         assert_eq!(config.proxy.domains[1].ssl, SslMode::Off);
+    }
+
+    #[test]
+    fn test_parse_pipes_block() {
+        let yaml = r#"
+name: pipes-test
+pipes:
+  - name: apprise-to-ntfy
+    source: app
+    target: ntfy
+    source_endpoint: "GET /status"
+    target_endpoint: "POST /pipetest"
+    source_fields: [message]
+    target_fields: [message]
+    trigger: manual
+    retry: 5
+    retry_backoff_ms: 500
+    on_failure: oncall-notify
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert_eq!(config.pipes.len(), 1);
+        let p = &config.pipes[0];
+        assert_eq!(p.name, "apprise-to-ntfy");
+        assert_eq!(p.source_endpoint, "GET /status");
+        assert_eq!(p.trigger, "manual");
+        // The declared retry/handler flow into the typed PipeConfig …
+        let cfg = p.to_pipe_config();
+        let retry = cfg.retry.as_ref().expect("retry declared");
+        assert_eq!(retry.max_retries, 5);
+        assert_eq!(retry.backoff_base_ms, 500);
+        assert_eq!(retry.backoff_max_ms, 30_000); // default filled in
+        assert_eq!(
+            cfg.on_failure,
+            Some(crate::models::pipe_config::HandlerRef::Pipe(
+                "oncall-notify".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_pipes_absent_defaults_empty_and_trigger_default() {
+        // No pipes: block → empty (back-compat). Minimal pipe → webhook trigger,
+        // empty PipeConfig (no retry/handlers declared).
+        let config = StackerConfig::from_str("name: no-pipes\n").unwrap();
+        assert!(config.pipes.is_empty());
+
+        let yaml = r#"
+name: t
+pipes:
+  - name: p
+    source: a
+    target: b
+    source_endpoint: "GET /x"
+    target_endpoint: "POST /y"
+"#;
+        let c = StackerConfig::from_str(yaml).unwrap();
+        assert_eq!(c.pipes[0].trigger, "webhook");
+        assert_eq!(
+            c.pipes[0].to_pipe_config(),
+            crate::models::pipe_config::PipeConfig::default()
+        );
     }
 
     #[test]
@@ -2143,6 +4683,232 @@ app:
         );
     }
 
+    // --- E007: port mappings must be real ports -----------------------
+    //
+    // A GitLab deploy provisioned a server, shipped the compose, and only then
+    // died on the host with `invalid containerPort: 133342`. `app.ports` went
+    // into the generated compose verbatim with no range check; a bare
+    // out-of-range entry is read by Docker as a container port.
+
+    fn proxy_config_with(proxy_type: ProxyType, domains: Vec<(&str, &str)>) -> StackerConfig {
+        ConfigBuilder::new()
+            .name("proxy-validation")
+            .proxy(ProxyConfig {
+                proxy_type,
+                auto_detect: true,
+                domains: domains
+                    .into_iter()
+                    .map(|(domain, upstream)| DomainConfig {
+                        domain: domain.to_string(),
+                        ssl: SslMode::Auto,
+                        upstream: upstream.to_string(),
+                    })
+                    .collect(),
+                config: None,
+            })
+            .build()
+            .unwrap()
+    }
+
+    fn errors_with_code(config: &StackerConfig, code: &str) -> Vec<ValidationIssue> {
+        config
+            .validate_semantics()
+            .into_iter()
+            .filter(|issue| issue.severity == Severity::Error && issue.code == code)
+            .collect()
+    }
+
+    #[test]
+    fn e008_rejects_a_blank_domain_when_a_proxy_is_enabled() {
+        // The failure this guards: `${commonDomain}` resolved to "" (an
+        // `env_file` line `commonDomain=`), the blank reached the NPM role, and
+        // the deploy died with a censored error after the server existed.
+        for proxy_type in [
+            ProxyType::NginxProxyManager,
+            ProxyType::Nginx,
+            ProxyType::Caddy,
+            ProxyType::Traefik,
+        ] {
+            let config = proxy_config_with(proxy_type, vec![("", "app:8080")]);
+            let errors = errors_with_code(&config, "E008");
+            assert_eq!(
+                errors.len(),
+                1,
+                "{proxy_type} should reject a blank domain: {:?}",
+                config.validate_semantics()
+            );
+            assert_eq!(errors[0].field.as_deref(), Some("proxy.domains[0].domain"));
+        }
+    }
+
+    #[test]
+    fn e008_rejects_a_whitespace_only_domain() {
+        let config = proxy_config_with(ProxyType::NginxProxyManager, vec![("   ", "app:8080")]);
+        assert_eq!(errors_with_code(&config, "E008").len(), 1);
+    }
+
+    #[test]
+    fn e008_reports_the_index_of_each_bad_entry() {
+        let config = proxy_config_with(
+            ProxyType::NginxProxyManager,
+            vec![("app.example.com", "app:8080"), ("", "api:9000")],
+        );
+        let errors = errors_with_code(&config, "E008");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].field.as_deref(), Some("proxy.domains[1].domain"));
+    }
+
+    #[test]
+    fn e008_rejects_a_blank_or_malformed_upstream() {
+        let blank = proxy_config_with(ProxyType::Nginx, vec![("app.example.com", "")]);
+        assert_eq!(errors_with_code(&blank, "E008").len(), 1);
+
+        let no_host = proxy_config_with(ProxyType::Nginx, vec![("app.example.com", ":8080")]);
+        assert_eq!(errors_with_code(&no_host, "E008").len(), 1);
+
+        let bad_port = proxy_config_with(ProxyType::Nginx, vec![("app.example.com", "app:99999")]);
+        assert_eq!(errors_with_code(&bad_port, "E008").len(), 1);
+    }
+
+    #[test]
+    fn e008_accepts_a_complete_routing_entry() {
+        let with_port = proxy_config_with(
+            ProxyType::NginxProxyManager,
+            vec![("app.example.com", "app:8080")],
+        );
+        assert!(errors_with_code(&with_port, "E008").is_empty());
+
+        // A bare hostname is legal — the proxy defaults the port to 80.
+        let no_port = proxy_config_with(ProxyType::Nginx, vec![("app.example.com", "app")]);
+        assert!(errors_with_code(&no_port, "E008").is_empty());
+    }
+
+    #[test]
+    fn e008_ignores_domains_when_no_proxy_is_enabled() {
+        // Without a proxy nothing reads these entries, so a blank is inert.
+        let config = proxy_config_with(ProxyType::None, vec![("", "")]);
+        assert!(errors_with_code(&config, "E008").is_empty());
+    }
+
+    #[test]
+    fn e008_allows_a_proxy_with_no_routing_entries() {
+        // A proxy can be deployed to be configured through its own UI later.
+        let config = proxy_config_with(ProxyType::NginxProxyManager, vec![]);
+        assert!(errors_with_code(&config, "E008").is_empty());
+    }
+
+    #[test]
+    fn validate_port_mapping_accepts_every_compose_shape() {
+        for good in [
+            "80",
+            "8080:80",
+            "127.0.0.1:5432:5432",
+            "[::1]:8080:80",
+            "8000-8010:8000-8010",
+            "2222:22/tcp",
+            "53:53/udp",
+            "65535:65535",
+        ] {
+            assert!(
+                validate_port_mapping(good).is_ok(),
+                "{good} should be valid: {:?}",
+                validate_port_mapping(good)
+            );
+        }
+    }
+
+    #[test]
+    fn validate_port_mapping_rejects_out_of_range_and_malformed() {
+        for bad in [
+            "133342",
+            "8082:133342",
+            "0",
+            "65536",
+            "127.0.0.1:0:80",
+            "abc:80",
+            "",
+            "80/http",
+            "1:2:3:4",
+        ] {
+            assert!(
+                validate_port_mapping(bad).is_err(),
+                "{bad} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn e007_flags_out_of_range_app_port() {
+        let config = ConfigBuilder::new()
+            .name("gitlab")
+            .app_type(AppType::Custom)
+            .app_image("gitlab/gitlab-ce:18.10.1-ce.0")
+            .app_ports(vec!["133342".to_string()])
+            .build()
+            .unwrap();
+
+        let issues = config.validate_semantics();
+        let e007: Vec<_> = issues
+            .iter()
+            .filter(|i| i.code == "E007" && i.severity == Severity::Error)
+            .collect();
+
+        assert_eq!(e007.len(), 1, "expected one E007, got: {issues:?}");
+        assert_eq!(e007[0].field.as_deref(), Some("app.ports"));
+        assert!(e007[0].message.contains("133342"));
+    }
+
+    #[test]
+    fn e007_names_the_offending_service() {
+        let svc = ServiceDefinition {
+            runtime: Default::default(),
+            name: "db".to_string(),
+            image: "postgres:16".to_string(),
+            ports: vec!["5432:5432".to_string(), "99999:5432".to_string()],
+            environment: HashMap::new(),
+            volumes: vec![],
+            depends_on: vec![],
+            command: None,
+            healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
+        };
+
+        let config = ConfigBuilder::new()
+            .name("stack")
+            .add_service(svc)
+            .build()
+            .unwrap();
+
+        let e007: Vec<_> = config
+            .validate_semantics()
+            .into_iter()
+            .filter(|i| i.code == "E007")
+            .collect();
+
+        assert_eq!(e007.len(), 1, "only the bad mapping should be flagged");
+        assert_eq!(e007[0].field.as_deref(), Some("services.db.ports"));
+    }
+
+    #[test]
+    fn e007_stays_quiet_on_valid_ports() {
+        let config = ConfigBuilder::new()
+            .name("gitlab")
+            .app_type(AppType::Custom)
+            .app_image("gitlab/gitlab-ce:18.10.1-ce.0")
+            .app_ports(vec!["8082:80".to_string(), "2222:22".to_string()])
+            .build()
+            .unwrap();
+
+        assert!(
+            !config.validate_semantics().iter().any(|i| i.code == "E007"),
+            "valid ports must not raise E007"
+        );
+    }
+
     #[test]
     fn test_validate_semantics_port_conflict() {
         let config = StackerConfig::from_str(
@@ -2204,6 +4970,223 @@ services:
             .filter(|i| i.severity == Severity::Error)
             .collect();
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+    }
+
+    #[test]
+    fn w001_does_not_false_positive_on_distinct_loopback_ports() {
+        // Regression: `ip:host:container` bindings must key on the host *port*,
+        // not the IP. Two loopback services on different ports do NOT conflict.
+        let config = StackerConfig::from_str(
+            r#"
+name: demo
+app:
+  type: custom
+  image: myapp:latest
+services:
+  - name: postgres
+    image: postgres:16-alpine
+    ports:
+      - "127.0.0.1:5432:5432"
+  - name: redis
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            !config
+                .validate_semantics()
+                .iter()
+                .any(|issue| issue.code == "W001"),
+            "distinct loopback host ports must not be reported as a conflict"
+        );
+    }
+
+    #[test]
+    fn w001_detects_real_host_port_conflict_across_binding_forms() {
+        // A 2-part `80:80` and a 3-part `127.0.0.1:80:80` both publish host
+        // port 80 → real conflict, previously missed by the IP-first extractor.
+        let config = StackerConfig::from_str(
+            r#"
+name: demo
+app:
+  type: custom
+  image: myapp:latest
+services:
+  - name: web
+    image: nginx:alpine
+    ports:
+      - "80:80"
+  - name: legacy
+    image: httpd:alpine
+    ports:
+      - "127.0.0.1:80:80"
+"#,
+        )
+        .unwrap();
+
+        let w001: Vec<_> = config
+            .validate_semantics()
+            .into_iter()
+            .filter(|issue| issue.code == "W001")
+            .collect();
+        assert_eq!(
+            w001.len(),
+            1,
+            "expected one W001 for the port-80 clash: {w001:?}"
+        );
+        assert!(w001[0].message.contains("80"));
+        assert!(w001[0].message.contains("web") && w001[0].message.contains("legacy"));
+    }
+
+    #[test]
+    fn proxy_block_warns_when_user_service_publishes_an_ingress_port() {
+        // A `proxy:` block deploys a platform-managed proxy owning 80/443/81.
+        // A user's own reverse-proxy service on 80/443 collides → one W003.
+        let config = StackerConfig::from_str(
+            r#"
+name: demo
+app:
+  type: custom
+  image: myapp:latest
+services:
+  - name: my-own-traefik
+    image: traefik:v2.10
+    ports:
+      - "80:80"
+      - "443:443"
+proxy:
+  type: nginx-proxy-manager
+"#,
+        )
+        .unwrap();
+
+        let w003: Vec<_> = config
+            .validate_semantics()
+            .into_iter()
+            .filter(|issue| issue.code == "W003")
+            .collect();
+        assert_eq!(w003.len(), 1, "expected exactly one W003, got: {w003:?}");
+        assert_eq!(w003[0].severity, Severity::Warning);
+        assert!(w003[0].message.contains("my-own-traefik"));
+        // Both conflicting ports are reported in the single per-service warning.
+        assert!(w003[0].message.contains("80"));
+        assert!(w003[0].message.contains("443"));
+    }
+
+    #[test]
+    fn proxy_block_does_not_warn_for_nonconflicting_ports() {
+        // The app on :8080 (with `127.0.0.1:` host-scoped DB elsewhere) does not
+        // overlap the proxy's ingress ports → no W003.
+        let config = StackerConfig::from_str(
+            r#"
+name: demo
+app:
+  type: custom
+  image: myapp:latest
+  ports:
+    - "8080:8080"
+services:
+  - name: db
+    image: postgres:16-alpine
+    ports:
+      - "127.0.0.1:5432:5432"
+proxy:
+  type: nginx-proxy-manager
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            !config
+                .validate_semantics()
+                .iter()
+                .any(|issue| issue.code == "W003"),
+            "no ingress overlap should produce no W003"
+        );
+    }
+
+    #[test]
+    fn test_validate_semantics_warns_when_ssh_key_only_under_server_on_cloud_target() {
+        let config = StackerConfig::from_str(
+            r#"
+name: hermes-agent
+app:
+  type: static
+deploy:
+  target: cloud
+  server:
+    host: 116.202.19.183
+    user: root
+    ssh_key: /home/me/.ssh/stacker-project-test
+  cloud:
+    provider: hetzner
+    region: fsn1
+"#,
+        )
+        .unwrap();
+
+        let issues = config.validate_semantics();
+        let w003: Vec<_> = issues.iter().filter(|i| i.code == "W003").collect();
+        assert_eq!(w003.len(), 1, "expected one W003: {issues:?}");
+        assert_eq!(w003[0].severity, Severity::Warning);
+        assert!(
+            w003[0].message.contains("stacker-project-test"),
+            "message should name the ignored key: {}",
+            w003[0].message
+        );
+    }
+
+    #[test]
+    fn test_validate_semantics_no_w003_when_cloud_ssh_key_is_set() {
+        let config = StackerConfig::from_str(
+            r#"
+name: hermes-agent
+app:
+  type: static
+deploy:
+  target: cloud
+  server:
+    host: 116.202.19.183
+    user: root
+    ssh_key: /home/me/.ssh/stacker-project-test
+  cloud:
+    provider: hetzner
+    region: fsn1
+    ssh_key: /home/me/.ssh/stacker-project-test
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            !config.validate_semantics().iter().any(|i| i.code == "W003"),
+            "deploy.cloud.ssh_key is set, so nothing is being ignored"
+        );
+    }
+
+    #[test]
+    fn test_validate_semantics_no_w003_on_server_target() {
+        let config = StackerConfig::from_str(
+            r#"
+name: hermes-agent
+app:
+  type: static
+deploy:
+  target: server
+  server:
+    host: 116.202.19.183
+    user: root
+    ssh_key: /home/me/.ssh/stacker-project-test
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            !config.validate_semantics().iter().any(|i| i.code == "W003"),
+            "deploy.server.ssh_key is the right place for a server-target deploy"
+        );
     }
 
     #[test]
@@ -2390,6 +5373,7 @@ deploy:
             .app_type(AppType::Node)
             .app_path("./src")
             .add_service(ServiceDefinition {
+                runtime: Default::default(),
                 name: "postgres".to_string(),
                 image: "postgres:16".to_string(),
                 ports: vec!["5432:5432".to_string()],
@@ -2398,6 +5382,11 @@ deploy:
                 depends_on: vec![],
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             })
             .deploy_target(DeployTarget::Cloud)
             .cloud(CloudConfig {
@@ -2464,6 +5453,7 @@ deploy:
         let config = ConfigBuilder::new()
             .name("multi")
             .add_service(ServiceDefinition {
+                runtime: Default::default(),
                 name: "pg".to_string(),
                 image: "postgres:16".to_string(),
                 ports: vec![],
@@ -2472,8 +5462,14 @@ deploy:
                 depends_on: vec![],
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             })
             .add_service(ServiceDefinition {
+                runtime: Default::default(),
                 name: "redis".to_string(),
                 image: "redis:7".to_string(),
                 ports: vec![],
@@ -2482,8 +5478,14 @@ deploy:
                 depends_on: vec![],
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             })
             .add_service(ServiceDefinition {
+                runtime: Default::default(),
                 name: "minio".to_string(),
                 image: "minio/minio".to_string(),
                 ports: vec![],
@@ -2492,6 +5494,11 @@ deploy:
                 depends_on: vec![],
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             })
             .build()
             .unwrap();

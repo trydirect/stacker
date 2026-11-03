@@ -10,7 +10,8 @@
 
 use crate::configuration::DeploymentSettings;
 use crate::db;
-use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path};
+use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path_for};
+use crate::models::project::sanitize_project_name;
 use crate::models::{Project, ProjectApp};
 use crate::services::env_model::{
     normalize_optional_json_env, reconcile_env_layers, EnvLayer, ReconciledEnv,
@@ -25,6 +26,49 @@ use std::collections::{BTreeMap, HashMap};
 use tera::{Context as TeraContext, Tera};
 
 const RESERVED_ENV_PREFIXES: &[&str] = &["STACKER_", "DOCKER_", "VAULT_", "AGENT_"];
+
+/// Keys that Stacker injects into the runtime `.env` itself (bookkeeping, not
+/// user config). Drift confined to these keys must NOT block a redeploy —
+/// otherwise a freshly stamped `DEPLOYMENT_HASH` alone trips the drift guard on
+/// every deploy even though no user-meaningful config changed.
+const STACKER_OWNED_ENV_KEYS: &[&str] = &["DEPLOYMENT_HASH"];
+
+fn is_stacker_owned_env_key(key: &str) -> bool {
+    STACKER_OWNED_ENV_KEYS.contains(&key)
+        || RESERVED_ENV_PREFIXES
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+}
+
+/// Hash of an env body for drift detection. Comment/blank lines and
+/// Stacker-owned keys are dropped and the remaining keys sorted, so the hash
+/// reflects only user-meaningful runtime config. Used for both the stamped
+/// render hash and the on-disk comparison, keeping them consistent.
+fn hash_env_body_semantic(body: &str) -> String {
+    let mut entries: BTreeMap<&str, &str> = BTreeMap::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if is_stacker_owned_env_key(key) {
+            continue;
+        }
+        entries.insert(key, value);
+    }
+    let mut normalized = String::new();
+    for (key, value) in &entries {
+        normalized.push_str(key);
+        normalized.push('=');
+        normalized.push_str(value);
+        normalized.push('\n');
+    }
+    sha256_hex(normalized.as_bytes())
+}
 
 /// Rendered configuration bundle for a deployment
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,7 +161,7 @@ pub fn render_env(input: EnvRenderInput) -> std::result::Result<RenderedEnv, Env
     validate_env(&environment)?;
 
     let body = format_env_body(&environment);
-    let hash = sha256_hex(body.as_bytes());
+    let hash = hash_env_body_semantic(&body);
     let header = format_header_stamp(input.version, &hash, input.generated_at, &inputs);
 
     Ok(RenderedEnv {
@@ -347,7 +391,7 @@ pub fn env_body_hash(content: &str) -> String {
         .strip_prefix("# stacker-render ")
         .and_then(|_| content.split_once('\n').map(|(_, body)| body))
         .unwrap_or(content);
-    sha256_hex(body.as_bytes())
+    hash_env_body_semantic(body)
 }
 
 fn parse_header_version(header: &str) -> Option<u64> {
@@ -390,6 +434,68 @@ pub struct AppRenderContext {
     pub healthcheck: Option<HealthCheck>,
     /// Container runtime override (e.g., "kata" for hardware isolation)
     pub runtime: Option<String>,
+    /// command, entrypoint and the settings in `project_app.runtime`.
+    #[serde(flatten)]
+    pub run: AppRunSettings,
+}
+
+/// What the app runs and how, beyond image and wiring. See
+/// shared-fixtures/api-contracts/stack-service-runtime-fields.json.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AppRunSettings {
+    pub command: Option<String>,
+    pub entrypoint: Option<String>,
+    #[serde(default)]
+    pub cap_add: Vec<String>,
+    #[serde(default)]
+    pub cap_drop: Vec<String>,
+    #[serde(default)]
+    pub devices: Vec<String>,
+    #[serde(default)]
+    pub profiles: Vec<String>,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    pub replicas: Option<u32>,
+    /// `deploy.resources.reservations.devices` entries, as stored.
+    #[serde(default)]
+    pub gpu_devices: Vec<Value>,
+}
+
+impl AppRunSettings {
+    fn from_app(app: &ProjectApp) -> Self {
+        let runtime = app.runtime.as_ref();
+        let strings = |key: &str| -> Vec<String> {
+            runtime
+                .and_then(|r| r.get(key))
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let deploy = runtime.and_then(|r| r.get("deploy"));
+        Self {
+            command: app.command.clone().filter(|c| !c.is_empty()),
+            entrypoint: app.entrypoint.clone().filter(|e| !e.is_empty()),
+            cap_add: strings("cap_add"),
+            cap_drop: strings("cap_drop"),
+            devices: strings("devices"),
+            profiles: strings("profiles"),
+            aliases: strings("aliases"),
+            replicas: deploy
+                .and_then(|d| d.get("replicas"))
+                .and_then(Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok()),
+            gpu_devices: deploy
+                .and_then(|d| d.pointer("/resources/reservations/devices"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -397,6 +503,13 @@ pub struct PortMapping {
     pub host: u16,
     pub container: u16,
     pub protocol: String,
+}
+
+/// True for a Compose named-volume reference (e.g. "postgres_data"), false
+/// for a bind mount (paths starting with `.`, `/`, or `~`), which Compose
+/// does not declare under top-level `volumes:`.
+fn is_named_volume(source: &str) -> bool {
+    !source.starts_with('.') && !source.starts_with('/') && !source.starts_with('~')
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -440,6 +553,13 @@ impl ConfigRenderer {
             .context("Failed to add docker-compose template")?;
         tera.add_raw_template("service.tera", SERVICE_TEMPLATE)
             .context("Failed to add service template")?;
+
+        // Env values are arbitrary user text and were interpolated raw into
+        // the compose, so a value containing ": ", "#", a quote or a newline
+        // produced a broken or silently re-parsed document. Quoting is done
+        // by a filter rather than in the template because it has to escape,
+        // not just wrap.
+        tera.register_filter("yaml_quote", yaml_quote_filter);
 
         // Initialize Vault service if configured
         let vault_service =
@@ -504,10 +624,11 @@ impl ConfigRenderer {
             app_contexts.push(context);
 
             let rendered_env = self.render_env_file(app, deployment_hash, &environment)?;
+            let stack_code = format!("{}-{}", sanitize_project_name(&project.name), project.id);
             let config = AppConfig {
                 content: rendered_env.content,
                 content_type: "env".to_string(),
-                destination_path: remote_runtime_env_path().to_string(),
+                destination_path: remote_runtime_env_path_for(&stack_code),
                 file_mode: "0600".to_string(),
                 owner: Some("trydirect".to_string()),
                 group: Some("docker".to_string()),
@@ -583,6 +704,7 @@ impl ConfigRenderer {
             labels,
             healthcheck,
             runtime: None,
+            run: AppRunSettings::from_app(app),
         })
     }
 
@@ -862,14 +984,61 @@ impl ConfigRenderer {
         context.insert("project_id", &project.stack_id.to_string());
         context.insert("env_file", compose_env_file_reference());
 
-        // Extract network configuration from project metadata
-        let default_network = project
-            .metadata
-            .get("network")
-            .and_then(|v| v.as_str())
-            .unwrap_or("trydirect_network")
-            .to_string();
+        // The top-level `networks:` block must declare whatever name the
+        // per-app `networks:` list actually references (usually
+        // "default_network", resolved from the project's own network
+        // config — see `ProjectAppService::default_network_from_project`).
+        // `project.metadata["network"]` is an unrelated, never-populated
+        // field; falling back to it (or to the "trydirect_network" literal)
+        // when apps already carry a real network name produced a top-level
+        // declaration that didn't match any app's `networks:` entry —
+        // "service X refers to undefined network default_network".
+        let default_network = apps
+            .iter()
+            .find_map(|app| app.networks.first().cloned())
+            .or_else(|| {
+                project
+                    .metadata
+                    .get("network")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "trydirect_network".to_string());
+        // "default_network" is the platform's shared external network — the
+        // agent/status-panel and every project's containers all attach to
+        // the *same*, pre-existing host network by that literal name (see
+        // `forms::project::network::Network::default()` and
+        // `compose_service_sync::upsert_external_network`, which both
+        // always mark it `external: true`). Declaring it here as a plain
+        // `driver: bridge` network instead makes `docker compose -p
+        // <project> up` create a brand new project-scoped network
+        // (`<project>_default_network`) rather than joining the real
+        // shared one — the redeployed container ends up isolated from the
+        // rest of the stack (DNS lookups for sibling services fail). See
+        // GH #237. Any other network name (the "trydirect_network"
+        // fallback) keeps its own project-scoped bridge network, matching
+        // `Network::into()`'s `is_default` check.
+        let default_network_is_external = default_network == "default_network";
         context.insert("default_network", &default_network);
+        context.insert("default_network_is_external", &default_network_is_external);
+
+        // Same class of bug as the network mismatch above (GH #211): the
+        // per-service `volumes:` list can reference a named volume (e.g.
+        // "postgres_data"), but nothing declared it at the top level, so
+        // `docker compose` rejected the file with "service X refers to
+        // undefined volume postgres_data". Declare every named volume
+        // actually referenced by a service — bind mounts (paths starting
+        // with `.`, `/`, or `~`) are left alone, since those aren't
+        // declared under top-level `volumes:` at all.
+        let mut named_volumes: Vec<String> = Vec::new();
+        for app in apps {
+            for vol in &app.volumes {
+                if is_named_volume(&vol.source) && !named_volumes.contains(&vol.source) {
+                    named_volumes.push(vol.source.clone());
+                }
+            }
+        }
+        context.insert("named_volumes", &named_volumes);
 
         self.tera
             .render("docker-compose.yml.tera", &context)
@@ -913,10 +1082,11 @@ impl ConfigRenderer {
     ) -> Result<(AppConfig, String)> {
         let environment = self.resolve_app_environment(pool, project, app).await?;
         let rendered_env = self.render_env_file(app, deployment_hash, &environment)?;
+        let stack_code = format!("{}-{}", sanitize_project_name(&project.name), project.id);
         let config = AppConfig {
             content: rendered_env.content,
             content_type: "env".to_string(),
-            destination_path: remote_runtime_env_path().to_string(),
+            destination_path: remote_runtime_env_path_for(&stack_code),
             file_mode: "0600".to_string(),
             owner: Some("trydirect".to_string()),
             group: Some("docker".to_string()),
@@ -1040,6 +1210,24 @@ impl SyncResult {
 // ============================================================================
 
 /// Docker Compose template using Tera syntax
+/// Tera filter: render a value as a double-quoted YAML scalar with escapes.
+///
+/// Shares [`crate::cli::generator::compose::yaml_quote`] with the CLI
+/// generator so both renderers escape identically — the CLI-side half of this
+/// was GH #251, and this template had the same defect.
+fn yaml_quote_filter(
+    value: &tera::Value,
+    _args: &HashMap<String, tera::Value>,
+) -> tera::Result<tera::Value> {
+    let raw = value
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| value.to_string());
+    Ok(tera::Value::String(
+        crate::cli::generator::compose::yaml_quote(&raw),
+    ))
+}
+
 const DOCKER_COMPOSE_TEMPLATE: &str = r#"# Generated by TryDirect ConfigRenderer
 # Project: {{ project_name }}
 # Generated at: {{ now() | date(format="%Y-%m-%d %H:%M:%S UTC") }}
@@ -1057,16 +1245,28 @@ services:
     runtime: {{ app.runtime }}
 {% endif %}
 {% if app.command %}
-    command: {{ app.command }}
+    command: {{ app.command | yaml_quote }}
 {% endif %}
 {% if app.entrypoint %}
-    entrypoint: {{ app.entrypoint }}
+    entrypoint: {{ app.entrypoint | yaml_quote }}
 {% endif %}
-    restart: {{ app.restart_policy }}
+    restart: {{ app.restart_policy | yaml_quote }}
+{% if app.profiles | length > 0 %}
+    profiles: {{ app.profiles | json_encode() }}
+{% endif %}
+{% if app.cap_add | length > 0 %}
+    cap_add: {{ app.cap_add | json_encode() }}
+{% endif %}
+{% if app.cap_drop | length > 0 %}
+    cap_drop: {{ app.cap_drop | json_encode() }}
+{% endif %}
+{% if app.devices | length > 0 %}
+    devices: {{ app.devices | json_encode() }}
+{% endif %}
 {% if app.environment | length > 0 %}
     environment:
-{% for key, value in app.environment %}
-      - {{ key }}={{ value }}
+{% for key, value in app.environment %}{% set entry = key ~ "=" ~ value %}
+      - {{ entry | yaml_quote }}
 {% endfor %}
 {% endif %}
 {% if app.ports | length > 0 %}
@@ -1082,13 +1282,20 @@ services:
 
 {% endfor %}
 {% endif %}
+    networks:
 {% if app.networks | length > 0 %}
-    networks:
 {% for network in app.networks %}
-      - {{ network }}
-{% endfor %}
+{% if app.aliases | length > 0 %}
+      {{ network }}:
+        aliases: {{ app.aliases | json_encode() }}
 {% else %}
-    networks:
+      - {{ network }}
+{% endif %}
+{% endfor %}
+{% elif app.aliases | length > 0 %}
+      {{ default_network }}:
+        aliases: {{ app.aliases | json_encode() }}
+{% else %}
       - {{ default_network }}
 {% endif %}
 {% if app.depends_on | length > 0 %}
@@ -1119,9 +1326,16 @@ services:
       start_period: {{ app.healthcheck.start_period }}
 {% endif %}
 {% endif %}
-{% if app.resources.memory_limit or app.resources.cpu_limit %}
+{% set has_limits = app.resources.memory_limit or app.resources.cpu_limit %}
+{% set has_gpu = app.gpu_devices | length > 0 %}
+{% if has_limits or has_gpu or app.replicas is number %}
     deploy:
+{% if app.replicas is number %}
+      replicas: {{ app.replicas }}
+{% endif %}
+{% if has_limits or has_gpu %}
       resources:
+{% if has_limits %}
         limits:
 {% if app.resources.memory_limit %}
           memory: {{ app.resources.memory_limit }}
@@ -1129,13 +1343,19 @@ services:
 {% if app.resources.cpu_limit %}
           cpus: '{{ app.resources.cpu_limit }}'
 {% endif %}
-{% if app.resources.memory_reservation or app.resources.cpu_reservation %}
+{% endif %}
+{% set limit_reservations = has_limits and (app.resources.memory_reservation or app.resources.cpu_reservation) %}
+{% if limit_reservations or has_gpu %}
         reservations:
-{% if app.resources.memory_reservation %}
+{% if limit_reservations and app.resources.memory_reservation %}
           memory: {{ app.resources.memory_reservation }}
 {% endif %}
-{% if app.resources.cpu_reservation %}
+{% if limit_reservations and app.resources.cpu_reservation %}
           cpus: '{{ app.resources.cpu_reservation }}'
+{% endif %}
+{% if has_gpu %}
+          devices: {{ app.gpu_devices | json_encode() }}
+{% endif %}
 {% endif %}
 {% endif %}
 {% endif %}
@@ -1143,7 +1363,17 @@ services:
 {% endfor %}
 networks:
   {{ default_network }}:
+{% if default_network_is_external %}
+    external: true
+{% else %}
     driver: bridge
+{% endif %}
+{% if named_volumes | length > 0 %}
+volumes:
+{% for vol in named_volumes %}
+  {{ vol }}:
+{% endfor %}
+{% endif %}
 "#;
 
 /// Individual service template (for partial updates)
@@ -1154,8 +1384,8 @@ const SERVICE_TEMPLATE: &str = r#"
     restart: {{ app.restart_policy }}
 {% if app.environment | length > 0 %}
     environment:
-{% for key, value in app.environment %}
-      - {{ key }}={{ value }}
+{% for key, value in app.environment %}{% set entry = key ~ "=" ~ value %}
+      - {{ entry | yaml_quote }}
 {% endfor %}
 {% endif %}
 {% if app.ports | length > 0 %}
@@ -1398,6 +1628,64 @@ mod tests {
     }
 
     #[test]
+    fn drift_ignores_stacker_owned_keys() {
+        // Two renders identical except for the Stacker-injected DEPLOYMENT_HASH
+        // must hash the same, so a fresh deployment hash alone is not drift.
+        let stale = render_env(EnvRenderInput {
+            base: HashMap::from([
+                ("KEY".to_string(), "value".to_string()),
+                ("DEPLOYMENT_HASH".to_string(), "deployment_old".to_string()),
+            ]),
+            ..EnvRenderInput::default()
+        })
+        .unwrap();
+        let fresh = render_env(EnvRenderInput {
+            base: HashMap::from([
+                ("KEY".to_string(), "value".to_string()),
+                ("DEPLOYMENT_HASH".to_string(), "deployment_new".to_string()),
+            ]),
+            ..EnvRenderInput::default()
+        })
+        .unwrap();
+
+        // Bookkeeping key is still written to the file...
+        assert!(stale.content.contains("DEPLOYMENT_HASH=deployment_old"));
+        assert!(fresh.content.contains("DEPLOYMENT_HASH=deployment_new"));
+        // ...but does not affect the drift hash.
+        assert_eq!(stale.hash, fresh.hash);
+
+        // On-disk (stale) content is accepted against the freshly rendered hash.
+        let check = check_env_drift(Some(&stale.content), Some(&fresh.hash), false).unwrap();
+        assert!(check.can_write);
+        assert!(!check.forced);
+    }
+
+    #[test]
+    fn drift_still_detects_user_key_changes() {
+        // A real user-meaningful difference must still be flagged as drift.
+        let on_disk = render_env(EnvRenderInput {
+            base: HashMap::from([
+                ("KEY".to_string(), "old".to_string()),
+                ("DEPLOYMENT_HASH".to_string(), "deployment_old".to_string()),
+            ]),
+            ..EnvRenderInput::default()
+        })
+        .unwrap();
+        let expected = render_env(EnvRenderInput {
+            base: HashMap::from([
+                ("KEY".to_string(), "new".to_string()),
+                ("DEPLOYMENT_HASH".to_string(), "deployment_new".to_string()),
+            ]),
+            ..EnvRenderInput::default()
+        })
+        .unwrap();
+
+        assert_ne!(on_disk.hash, expected.hash);
+        let result = check_env_drift(Some(&on_disk.content), Some(&expected.hash), false);
+        assert!(matches!(result, Err(EnvRenderError::DriftDetected { .. })));
+    }
+
+    #[test]
     fn check_env_drift_allows_forced_mismatch() {
         let rendered = render_env(EnvRenderInput {
             base: HashMap::from([("KEY".to_string(), "value".to_string())]),
@@ -1503,7 +1791,10 @@ mod tests {
     #[test]
     fn test_env_destination_path_format() {
         // Test that .env files have correct destination paths
-        assert_eq!(remote_runtime_env_path(), "/home/trydirect/project/.env");
+        assert_eq!(
+            remote_runtime_env_path_for("project"),
+            "/home/trydirect/project/.env"
+        );
     }
 
     #[test]
@@ -1512,7 +1803,7 @@ mod tests {
         let config = AppConfig {
             content: "FOO=bar\nBAZ=qux".to_string(),
             content_type: "env".to_string(),
-            destination_path: remote_runtime_env_path().to_string(),
+            destination_path: remote_runtime_env_path_for("test-project"),
             file_mode: "0600".to_string(),
             owner: Some("trydirect".to_string()),
             group: Some("docker".to_string()),
@@ -1520,7 +1811,7 @@ mod tests {
 
         assert_eq!(config.content_type, "env");
         assert_eq!(config.file_mode, "0600");
-        assert_eq!(config.destination_path, remote_runtime_env_path());
+        assert_eq!(config.destination_path, "/home/trydirect/test-project/.env");
     }
 
     #[test]
@@ -1553,7 +1844,7 @@ mod tests {
             AppConfig {
                 content: "INFLUX_TOKEN=xxx".to_string(),
                 content_type: "env".to_string(),
-                destination_path: remote_runtime_env_path().to_string(),
+                destination_path: remote_runtime_env_path_for("test-project"),
                 file_mode: "0600".to_string(),
                 owner: Some("trydirect".to_string()),
                 group: Some("docker".to_string()),
@@ -1565,7 +1856,7 @@ mod tests {
             AppConfig {
                 content: "DOMAIN=example.com".to_string(),
                 content_type: "env".to_string(),
-                destination_path: remote_runtime_env_path().to_string(),
+                destination_path: remote_runtime_env_path_for("test-project"),
                 file_mode: "0600".to_string(),
                 owner: Some("trydirect".to_string()),
                 group: Some("docker".to_string()),
@@ -1646,9 +1937,78 @@ mod tests {
         assert_eq!(ctx.image, "nginx:latest");
     }
 
+    /// Every key of `expected` is in `actual` with the same value;
+    /// `networks_aliases`: every network the service joins carries them.
+    fn assert_compose_subset(case: &str, actual: &serde_json::Value, expected: &serde_json::Value) {
+        for (key, want) in expected.as_object().unwrap() {
+            if key == "networks_aliases" {
+                let networks = actual["networks"].as_object().unwrap_or_else(|| {
+                    panic!(
+                        "{case}: networks with aliases expected, got {}",
+                        actual["networks"]
+                    )
+                });
+                assert!(!networks.is_empty(), "{case}: no network");
+                for (name, net) in networks {
+                    assert_eq!(&net["aliases"], want, "{case}: aliases on {name}");
+                }
+            } else if want.is_object() {
+                assert_compose_subset(case, &actual[key], want);
+            } else {
+                assert_eq!(&actual[key], want, "{case}: `{key}`\nservice: {actual}");
+            }
+        }
+    }
+
+    /// shared-fixtures/api-contracts/stack-service-runtime-fields.json, path
+    /// agent_render: stacker.yml -> registered project app -> project_app row
+    /// -> the compose the status-panel agent applies.
+    #[test]
+    fn agent_render_carries_every_declared_setting() {
+        let contract: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/contracts/stack-service-runtime-fields.contract.json"
+        ))
+        .unwrap();
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project {
+            name: "runtime-fields".to_string(),
+            ..Project::default()
+        };
+        for case in contract["cases"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let service = &case["stacker_yml"];
+            let yml = json!({
+                "name": "runtime-fields",
+                "app": { "type": "custom", "image": "nginx:1.27" },
+                "services": [service],
+            });
+            let config = crate::cli::config_parser::StackerConfig::from_str(
+                &serde_yaml::to_string(&yml).unwrap(),
+            )
+            .unwrap();
+            let body = crate::cli::stacker_client::build_project_body(&config);
+            let form: crate::forms::project::ProjectForm =
+                serde_json::from_value(json!({ "custom": body["custom"] })).unwrap();
+            let apps = crate::project_app::sync::project_level_apps_from_form(1, &form);
+            let code = service["name"].as_str().unwrap();
+            let app = apps
+                .iter()
+                .find(|a| a.code == code)
+                .unwrap_or_else(|| panic!("{name}: no project_app row"));
+            let ctx = renderer
+                .project_app_to_context(app, HashMap::new())
+                .unwrap();
+            let compose = renderer.render_compose(&[ctx], &project).unwrap();
+            let doc: serde_json::Value = serde_yaml::from_str(&compose)
+                .unwrap_or_else(|e| panic!("{name}: rendered compose is YAML: {e}\n{compose}"));
+            assert_compose_subset(name, &doc["services"][code], &case["compose"]);
+        }
+    }
+
     #[test]
     fn render_compose_includes_kata_runtime() {
         let ctx = AppRenderContext {
+            run: Default::default(),
             code: "web".to_string(),
             name: "web".to_string(),
             image: "nginx:latest".to_string(),
@@ -1678,6 +2038,7 @@ mod tests {
     #[test]
     fn render_compose_runtime_none_serializes_null() {
         let ctx = AppRenderContext {
+            run: Default::default(),
             code: "web".to_string(),
             name: "web".to_string(),
             image: "nginx:latest".to_string(),
@@ -1703,6 +2064,304 @@ mod tests {
         assert!(json.get("runtime").is_none() || json["runtime"].is_null());
     }
 
+    // Regression test for GH issue #211: the rendered compose's top-level
+    // `networks:` block must declare the same name each app's own
+    // `networks:` list references. Before the fix, the top-level block
+    // always used `project.metadata["network"]` (never populated in
+    // practice) falling back to the unrelated literal "trydirect_network",
+    // while apps carry the project's real network name (typically
+    // "default_network", resolved via `custom.networks`) — producing
+    // "service X refers to undefined network default_network: invalid
+    // compose project" on every single-app deploy_app re-render.
+    #[test]
+    fn render_compose_top_level_network_matches_app_networks() {
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project {
+            name: "miniflux".to_string(),
+            ..Project::default()
+        };
+        let app_ctx = AppRenderContext {
+            run: Default::default(),
+            code: "app".to_string(),
+            name: "app".to_string(),
+            image: "miniflux/miniflux:latest".to_string(),
+            environment: HashMap::new(),
+            ports: vec![],
+            volumes: vec![],
+            domain: None,
+            ssl_enabled: false,
+            networks: vec!["default_network".to_string()],
+            depends_on: vec![],
+            restart_policy: "unless-stopped".to_string(),
+            resources: ResourceLimits::default(),
+            labels: HashMap::new(),
+            healthcheck: None,
+            runtime: None,
+        };
+        let db_ctx = AppRenderContext {
+            code: "postgres".to_string(),
+            networks: vec!["default_network".to_string()],
+            ..app_ctx.clone()
+        };
+
+        let compose = renderer
+            .render_compose(&[app_ctx, db_ctx], &project)
+            .unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&compose).unwrap();
+
+        for service in ["app", "postgres"] {
+            let service_networks: Vec<&str> = doc["services"][service]["networks"]
+                .as_sequence()
+                .unwrap_or_else(|| panic!("{service} should declare networks:\n{compose}"))
+                .iter()
+                .filter_map(|v| v.as_str())
+                .collect();
+            for network in &service_networks {
+                assert!(
+                    doc["networks"]
+                        .as_mapping()
+                        .map(|m| m.contains_key(serde_yaml::Value::String(network.to_string())))
+                        .unwrap_or(false),
+                    "{service} references network '{network}' but top-level networks: \
+                     never declares it:\n{compose}"
+                );
+            }
+        }
+    }
+
+    // Regression test for GH issue #237: declaring `default_network` as a
+    // plain `driver: bridge` network (rather than `external: true`) makes
+    // `docker compose -p <project> up` create a brand new project-scoped
+    // network instead of joining the shared external network the rest of
+    // the stack (and the agent/status-panel) actually run on — the
+    // redeployed container ends up isolated, unable to resolve sibling
+    // services by hostname. `default_network` must always render as
+    // `external: true`, matching `Network::default()` /
+    // `upsert_external_network` elsewhere in the codebase.
+    #[test]
+    fn render_compose_declares_default_network_as_external() {
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project {
+            name: "miniflux".to_string(),
+            ..Project::default()
+        };
+        let app_ctx = AppRenderContext {
+            run: Default::default(),
+            code: "miniflux".to_string(),
+            name: "miniflux".to_string(),
+            image: "miniflux/miniflux:latest".to_string(),
+            environment: HashMap::new(),
+            ports: vec![],
+            volumes: vec![],
+            domain: None,
+            ssl_enabled: false,
+            networks: vec!["default_network".to_string()],
+            depends_on: vec![],
+            restart_policy: "unless-stopped".to_string(),
+            resources: ResourceLimits::default(),
+            labels: HashMap::new(),
+            healthcheck: None,
+            runtime: None,
+        };
+
+        let compose = renderer.render_compose(&[app_ctx], &project).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&compose).unwrap();
+
+        assert_eq!(
+            doc["networks"]["default_network"]["external"],
+            serde_yaml::Value::Bool(true),
+            "default_network must be declared external: true so `docker compose -p <project>` \
+             attaches to the real shared network instead of creating a project-scoped copy:\n{compose}"
+        );
+    }
+
+    // Regression test for GH issue #236: same class of bug as #211, but for
+    // volumes. A named volume referenced under a service's `volumes:` list
+    // must also be declared under the top-level `volumes:` block, or
+    // `docker compose` rejects the file with "service X refers to
+    // undefined volume Y". Bind mounts (host paths) must NOT be declared.
+    #[test]
+    fn render_compose_declares_named_volumes_referenced_by_services() {
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project {
+            name: "miniflux".to_string(),
+            ..Project::default()
+        };
+        let postgres_ctx = AppRenderContext {
+            run: Default::default(),
+            code: "postgres".to_string(),
+            name: "postgres".to_string(),
+            image: "postgres:16-alpine".to_string(),
+            environment: HashMap::new(),
+            ports: vec![],
+            volumes: vec![
+                VolumeMount {
+                    source: "postgres_data".to_string(),
+                    target: "/var/lib/postgresql/data".to_string(),
+                    read_only: false,
+                },
+                VolumeMount {
+                    source: "./config".to_string(),
+                    target: "/etc/postgres".to_string(),
+                    read_only: true,
+                },
+            ],
+            domain: None,
+            ssl_enabled: false,
+            networks: vec!["default_network".to_string()],
+            depends_on: vec![],
+            restart_policy: "unless-stopped".to_string(),
+            resources: ResourceLimits::default(),
+            labels: HashMap::new(),
+            healthcheck: None,
+            runtime: None,
+        };
+
+        let compose = renderer.render_compose(&[postgres_ctx], &project).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&compose).unwrap();
+
+        let service_volumes: Vec<&str> = doc["services"]["postgres"]["volumes"]
+            .as_sequence()
+            .expect("postgres should declare volumes")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            service_volumes
+                .iter()
+                .any(|v| v.starts_with("postgres_data:")),
+            "expected postgres_data mount in {:?}",
+            service_volumes
+        );
+
+        let top_level_volumes = doc
+            .get("volumes")
+            .and_then(|v| v.as_mapping())
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            top_level_volumes.contains_key(serde_yaml::Value::String("postgres_data".to_string())),
+            "postgres references named volume 'postgres_data' but top-level volumes: \
+             never declares it:\n{compose}"
+        );
+        assert!(
+            !top_level_volumes.contains_key(serde_yaml::Value::String("./config".to_string())),
+            "bind mounts must not be declared under top-level volumes::\n{compose}"
+        );
+    }
+
+    /// Env values are arbitrary user text. Interpolated raw into the compose
+    /// (`- {{ key }}={{ value }}`) a value carrying ": ", "#", a quote or a
+    /// newline broke the document or was silently re-parsed into something
+    /// else. This is the backend twin of GH #251, which fixed the CLI
+    /// generator; this template had the identical defect.
+    #[test]
+    fn render_compose_quotes_hostile_env_values() {
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project {
+            name: "demo".to_string(),
+            ..Project::default()
+        };
+
+        let hostile = [
+            // A bare ": " makes the list item parse as a nested mapping.
+            ("DSN", "postgres://user:pw@host:5432/db?opt=a: b"),
+            // " #" starts a comment and silently truncates the value.
+            ("MOTD", "hello #not-a-comment"),
+            ("QUOTED", "say \"hi\" and 'bye'"),
+            (
+                "MULTILINE",
+                "external_url 'http://git.example.com'\nnginx['listen_port'] = 80",
+            ),
+            ("TRAILING", "value with trailing space "),
+            ("BRACES", "{not: a, mapping: here}"),
+        ];
+
+        let mut environment = HashMap::new();
+        for (key, value) in hostile {
+            environment.insert(key.to_string(), value.to_string());
+        }
+
+        let ctx = AppRenderContext {
+            run: Default::default(),
+            code: "web".to_string(),
+            name: "web".to_string(),
+            image: "nginx:latest".to_string(),
+            environment,
+            ports: vec![],
+            volumes: vec![],
+            domain: None,
+            ssl_enabled: false,
+            networks: vec![],
+            depends_on: vec![],
+            restart_policy: "unless-stopped".to_string(),
+            resources: ResourceLimits::default(),
+            labels: HashMap::new(),
+            healthcheck: None,
+            runtime: None,
+        };
+
+        let compose = renderer.render_compose(&[ctx], &project).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&compose)
+            .unwrap_or_else(|err| panic!("rendered compose must parse: {err}\n{compose}"));
+
+        let rendered_env = doc["services"]["web"]["environment"]
+            .as_sequence()
+            .unwrap_or_else(|| panic!("environment must be a list:\n{compose}"));
+
+        // Every entry must come back as one string, exactly "KEY=value".
+        let entries: Vec<&str> = rendered_env
+            .iter()
+            .map(|item| {
+                item.as_str().unwrap_or_else(|| {
+                    panic!("env entry re-parsed as {item:?} instead of a string:\n{compose}")
+                })
+            })
+            .collect();
+
+        for (key, value) in hostile {
+            let expected = format!("{key}={value}");
+            assert!(
+                entries.contains(&expected.as_str()),
+                "{key} did not round-trip; got {entries:?}\n{compose}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_compose_omits_volumes_block_when_no_named_volumes() {
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project {
+            name: "demo".to_string(),
+            ..Project::default()
+        };
+        let ctx = AppRenderContext {
+            run: Default::default(),
+            code: "web".to_string(),
+            name: "web".to_string(),
+            image: "nginx:latest".to_string(),
+            environment: HashMap::new(),
+            ports: vec![],
+            volumes: vec![],
+            domain: None,
+            ssl_enabled: false,
+            networks: vec![],
+            depends_on: vec![],
+            restart_policy: "unless-stopped".to_string(),
+            resources: ResourceLimits::default(),
+            labels: HashMap::new(),
+            healthcheck: None,
+            runtime: None,
+        };
+
+        let compose = renderer.render_compose(&[ctx], &project).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&compose).unwrap();
+        assert!(
+            doc.get("volumes").is_none(),
+            "no service declares a named volume, so volumes: should be omitted:\n{compose}"
+        );
+    }
+
     #[test]
     fn render_compose_references_relative_env_file() {
         let renderer = ConfigRenderer::new().unwrap();
@@ -1711,6 +2370,7 @@ mod tests {
             ..Project::default()
         };
         let ctx = AppRenderContext {
+            run: Default::default(),
             code: "web".to_string(),
             name: "web".to_string(),
             image: "nginx:latest".to_string(),
@@ -1750,6 +2410,7 @@ mod tests {
             "web",
         );
         let ctx = AppRenderContext {
+            run: Default::default(),
             code: "web".to_string(),
             name: "web".to_string(),
             image: "nginx:latest".to_string(),

@@ -1,7 +1,11 @@
 pub mod agent_capabilities;
 pub mod agent_client;
+pub mod agent_identity;
+pub mod agent_token;
+pub mod chat;
 pub mod client;
 pub mod db_pools;
+pub mod internal_key;
 pub(crate) mod json;
 pub mod mq_manager;
 pub mod project;
@@ -12,6 +16,7 @@ pub mod vault;
 
 pub use agent_capabilities::*;
 pub use agent_client::*;
+pub use agent_identity::*;
 pub use db_pools::*;
 pub use env_path::*;
 pub use json::*;
@@ -23,9 +28,19 @@ pub(crate) mod compressor;
 pub mod dockerhub;
 pub mod env_path;
 pub mod fs;
+pub mod gravatar;
 pub(crate) mod ip;
 pub mod stacker_labels;
 
 pub use dockerhub::*;
 
 pub use cloud::*;
+pub mod audit_cache;
+pub mod bake;
+pub mod bake_job;
+pub mod bake_finalize;
+pub mod bake_registry;
+pub mod cloud_init;
+pub mod compose_yaml;
+pub mod field_policy_backfill;
+pub mod rate_limit;

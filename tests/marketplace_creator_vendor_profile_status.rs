@@ -135,8 +135,15 @@ async fn creator_vendor_profile_status_returns_persisted_profile() {
     assert_eq!(None, vendor_profile.get("payout_account_ref"));
 }
 
+/// Someone else's template must look exactly like a template that does not
+/// exist, status and body alike.
+///
+/// This asserted 403 until 2026-10-10. A 403 where an unknown id gets 404 tells
+/// a caller holding a guessed template id that the template is real and belongs
+/// to another creator. Comparing the two answers to each other, rather than to
+/// a hardcoded status, is what keeps them from drifting apart again.
 #[tokio::test]
-async fn creator_vendor_profile_status_rejects_non_owner() {
+async fn creator_vendor_profile_status_hides_another_creators_template() {
     let app = match common::spawn_app_two_users().await {
         Some(app) => app,
         None => return,
@@ -149,17 +156,40 @@ async fn creator_vendor_profile_status_rejects_non_owner() {
     )
     .await;
 
-    let response = reqwest::Client::new()
-        .get(format!(
-            "{}/api/templates/{}/vendor-profile-status",
-            app.address, template_id
-        ))
-        .bearer_auth(common::USER_B_TOKEN)
-        .send()
-        .await
-        .expect("Failed to fetch vendor profile status");
+    let client = reqwest::Client::new();
+    let fetch = |id: String| {
+        let client = client.clone();
+        let address = app.address.clone();
+        async move {
+            let response = client
+                .get(format!(
+                    "{}/api/templates/{}/vendor-profile-status",
+                    address, id
+                ))
+                .bearer_auth(common::USER_B_TOKEN)
+                .send()
+                .await
+                .expect("Failed to fetch vendor profile status");
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            (status, body)
+        }
+    };
 
-    assert_eq!(StatusCode::FORBIDDEN, response.status());
+    let someone_elses = fetch(template_id).await;
+    let does_not_exist = fetch(uuid::Uuid::new_v4().to_string()).await;
+
+    assert_eq!(
+        StatusCode::NOT_FOUND,
+        someone_elses.0,
+        "another creator's template must answer 404, not 403: {}",
+        someone_elses.1
+    );
+    assert_eq!(
+        does_not_exist, someone_elses,
+        "the answer for another creator's template must be identical to the \
+         answer for one that does not exist"
+    );
 }
 
 #[tokio::test]

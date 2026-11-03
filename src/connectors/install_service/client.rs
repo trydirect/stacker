@@ -1,4 +1,4 @@
-use super::InstallServiceConnector;
+use super::{InstallServiceConnector, PostDeployClonePayload};
 use crate::forms::cloud_firewall;
 use crate::forms::project::{RegistryForm, Stack, Var};
 use crate::forms::{CloudFirewallOperationMessage, ConfigureCloudFirewallResponse};
@@ -106,6 +106,8 @@ impl InstallServiceConnector for InstallServiceClient {
         mq_manager: &MqManager,
         server_public_key: Option<String>,
         server_private_key: Option<String>,
+        proxy_domains: Option<serde_json::Value>,
+        initiator_email: Option<String>,
     ) -> Result<i32, String> {
         // Build payload for the install service
         let mut payload = crate::forms::project::Payload::try_from(project)
@@ -139,9 +141,29 @@ impl InstallServiceConnector for InstallServiceClient {
             payload.common_domain = stack_var_string(&form_stack.vars, "commonDomain");
         }
         payload.user_token = Some(user_id);
+        payload.initiator_email = initiator_email.filter(|email| *email != user_email);
         payload.user_email = Some(user_email);
         payload.docker_compose = Some(compress(fc.as_str()));
         payload.registry = registry;
+        // Reverse-proxy routing domains → install_data["proxy_domains"], read by
+        // AppVarsMapper as the `stacker_proxy_domains` extra-var. Set on the MQ
+        // payload here (not just the stored deployment record) so it actually
+        // reaches the Install Service.
+        payload.proxy_domains = proxy_domains;
+
+        // Set stack_code for per-project directory namespacing on the remote server.
+        // The Ansible `custom` role uses this as `stack_source` to compute the
+        // deploy directory: /home/trydirect/{stack_code}/.
+        // Includes project.id to guarantee uniqueness — project.name has no DB
+        // constraint, so "My App" and "my-app" would otherwise collide.
+        if payload.stack_code.is_none() {
+            let stack_code = format!(
+                "{}-{}",
+                crate::models::project::sanitize_project_name(&project.name),
+                project.id
+            );
+            payload.stack_code = Some(stack_code);
+        }
 
         tracing::debug!(
             "Send project data (deployment_hash = {:?}): {:?}",
@@ -171,6 +193,23 @@ impl InstallServiceConnector for InstallServiceClient {
 
         let routing_key = format!("install.start.{}.all.all", provider);
         tracing::debug!("Route: {:?}", routing_key);
+
+        // Reject oversized config_files payloads before publishing to MQ.
+        // The Install Service passes this inline as Ansible --extra-vars,
+        // which hits shell ARG_MAX limits when too large.
+        if let Some(ref config_files) = payload.config_files {
+            let size = serde_json::to_string(config_files)
+                .map(|s| s.len())
+                .unwrap_or(0);
+            const MAX_CONFIG_FILES_BYTES: usize = 128 * 1024; // 128 KB
+            if size > MAX_CONFIG_FILES_BYTES {
+                return Err(format!(
+                    "Config files payload too large ({:.1} KB). \
+                     Simplify environment variables or reduce bind-mount file count.",
+                    size as f64 / 1024.0
+                ));
+            }
+        }
 
         mq_manager
             .publish("install".to_string(), routing_key, &payload)
@@ -208,5 +247,24 @@ impl InstallServiceConnector for InstallServiceClient {
             firewall_name: None,
             firewall: None,
         })
+    }
+
+    async fn post_deploy_clone(
+        &self,
+        payload: PostDeployClonePayload,
+        mq_manager: &MqManager,
+    ) -> Result<(), String> {
+        let routing_key = "install.post_deploy.clone.all.all".to_string();
+        tracing::info!(
+            deployment_hash = %payload.deployment_hash,
+            server_id = payload.server_id,
+            "publishing post-deploy-clone job to install service"
+        );
+        mq_manager
+            .publish("install".to_string(), routing_key, &payload)
+            .await
+            .map_err(|err| format!("Failed to publish post-deploy-clone to MQ: {}", err))?;
+
+        Ok(())
     }
 }

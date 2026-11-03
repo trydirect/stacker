@@ -1,6 +1,7 @@
 use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models;
+use crate::routes::project::access::{self, Need};
 use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -55,17 +56,22 @@ pub async fn list_by_project(
 ) -> Result<impl Responder> {
     let project_id = path.0;
 
-    // Verify user owns the project
-    let _project = db::project::fetch(pg_pool.get_ref(), project_id)
+    // The owner and members deploy to these servers; a viewer does not.
+    let project = db::project::fetch(pg_pool.get_ref(), project_id)
         .await
         .map_err(|_err| JsonResponse::<models::Server>::build().internal_server_error(""))
         .and_then(|p| match p {
-            Some(proj) if proj.user_id != user.id => {
-                Err(JsonResponse::<models::Server>::build().not_found("Project not found"))
-            }
             Some(proj) => Ok(proj),
             None => Err(JsonResponse::<models::Server>::build().not_found("Project not found")),
         })?;
+    access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::Manage,
+        "Project not found",
+    )
+    .await?;
 
     db::server::fetch_by_project(pg_pool.get_ref(), project_id)
         .await

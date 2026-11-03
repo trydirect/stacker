@@ -58,7 +58,7 @@ fn explain_env_json_outputs_redacted_provenance() {
             predicate::str::contains("\"schemaVersion\": \"v1alpha1\"")
                 .and(predicate::str::contains("\"appCode\": \"device-api\""))
                 .and(predicate::str::contains(
-                    "\"runtimeEnvPath\": \"/home/trydirect/project/.env\"",
+                    "\"runtimeEnvPath\": \"/home/trydirect/local-name/.env\"",
                 ))
                 .and(predicate::str::contains("DATABASE_URL"))
                 .and(predicate::str::contains("secret-value").not()),
@@ -79,7 +79,7 @@ fn explain_topology_json_outputs_paths_and_services() {
             predicate::str::contains("\"schemaVersion\": \"v1alpha1\"")
                 .and(predicate::str::contains("\"target\": \"cloud\""))
                 .and(predicate::str::contains(
-                    "\"runtimeComposePath\": \"/home/trydirect/project/docker-compose.yml\"",
+                    "\"runtimeComposePath\": \"/home/trydirect/local-name/docker-compose.yml\"",
                 ))
                 .and(predicate::str::contains("\"code\": \"device-api\"")),
         );

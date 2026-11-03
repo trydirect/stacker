@@ -8,6 +8,7 @@ use crate::forms;
 use crate::helpers::project::builder::DcBuilder;
 use crate::helpers::{JsonResponse, MqManager, VaultClient};
 use crate::models;
+use crate::routes::project::access::{self, Need};
 use crate::services;
 use actix_web::{post, web, web::Data, Responder, Result};
 use serde::Deserialize;
@@ -43,22 +44,8 @@ fn parse_template_requirements(
 }
 
 fn map_marketplace_access_error(err: services::MarketplaceAccessError) -> actix_web::Error {
-    match err {
-        services::MarketplaceAccessError::ValidationFailed(reason) => {
-            tracing::error!("Failed to validate marketplace access: {}", reason);
-            JsonResponse::<models::Project>::build()
-                .internal_server_error("Failed to validate marketplace access")
-        }
-        services::MarketplaceAccessError::NoPaymentMethod { .. } => {
-            JsonResponse::<models::Project>::build().payment_required(err.to_string())
-        }
-        services::MarketplaceAccessError::MissingUserToken
-        | services::MarketplaceAccessError::InsufficientFeaturePlan
-        | services::MarketplaceAccessError::InsufficientTemplatePlan { .. }
-        | services::MarketplaceAccessError::TemplateNotOwned => {
-            JsonResponse::<models::Project>::build().forbidden(err.to_string())
-        }
-    }
+    // Shared mapping lives with the gate so every deploy path answers alike.
+    services::map_access_error(err)
 }
 
 fn validate_template_target_requirements(
@@ -272,20 +259,6 @@ struct HetznerIpv4 {
     ip: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct HetznerServerTypesResponse {
-    #[serde(default)]
-    server_types: Vec<HetznerServerTypeEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HetznerServerTypeEntry {
-    name: String,
-    /// Non-null when Hetzner has deprecated this type; value is an ISO-8601 timestamp.
-    #[serde(default)]
-    deprecated: Option<String>,
-}
-
 fn hetzner_api_base_url() -> String {
     std::env::var("STACKER_HETZNER_API_URL")
         .unwrap_or_else(|_| "https://api.hetzner.cloud/v1".to_string())
@@ -471,90 +444,16 @@ async fn validate_hetzner_server_type(
         None => return Ok(()),
     };
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(8))
-        .build()
-        .map_err(|err| format!("Could not initialize Hetzner API client: {}", err))?;
-
-    let url = match region {
-        Some(loc) => format!("{}/server_types?location={}", hetzner_api_base_url(), loc),
-        None => format!("{}/server_types", hetzner_api_base_url()),
-    };
-
-    let response = match client.get(&url).bearer_auth(&token).send().await {
-        Ok(r) => r,
-        Err(err) => {
-            tracing::warn!(
-                "Could not reach Hetzner API to validate server type '{}': {}; proceeding",
-                server_type,
-                err
-            );
-            return Ok(());
-        }
-    };
-
-    if !response.status().is_success() {
-        tracing::warn!(
-            "Hetzner server_types API returned HTTP {}; skipping server type validation",
-            response.status().as_u16()
-        );
-        return Ok(());
-    }
-
-    let body = match response.json::<HetznerServerTypesResponse>().await {
-        Ok(b) => b,
-        Err(err) => {
-            tracing::warn!(
-                "Invalid Hetzner server types response: {}; skipping validation",
-                err
-            );
-            return Ok(());
-        }
-    };
-
-    // Check if the requested type is deprecated before checking availability.
-    if let Some(entry) = body
-        .server_types
-        .iter()
-        .find(|t| t.name.eq_ignore_ascii_case(server_type))
-    {
-        if entry.deprecated.is_some() {
-            let active: Vec<&str> = body
-                .server_types
-                .iter()
-                .filter(|t| t.deprecated.is_none())
-                .map(|t| t.name.as_str())
-                .collect();
-            return Err(format!(
-                "Server type '{}' is deprecated in Hetzner and can no longer be used to create new servers. \
-                 Set `deploy.cloud.size` in stacker.yml to an active type: {}",
-                server_type,
-                if active.is_empty() {
-                    "none found".to_string()
-                } else {
-                    active.join(", ")
-                }
-            ));
-        }
-        return Ok(());
-    }
-
-    let available: Vec<&str> = body
-        .server_types
-        .iter()
-        .filter(|t| t.deprecated.is_none())
-        .map(|t| t.name.as_str())
-        .collect();
-
-    Err(format!(
-        "Server type '{}' is not available in Hetzner. Available types: {}",
+    // Delegate to the shared connector so the route handler and the CLI
+    // local-orchestrator path enforce identical rules. See
+    // `crate::connectors::hetzner::validate_server_type_availability`.
+    crate::connectors::hetzner::validate_server_type_availability(
+        &hetzner_api_base_url(),
+        &token,
         server_type,
-        if available.is_empty() {
-            "none found".to_string()
-        } else {
-            available.join(", ")
-        }
-    ))
+        region,
+    )
+    .await
 }
 
 async fn validate_template_server_capacity_requirements(
@@ -1421,22 +1320,41 @@ async fn execute_deployment(
                         })
                     }
                     Err(e) => {
-                        tracing::warn!(
+                        // Hard-fail rather than warn: without this key the row
+                        // keeps key_status="none", nothing is ever authorized
+                        // on the box, and the deploy would still report
+                        // success. The loss only surfaces hours later as
+                        // "Permission denied (publickey)".
+                        tracing::error!(
                             "Failed to store auto-generated SSH key in Vault for server {}: {}",
                             server.id,
                             e
                         );
-                        server
+                        return Err(JsonResponse::<models::Project>::build()
+                            .internal_server_error(format!(
+                                "Could not store the SSH key for server {} in Vault, so no key \
+                                 would be installed on the machine and you would have no SSH \
+                                 access to it. Deploy aborted before creating anything. \
+                                 Vault error: {}",
+                                server.id, e
+                            )));
                     }
                 }
             }
             Err(e) => {
-                tracing::warn!(
+                tracing::error!(
                     "Failed to auto-generate SSH keypair for server {}: {}",
                     server.id,
                     e
                 );
-                server
+                return Err(
+                    JsonResponse::<models::Project>::build().internal_server_error(format!(
+                        "Could not generate an SSH keypair for server {}, so no key would be \
+                         installed on the machine and you would have no SSH access to it. \
+                         Deploy aborted before creating anything. Error: {}",
+                        server.id, e
+                    )),
+                );
             }
         }
     } else {
@@ -1459,6 +1377,12 @@ async fn execute_deployment(
         server
     };
 
+    // NOTE: the user's own key from deploy.cloud.ssh_key is deliberately NOT
+    // merged into new_public_key. That value is single-valued the whole way
+    // down — one provider ssh_key object, one TF_VAR_public_key_content — so a
+    // newline-joined list collapsed onto a single authorized_keys line and only
+    // the first key stayed usable. The CLI now authorizes each extra key
+    // separately via POST /server/{id}/ssh-key/authorize-public-key.
     let has_existing_ip = server.srv_ip.as_ref().map_or(false, |ip| !ip.is_empty());
     if has_existing_ip && new_public_key.is_none() && server.vault_key_path.is_none() {
         tracing::error!(
@@ -1527,6 +1451,18 @@ async fn execute_deployment(
                         .collect(),
                 ),
             );
+        }
+    }
+
+    // Record reverse-proxy routing domains on the deployment's request_json for
+    // audit/rollback. NOTE: this stored record is NOT what reaches the Install
+    // Service — the MQ payload is built from the project + form in
+    // `install_service.deploy()`, so actual delivery is via `payload.proxy_domains`
+    // (threaded through the deploy call below). AppVarsMapper reads it as the
+    // `stacker_proxy_domains` extra var.
+    if let Some(ref proxy_domains) = form.proxy_domains {
+        if let Some(obj) = json_request.as_object_mut() {
+            obj.insert("proxy_domains".to_string(), proxy_domains.clone());
         }
     }
     let deployment_hash = format!("deployment_{}", Uuid::new_v4());
@@ -1599,6 +1535,8 @@ async fn execute_deployment(
             mq_manager,
             new_public_key,
             new_private_key,
+            form.proxy_domains.clone(),
+            form.initiator_email.clone(),
         )
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
@@ -1911,11 +1849,25 @@ pub async fn item(
             Some(project) => Ok(project),
             None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
         })?;
+    let access = access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::Manage,
+        "not found",
+    )
+    .await?;
+    let mut form = form.into_inner();
+    form.initiator_email =
+        access::report_initiator(pg_pool.get_ref(), &project, &user, access).await;
+    let user = Arc::new(
+        access::acting_user(&project, user.as_ref(), access, &sets.user_service_url).await?,
+    );
 
     let (project_id, deployment_id) = deploy_project(
         user.as_ref(),
         project,
-        form.into_inner(),
+        form,
         pg_pool.get_ref(),
         mq_manager.get_ref(),
         sets.get_ref(),
@@ -1961,6 +1913,19 @@ pub async fn saved_item(
             Some(project) => Ok(project),
             None => Err(JsonResponse::<models::Project>::build().not_found("Project not found")),
         })?;
+    let access = access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::Manage,
+        "Project not found",
+    )
+    .await?;
+    form.initiator_email =
+        access::report_initiator(pg_pool.get_ref(), &project, &user, access).await;
+    let user = Arc::new(
+        access::acting_user(&project, user.as_ref(), access, &sets.user_service_url).await?,
+    );
 
     let marketplace_template = if let Some(template_id) = project.source_template_id {
         let template = db::marketplace::get_by_id(pg_pool.get_ref(), template_id)
@@ -1988,8 +1953,8 @@ pub async fn saved_item(
 
     let cloud = match db::cloud::fetch(pg_pool.get_ref(), cloud_id).await {
         Ok(cloud) => match cloud {
-            Some(cloud) => cloud,
-            None => {
+            Some(cloud) if cloud.user_id == user.id => cloud,
+            _ => {
                 return Err(
                     JsonResponse::<models::Project>::build().not_found("No cloud configured")
                 );
@@ -2185,12 +2150,22 @@ pub async fn rollback(
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
         .and_then(|project| match project {
-            Some(project) if project.user_id != user.id => {
-                Err(JsonResponse::<models::Project>::build().not_found("Project not found"))
-            }
             Some(project) => Ok(project),
             None => Err(JsonResponse::<models::Project>::build().not_found("Project not found")),
         })?;
+    let access = access::check(
+        pg_pool.get_ref(),
+        &project,
+        &user.id,
+        Need::Manage,
+        "Project not found",
+    )
+    .await?;
+    let initiator_email =
+        access::report_initiator(pg_pool.get_ref(), &project, &user, access).await;
+    let user = Arc::new(
+        access::acting_user(&project, user.as_ref(), access, &sets.user_service_url).await?,
+    );
 
     let template_id = project.source_template_id.ok_or_else(|| {
         JsonResponse::<models::Project>::build()
@@ -2260,7 +2235,8 @@ pub async fn rollback(
     let (metadata, template_stack_code) =
         build_rollback_project_payload(target_version.stack_definition.clone())
             .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
-    let deploy_form = build_rollback_deploy_form(template_stack_code);
+    let mut deploy_form = build_rollback_deploy_form(template_stack_code);
+    deploy_form.initiator_email = initiator_email;
 
     validate_reused_cloud_server(&cloud, &server)
         .await
@@ -2333,6 +2309,8 @@ mod tests {
             price: None,
             billing_cycle: None,
             currency: None,
+            daily_rate: None,
+            monthly_cap: None,
             created_at: None,
             updated_at: None,
             approved_at: None,
@@ -3089,5 +3067,94 @@ mod tests {
             }
         });
         assert!(embedded_marketplace_compose(&metadata).is_none());
+    }
+}
+
+/// Contract across the CLI and the server for host-local ports.
+///
+/// The loopback handling broke more than once because each half was tested
+/// alone: the CLI parser was pinned to drop the host IP (`127.0.0.1:1025:25` ->
+/// `1025`), while the server expects the IP to arrive with the mapping and
+/// skips such ports. Together they opened databases bound to 127.0.0.1 to the
+/// internet: the firewall rule allowed 5432/6379 from anywhere and the compose
+/// file published them on every interface. This test runs a stacker.yml
+/// through the CLI's payload builder and then through what the server does
+/// with it.
+#[cfg(test)]
+mod loopback_ports_contract {
+    use super::derive_public_ports_from_metadata;
+    use crate::cli::config_parser::StackerConfig;
+    use crate::cli::stacker_client::build_project_body;
+
+    const STACKER_YML: &str = r#"
+name: loopback-contract
+app:
+  type: custom
+  image: example/web:1.0
+  ports:
+    - "8000:8000"
+    - "127.0.0.1:8025:8025"
+services:
+  - name: postgres
+    image: postgres:16
+    ports:
+      - "127.0.0.1:5432:5432"
+  - name: redis
+    image: redis:7
+    ports:
+      - "127.0.0.1:6379:6379/tcp"
+  - name: proxy
+    image: nginx:alpine
+    ports:
+      - "443:443"
+"#;
+
+    fn shared_ports(body: &serde_json::Value) -> Vec<serde_json::Value> {
+        ["web", "service", "feature"]
+            .iter()
+            .filter_map(|group| body["custom"][group].as_array())
+            .flatten()
+            .filter_map(|app| app["shared_ports"].as_array())
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn ports_bound_to_loopback_in_stacker_yml_are_not_opened_to_the_internet() {
+        let config = StackerConfig::from_str(STACKER_YML).expect("stacker.yml parses");
+        let body = build_project_body(&config);
+
+        let mut public = derive_public_ports_from_metadata(&body);
+        public.sort();
+        assert_eq!(
+            public,
+            vec!["443/tcp".to_string(), "8000/tcp".to_string()],
+            "only the ports not bound to 127.0.0.1 may reach the firewall"
+        );
+    }
+
+    #[test]
+    fn ports_bound_to_loopback_in_stacker_yml_stay_on_loopback_in_compose() {
+        let config = StackerConfig::from_str(STACKER_YML).expect("stacker.yml parses");
+        let body = build_project_body(&config);
+
+        let mut loopback_published = Vec::new();
+        for raw in shared_ports(&body) {
+            let port: crate::forms::project::Port =
+                serde_json::from_value(raw.clone()).expect("shared port");
+            let dc: docker_compose_types::Port = (&port).try_into().expect("compose port");
+            if let Some(docker_compose_types::PublishedPort::Single(p)) = dc.published {
+                if dc.host_ip.as_deref() == Some("127.0.0.1") {
+                    loopback_published.push(p);
+                }
+            }
+        }
+        loopback_published.sort();
+        assert_eq!(
+            loopback_published,
+            vec![5432, 6379, 8025],
+            "compose must publish these on 127.0.0.1 only"
+        );
     }
 }

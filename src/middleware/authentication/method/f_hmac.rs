@@ -60,7 +60,7 @@ async fn compute_body_hash(
     Ok(format!("{:x}", mac.finalize().into_bytes()))
 }
 
-#[tracing::instrument(name = "try authenticate via hmac")]
+#[tracing::instrument(name = "try authenticate via hmac", skip_all)]
 pub async fn try_hmac(req: &mut ServiceRequest) -> Result<bool, String> {
     let client_id = get_header::<i32>(&req, "stacker-id")?;
     if client_id.is_none() {

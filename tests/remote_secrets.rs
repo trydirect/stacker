@@ -16,6 +16,16 @@ use std::sync::Arc;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TestAppWithVault> = OnceCell::const_new();
+
+async fn app() -> &'static common::TestAppWithVault {
+    common::get_or_init_vault_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 struct TwoUserVaultApp {
     app: common::TwoUserTestApp,
     vault_server: MockServer,

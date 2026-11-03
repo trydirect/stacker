@@ -46,6 +46,10 @@ pub struct Server {
     /// Optional friendly name for the server
     #[validate(max_length = 100)]
     pub name: Option<String>,
+    /// Pinned SSH host key fingerprint in OpenSSH form ("SHA256:base64").
+    /// `None` means nothing is pinned yet, so the next successful connection
+    /// records what the server presented (trust on first use).
+    pub host_key_fingerprint: Option<String>,
 }
 
 impl Default for Server {
@@ -69,6 +73,7 @@ impl Default for Server {
             connection_mode: default_connection_mode(),
             key_status: default_key_status(),
             name: None,
+            host_key_fingerprint: None,
         }
     }
 }

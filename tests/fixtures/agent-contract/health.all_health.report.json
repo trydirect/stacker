@@ -1,0 +1,36 @@
+{
+  "type": "all_health",
+  "deployment_hash": "deployment_5fbda840-8d25-4c19-9e16-b7e2ba33bc4d",
+  "status": "ok",
+  "last_heartbeat_at": "2026-09-06T10:45:48Z",
+  "containers": [
+    {
+      "app_code": "floci",
+      "container_name": "project-app-1",
+      "container_state": "running",
+      "status": "ok",
+      "metrics": {
+        "cpu_pct": 0.17623701691627502,
+        "mem_limit_bytes": 8122089472,
+        "mem_pct": 2.0495407581329346,
+        "mem_usage_mb": 158.75390625,
+        "rx_bytes": 6366,
+        "tx_bytes": 142
+      }
+    },
+    {
+      "app_code": "floci-ui",
+      "container_name": "project-floci-ui-1",
+      "container_state": "running",
+      "status": "ok",
+      "metrics": {
+        "cpu_pct": 0.06171600893139839,
+        "mem_limit_bytes": 8122089472,
+        "mem_pct": 0.9856616258621216,
+        "mem_usage_mb": 76.34765625,
+        "rx_bytes": 40171,
+        "tx_bytes": 537354
+      }
+    }
+  ]
+}

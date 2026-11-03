@@ -60,4 +60,27 @@ impl CliRuntime {
     {
         self.rt.block_on(future)
     }
+
+    /// Test-only runtime with dummy credentials pointing at an unreachable
+    /// API — for exercising resolver paths that must NOT touch the network
+    /// (explicit flags, local placement, pinned hashes, error wording).
+    #[cfg(test)]
+    pub fn for_tests() -> Self {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let creds = StoredCredentials {
+            access_token: "test-token".to_string(),
+            refresh_token: None,
+            token_type: "Bearer".to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+            email: Some("test@example.com".to_string()),
+            server_url: Some("http://127.0.0.1:1".to_string()),
+            org: None,
+            domain: None,
+        };
+        let client = StackerClient::new("http://127.0.0.1:1", "test-token");
+        Self { creds, client, rt }
+    }
 }

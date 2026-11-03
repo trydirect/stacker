@@ -2,6 +2,16 @@ mod common;
 
 use reqwest::StatusCode;
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TwoUserTestApp {
+    common::get_or_init_two_user_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 #[tokio::test]
 async fn project_alias_lists_projects_for_authenticated_user() {
     let Some(app) = common::spawn_app_two_users().await else {

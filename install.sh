@@ -106,6 +106,11 @@ download_and_install() {
 
     ok "Installed stacker v${version} to ${INSTALL_DIR}/${BINARY_NAME}"
 
+    # Clean up temp dir and clear trap before function returns
+    # (tmpdir is local — trap must not fire after this point)
+    rm -rf "$tmpdir"
+    trap - EXIT
+
     write_user_config
 }
 

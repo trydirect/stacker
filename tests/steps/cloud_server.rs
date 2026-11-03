@@ -1,4 +1,4 @@
-use cucumber::{given, when};
+use cucumber::{given, then, when};
 use serde_json::json;
 
 use super::StepWorld;
@@ -146,4 +146,85 @@ async fn get_delete_preview(world: &mut StepWorld) {
     world
         .get(&format!("/server/{}/delete-preview", server_id))
         .await;
+}
+
+// ── SSH public key authorization ───────────────────────────────────────────
+//
+// Backs tests/features/ssh_key_authorization.feature. The endpoint had no
+// coverage, which is how a broken Vault policy and a single-attempt 15s SSH
+// timeout both shipped unnoticed.
+
+#[given("the stored server has an active SSH key")]
+async fn given_server_has_active_key(world: &mut StepWorld) {
+    set_server_key_state(
+        world,
+        "active",
+        Some("secret/users/test_user_id/ssh_keys/1"),
+    )
+    .await;
+}
+
+#[given("the stored server has an active SSH key without a Vault path")]
+async fn given_server_active_key_no_vault_path(world: &mut StepWorld) {
+    set_server_key_state(world, "active", None).await;
+}
+
+#[given("the stored server belongs to another user")]
+async fn given_server_belongs_to_other_user(world: &mut StepWorld) {
+    let pool = world.db_pool.as_ref().expect("no db_pool");
+    let server_id: i32 = stored_server_id(world);
+
+    sqlx::query("UPDATE server SET user_id = $1 WHERE id = $2")
+        .bind(super::common::USER_B_ID)
+        .bind(server_id)
+        .execute(pool)
+        .await
+        .expect("Failed to reassign test server");
+}
+
+#[when(regex = r#"^I authorize public key "([^"]*)" for the stored server$"#)]
+async fn authorize_public_key_for_server(world: &mut StepWorld, public_key: String) {
+    let server_id = stored_server_id(world);
+    let body = json!({ "public_key": public_key });
+    world
+        .post_json(
+            &format!("/server/{}/ssh-key/authorize-public-key", server_id),
+            &body,
+        )
+        .await;
+}
+
+#[then(regex = r#"^the response message should contain "([^"]+)"$"#)]
+async fn response_message_should_contain(world: &mut StepWorld, expected: String) {
+    let body = world.response_body.clone().unwrap_or_default();
+    assert!(
+        body.contains(&expected),
+        "expected response body to contain {expected:?}, got: {body}"
+    );
+}
+
+fn stored_server_id(world: &StepWorld) -> i32 {
+    world
+        .stored_ids
+        .get("server_id")
+        .expect("No stored server_id")
+        .parse()
+        .expect("server_id is not an integer")
+}
+
+async fn set_server_key_state(
+    world: &mut StepWorld,
+    key_status: &str,
+    vault_key_path: Option<&str>,
+) {
+    let pool = world.db_pool.as_ref().expect("no db_pool");
+    let server_id = stored_server_id(world);
+
+    sqlx::query("UPDATE server SET key_status = $1, vault_key_path = $2, srv_ip = COALESCE(srv_ip, '10.0.0.1') WHERE id = $3")
+        .bind(key_status)
+        .bind(vault_key_path)
+        .bind(server_id)
+        .execute(pool)
+        .await
+        .expect("Failed to set server key state");
 }

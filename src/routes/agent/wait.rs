@@ -13,7 +13,7 @@ pub struct WaitQuery {
 #[tracing::instrument(name = "Agent poll for commands", skip_all)]
 #[get("/commands/wait/{deployment_hash}")]
 pub async fn wait_handler(
-    agent: web::ReqData<Arc<models::Agent>>,
+    agent: helpers::AuthenticatedAgent,
     path: web::Path<String>,
     query: web::Query<WaitQuery>,
     agent_pool: web::Data<AgentPgPool>,

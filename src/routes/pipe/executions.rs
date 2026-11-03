@@ -65,6 +65,19 @@ pub async fn list_executions_handler(
         .ok("Pipe executions fetched successfully"))
 }
 
+/// The answer for an execution the caller is not allowed to see.
+///
+/// Identical to the answer for an execution that does not exist. Without this
+/// the ownership refusal reads "Pipe instance not found", naming the parent,
+/// which tells a caller holding a guessed execution id that it is real.
+///
+/// Note this is only needed on the routes keyed by an execution id.
+/// `list_executions_handler` is keyed by the instance id and already answers
+/// "Pipe instance not found" either way.
+fn execution_not_visible() -> actix_web::Error {
+    JsonResponse::<String>::not_found("Pipe execution not found")
+}
+
 /// Get a single pipe execution by ID
 #[tracing::instrument(name = "Get pipe execution", skip_all)]
 #[get("/executions/{execution_id}")]
@@ -91,16 +104,19 @@ pub async fn get_execution_handler(
 
             match instance {
                 Some(i) => {
-                    super::verify_pipe_owner(pg_pool.get_ref(), &i, &user.id).await?;
+                    super::mask_refusal_as(
+                        super::verify_pipe_owner(pg_pool.get_ref(), &i, &user.id).await,
+                        execution_not_visible,
+                    )?;
                 }
-                None => return Err(JsonResponse::not_found("Pipe execution not found")),
+                None => return Err(execution_not_visible()),
             }
 
             Ok(JsonResponse::build()
                 .set_item(Some(exec))
                 .ok("Pipe execution fetched successfully"))
         }
-        None => Err(JsonResponse::not_found("Pipe execution not found")),
+        None => Err(execution_not_visible()),
     }
 }
 
@@ -125,7 +141,7 @@ pub async fn replay_execution_handler(
 
     let original = match original {
         Some(exec) => exec,
-        None => return Err(JsonResponse::not_found("Pipe execution not found")),
+        None => return Err(execution_not_visible()),
     };
 
     // Verify ownership via instance -> user
@@ -135,10 +151,13 @@ pub async fn replay_execution_handler(
 
     let instance = match instance {
         Some(i) => i,
-        None => return Err(JsonResponse::not_found("Pipe instance not found")),
+        None => return Err(execution_not_visible()),
     };
 
-    super::verify_pipe_owner(pg_pool.get_ref(), &instance, &user.id).await?;
+    super::mask_refusal_as(
+        super::verify_pipe_owner(pg_pool.get_ref(), &instance, &user.id).await,
+        execution_not_visible,
+    )?;
 
     // Create a new execution record for the replay
     let replay_execution = PipeExecution::new(

@@ -4,7 +4,7 @@ use crate::db;
 use crate::helpers::security_validator;
 use crate::helpers::JsonResponse;
 use crate::models;
-use actix_web::{get, patch, post, web, Responder, Result};
+use actix_web::{get, patch, post, put, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::Instrument;
@@ -366,6 +366,7 @@ pub async fn unapprove_handler(
 
     // Send webhook to unpublish from marketplace while preserving subscription state
     let template_clone = template.clone();
+    let unapprove_reason = req.reason.clone();
     tokio::spawn(async move {
         match WebhookSenderConfig::from_env() {
             Ok(config) => {
@@ -376,7 +377,11 @@ pub async fn unapprove_handler(
                 );
 
                 if let Err(e) = sender
-                    .send_template_unpublished(&template_clone, &template_clone.creator_user_id)
+                    .send_template_unpublished(
+                        &template_clone,
+                        &template_clone.creator_user_id,
+                        unapprove_reason.as_deref(),
+                    )
                     .instrument(span)
                     .await
                 {
@@ -472,6 +477,73 @@ pub async fn security_scan_handler(
         .ok("Security scan completed"))
 }
 
+/// Re-scan an already-published template for `config_contract` field-policy
+/// completeness. Unlike the publish-time gate in `creator.rs`
+/// (`ensure_contract_declares_generated_secrets`), this never blocks —
+/// legacy templates approved before the field-policy feature existed have
+/// no way to satisfy it retroactively without a new version. Instead it
+/// flags the gap via `verifications.secrets_manifest_generated` so it's
+/// visible in admin review, and reports exactly which fields are missing a
+/// `mutability: generated` policy.
+#[tracing::instrument(name = "Detect secrets in template (admin)", skip_all)]
+#[post("/{id}/detect-secrets")]
+pub async fn detect_secrets_handler(
+    _admin: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    let versions = db::marketplace::list_versions_by_template(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    let latest = versions
+        .iter()
+        .find(|v| v.is_latest == Some(true))
+        .or_else(|| versions.first())
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build()
+                .bad_request("No versions found for this template")
+        })?;
+
+    let config_contract = db::marketplace::get_config_contract(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    let missing_fields = crate::routes::marketplace::creator::missing_generated_secret_fields(
+        &latest.stack_definition,
+        latest.definition_format.as_deref(),
+        &config_contract,
+    );
+    let complete = missing_fields.is_empty();
+
+    if let Err(e) = db::marketplace::update_verifications(
+        pg_pool.get_ref(),
+        &id,
+        serde_json::json!({ "secrets_manifest_generated": complete }),
+    )
+    .await
+    {
+        tracing::warn!(
+            "Failed to set secrets_manifest_generated verification: {}",
+            e
+        );
+    }
+
+    let result = serde_json::json!({
+        "template_id": id,
+        "version": latest.version,
+        "secrets_manifest_generated": complete,
+        "missing_generated_secret_fields": missing_fields,
+    });
+
+    Ok(JsonResponse::<serde_json::Value>::build()
+        .set_item(result)
+        .ok("Secret-field detection completed"))
+}
+
 #[tracing::instrument(name = "List available plans from User Service", skip_all)]
 #[get("/plans")]
 pub async fn list_plans_handler(
@@ -509,6 +581,48 @@ pub struct AdminPricingRequest {
     pub billing_cycle: Option<String>,
     pub required_plan_name: Option<String>,
     pub currency: Option<String>,
+    /// Daily rate for deployment_daily billing (USD)
+    pub daily_rate: Option<f64>,
+    /// Monthly cap for deployment_daily billing (USD)
+    pub monthly_cap: Option<f64>,
+}
+
+/// Edit any template's content and version payload as an administrator.
+///
+/// Deliberately the same write path as the author's own
+/// `PUT /api/v1/templates/{id}` (`creator::apply_template_update`), so an admin
+/// edit cannot slip past the config-contract validation or the stripping of
+/// author-declared generated secrets. The only difference is
+/// `UpdateAuthority::Admin`, which lifts the review-workflow status gate: the
+/// point of this route is correcting a listing that is already approved.
+///
+/// Ownership is not checked, by design - Casbin restricts the route to admin
+/// roles, and an admin editing someone else's listing is the feature. The edit
+/// is logged with the acting admin so the change is attributable.
+#[tracing::instrument(name = "Admin update template", skip_all)]
+#[put("/{id}")]
+pub async fn update_template_handler(
+    admin: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+    body: web::Json<crate::routes::marketplace::creator::UpdateTemplateRequest>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    tracing::info!(
+        admin_id = %admin.id,
+        template_id = %id,
+        "admin edits marketplace template"
+    );
+
+    crate::routes::marketplace::creator::apply_template_update(
+        pg_pool.get_ref(),
+        id,
+        body.into_inner(),
+        crate::routes::marketplace::creator::UpdateAuthority::Admin,
+    )
+    .await
 }
 
 #[tracing::instrument(name = "Admin update template pricing", skip_all)]
@@ -530,6 +644,8 @@ pub async fn pricing_handler(
         req.billing_cycle.as_deref(),
         req.required_plan_name.as_deref(),
         req.currency.as_deref(),
+        req.daily_rate,
+        req.monthly_cap,
     )
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err))?;
@@ -541,6 +657,43 @@ pub async fn pricing_handler(
     }
 }
 
+/// Fires the vendor-facing verification-change notification, non-blocking.
+/// Shared by both vendor-profile PATCH handlers (template-scoped and
+/// creator-scoped) so a vendor is notified with the admin's reason
+/// regardless of which one the admin UI happened to call.
+fn spawn_vendor_verification_webhook(
+    creator_user_id: String,
+    verification_status: String,
+    reason: Option<String>,
+) {
+    tokio::spawn(async move {
+        match WebhookSenderConfig::from_env() {
+            Ok(config) => {
+                let sender = MarketplaceWebhookSender::new(config);
+                let span = tracing::info_span!(
+                    "send_vendor_verification_webhook",
+                    creator_user_id = %creator_user_id
+                );
+
+                if let Err(e) = sender
+                    .send_vendor_verification_changed(
+                        &creator_user_id,
+                        &verification_status,
+                        reason.as_deref(),
+                    )
+                    .instrument(span)
+                    .await
+                {
+                    tracing::warn!("Failed to send vendor verification webhook: {:?}", e);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Webhook sender config not available: {}", e);
+            }
+        }
+    });
+}
+
 #[derive(serde::Deserialize, Debug)]
 pub struct AdminVendorProfileRequest {
     pub verification_status: Option<String>,
@@ -549,6 +702,10 @@ pub struct AdminVendorProfileRequest {
     pub payout_provider: Option<String>,
     pub payout_account_ref: Option<String>,
     pub metadata: Option<serde_json::Value>,
+    /// Why verification_status is being set - forwarded to the vendor in
+    /// the vendor_verification_changed notification when present. Not
+    /// persisted; this is a one-shot explanation, not a profile field.
+    pub reason: Option<String>,
 }
 
 fn validate_vendor_status(
@@ -634,6 +791,14 @@ pub async fn update_vendor_profile_handler(
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
+    if let Some(verification_status) = req.verification_status.clone() {
+        spawn_vendor_verification_webhook(
+            template.creator_user_id.clone(),
+            verification_status,
+            req.reason.clone(),
+        );
+    }
+
     Ok(JsonResponse::<serde_json::Value>::build().ok("Vendor profile updated"))
 }
 
@@ -694,6 +859,14 @@ pub async fn update_vendor_profile_by_creator_handler(
     )
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    if let Some(verification_status) = req.verification_status.clone() {
+        spawn_vendor_verification_webhook(
+            creator_user_id.clone(),
+            verification_status,
+            req.reason.clone(),
+        );
+    }
 
     Ok(JsonResponse::<serde_json::Value>::build().ok("Vendor profile updated"))
 }

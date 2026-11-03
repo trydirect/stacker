@@ -102,3 +102,32 @@ pub async fn delete(pool: &PgPool, project_id: i32, user_id: &str) -> Result<boo
         "Failed to delete project member".to_string()
     })
 }
+
+pub async fn fetch_by_project_with_email(
+    pool: &PgPool,
+    project_id: i32,
+) -> Result<Vec<models::ProjectMemberWithEmail>, String> {
+    let query_span = tracing::info_span!("Fetch project members with email", project_id);
+    sqlx::query_as!(
+        models::ProjectMemberWithEmail,
+        r#"
+        SELECT m.project_id, m.user_id, m.role, m.created_by, m.created_at, m.updated_at,
+               (SELECT i.email FROM project_invitation i
+                WHERE i.project_id = m.project_id AND i.accepted_by = m.user_id
+                  AND i.status = 'accepted'
+                ORDER BY i.accepted_at DESC
+                LIMIT 1) AS email
+        FROM project_member m
+        WHERE m.project_id = $1
+        ORDER BY m.created_at ASC, m.user_id ASC
+        "#,
+        project_id
+    )
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to fetch project members: {:?}", err);
+        "Failed to fetch project members".to_string()
+    })
+}

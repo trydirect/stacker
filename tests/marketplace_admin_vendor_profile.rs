@@ -5,6 +5,16 @@ use reqwest::StatusCode;
 use serde_json::{json, Value};
 use sqlx::Row;
 
+use tokio::sync::OnceCell;
+
+static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
+
+async fn app() -> common::TestApp {
+    common::get_or_init_app_fresh(&APP_CONFIG)
+        .await
+        .expect("Failed to start test app")
+}
+
 fn create_admin_jwt() -> String {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
@@ -18,7 +28,8 @@ fn create_admin_jwt() -> String {
     let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string());
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string());
 
-    format!("{}.{}.{}", header_b64, payload_b64, "test_signature")
+    let signature = common::sign_test_jwt(&header_b64, &payload_b64);
+    format!("{}.{}.{}", header_b64, payload_b64, signature)
 }
 
 async fn insert_template(pool: &sqlx::PgPool, creator_user_id: &str, slug: &str) -> String {
@@ -55,10 +66,7 @@ async fn fetch_template_detail(address: &str, template_id: &str, token: &str) ->
 
 #[tokio::test]
 async fn admin_detail_returns_default_vendor_profile_when_missing() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     let template_id = insert_template(
         &app.db_pool,
@@ -91,10 +99,7 @@ async fn admin_detail_returns_default_vendor_profile_when_missing() {
 
 #[tokio::test]
 async fn admin_detail_returns_vendor_profile_for_template_creator() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     let template_id = insert_template(
         &app.db_pool,
@@ -144,10 +149,7 @@ async fn admin_detail_returns_vendor_profile_for_template_creator() {
 
 #[tokio::test]
 async fn admin_patch_vendor_profile_creates_profile_when_missing() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     let token = create_admin_jwt();
     let template_id = insert_template(
@@ -198,10 +200,7 @@ async fn admin_patch_vendor_profile_creates_profile_when_missing() {
 
 #[tokio::test]
 async fn admin_patch_vendor_profile_preserves_unspecified_fields() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     let token = create_admin_jwt();
     let template_id = insert_template(
@@ -264,10 +263,7 @@ async fn admin_patch_vendor_profile_preserves_unspecified_fields() {
 
 #[tokio::test]
 async fn admin_patch_vendor_profile_rejects_invalid_status_values() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     let template_id = insert_template(
         &app.db_pool,
@@ -294,10 +290,7 @@ async fn admin_patch_vendor_profile_rejects_invalid_status_values() {
 
 #[tokio::test]
 async fn admin_patch_vendor_profile_requires_admin_role() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     let template_id = insert_template(
         &app.db_pool,
@@ -321,12 +314,10 @@ async fn admin_patch_vendor_profile_requires_admin_role() {
                     "email": "user@test.com",
                     "exp": (Utc::now() + Duration::minutes(30)).timestamp(),
                 });
-                format!(
-                    "{}.{}.{}",
-                    URL_SAFE_NO_PAD.encode(header.to_string()),
-                    URL_SAFE_NO_PAD.encode(payload.to_string()),
-                    "test_signature"
-                )
+                let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string());
+                let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string());
+                let signature = common::sign_test_jwt(&header_b64, &payload_b64);
+                format!("{}.{}.{}", header_b64, payload_b64, signature)
             }),
         )
         .json(&json!({

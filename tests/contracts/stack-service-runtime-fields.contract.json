@@ -1,0 +1,151 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "stack-service-runtime-fields",
+  "description": "Runtime settings of a service declared under `services:` in stacker.yml, and the Docker Compose they must produce on every path that renders a compose file from it.",
+  "_owner": "trydirect/config",
+  "_consumers": [
+    "stacker"
+  ],
+  "_notes": [
+    "A stacker.yml service reaches a compose file along four paths. cli_compose: the CLI generates the compose it deploys (local, and uploaded to the server for cloud/server targets). compose_sync: with deploy.compose_file set, the CLI writes the service into the author's own compose file. project_app: the CLI registers the service as a project app (POST /project), from which the server renders the compose for deploys started outside the CLI. agent_render: the project_app row the server keeps per app, from which the config renderer writes the compose the status-panel agent applies.",
+    "A field declared in stacker.yml must reach the compose on every path, or be refused before it is lost. A silently dropped field deploys a different stack from the one the author wrote: a one-shot job without restart: \"no\" restarts for ever, a GPU service without its device reservation runs on the CPU.",
+    "restart applies only when set. An unset restart keeps each path's existing default: unless-stopped from the CLI generator, always for a registered project app.",
+    "aliases are added on every network the service joins, so other services reach it by the alias whichever network they share with it. A service that names no network joins `default`, and carries its aliases there.",
+    "deploy.replicas: 0 keeps a service defined but not started. Together with profiles it lets one stack carry CPU and GPU variants of the same service: the CPU variant runs by default, the GPU variants only under their profile.",
+    "deploy.replicas and a device count may name a variable (${VAR}, ${VAR:-default}). When stacker.yml is read without filling variables - deploy validation, CLI commands that rewrite stacker.yml - the reference is kept and reaches the compose as written; filled, its value must be a whole number. A server-rendered compose (project_app, agent_render) only carries a known number.",
+    "Each case gives a service as written in stacker.yml (as JSON) and the compose service it must produce. The compose subset is what a consumer must contain; other keys (labels, networks without aliases, environment) are left to each path."
+  ],
+  "version": "v1",
+  "paths": [
+    "cli_compose",
+    "compose_sync",
+    "project_app",
+    "agent_render"
+  ],
+  "fields": {
+    "restart": {
+      "status": "new",
+      "type": "string",
+      "enum": ["no", "always", "unless-stopped", "on-failure"]
+    },
+    "entrypoint": {
+      "status": "new",
+      "type": "string"
+    },
+    "profiles": {
+      "status": "new",
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "aliases": {
+      "status": "new",
+      "type": "array",
+      "items": {"type": "string"},
+      "compose": "networks.<each network>.aliases"
+    },
+    "deploy.replicas": {
+      "status": "new",
+      "oneOf": [
+        {"type": "integer", "minimum": 0},
+        {"type": "string", "description": "${VAR} reference, e.g. ${OLLAMA_CPU_REPLICAS} or ${OLLAMA_CPU_REPLICAS:-1}"}
+      ]
+    },
+    "deploy.resources.reservations.devices": {
+      "status": "new",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "driver": {"type": "string"},
+          "count": {"oneOf": [{"type": "integer", "minimum": 1}, {"const": "all"}, {"type": "string", "description": "${VAR} reference"}]},
+          "device_ids": {"type": "array", "items": {"type": "string"}},
+          "capabilities": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+        },
+        "required": ["capabilities"]
+      }
+    },
+    "depends_on": {"status": "existing", "type": "array", "items": {"type": "string"}},
+    "healthcheck": {"status": "existing", "type": "object"},
+    "cap_add": {"status": "existing", "type": "array", "items": {"type": "string"}},
+    "cap_drop": {"status": "existing", "type": "array", "items": {"type": "string"}},
+    "devices": {"status": "existing", "type": "array", "items": {"type": "string"}}
+  },
+  "cases": [
+    {
+      "name": "one-shot job that must not restart",
+      "stacker_yml": {
+        "name": "model-pull",
+        "image": "ollama/ollama:0.40.4",
+        "restart": "no",
+        "entrypoint": "/bin/sh",
+        "command": "-c 'ollama pull nomic-embed-text'",
+        "depends_on": ["ollama-cpu"]
+      },
+      "compose": {
+        "restart": "no",
+        "entrypoint": "/bin/sh",
+        "depends_on": ["ollama-cpu"]
+      }
+    },
+    {
+      "name": "CPU variant: runs by default, answers as ollama",
+      "stacker_yml": {
+        "name": "ollama-cpu",
+        "image": "ollama/ollama:0.40.4",
+        "aliases": ["ollama"],
+        "deploy": {"replicas": 1}
+      },
+      "compose": {
+        "networks_aliases": ["ollama"],
+        "deploy": {"replicas": 1}
+      }
+    },
+    {
+      "name": "NVIDIA variant behind a profile",
+      "stacker_yml": {
+        "name": "ollama-gpu",
+        "image": "ollama/ollama:0.40.4",
+        "profiles": ["gpu-nvidia"],
+        "aliases": ["ollama"],
+        "deploy": {
+          "resources": {
+            "reservations": {
+              "devices": [{"driver": "nvidia", "count": 1, "capabilities": ["gpu"]}]
+            }
+          }
+        }
+      },
+      "compose": {
+        "profiles": ["gpu-nvidia"],
+        "networks_aliases": ["ollama"],
+        "deploy": {
+          "resources": {
+            "reservations": {
+              "devices": [{"driver": "nvidia", "count": 1, "capabilities": ["gpu"]}]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "AMD variant: devices, capabilities and healthcheck carried",
+      "stacker_yml": {
+        "name": "ollama-gpu-amd",
+        "image": "ollama/ollama:0.40.4-rocm",
+        "profiles": ["gpu-amd"],
+        "devices": ["/dev/kfd", "/dev/dri"],
+        "cap_add": ["SYS_PTRACE"],
+        "cap_drop": ["NET_RAW"],
+        "healthcheck": {"test": "CMD ollama list", "interval": "30s", "timeout": "5s", "retries": 3}
+      },
+      "compose": {
+        "profiles": ["gpu-amd"],
+        "devices": ["/dev/kfd", "/dev/dri"],
+        "cap_add": ["SYS_PTRACE"],
+        "cap_drop": ["NET_RAW"],
+        "healthcheck": {"interval": "30s", "timeout": "5s", "retries": 3}
+      }
+    }
+  ]
+}

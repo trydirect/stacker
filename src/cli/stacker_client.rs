@@ -113,6 +113,20 @@ pub struct ProjectAppInfo {
     pub parent_app_code: Option<String>,
 }
 
+/// App config as returned by `/project/{id}/apps/{code}/config`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfigInfo {
+    pub project_id: i32,
+    pub app_code: String,
+    pub environment: serde_json::Value,
+    pub ports: serde_json::Value,
+    pub volumes: serde_json::Value,
+    pub domain: Option<String>,
+    pub ssl_enabled: bool,
+    pub resources: serde_json::Value,
+    pub restart_policy: String,
+}
+
 /// Project app registration payload for `POST /project/{id}/apps`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectAppRegistrationRequest {
@@ -229,7 +243,10 @@ pub struct AuthorizePublicKeyResponse {
 // Marketplace response types
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Marketplace template summary as returned by `GET /api/templates`
+/// Marketplace template as returned by `GET /api/templates` (summary; list
+/// form) and `GET /api/templates/{slug}` (detail). In the list form
+/// `stack_definition` is absent; `get_marketplace_template` populates it from
+/// the detail response's `latest_version.stack_definition`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketplaceTemplate {
     pub id: Option<serde_json::Value>,
@@ -258,6 +275,8 @@ pub struct MarketplaceInstallResponse {
     pub template: MarketplaceTemplate,
     pub latest_version: serde_json::Value,
     pub deployment_id: Option<i32>,
+    #[serde(default)]
+    pub deployment_hash: Option<String>,
     /// Populated only when the template is billed per_install.
     #[serde(default)]
     pub authorization: Option<AuthorizationSummary>,
@@ -329,6 +348,16 @@ pub struct DeploymentStatusInfo {
     pub status: String,
     /// Human-readable status/error message from the deployment pipeline.
     pub status_message: Option<String>,
+    /// Stable machine-readable failure class (e.g. `port_conflict`), from
+    /// `available_options.error_kind` in the shared failure payload
+    /// (`config/shared-fixtures/deploy-failure-payload.json`). Absent on
+    /// deployments that predate the contract — consumers then fall back to
+    /// text detection over the status message.
+    #[serde(default)]
+    pub error_kind: Option<String>,
+    /// Remediation text for the classified failure.
+    #[serde(default)]
+    pub err_description: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -695,6 +724,46 @@ impl StackerClient {
         Ok(api.list.unwrap_or_default())
     }
 
+    /// Get app configuration (env, ports, volumes, domain).
+    pub async fn get_app_config(
+        &self,
+        project_id: i32,
+        app_code: &str,
+    ) -> Result<AppConfigInfo, CliError> {
+        let resp = self
+            .send_project_request(
+                reqwest::Method::GET,
+                &format!("/{}/apps/{}/config", project_id, app_code),
+                None,
+                "GET /project/{id}/apps/{code}/config",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: stacker_api_failure(
+                    &format!("GET /project/{project_id}/apps/{app_code}/config"),
+                    status,
+                    &body,
+                ),
+            });
+        }
+
+        let api: ApiResponse<AppConfigInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: self.target.clone(),
+            reason: "Stacker server did not return app config".to_string(),
+        })
+    }
+
     /// Create or update one project app target.
     pub async fn upsert_project_app(
         &self,
@@ -925,6 +994,47 @@ impl StackerClient {
         api.item.ok_or_else(|| CliError::DeployFailed {
             target: self.target.clone(),
             reason: "Stacker server updated project but returned no item".to_string(),
+        })
+    }
+
+    /// Synchronize project configuration without creating a deployment or
+    /// contacting the target server.
+    pub async fn sync_project(
+        &self,
+        project_id: i32,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value, CliError> {
+        let resp = self
+            .send_project_request(
+                reqwest::Method::PUT,
+                &format!("/{project_id}/sync"),
+                Some(&body),
+                "PUT /project/{id}/sync",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: stacker_api_failure(
+                    &format!("PUT /project/{project_id}/sync"),
+                    status,
+                    &body,
+                ),
+            });
+        }
+
+        let api: ApiResponse<serde_json::Value> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: self.target.clone(),
+            reason: "Stacker server synchronized project but returned no result".to_string(),
         })
     }
 
@@ -1882,13 +1992,26 @@ impl StackerClient {
         let Some(item) = api.item else {
             return Ok(None);
         };
+        // The server nests the full definition under `latest_version`
+        // (see marketplace `detail_handler`), while the summary fields live
+        // under `template`. Pull the definition across so callers that read
+        // `MarketplaceTemplate.stack_definition` (e.g. the service catalog)
+        // actually see it instead of always getting `None`.
+        let latest_stack_definition = item
+            .get("latest_version")
+            .and_then(|lv| lv.get("stack_definition"))
+            .filter(|sd| !sd.is_null())
+            .cloned();
         let template = item.get("template").cloned().unwrap_or(item);
-        serde_json::from_value(template)
-            .map(Some)
-            .map_err(|e| CliError::DeployFailed {
+        let mut template: MarketplaceTemplate =
+            serde_json::from_value(template).map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid marketplace template response: {}", e),
-            })
+            })?;
+        if template.stack_definition.is_none() {
+            template.stack_definition = latest_stack_definition;
+        }
+        Ok(Some(template))
     }
 
     /// Create a Stacker project from a marketplace template.
@@ -2670,6 +2793,48 @@ impl StackerClient {
     /// Fetch the snapshot for the most recently active agent in a project.
     /// Returns `(snapshot_json, deployment_hash)` so the caller can use the hash
     /// for subsequent agent commands.
+    /// Reissue the agent's bearer token for a deployment.
+    ///
+    /// The token itself is not returned: the agent's only source is Vault, and
+    /// it adopts the new value on its next refresh, about a minute later.
+    pub async fn rotate_agent_token(
+        &self,
+        deployment_hash: &str,
+    ) -> Result<serde_json::Value, CliError> {
+        let url = format!(
+            "{}/api/v1/agent/rotate-token/{}",
+            self.base_url, deployment_hash
+        );
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: stacker_api_failure(
+                    &format!("POST /api/v1/agent/rotate-token/{deployment_hash}"),
+                    status,
+                    &body,
+                ),
+            });
+        }
+
+        resp.json().await.map_err(|e| CliError::AgentCommandFailed {
+            command_id: String::new(),
+            error: format!("Invalid rotate-token response: {}", e),
+        })
+    }
+
     pub async fn agent_snapshot_by_project(
         &self,
         project_id: i32,
@@ -3024,6 +3189,65 @@ impl StackerClient {
 
         api.item
             .ok_or_else(|| CliError::ConfigValidation("Empty status response".to_string()))
+    }
+
+    /// Delete a pipe template. `DELETE /api/v1/pipes/templates/{id}`.
+    /// Idempotent from the caller's view: a 404 (already gone) is treated as
+    /// success so `pipe apply --prune` can be re-run safely.
+    pub async fn delete_pipe_template(&self, template_id: &str) -> Result<(), CliError> {
+        let url = format!("{}/api/v1/pipes/templates/{}", self.base_url, template_id);
+        let resp = self
+            .http
+            .delete(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to delete pipe template: {}", e))
+            })?;
+        if resp.status().is_success() || resp.status().as_u16() == 404 {
+            return Ok(());
+        }
+        let status_code = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        Err(CliError::ConfigValidation(
+            stacker_api_failure_with_message(
+                "Delete pipe template failed",
+                &format!("DELETE /api/v1/pipes/templates/{template_id}"),
+                status_code,
+                &body,
+                cli_debug_enabled(),
+            ),
+        ))
+    }
+
+    /// Delete a pipe instance. `DELETE /api/v1/pipes/instances/{id}`.
+    /// 404 → treated as success (idempotent).
+    pub async fn delete_pipe_instance(&self, instance_id: &str) -> Result<(), CliError> {
+        let url = format!("{}/api/v1/pipes/instances/{}", self.base_url, instance_id);
+        let resp = self
+            .http
+            .delete(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to delete pipe instance: {}", e))
+            })?;
+        if resp.status().is_success() || resp.status().as_u16() == 404 {
+            return Ok(());
+        }
+        let status_code = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        Err(CliError::ConfigValidation(
+            stacker_api_failure_with_message(
+                "Delete pipe instance failed",
+                &format!("DELETE /api/v1/pipes/instances/{instance_id}"),
+                status_code,
+                &body,
+                cli_debug_enabled(),
+            ),
+        ))
     }
 
     /// List pipe templates visible to the current user.
@@ -3395,6 +3619,41 @@ impl StackerClient {
 
         Ok(())
     }
+
+    /// Resubmit an approved/rejected/needs_changes template with a new version.
+    pub async fn marketplace_resubmit(
+        &self,
+        template_id: &str,
+        body: serde_json::Value,
+    ) -> Result<(), CliError> {
+        let url = format!("{}/api/templates/{}/resubmit", self.base_url, template_id);
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                CliError::MarketplaceFailed(format!("Stacker server unreachable: {}", e))
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::MarketplaceFailed(
+                stacker_api_failure_with_message(
+                    "Resubmit failed",
+                    &format!("POST /api/templates/{template_id}/resubmit"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -3567,6 +3826,26 @@ fn parse_port_mapping(port_str: &str) -> (String, String) {
     }
 }
 
+/// The `shared_ports` entry for a port mapping from stacker.yml.
+///
+/// A host IP must reach the server: `127.0.0.1:5432:5432` is host-local, and
+/// the server reads the IP from `container_port` to keep the port out of the
+/// firewall and to publish it on 127.0.0.1 only. Sending just `5432` opened a
+/// database bound to loopback to the internet.
+fn port_mapping_json(port_str: &str) -> serde_json::Value {
+    let (host, container) = parse_port_mapping(port_str);
+    let mapping = port_str.split('/').next().unwrap_or(port_str);
+    let container_port = if mapping.matches(':').count() >= 2 {
+        mapping.to_string()
+    } else {
+        container
+    };
+    serde_json::json!({
+        "host_port": host,
+        "container_port": container_port,
+    })
+}
+
 /// Parse a volume mapping string like "./dist:/usr/share/nginx/html" or "data:/var/lib/db"
 /// into (host_path, container_path, read_only) tuple.
 /// Handles optional `:ro` / `:rw` suffix (e.g. "/var/run/docker.sock:/var/run/docker.sock:ro").
@@ -3588,17 +3867,8 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
     let (dockerhub_user, dockerhub_name, dockerhub_tag) = parse_docker_image(&svc.image);
     let id = generate_app_id();
 
-    let shared_ports: Vec<serde_json::Value> = svc
-        .ports
-        .iter()
-        .map(|p| {
-            let (host, container) = parse_port_mapping(p);
-            serde_json::json!({
-                "host_port": host,
-                "container_port": container,
-            })
-        })
-        .collect();
+    let shared_ports: Vec<serde_json::Value> =
+        svc.ports.iter().map(|p| port_mapping_json(p)).collect();
 
     let volumes: Vec<serde_json::Value> = svc
         .volumes
@@ -3630,7 +3900,7 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
         "code": svc.name.to_lowercase(),
         "type": "web",
         "dockerhub_name": dockerhub_name,
-        "restart": "always",
+        "restart": svc.runtime.restart.map_or("always", |r| r.as_str()),
         "custom": true,
         "shared_ports": shared_ports,
         "volumes": volumes,
@@ -3639,6 +3909,26 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
     });
 
     let obj = app.as_object_mut().unwrap();
+    // Everything else the service declares reaches the server's compose too
+    // (shared-fixtures/api-contracts/stack-service-runtime-fields.json).
+    for (key, values) in [
+        ("depends_on", &svc.depends_on),
+        ("cap_add", &svc.cap_add),
+        ("cap_drop", &svc.cap_drop),
+        ("devices", &svc.devices),
+        ("profiles", &svc.runtime.profiles),
+        ("aliases", &svc.runtime.aliases),
+    ] {
+        if !values.is_empty() {
+            obj.insert(key.to_string(), serde_json::json!(values));
+        }
+    }
+    if let Some(ref entrypoint) = svc.runtime.entrypoint {
+        obj.insert("entrypoint".to_string(), serde_json::json!(entrypoint));
+    }
+    if let Some(ref deploy) = svc.runtime.deploy {
+        obj.insert("deploy".to_string(), serde_json::json!(deploy));
+    }
     if let Some(user) = dockerhub_user {
         obj.insert("dockerhub_user".to_string(), serde_json::json!(user));
     }
@@ -3665,6 +3955,29 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
 
 fn is_platform_managed_service(svc: &ServiceDefinition) -> bool {
     crate::project_app::is_platform_managed_app_identity(&svc.name, Some(&svc.image))
+}
+
+/// Cloud/server deploys go through the Stacker server API, which pulls a
+/// pre-built image on the remote host — it never receives the local build
+/// context. `app_source_to_app_json` silently drops the app from the deploy
+/// payload when `app.image` is unset, which previously produced a "deployed"
+/// project missing its main container. Call this before `build_project_body`
+/// so a build-only `app:` section (declared via `dockerfile:`/`build:`, no
+/// `image:`) fails fast with an actionable message instead of deploying
+/// everything except the app.
+pub fn require_app_image_for_remote_deploy(config: &StackerConfig) -> Result<(), CliError> {
+    let app = &config.app;
+    let app_declared = config.app_present || app.dockerfile.is_some() || app.build.is_some();
+    if app_declared && app.image.is_none() {
+        return Err(CliError::ConfigValidation(
+            "app.image is required for cloud/server deploys: the Stacker server pulls a \
+             pre-built image on the remote host and cannot build from app.dockerfile/app.build \
+             locally. Push your image to a registry and set `app.image`, or use \
+             `deploy.target: local` to build and run it on this machine."
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Convert the `app` section of stacker.yml into the Stacker server's app JSON
@@ -3695,13 +4008,7 @@ fn app_source_to_app_json(
             .app
             .ports
             .iter()
-            .map(|p| {
-                let (host, container) = parse_port_mapping(p);
-                serde_json::json!({
-                    "host_port": host,
-                    "container_port": container,
-                })
-            })
+            .map(|p| port_mapping_json(p))
             .collect()
     };
 
@@ -3822,6 +4129,21 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
             continue;
         }
         service_apps.push(service_to_app_json(svc, &network_ids));
+    }
+
+    // `project_app.config_contract` is persisted by a separate server-side
+    // accessor. Include the full contract on each generated app so `stacker
+    // sync` does not silently discard the policy from stacker.yml.
+    if let Ok(config_contract) = serde_json::to_value(&config.config_contract) {
+        let has_services = config_contract
+            .get("services")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|services| !services.is_empty());
+        if has_services {
+            for app in web_apps.iter_mut().chain(service_apps.iter_mut()) {
+                app["config_contract"] = config_contract.clone();
+            }
+        }
     }
 
     serde_json::json!({
@@ -4057,9 +4379,9 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
         }
     }
 
-    // When proxy type is Nginx or NginxProxyManager, inject "nginx_proxy_manager"
-    // into extended_features so the install service's Ansible playbook runs the
-    // nginx_proxy_manager role (collect_roles checks selected_features).
+    // Inject the proxy role into extended_features so the install service's
+    // Ansible playbook runs the corresponding role (collect_roles checks
+    // selected_features).
     match config.proxy.proxy_type {
         crate::cli::config_parser::ProxyType::Nginx
         | crate::cli::config_parser::ProxyType::NginxProxyManager => {
@@ -4075,7 +4397,72 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
                 }
             }
         }
+        crate::cli::config_parser::ProxyType::Traefik => {
+            if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
+                let features = stack_obj
+                    .entry("extended_features")
+                    .or_insert_with(|| serde_json::json!([]));
+                if let Some(arr) = features.as_array_mut() {
+                    let role = serde_json::Value::String("traefik".to_string());
+                    if !arr.contains(&role) {
+                        arr.push(role);
+                    }
+                }
+            }
+        }
+        crate::cli::config_parser::ProxyType::Caddy => {
+            if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
+                let features = stack_obj
+                    .entry("extended_features")
+                    .or_insert_with(|| serde_json::json!([]));
+                if let Some(arr) = features.as_array_mut() {
+                    let role = serde_json::Value::String("caddy".to_string());
+                    if !arr.contains(&role) {
+                        arr.push(role);
+                    }
+                }
+            }
+        }
         _ => {}
+    }
+
+    // Proxy routing domains (proxy.domains) for platform-managed proxies that
+    // route via a config file — caddy (Caddyfile) and nginx (conf.d). Forwarded
+    // to the Install Service, which passes them to the proxy role as the
+    // `stacker_proxy_domains` extra var. (Traefik routes via container labels
+    // generated into the compose, so it does not need this.)
+    // A domain that resolved to nothing (an unset `${commonDomain}`, say) cannot
+    // become a routing entry: the proxy has no name to match on, and NPM refuses
+    // the request outright, failing the whole deploy over a route nobody asked
+    // for. Drop the blanks and route whatever is left.
+    let routed_domains: Vec<&crate::cli::config_parser::DomainConfig> = config
+        .proxy
+        .domains
+        .iter()
+        .filter(|d| !d.domain.trim().is_empty())
+        .collect();
+    if !routed_domains.is_empty() {
+        let domains: Vec<serde_json::Value> = routed_domains
+            .iter()
+            .map(|d| {
+                let ssl = match d.ssl {
+                    crate::cli::config_parser::SslMode::Auto => "auto",
+                    crate::cli::config_parser::SslMode::Manual => "manual",
+                    crate::cli::config_parser::SslMode::Off => "off",
+                };
+                serde_json::json!({
+                    "domain": d.domain,
+                    "upstream": d.upstream,
+                    "ssl": ssl,
+                })
+            })
+            .collect();
+        if let Some(obj) = form.as_object_mut() {
+            obj.insert(
+                "proxy_domains".to_string(),
+                serde_json::Value::Array(domains),
+            );
+        }
     }
 
     // When monitoring.status_panel is enabled, inject the "statuspanel" role into
@@ -4121,6 +4508,15 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
             );
         }
     }
+
+    // deploy.cloud.ssh_key is NOT sent in the deploy form. It used to be passed
+    // as server.additional_public_keys and newline-joined into
+    // server.public_key, which is single-valued downstream (one provider
+    // ssh_key object, one TF_VAR_public_key_content) — the list collapsed onto
+    // one authorized_keys line and only the first key stayed usable. The key is
+    // now authorized after deploy, one call per key, via
+    // POST /server/{id}/ssh-key/authorize-public-key. See
+    // DeployCommand::authorize_configured_user_key.
 
     if let Some(cloud_cfg) = config.deploy.cloud.as_ref() {
         if !cloud_cfg.public_ports.is_empty() {
@@ -4576,6 +4972,7 @@ mod tests {
                 status_panel: true,
                 healthcheck: None,
                 metrics: None,
+                alerts: None,
             })
             .build()
             .unwrap();
@@ -4639,6 +5036,7 @@ mod tests {
                 status_panel: true,
                 healthcheck: None,
                 metrics: None,
+                alerts: None,
             })
             .build()
             .unwrap();
@@ -4718,6 +5116,125 @@ mod tests {
     }
 
     #[test]
+    fn test_build_deploy_form_serializes_proxy_domains() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::Caddy,
+                auto_detect: true,
+                domains: vec![
+                    crate::cli::config_parser::DomainConfig {
+                        domain: "app.example.com".to_string(),
+                        ssl: crate::cli::config_parser::SslMode::Auto,
+                        upstream: "app:8080".to_string(),
+                    },
+                    crate::cli::config_parser::DomainConfig {
+                        domain: "api.example.com".to_string(),
+                        ssl: crate::cli::config_parser::SslMode::Off,
+                        upstream: "app:9000".to_string(),
+                    },
+                ],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let form = build_deploy_form(&config);
+        let domains = form["proxy_domains"]
+            .as_array()
+            .expect("proxy_domains should be present in the deploy form");
+        assert_eq!(domains.len(), 2);
+        assert_eq!(domains[0]["domain"], "app.example.com");
+        assert_eq!(domains[0]["upstream"], "app:8080");
+        assert_eq!(domains[0]["ssl"], "auto");
+        assert_eq!(domains[1]["domain"], "api.example.com");
+        assert_eq!(domains[1]["ssl"], "off");
+    }
+
+    #[test]
+    fn test_build_deploy_form_drops_blank_proxy_domains() {
+        // `${commonDomain}` that resolved to nothing leaves an entry whose domain
+        // is empty. It reached the NPM role, which answered with a censored 4xx
+        // and took the whole deploy down (install 4068). A route with no name is
+        // not a route — it must never leave the CLI.
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::NginxProxyManager,
+                auto_detect: true,
+                domains: vec![
+                    crate::cli::config_parser::DomainConfig {
+                        domain: String::new(),
+                        ssl: crate::cli::config_parser::SslMode::Auto,
+                        upstream: "app:8080".to_string(),
+                    },
+                    crate::cli::config_parser::DomainConfig {
+                        domain: "   ".to_string(),
+                        ssl: crate::cli::config_parser::SslMode::Auto,
+                        upstream: "app:8080".to_string(),
+                    },
+                    crate::cli::config_parser::DomainConfig {
+                        domain: "app.example.com".to_string(),
+                        ssl: crate::cli::config_parser::SslMode::Auto,
+                        upstream: "app:8080".to_string(),
+                    },
+                ],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let form = build_deploy_form(&config);
+        let domains = form["proxy_domains"]
+            .as_array()
+            .expect("the one named domain should still be routed");
+        assert_eq!(domains.len(), 1);
+        assert_eq!(domains[0]["domain"], "app.example.com");
+    }
+
+    #[test]
+    fn test_build_deploy_form_omits_proxy_domains_when_every_domain_is_blank() {
+        // Nothing left to route: the key must be absent rather than an empty
+        // array, so the Install Service treats it as "no proxy domains".
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::NginxProxyManager,
+                auto_detect: true,
+                domains: vec![crate::cli::config_parser::DomainConfig {
+                    domain: String::new(),
+                    ssl: crate::cli::config_parser::SslMode::Auto,
+                    upstream: "app:8080".to_string(),
+                }],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let form = build_deploy_form(&config);
+        assert!(
+            form.get("proxy_domains").is_none(),
+            "an all-blank domain list must not produce a proxy_domains key"
+        );
+    }
+
+    #[test]
+    fn test_build_deploy_form_omits_proxy_domains_when_none() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .build()
+            .unwrap();
+        let form = build_deploy_form(&config);
+        assert!(
+            form.get("proxy_domains").is_none(),
+            "proxy_domains must be absent when no proxy domains are declared"
+        );
+    }
+
+    #[test]
     fn test_build_project_body_with_nginx_proxy_does_not_add_npm_project_feature() {
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
@@ -4736,6 +5253,68 @@ mod tests {
             features.iter().all(|f| f["code"] != "nginx_proxy_manager"),
             "feature array should not contain nginx_proxy_manager project app: {:?}",
             features
+        );
+    }
+
+    /// Regression for the same defect the submit path had: the contract is
+    /// serialized here too, so a kind missing from `Serialize` silently drops
+    /// out of `project_app.config_contract` on every `stacker sync`.
+    #[test]
+    fn build_project_body_carries_volume_declarations() {
+        let mut config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("volume-project")
+            .app_image("nginx:1.27")
+            .build()
+            .expect("config should build");
+        config.config_contract = serde_json::from_value(serde_json::json!({
+            "services": {
+                "ollama": {
+                    "volumes": { "app_ollama": { "mutability": "fixed" } }
+                }
+            }
+        }))
+        .expect("config contract should deserialize");
+
+        let body = build_project_body(&config);
+        assert_eq!(
+            body["custom"]["web"][0]["config_contract"]["services"]["ollama"]["volumes"]
+                ["app_ollama"]["mutability"],
+            "fixed",
+            "the volume declaration must survive into the synced app"
+        );
+    }
+
+    #[test]
+    fn build_project_body_includes_config_contract_on_apps() {
+        let mut config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("contract-project")
+            .app_image("nginx:1.27")
+            .build()
+            .expect("config should build");
+        config.config_contract = serde_json::from_value(serde_json::json!({
+            "services": {
+                "app": {
+                    "fields": {
+                        "JWT_SECRET": {
+                            "mutability": "generated",
+                            "type": "hex",
+                            "length": 32
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("config contract should deserialize");
+
+        let body = build_project_body(&config);
+        let contract = &body["custom"]["web"][0]["config_contract"];
+        assert_eq!(
+            contract["services"]["app"]["fields"]["JWT_SECRET"]["mutability"],
+            "generated"
+        );
+        assert_eq!(
+            contract["services"]["app"]["fields"]["JWT_SECRET"]["type"],
+            "hex"
         );
     }
 
@@ -4819,6 +5398,7 @@ mod tests {
     #[test]
     fn test_build_project_body_skips_declared_npm_service_when_proxy_is_managed() {
         let npm_service = ServiceDefinition {
+            runtime: Default::default(),
             name: "nginx_proxy_manager".to_string(),
             image: "jc21/nginx-proxy-manager:latest".to_string(),
             ports: vec![
@@ -4831,8 +5411,14 @@ mod tests {
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let redis_service = ServiceDefinition {
+            runtime: Default::default(),
             name: "redis".to_string(),
             image: "redis:7-alpine".to_string(),
             ports: vec![],
@@ -4841,6 +5427,11 @@ mod tests {
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
@@ -4867,6 +5458,7 @@ mod tests {
     #[test]
     fn test_build_project_body_skips_platform_managed_services_even_without_proxy() {
         let npm_service = ServiceDefinition {
+            runtime: Default::default(),
             name: "nginx_proxy_manager".to_string(),
             image: "jc21/nginx-proxy-manager:latest".to_string(),
             ports: vec![
@@ -4879,8 +5471,14 @@ mod tests {
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let statuspanel_service = ServiceDefinition {
+            runtime: Default::default(),
             name: "statuspanel".to_string(),
             image: "trydirect/status:latest".to_string(),
             ports: vec!["5000:5000".to_string()],
@@ -4889,8 +5487,14 @@ mod tests {
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let smtp_service = ServiceDefinition {
+            runtime: Default::default(),
             name: "smtp".to_string(),
             image: "trydirect/smtp:latest".to_string(),
             ports: vec!["127.0.0.1:1025:25".to_string()],
@@ -4899,6 +5503,11 @@ mod tests {
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
@@ -4946,6 +5555,7 @@ mod tests {
     #[test]
     fn test_scn_001_stacker_yml_service_serializes_as_service_target() {
         let upload_service = ServiceDefinition {
+            runtime: Default::default(),
             name: "upload".to_string(),
             image: "ghcr.io/example/upload:1.0".to_string(),
             ports: vec!["8081:8080".to_string()],
@@ -4954,6 +5564,11 @@ mod tests {
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("Device API")
@@ -4989,6 +5604,7 @@ mod tests {
                 status_panel: true,
                 healthcheck: None,
                 metrics: None,
+                alerts: None,
             })
             .build()
             .unwrap();
@@ -5015,6 +5631,74 @@ mod tests {
             features.is_empty(),
             "feature array should be empty when no proxy configured"
         );
+    }
+
+    // Regression test for GH issue #218: `app` service silently missing from
+    // the remote docker-compose.yml for cloud/server deploys. Root cause: a
+    // build-only `app:` section (declared via `dockerfile:`/`build:`, no
+    // `image:`) makes `app_source_to_app_json` return `None`, so
+    // `build_project_body` produces an empty `web` array and the server
+    // deploys everything except the app — silently. This must now be caught
+    // up front instead.
+    #[test]
+    fn test_build_project_body_drops_app_without_image() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("goaccess")
+            .app_dockerfile("Dockerfile")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .build()
+            .unwrap();
+
+        let body = build_project_body(&config);
+        assert!(
+            body["custom"]["web"].as_array().unwrap().is_empty(),
+            "documents the bug: app section has no image, so `web` stays empty \
+             even though app.dockerfile declares a real app"
+        );
+    }
+
+    #[test]
+    fn test_require_app_image_for_remote_deploy_rejects_dockerfile_only_app() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("goaccess")
+            .app_dockerfile("Dockerfile")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .build()
+            .unwrap();
+
+        let err = require_app_image_for_remote_deploy(&config)
+            .expect_err("build-only app (no image) must be rejected before remote deploy");
+        match err {
+            CliError::ConfigValidation(msg) => {
+                assert!(msg.contains("app.image"), "got: {msg}");
+            }
+            other => panic!("expected ConfigValidation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_require_app_image_for_remote_deploy_accepts_image_app() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("goaccess")
+            .app_image("nginx:alpine")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .build()
+            .unwrap();
+
+        require_app_image_for_remote_deploy(&config)
+            .expect("app with an explicit image should be allowed to deploy remotely");
+    }
+
+    #[test]
+    fn test_require_app_image_for_remote_deploy_accepts_services_only_stack() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("services-only")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .build()
+            .unwrap();
+
+        require_app_image_for_remote_deploy(&config)
+            .expect("a stack with no declared app: section should not be rejected");
     }
 
     #[test]
@@ -5171,6 +5855,83 @@ mod tests {
                 .and_then(|meta| meta.get("deployment_hash")),
             Some(&serde_json::json!("hash-123"))
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_marketplace_template_pulls_stack_definition_from_latest_version() {
+        let server = MockServer::start().await;
+
+        // Mirror the server's `detail_handler` shape: summary fields under
+        // `template`, full definition under `latest_version.stack_definition`.
+        Mock::given(method("GET"))
+            .and(path("/api/templates/n8n"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "_status": "OK",
+                "item": {
+                    "template": {
+                        "id": "abc-123",
+                        "slug": "n8n",
+                        "name": "n8n",
+                        "status": "approved"
+                    },
+                    "latest_version": {
+                        "definition_format": "yaml",
+                        "stack_definition": "version: '3.8'\nservices:\n  n8n:\n    image: n8nio/n8n:latest"
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = StackerClient::new(&server.uri(), "token");
+        let template = client
+            .get_marketplace_template("n8n")
+            .await
+            .expect("request should succeed")
+            .expect("template should be present");
+
+        assert_eq!(template.slug, "n8n");
+        assert_eq!(
+            template.stack_definition,
+            Some(serde_json::json!(
+                "version: '3.8'\nservices:\n  n8n:\n    image: n8nio/n8n:latest"
+            )),
+            "stack_definition must be lifted out of latest_version",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_marketplace_template_leaves_definition_none_when_absent() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/templates/bare"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "_status": "OK",
+                "item": {
+                    "template": {
+                        "id": "def-456",
+                        "slug": "bare",
+                        "name": "bare",
+                        "status": "approved"
+                    },
+                    "latest_version": {
+                        "definition_format": "yaml",
+                        "stack_definition": null
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = StackerClient::new(&server.uri(), "token");
+        let template = client
+            .get_marketplace_template("bare")
+            .await
+            .expect("request should succeed")
+            .expect("template should be present");
+
+        assert_eq!(template.stack_definition, None);
     }
 
     #[tokio::test]

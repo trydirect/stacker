@@ -7,8 +7,8 @@ use uuid::Uuid;
 
 use super::connector::UserServiceConnector;
 use super::types::{
-    AuthorizationHandle, BillingCapability, CategoryInfo, PlanDefinition, ProductInfo,
-    StackResponse, UserPlanInfo, UserProfile,
+    AuthorizationHandle, BillingCapability, CategoryInfo, ManagedBillingEvent, ManagedUsageReport,
+    PlanDefinition, ProductInfo, StackResponse, UserPlanInfo, UserProfile,
 };
 use super::utils::is_plan_higher_tier;
 
@@ -740,6 +740,85 @@ impl UserServiceConnector for UserServiceClient {
             .post(&url)
             .header("Authorization", format!("Bearer {}", auth_token))
             .json(&payload)
+            .send()
+            .await?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let text = resp.text().await.unwrap_or_default();
+        Err(map_billing_error_status(status.as_u16(), &text))
+    }
+
+    async fn daily_capture_install_charge(
+        &self,
+        auth_token: &str,
+        authorization_id: &str,
+        amount_minor: i64,
+        deployment_hash: &str,
+    ) -> Result<AuthorizationHandle, ConnectorError> {
+        let url = format!(
+            "{}/api/1.0/marketplace/billing/daily-capture",
+            self.base_url
+        );
+        let payload = serde_json::json!({
+            "payment_intent_id": authorization_id,
+            "amount_minor": amount_minor,
+            "deployment_hash": deployment_hash,
+        });
+        let resp = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", auth_token))
+            .json(&payload)
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await.map_err(ConnectorError::from)?;
+        if !status.is_success() {
+            return Err(map_billing_error_status(status.as_u16(), &text));
+        }
+        serde_json::from_str::<AuthorizationHandle>(&text)
+            .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
+    }
+
+    async fn report_managed_usage(
+        &self,
+        service_token: &str,
+        usage: &ManagedUsageReport,
+    ) -> Result<(), ConnectorError> {
+        self.post_managed_billing("usage", service_token, usage)
+            .await
+    }
+
+    async fn record_managed_billing_event(
+        &self,
+        service_token: &str,
+        event: &ManagedBillingEvent,
+    ) -> Result<(), ConnectorError> {
+        self.post_managed_billing("event", service_token, event)
+            .await
+    }
+}
+
+impl UserServiceClient {
+    /// POST to `/api/1.0/marketplace/billing/managed/<path>` with the service
+    /// token; non-2xx responses map like the other billing calls.
+    async fn post_managed_billing<T: Serialize>(
+        &self,
+        path: &str,
+        service_token: &str,
+        body: &T,
+    ) -> Result<(), ConnectorError> {
+        let url = format!(
+            "{}/api/1.0/marketplace/billing/managed/{}",
+            self.base_url, path
+        );
+        let resp = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", service_token))
+            .json(body)
             .send()
             .await?;
         let status = resp.status();

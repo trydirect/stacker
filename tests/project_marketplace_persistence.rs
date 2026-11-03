@@ -5,6 +5,16 @@ use sqlx::Row;
 use stacker::{db, models};
 use uuid::Uuid;
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TestApp {
+    common::get_or_init_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 async fn insert_template(pool: &sqlx::PgPool, user_id: &str) -> Uuid {
     sqlx::query(
         r#"INSERT INTO stack_template (

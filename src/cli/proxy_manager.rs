@@ -150,6 +150,7 @@ const PROXY_SIGNATURES: &[(&str, ProxyType)] = &[
     ("jc21/nginx-proxy-manager", ProxyType::NginxProxyManager),
     ("nginx-proxy-manager", ProxyType::NginxProxyManager),
     ("traefik", ProxyType::Traefik),
+    ("caddy", ProxyType::Caddy),
     ("nginx", ProxyType::Nginx),
 ];
 
@@ -373,6 +374,36 @@ pub fn generate_nginx_configs(
     Ok(configs)
 }
 
+/// Generate a Caddyfile site block for a single domain configuration.
+///
+/// Unlike nginx, Caddy issues/renews TLS certificates itself (automatic
+/// HTTPS) — no separate 80→443 redirect block or certbot paths to manage.
+/// `SslMode::Manual` points at certs mounted into the Caddy container;
+/// `SslMode::Off` prefixes the site address with `http://` to disable
+/// automatic HTTPS for that domain.
+pub fn generate_caddy_server_block(domain: &DomainConfig) -> Result<String, CliError> {
+    validate_domain(&domain.domain)?;
+    validate_upstream(&domain.upstream)?;
+
+    let site_address = match domain.ssl {
+        SslMode::Off => format!("http://{}", domain.domain),
+        SslMode::Auto | SslMode::Manual => domain.domain.clone(),
+    };
+
+    let mut block = String::new();
+    block.push_str(&format!("{} {{\n", site_address));
+    if domain.ssl == SslMode::Manual {
+        block.push_str(&format!(
+            "    tls /etc/caddy/certs/{d}/cert.pem /etc/caddy/certs/{d}/key.pem\n",
+            d = domain.domain
+        ));
+    }
+    block.push_str(&format!("    reverse_proxy {}\n", domain.upstream));
+    block.push_str("}\n");
+
+    Ok(block)
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Tests
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -444,6 +475,16 @@ mod tests {
         }
     }
 
+    fn caddy_container() -> ContainerInfo {
+        ContainerInfo {
+            id: "jkl012".to_string(),
+            name: "caddy".to_string(),
+            image: "caddy:2-alpine".to_string(),
+            ports: vec![80, 443],
+            status: "Up 1 hour".to_string(),
+        }
+    }
+
     fn app_container() -> ContainerInfo {
         ContainerInfo {
             id: "xyz999".to_string(),
@@ -481,6 +522,14 @@ mod tests {
         let detection = detect_proxy(&runtime).unwrap();
         assert_eq!(detection.proxy_type, ProxyType::Traefik);
         assert_eq!(detection.container_name.as_deref(), Some("traefik"));
+    }
+
+    #[test]
+    fn test_detect_proxy_caddy_from_containers() {
+        let runtime = MockContainerRuntime::available_with(vec![caddy_container()]);
+        let detection = detect_proxy(&runtime).unwrap();
+        assert_eq!(detection.proxy_type, ProxyType::Caddy);
+        assert_eq!(detection.container_name.as_deref(), Some("caddy"));
     }
 
     #[test]
@@ -563,6 +612,48 @@ mod tests {
         let block = generate_nginx_server_block(&domain).unwrap();
         assert!(block.contains("proxy_pass http://app:8080;"));
         assert!(!block.contains("proxy_pass http://http://app:8080;"));
+    }
+
+    // ── caddy config generation tests ───────────────
+
+    #[test]
+    fn test_generate_caddy_server_block_ssl_auto() {
+        let domain = DomainConfig {
+            domain: "app.example.com".to_string(),
+            ssl: SslMode::Auto,
+            upstream: "app:3000".to_string(),
+        };
+        let block = generate_caddy_server_block(&domain).unwrap();
+        // Automatic HTTPS: bare domain as the site address, no scheme, no
+        // manual cert/redirect plumbing like the nginx block needs.
+        assert!(block.starts_with("app.example.com {"));
+        assert!(block.contains("reverse_proxy app:3000"));
+        assert!(!block.contains("tls "));
+    }
+
+    #[test]
+    fn test_generate_caddy_server_block_ssl_manual() {
+        let domain = DomainConfig {
+            domain: "app.example.com".to_string(),
+            ssl: SslMode::Manual,
+            upstream: "app:3000".to_string(),
+        };
+        let block = generate_caddy_server_block(&domain).unwrap();
+        assert!(block.contains("tls /etc/caddy/certs/app.example.com/cert.pem /etc/caddy/certs/app.example.com/key.pem"));
+        assert!(block.contains("reverse_proxy app:3000"));
+    }
+
+    #[test]
+    fn test_generate_caddy_server_block_no_ssl() {
+        let domain = DomainConfig {
+            domain: "app.local".to_string(),
+            ssl: SslMode::Off,
+            upstream: "app:8080".to_string(),
+        };
+        let block = generate_caddy_server_block(&domain).unwrap();
+        assert!(block.starts_with("http://app.local {"));
+        assert!(block.contains("reverse_proxy app:8080"));
+        assert!(!block.contains("tls "));
     }
 
     #[test]

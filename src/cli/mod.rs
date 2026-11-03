@@ -16,6 +16,7 @@ pub mod config_parser;
 pub mod config_promote;
 pub mod credentials;
 pub mod debug;
+pub mod deployment_context;
 pub mod deployment_lock;
 pub mod detector;
 pub mod error;
@@ -27,6 +28,8 @@ pub mod install_runner;
 pub mod local_compose;
 pub mod local_pipe_store;
 pub mod ml_field_matcher;
+pub mod notify;
+pub mod pipe_apply;
 pub mod progress;
 pub mod proxy_manager;
 pub mod runtime;
@@ -34,3 +37,13 @@ pub mod service_catalog;
 pub mod service_import;
 pub mod stacker_client;
 pub mod user_config;
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::Mutex;
+
+    /// Serializes tests that mutate process-global env vars — `cargo test`
+    /// runs lib tests in parallel threads and unsynchronized `set_var` /
+    /// `remove_var` racing across tests causes flaky failures.
+    pub static ENV_LOCK: Mutex<()> = Mutex::new(());
+}

@@ -74,6 +74,46 @@ struct ProgressMessage {
     /// SSH port (default 22)
     #[serde(default)]
     ssh_port: Option<i32>,
+    /// Typed failure classification published by the install service on
+    /// terminal failures (`report_on_fail`). Declared explicitly — serde
+    /// silently drops undeclared fields, which is why this record never
+    /// reached `deployment.metadata` before. Shape is pinned by
+    /// `config/shared-fixtures/deploy-failure-payload.json`.
+    #[serde(default)]
+    available_options: Option<serde_json::Value>,
+}
+
+/// Stable machine-readable id of the failure class, extracted from
+/// `available_options.error_kind`. `None` when the producer predates the
+/// shared contract or the message isn't a classified failure.
+fn progress_error_kind(msg: &ProgressMessage) -> Option<String> {
+    msg.available_options
+        .as_ref()?
+        .get("error_kind")?
+        .as_str()
+        .map(ToOwned::to_owned)
+        .filter(|kind| !kind.is_empty())
+}
+
+/// Human remediation text for the failure, from `available_options.err_description`.
+fn progress_err_description(msg: &ProgressMessage) -> Option<String> {
+    msg.available_options
+        .as_ref()?
+        .get("err_description")?
+        .as_str()
+        .map(ToOwned::to_owned)
+        .filter(|text| !text.is_empty())
+}
+
+/// Select the identifier that unambiguously names the deployment.
+///
+/// Install-service progress messages may contain both fields. `deploy_id` is
+/// an older compatibility field and has historically been populated with a
+/// project/deployment number depending on the producer. A deployment hash is
+/// generated for this deploy and is the only safe source of identity when it
+/// is present.
+fn progress_deployment_identifier(msg: &ProgressMessage) -> Option<&str> {
+    msg.deployment_hash.as_deref().or(msg.deploy_id.as_deref())
 }
 
 impl ListenCommand {
@@ -89,6 +129,107 @@ fn progress_message_server_ip(msg: &ProgressMessage) -> Option<String> {
         .filter(|ip| !ip.is_empty())
         .map(ToOwned::to_owned)
         .or_else(|| extract_ipv4_from_text(&msg.message))
+}
+
+/// Reconcile `server.srv_ip` directly from the cloud provider.
+///
+/// The listener normally learns the IP from the install service's progress
+/// message (`progress_message_server_ip`). When provisioning succeeds but the
+/// install service ends the deploy `paused`/`failed` *without* reporting the IP,
+/// that path leaves `srv_ip` null forever — the reported "server created, no SSH
+/// access" bug. Here we go straight to the provider (Hetzner assigns a public
+/// IPv4 at creation) and persist it, so the record isn't orphaned.
+///
+/// Best-effort: only acts on servers that have a cloud but no IP yet, only for
+/// Hetzner today, and logs (never propagates) any provider error.
+async fn reconcile_server_ip_from_provider(pool: &PgPool, project_id: i32) {
+    let servers = match db::server::fetch_by_project(pool, project_id).await {
+        Ok(servers) => servers,
+        Err(e) => {
+            eprintln!(
+                "IP reconcile: could not load servers for project {}: {}",
+                project_id, e
+            );
+            return;
+        }
+    };
+
+    for server in servers {
+        let needs_ip = server
+            .srv_ip
+            .as_deref()
+            .map(str::trim)
+            .map_or(true, str::is_empty);
+        if !needs_ip {
+            continue;
+        }
+        let Some(cloud_id) = server.cloud_id else {
+            continue;
+        };
+        let Some(name) = server
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        else {
+            continue;
+        };
+
+        let cloud = match db::cloud::fetch(pool, cloud_id).await {
+            Ok(Some(cloud)) => cloud,
+            Ok(None) => continue,
+            Err(e) => {
+                eprintln!("IP reconcile: could not load cloud {}: {}", cloud_id, e);
+                continue;
+            }
+        };
+        // Only Hetzner is supported for provider-side IP lookup today.
+        if normalize_provider(&cloud.provider) != Some("htz") {
+            continue;
+        }
+        let cloud = if cloud.save_token == Some(true) {
+            CloudForm::decode_model(cloud, true)
+        } else {
+            cloud
+        };
+        let Some(token) = cloud
+            .cloud_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        else {
+            continue;
+        };
+
+        match crate::connectors::hetzner::fetch_server_ipv4_by_name(
+            &crate::connectors::hetzner::api_base_url(),
+            token,
+            name,
+        )
+        .await
+        {
+            Ok(Some(ip)) => {
+                match db::server::update_srv_ip(pool, project_id, &ip, server.ssh_port).await {
+                    Ok(s) => println!(
+                        "IP reconcile: set server {} srv_ip={} from provider for project {}",
+                        s.id, ip, project_id
+                    ),
+                    Err(e) => eprintln!(
+                        "IP reconcile: failed to persist srv_ip for project {}: {}",
+                        project_id, e
+                    ),
+                }
+            }
+            Ok(None) => println!(
+                "IP reconcile: provider has no IP yet for server '{}' (project {})",
+                name, project_id
+            ),
+            Err(e) => eprintln!(
+                "IP reconcile: provider lookup failed for server '{}' (project {}): {}",
+                name, project_id, e
+            ),
+        }
+    }
 }
 
 fn extract_public_ports(metadata: &Value) -> Vec<String> {
@@ -363,32 +504,26 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                                 } else {
                                     msg.status.clone()
                                 };
-                                // Try to find deployment by deploy_id or deployment_hash
-                                let deployment_result = if let Some(ref deploy_id_str) =
-                                    msg.deploy_id
+                                // Prefer deployment_hash when both identifiers are present.
+                                // deploy_id is retained only as a compatibility fallback.
+                                let deployment_result = if let Some(identifier) =
+                                    progress_deployment_identifier(&msg)
                                 {
-                                    // Try deploy_id first (numeric ID)
-                                    if let Ok(id) = deploy_id_str.parse::<i32>() {
-                                        deployment::fetch(db_pool.get_ref(), id).await
-                                    } else if let Some(ref hash) = msg.deployment_hash {
-                                        // deploy_id might be the hash string
+                                    if msg.deployment_hash.is_some() {
                                         deployment::fetch_by_deployment_hash(
                                             db_pool.get_ref(),
-                                            hash,
+                                            identifier,
                                         )
                                         .await
+                                    } else if let Ok(id) = identifier.parse::<i32>() {
+                                        deployment::fetch(db_pool.get_ref(), id).await
                                     } else {
-                                        // Try deploy_id as hash
                                         deployment::fetch_by_deployment_hash(
                                             db_pool.get_ref(),
-                                            deploy_id_str,
+                                            identifier,
                                         )
                                         .await
                                     }
-                                } else if let Some(ref hash) = msg.deployment_hash {
-                                    // Use deployment_hash
-                                    deployment::fetch_by_deployment_hash(db_pool.get_ref(), hash)
-                                        .await
                                 } else {
                                     // No identifier available
                                     println!("No deploy_id or deployment_hash in message");
@@ -420,17 +555,37 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                                             }
                                         }
 
+                                        // Persist the typed failure classification alongside
+                                        // the message; `stacker deploy` turns these into the
+                                        // exit code and the remediation hint (shared contract:
+                                        // config/shared-fixtures/deploy-failure-payload.json).
+                                        if let Some(options) = msg.available_options.as_ref() {
+                                            if options.is_object() {
+                                                if let Some(obj) = row.metadata.as_object_mut() {
+                                                    obj.insert(
+                                                        "available_options".to_string(),
+                                                        options.clone(),
+                                                    );
+                                                } else {
+                                                    row.metadata = serde_json::json!({
+                                                        "available_options": options
+                                                    });
+                                                }
+                                            }
+                                        }
+
                                         // Update server.srv_ip whenever the progress
                                         // message carries an IP from the cloud provisioner.
                                         // Previously this was gated on status == "completed",
                                         // but the IP is already known after Terraform succeeds
                                         // even when the subsequent Ansible step fails (status
                                         // "paused" / "failed").
-                                        if let Some(ip) = progress_message_server_ip(&msg) {
+                                        let ip_from_message = progress_message_server_ip(&msg);
+                                        if let Some(ip) = &ip_from_message {
                                             match db::server::update_srv_ip(
                                                 db_pool.get_ref(),
                                                 row.project_id,
-                                                &ip,
+                                                ip,
                                                 msg.ssh_port,
                                             )
                                             .await
@@ -444,6 +599,24 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                                                     row.project_id, e
                                                 ),
                                             }
+                                        }
+
+                                        // Fallback: the install service provisioned a server but
+                                        // never reported its IP (deployment ends paused/failed with
+                                        // srv_ip null — the reported root cause of "no SSH access").
+                                        // Reconcile the IP straight from the cloud provider so the
+                                        // record isn't left orphaned forever.
+                                        if ip_from_message.is_none()
+                                            && matches!(
+                                                row.status.as_str(),
+                                                "paused" | "failed" | "error" | "completed"
+                                            )
+                                        {
+                                            reconcile_server_ip_from_provider(
+                                                db_pool.get_ref(),
+                                                row.project_id,
+                                            )
+                                            .await;
                                         }
 
                                         let is_completed = row.status == "completed";
@@ -543,7 +716,42 @@ mod tests {
             progress: "90".to_string(),
             srv_ip: srv_ip.map(ToOwned::to_owned),
             ssh_port: Some(22),
+            available_options: None,
         }
+    }
+
+    /// The shared failure payload (`config/shared-fixtures/deploy-failure-payload.json`)
+    /// must survive deserialization — before `available_options` was declared,
+    /// serde silently dropped it and the classification never reached the CLI.
+    #[test]
+    fn progress_message_keeps_available_options() {
+        let payload =
+            include_str!("../../../../tests/contracts/deploy-failure-payload.contract.json");
+        let example = serde_json::from_str::<serde_json::Value>(payload)
+            .expect("contract JSON is valid")["example"]
+            .clone();
+
+        let msg: ProgressMessage =
+            serde_json::from_value(example).expect("shared failure payload must deserialize");
+
+        let kind = progress_error_kind(&msg);
+        assert_eq!(kind.as_deref(), Some("port_conflict"));
+        assert_eq!(
+            progress_err_description(&msg).as_deref(),
+            Some(concat!(
+                "A port this stack needs is already in use on the target host (often by ",
+                "another already-deployed stack, e.g. statuspanel). Free the port or change ",
+                "it in stacker.yml, then redeploy."
+            ))
+        );
+    }
+
+    #[test]
+    fn progress_message_without_available_options_is_unclassified() {
+        let msg = progress_message("something failed", None);
+
+        assert_eq!(progress_error_kind(&msg), None);
+        assert_eq!(progress_err_description(&msg), None);
     }
 
     #[test]
@@ -564,5 +772,20 @@ mod tests {
             progress_message_server_ip(&msg),
             Some("178.104.222.170".to_string())
         );
+    }
+
+    #[test]
+    fn progress_uses_hash_before_legacy_deploy_id() {
+        let msg = progress_message("deploying", None);
+
+        assert_eq!(progress_deployment_identifier(&msg), Some("hash"));
+    }
+
+    #[test]
+    fn progress_falls_back_to_deploy_id_without_hash() {
+        let mut msg = progress_message("deploying", None);
+        msg.deployment_hash = None;
+
+        assert_eq!(progress_deployment_identifier(&msg), Some("174"));
     }
 }

@@ -27,24 +27,10 @@ enum Commands {
         #[command(subcommand)]
         command: AppMqCommands,
     },
-    Agent {
-        #[command(subcommand)]
-        command: AgentCommands,
-    },
     /// Stacker CLI — deploy apps from a stacker.yml config
     Stacker {
         #[command(subcommand)]
         command: StackerCommands,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum AgentCommands {
-    RotateToken {
-        #[arg(long)]
-        deployment_hash: String,
-        #[arg(long)]
-        new_token: String,
     },
 }
 
@@ -77,6 +63,14 @@ enum DebugCommands {
     Dockerhub {
         #[arg(long)]
         json: String,
+    },
+    /// Apply category_mapping.csv: merge duplicate categories, re-file
+    /// templates, rewrite tags
+    Recategorize {
+        #[arg(long)]
+        map: String,
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -187,8 +181,12 @@ enum StackerCommands {
     Status {
         #[arg(long)]
         json: bool,
+        /// Watch for changes (refresh periodically); notifies on completion by default
         #[arg(long)]
         watch: bool,
+        /// Send a terminal/desktop notification when deployment reaches a terminal state (on by default in --watch mode)
+        #[arg(long)]
+        notify: bool,
     },
     /// Tear down the deployed stack
     Destroy {
@@ -236,6 +234,9 @@ enum StackerConfigCommands {
     Validate {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
+        /// Deploy target to validate against (local, cloud, server).
+        #[arg(long)]
+        target: Option<String>,
     },
     /// Show resolved configuration
     Show {
@@ -406,21 +407,13 @@ fn get_command(
             DebugCommands::Dockerhub { json } => Ok(Box::new(
                 stacker::console::commands::debug::DockerhubCommand::new(json),
             )),
+            DebugCommands::Recategorize { map, dry_run } => Ok(Box::new(
+                stacker::console::commands::debug::RecategorizeCommand::new(map, dry_run),
+            )),
         },
         Commands::MQ { command } => match command {
             AppMqCommands::Listen {} => Ok(Box::new(
                 stacker::console::commands::mq::ListenCommand::new(),
-            )),
-        },
-        Commands::Agent { command } => match command {
-            AgentCommands::RotateToken {
-                deployment_hash,
-                new_token,
-            } => Ok(Box::new(
-                stacker::console::commands::agent::RotateTokenCommand::new(
-                    deployment_hash,
-                    new_token,
-                ),
             )),
         },
         Commands::Stacker { command } => match command {
@@ -499,8 +492,8 @@ fn get_command(
                     service, follow, tail, since,
                 ),
             )),
-            StackerCommands::Status { json, watch } => Ok(Box::new(
-                stacker::console::commands::cli::status::StatusCommand::new(json, watch),
+            StackerCommands::Status { json, watch, notify } => Ok(Box::new(
+                stacker::console::commands::cli::status::StatusCommand::new(json, watch, notify),
             )),
             StackerCommands::Destroy { volumes, confirm } => Ok(Box::new(
                 stacker::console::commands::cli::destroy::DestroyCommand::new(volumes, confirm),
@@ -509,8 +502,10 @@ fn get_command(
                 stacker::console::commands::cli::rollback::RollbackCommand::new(version, confirm),
             )),
             StackerCommands::Config { command: cfg_cmd } => match cfg_cmd {
-                StackerConfigCommands::Validate { file } => Ok(Box::new(
-                    stacker::console::commands::cli::config::ConfigValidateCommand::new(file),
+                StackerConfigCommands::Validate { file, target } => Ok(Box::new(
+                    stacker::console::commands::cli::config::ConfigValidateCommand::new(
+                        file, target,
+                    ),
                 )),
                 StackerConfigCommands::Show { file, resolved } => Ok(Box::new(
                     stacker::console::commands::cli::config::ConfigShowCommand::new(file, resolved),

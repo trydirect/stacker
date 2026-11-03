@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT (\n            1\n            + (SELECT COUNT(*) FROM project_member WHERE project_id = $1)\n            + (SELECT COUNT(*) FROM project_invitation\n               WHERE project_id = $1 AND status = 'pending' AND expires_at > NOW())\n        )::BIGINT AS \"taken!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "taken!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "7f242bf2ee7cf0a592afed4c430777ad56fbc0399a3cb43a5c6a2154aba6a0d3"
+}

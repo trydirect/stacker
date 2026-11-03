@@ -1,0 +1,13 @@
+version: "3.8"
+services:
+  web:
+    image: nginx:latest
+    environment:
+      API_KEY: "abcd1234efgh5678ijklmnop"
+      DB_PASSWORD: "supersecretpassword123"
+    ports:
+      - "80:80"
+  db:
+    image: mysql:latest
+    environment:
+      MYSQL_ROOT_PASSWORD: "root12345changeme"

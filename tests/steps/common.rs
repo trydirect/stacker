@@ -9,6 +9,10 @@ use std::net::TcpListener;
 use std::time::Duration;
 use tokio::time::sleep;
 
+/// Shared service key the BDD app is configured with; steps calling a
+/// service-to-service endpoint must send it as `X-Internal-Key`.
+pub const BDD_INTERNAL_KEY: &str = "bdd-internal-key";
+
 pub struct BddTestApp {
     pub address: String,
     pub db_pool: PgPool,
@@ -22,11 +26,22 @@ const POSTGRES_STARTUP_RETRY_DELAY: Duration = Duration::from_secs(1);
 pub async fn spawn_bdd_app() -> Option<BddTestApp> {
     let mut configuration = get_configuration().expect("Failed to get configuration");
 
+    // Disable DockerHub connector in tests to skip Redis connection timeout
+    if let Some(ref mut cfg) = configuration.connectors.dockerhub_service {
+        cfg.enabled = false;
+    }
+
     // Start mock auth server (token-aware: "user-b" → User B, anything else → User A)
     let auth_listener =
         TcpListener::bind("127.0.0.1:0").expect("Failed to bind port for BDD auth server");
     configuration.auth_url = format!(
         "http://127.0.0.1:{}/me",
+        auth_listener.local_addr().unwrap().port()
+    );
+    // The same mock answers the User Service plan lookup: sharing a project
+    // needs the owner on the Team plan. Every other User Service path is 404.
+    configuration.user_service_url = format!(
+        "http://127.0.0.1:{}",
         auth_listener.local_addr().unwrap().port()
     );
     let _ = tokio::spawn(mock_auth_server(auth_listener));
@@ -49,14 +64,30 @@ pub async fn spawn_bdd_app() -> Option<BddTestApp> {
         configuration.database.password = password;
     }
 
+    // A Vault that actually answers. Agent registration awaits its write to
+    // Vault before returning the token, so pointing at the default dead
+    // 127.0.0.1:8200 makes every registration scenario fail with a 500. It used
+    // to pass only because the write was a detached `spawn` whose failure
+    // nothing observed.
+    // Leaked deliberately: dropping a `MockServer` stops it, and the app holds
+    // its URI for the whole run. `spawn_bdd_app` is called once per process
+    // (`APP_INIT_ASYNC`), so this is a singleton, not a growing leak.
+    let vault_server: &'static wiremock::MockServer =
+        Box::leak(Box::new(wiremock::MockServer::start().await));
+    crate::vault_kv_mock::mount_vault_kv_mock(vault_server).await;
+    configuration.vault.address = vault_server.uri();
+    configuration.vault.token = "bdd-vault-token".to_string();
+    configuration.vault.api_prefix = "v1".to_string();
+
     // Unique database per BDD run
     configuration.database.database_name = format!("bdd_{}", uuid::Uuid::new_v4());
 
     // Increase client limit for BDD tests (multiple scenarios create clients)
     configuration.max_clients_number = 100;
 
-    // Set internal services access key for audit ingest tests
-    std::env::set_var("INTERNAL_SERVICES_ACCESS_KEY", "bdd-internal-key");
+    // Shared key for the service-to-service endpoints (audit ingest, agent
+    // registration). `require_internal_key` fails closed without it.
+    std::env::set_var("INTERNAL_SERVICES_ACCESS_KEY", BDD_INTERNAL_KEY);
 
     let connection_pool = match configure_database_with_retry(&configuration.database).await {
         Ok(pool) => pool,
@@ -92,7 +123,15 @@ async fn configure_database(config: &DatabaseSettings) -> Result<PgPool, sqlx::E
     connection
         .execute(format!(r#"CREATE DATABASE "{}""#, config.database_name).as_str())
         .await?;
-    let pool = PgPool::connect(&config.connection_string()).await?;
+    crate::test_databases::drop_at_exit(
+        &config.connection_string_without_db(),
+        &config.database_name,
+    );
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(32)
+        .acquire_timeout(std::time::Duration::from_secs(120))
+        .connect(&config.connection_string())
+        .await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
     Ok(pool)
 }
@@ -180,13 +219,36 @@ async fn mock_auth(req: actix_web::HttpRequest) -> actix_web::Result<impl Respon
     Ok(web::Json(forms::user::UserForm { user }))
 }
 
+/// User A is on the Team plan, User B on the free plan.
+#[get("/oauth_server/api/me")]
+async fn mock_plan(req: actix_web::HttpRequest) -> actix_web::Result<impl Responder> {
+    let is_user_b = req
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .contains("user-b");
+    let code = if is_user_b {
+        "plan-free-periodically"
+    } else {
+        "plan-individual-monthly"
+    };
+    Ok(web::Json(
+        serde_json::json!({ "user": { "plan": { "code": code } } }),
+    ))
+}
+
 async fn mock_auth_server(listener: TcpListener) {
-    HttpServer::new(|| App::new().service(web::scope("/me").service(mock_auth)))
-        .listen(listener)
-        .unwrap()
-        .run()
-        .await
-        .unwrap();
+    HttpServer::new(|| {
+        App::new()
+            .service(web::scope("/me").service(mock_auth))
+            .service(mock_plan)
+    })
+    .listen(listener)
+    .unwrap()
+    .run()
+    .await
+    .unwrap();
 }
 
 // ─── Test data helpers ───────────────────────────────────────────

@@ -75,7 +75,7 @@ impl CallableTrait for ResolveCommand {
                     })?
             } else {
                 // Find project first, then get its latest deployment
-                let project = ctx.client.find_project_by_name(&project_name).await?;
+                let project = ctx.client.find_project(&project_name).await?;
                 let project = project.ok_or_else(|| CliError::DeployFailed {
                     target: DeployTarget::Cloud,
                     reason: format!("Project '{}' not found on server.", project_name),
@@ -86,7 +86,12 @@ impl CallableTrait for ResolveCommand {
                     .await?
                     .ok_or_else(|| CliError::DeployFailed {
                         target: DeployTarget::Cloud,
-                        reason: format!("No deployments found for project '{}'.", project_name),
+                        reason: format!(
+                            "No deployments found for project '{}'. \
+                             Use 'stacker status' to find the deployment hash, then: \
+                             stacker resolve -y --deployment=<hash>",
+                            project_name
+                        ),
                     })?
             };
 

@@ -10,10 +10,10 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::connectors::user_service::UserServiceDeploymentResolver;
 use crate::db;
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
+use crate::mcp::tools::OwnedDeploymentResolver;
 use crate::models::{Command, CommandPriority};
 use crate::services::{DeploymentIdentifier, DeploymentResolver};
 
@@ -52,11 +52,8 @@ async fn wait_for_command_result(
     Ok(None)
 }
 
-fn create_resolver(context: &ToolContext) -> UserServiceDeploymentResolver {
-    UserServiceDeploymentResolver::from_context(
-        &context.settings.user_service_url,
-        context.user.access_token.as_deref(),
-    )
+fn create_resolver(context: &ToolContext) -> OwnedDeploymentResolver<'_> {
+    OwnedDeploymentResolver::new(context)
 }
 
 /// Enqueue a command, wait for result, return structured JSON.

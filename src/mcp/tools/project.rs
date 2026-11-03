@@ -145,7 +145,9 @@ impl ToolHandler for GetProjectTool {
             .map_err(|e| {
                 tracing::error!("Failed to fetch project {}: {}", params.id, e);
                 format!("Database error: {}", e)
-            })?;
+            })?
+            .filter(|project| project.user_id == context.user.id)
+            .ok_or_else(|| "Project not found".to_string())?;
 
         let result =
             serde_json::to_string(&project).map_err(|e| format!("Serialization error: {}", e))?;

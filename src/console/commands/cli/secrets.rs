@@ -1474,6 +1474,7 @@ mod tests {
 
     fn service_definition(name: &str) -> ServiceDefinition {
         ServiceDefinition {
+            runtime: Default::default(),
             name: name.to_string(),
             image: "optimum/syncopia-upload:latest".to_string(),
             ports: vec!["8000:8000".to_string()],
@@ -1485,6 +1486,11 @@ mod tests {
             depends_on: vec!["postgres".to_string()],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         }
     }
 
@@ -1522,6 +1528,7 @@ mod tests {
             proxy: Default::default(),
             deploy: Default::default(),
             install: Default::default(),
+            marketplace: Default::default(),
             environments: Default::default(),
             ai: Default::default(),
             monitoring: Default::default(),
@@ -1529,6 +1536,7 @@ mod tests {
             env_file: None,
             env: Default::default(),
             config_contract: Default::default(),
+            pipes: Vec::new(),
             origin: Default::default(),
             app_present: false,
         };

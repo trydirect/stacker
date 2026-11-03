@@ -23,10 +23,10 @@
 - [install — Marketplace Install Inputs](#install)
 - [environments — Named Environments](#environments)
 - [volumes — Named Volumes](#volumes)
-- [config_contract — Service Config Contracts](#config_contract)
 - [ai — AI Assistant](#ai)
 - [monitoring — Health & Metrics](#monitoring)
-  - [status_panel](#monitoringstatus_panel) · [healthcheck](#monitoringhealthcheck) · [metrics](#monitoringmetrics)
+  - [status_panel](#monitoringstatus_panel) · [healthcheck](#monitoringhealthcheck) · [metrics](#monitoringmetrics) · [alerts](#monitoringalerts)
+- [pipes — Declarative Pipes (IaC)](#pipes)
 - [hooks — Lifecycle Scripts](#hooks)
 - [env / env_file — Environment Variables](#env--env_file)
 - [Environment Variable Interpolation](#environment-variable-interpolation)
@@ -62,7 +62,10 @@ cat stacker.yml
 # 4. Deploy locally
 stacker deploy --target local
 
-# 5. Check status
+# 5. Synchronize project configuration without deploying
+stacker sync --verify
+
+# 6. Check status
 stacker status
 ```
 
@@ -407,8 +410,16 @@ Additional containers deployed alongside your main application — databases, ca
 | `environment` | `map<string, string>` | no | `{}` | Environment variables |
 | `volumes` | `string[]` | no | `[]` | Volume mounts (`"name:/path"` or `"./host:/container"`) |
 | `depends_on` | `string[]` | no | `[]` | Services this depends on (started first) |
-| `command` | `string` | no | — | Override the container's default command / entrypoint |
+| `command` | `string` | no | — | Override the container's default command |
+| `entrypoint` | `string` | no | — | Override the image's entrypoint |
 | `healthcheck` | `object` | no | — | Docker health check for this service |
+| `restart` | `string` | no | `unless-stopped` | `no`, `always`, `unless-stopped` or `on-failure` |
+| `cap_add`, `cap_drop` | `string[]` | no | `[]` | Linux capabilities to add or drop |
+| `devices` | `string[]` | no | `[]` | Host devices to map (`/dev/dri`) |
+| `profiles` | `string[]` | no | `[]` | Start the service only when one of these compose profiles is active |
+| `aliases` | `string[]` | no | `[]` | Other names the service answers to, on every network it joins |
+| `deploy.replicas` | `integer` | no | `1` | `0` keeps the service defined but not started |
+| `deploy.resources.reservations.devices` | `object[]` | no | `[]` | Devices to reserve, e.g. a GPU |
 
 #### `services[].command`
 
@@ -427,10 +438,28 @@ Docker health check configuration. Mapped directly to the compose `healthcheck:`
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `test` | `string` | — | Health check command (e.g. `"CMD pg_isready -U postgres"`) |
+| `test` | `string` | — | Health check command. See the forms below. |
 | `interval` | `string` | `30s` | Time between checks |
 | `timeout` | `string` | `30s` | Maximum time per check |
 | `retries` | `string \| integer` | `3` | Number of failures before unhealthy |
+
+**Forms of `test`.** Three spellings, all accepted:
+
+| What you write | What runs |
+|----------------|-----------|
+| `pg_isready -U postgres` | the command, through a shell |
+| `CMD-SHELL pg_isready -U postgres` | the same — the prefix is stripped and the list form emitted |
+| `CMD pg_isready -U postgres` | the command directly, without a shell |
+
+`CMD` executes the arguments as-is, so it cannot use `&&`, `|`, `$` or
+redirection; a `CMD` command containing any of those is emitted as `CMD-SHELL`
+instead, which is what the author meant.
+
+Write the prefix or leave it out, whichever reads better — stacker converts to
+the list form Docker expects either way. Writing the prefix inside a plain
+compose file would not work: Docker wraps a bare string in `CMD-SHELL` itself,
+so the prefix would be wrapped a second time and the container would try to run
+a program named `CMD-SHELL`.
 
 ```yaml
 services:
@@ -478,6 +507,45 @@ services:
 
 > **Note:** Stacker detects port conflicts across services during validation.
 > If two services bind the same host port, you'll get a warning (`W001`).
+
+#### One-shot jobs, profiles and GPUs
+
+`restart: "no"` keeps a job that runs once from being restarted after it
+finishes. `profiles`, `aliases` and `deploy` let one stack carry a CPU and a GPU
+variant of the same service: the CPU variant runs by default, the GPU variant
+only under its profile, and both answer to the same name.
+
+```yaml
+services:
+  - name: ollama-cpu
+    image: ollama/ollama:0.40.4
+    aliases: [ollama]
+    deploy:
+      replicas: ${OLLAMA_CPU_REPLICAS}   # 0 on a GPU machine
+
+  - name: ollama-gpu
+    image: ollama/ollama:0.40.4
+    profiles: [gpu-nvidia]
+    aliases: [ollama]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  - name: model-pull
+    image: ollama/ollama:0.40.4
+    restart: "no"
+    entrypoint: /bin/sh
+    command: -c "ollama pull nomic-embed-text"
+```
+
+On a GPU machine set `OLLAMA_CPU_REPLICAS=0` and `COMPOSE_PROFILES=gpu-nvidia`.
+These settings reach every compose stacker writes from the service: the one the
+CLI deploys, the author's own compose (`deploy.compose_file`), the one the
+server renders from the project, and the one the status-panel agent applies.
 
 ---
 
@@ -825,6 +893,102 @@ environments:
 
 ---
 
+## `config_contract`
+
+Declares who controls each of a service's inputs when somebody else installs the
+stack. Read at publish time and on the marketplace install path; ignored by a
+plain local deploy.
+
+Without it, the literal values that are correct for *your* deployment — a
+`JWT_SECRET`, a database password — are copied verbatim into every buyer's
+install, so every buyer and you share one set of credentials.
+
+```yaml
+config_contract:
+  services:
+    my-service:                 # must match a service name, or `app`
+      fields:
+        DATABASE_URL:
+          mutability: fixed     # your value ships as-is
+        LOG_LEVEL:
+          mutability: editable  # your value is a default the buyer may override
+        LICENSE_KEY:
+          mutability: provided  # the buyer must supply it; yours is never shipped
+        SECRET_KEY:
+          mutability: generated # a fresh value per install; the buyer never types it
+          type: alphanumeric
+          length: 32
+          display: password
+```
+
+| Key | Applies to | Meaning |
+|---|---|---|
+| `mutability` | every field | `fixed`, `editable`, `provided` or `generated` — see above |
+| `required` | every field | whether a value must resolve at all. Default `true` |
+| `type` | `generated` | `hex`, `base64`, `alphanumeric`, `uuid`, `enum`, `derived_jwt` |
+| `length` / `min_length` | `generated` | exact or minimum length |
+| `values` | `enum` | the allowed set |
+| `signing_key`, `claims`, `alg` | `derived_jwt` | `"service.FIELD"` to sign with, the claims, and one of `HS256`/`HS384`/`HS512` |
+| `display` | any field | UI hint — `boolean`, `string`, `number`, `password`. Independent of `type` |
+
+Publishing to the marketplace is refused until every secret-shaped field carries
+a `generated` or `provided` policy.
+
+**Shorthand.** Three plain lists are still accepted and mean
+`fixed`+required, `fixed`+optional, and `generated` respectively:
+
+```yaml
+config_contract:
+  services:
+    my-service:
+      required: [DATABASE_URL]
+      optional: [LOG_LEVEL]
+      secret:   [SECRET_KEY]
+```
+
+Mixing is fine; an explicit `fields:` entry wins over a list mentioning the same
+name.
+
+### Volume policy in `config_contract`
+
+A baked marketplace image is cloned for every buyer, and a volume that travels
+inside it arrives identical for all of them. Declare which ones should:
+
+```yaml
+config_contract:
+  services:
+    stackpilot-ollama:
+      volumes:
+        stackpilot_ollama: { mutability: fixed }
+```
+
+`fixed` — the content ships inside the image. `generated` — the volume is dropped
+before the snapshot so the buyer's machine initialises it from scratch. **An
+undeclared volume behaves as `generated`**: forgetting a declaration costs a
+rebuild, whereas the opposite default would hand the author's credentials to
+every buyer.
+
+`provided` and `editable` describe who types a *value*; a volume holds state and
+has no value to type, so both are rejected.
+
+**Declare `fixed` only for volumes holding data the service does not derive from
+a secret** — model weights, embeddings, a content cache. The distinction is not
+whether the service *has* a secret but whether it *persists* something built from
+one:
+
+| Service | Volume holds | Declare |
+|---|---|---|
+| Ollama | model weights | `fixed` |
+| Qdrant | collections; the API key is read from the environment at every start | `fixed` |
+| Postgres | the role password as `SCRAM-SHA-256$4096:…` | `generated` |
+| n8n | its own encryption key inside `database.sqlite` | `generated` |
+
+Nothing distinguishes these automatically: the secret is not present verbatim in
+any of the four volumes, so searching for it finds nothing in the safe and the
+unsafe case alike. The author knows how their service treats the secret; the
+platform cannot compute it. Get this wrong in the unsafe direction and every
+buyer inherits the author's credential.
+
 ## `volumes`
 
 *Optional* · `map<string, object>` · Default: `{}`
@@ -840,25 +1004,6 @@ volumes:
 ```
 
 Named volumes referenced in `app.volumes` or `services[].volumes` but not listed here are created implicitly by Docker Compose. Use this section when you need to configure the volume driver or share a volume name explicitly across services.
-
----
-
-## `config_contract`
-
-*Optional* · `object` · Default: none
-
-Declares service-level configuration contracts — metadata consumed by the TryDirect Install Service and marketplace pipeline to validate and pre-populate service inputs. Not used during local deploys.
-
-```yaml
-config_contract:
-  services:
-    my-service:
-      required_env:
-        - DATABASE_URL
-        - SECRET_KEY
-```
-
-> This section is primarily written by `stacker install` and the marketplace generator. You rarely need to set it by hand.
 
 ---
 
@@ -978,6 +1123,103 @@ monitoring:
   metrics:
     enabled: true
     telegraf: true
+```
+
+### `monitoring.alerts`
+
+*Optional* · `object` · Default: none · *Added in 0.3.2*
+
+Container-down alarm for the `stacker monitor` command. When configured,
+`stacker monitor` polls the deployment's live container health and fires an
+alert on transitions: once when a container stops running, and once when
+everything recovers (edge-triggered — no repeat spam while a container stays
+down).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `interval` | `int` | `60` | Poll interval in seconds (overridable with `--interval`) |
+| `on_recovery` | `bool` | `true` | Also notify when containers recover to healthy |
+| `target` | `object` | — (required) | Where to deliver the alert (see below) |
+
+**`target`** is one of:
+
+| Shape | Delivery |
+|-------|----------|
+| `{ terminal: true }` | Terminal + desktop notification (OS notification, terminal bell, stderr) |
+| `{ url: "<webhook>", method: POST }` | HTTP webhook (ntfy, Slack, …); `method` defaults to `POST` |
+| `{ pipe: <name> }` | Run a declared pipe (deferred — see notes) |
+
+```yaml
+monitoring:
+  status_panel: true
+  alerts:
+    interval: 30
+    on_recovery: true
+    target:
+      terminal: true
+      # or a webhook:
+      # url: "https://ntfy.example.com/alerts"
+      # method: POST
+      # or a pipe:
+      # pipe: oncall-notify
+```
+
+Run it with `stacker monitor` (loops every `interval`) or `stacker monitor --once`
+(single check — ideal for cron). Alert state is persisted to
+`.stacker/monitor.state`, so one-shot `--once` runs stay edge-triggered.
+
+> The `pipe:` target is accepted but not yet dispatched (a follow-up); use a
+> `terminal` or `url` target today.
+
+---
+
+## `pipes`
+
+*Optional* · `array` · Default: none · *Added in 0.3.2*
+
+Declaratively-defined data pipes, reconciled with the deployment by
+`stacker pipe diff` (preview) and `stacker pipe apply` (create / `--prune`).
+Each entry mirrors the `stacker pipe create` flags, so pipes become
+committable, reviewable, and reproducible.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | `string` | — (required) | Unique pipe name (identity for reconcile) |
+| `source` | `string` | — (required) | Source app code (container/service) |
+| `target` | `string` | — (required) | Target app code |
+| `source_endpoint` | `string` | — (required) | `"METHOD /path"` on the source |
+| `target_endpoint` | `string` | — (required) | `"METHOD /path"` on the target |
+| `source_fields` | `[string]` | `[]` | Source field names for mapping |
+| `target_fields` | `[string]` | `[]` | Target field names for mapping |
+| `trigger` | `string` | `webhook` | `manual` \| `webhook` \| `poll` |
+| `poll_interval` | `int` | — | Poll interval (seconds) when `trigger: poll` |
+| `retry` | `int` | — | Max delivery retries |
+| `retry_backoff_ms` | `int` | — | Base retry backoff (ms) |
+| `retry_backoff_max_ms` | `int` | — | Max retry backoff (ms) |
+| `on_failure` | `string` | — | Pipe (by name) to run when delivery fails |
+| `on_success` | `string` | — | Pipe (by name) to run after success |
+
+```yaml
+pipes:
+  - name: apprise-to-ntfy
+    source: app
+    target: ntfy
+    source_endpoint: "GET /status"
+    target_endpoint: "POST /pipetest"
+    source_fields: [message]
+    target_fields: [message]
+    trigger: manual
+    retry: 5
+    on_failure: oncall-notify
+```
+
+Workflow:
+
+```bash
+stacker pipe diff             # preview: create / update / unchanged / orphan
+stacker pipe apply            # create declared-but-missing pipes (idempotent)
+stacker pipe apply --prune    # also delete deployed pipes not in stacker.yml
+stacker pipe apply --dry-run  # show the plan without applying
 ```
 
 ---
@@ -1345,6 +1587,10 @@ Stacker validates your configuration both syntactically (YAML structure) and sem
 | `E002` | Server deployment requires `deploy.server.host` | `deploy.server.host` |
 | `E003` | Custom app type requires `app.image` or `app.dockerfile` | `app` |
 | `E004` | `deploy.environment` references an undefined environment key | `deploy.environment` / `environments` |
+| `E005` | `deploy.default_target` missing or naming an undefined target; invalid `deploy.cloud.public_ports` entry | `deploy.default_target` / `deploy.cloud.public_ports` |
+| `E006` | A `deploy.targets` profile defines both `server` and `cloud` | `deploy.targets.<name>` |
+| `E007` | Invalid port mapping in `app.ports` or `services.*.ports` | `app.ports` / `services.ports` |
+| `E008` | A proxy is enabled but a `proxy.domains` entry is incomplete — empty domain, or an empty/malformed upstream *(added in 0.3.3)* | `proxy.domains[N]` |
 
 ### Warnings (deployment may have issues)
 
@@ -1352,6 +1598,7 @@ Stacker validates your configuration both syntactically (YAML structure) and sem
 |------|------|-------|
 | `W001` | Port conflict — multiple services bind the same host port | `services.ports` |
 | `W002` | Named volume referenced in `volumes` but not mounted by any service | `volumes` |
+| `W003` | A `proxy:` block plus a service publishing the same ingress host port (80/443/81) — likely conflict *(added in 0.3.2)* | `proxy` / `services.ports` |
 
 ### Example output
 
@@ -1370,6 +1617,7 @@ Configuration issues:
 |---------|-------------|
 | `stacker init` | Initialize a new project — generates `stacker.yml` and `.stacker/` directory (Dockerfile + docker-compose.yml). Use `--from-github <url>` to generate config from a remote repo without cloning it first. |
 | `stacker deploy` | Build and deploy the stack; cloud deploys also install a local SSH backup key when possible |
+| `stacker sync` | Synchronize project metadata and app configuration with Stacker without creating a deployment, contacting a target server, or starting containers |
 | `stacker status` | Show container status |
 | `stacker logs` | Show container logs |
 | `stacker secrets` | Manage local `.env` secrets or remote Vault-backed service/server secrets |
@@ -1383,6 +1631,7 @@ Configuration issues:
 | `stacker ai ask` | Ask the AI assistant a question |
 | `stacker proxy add` | Add a reverse-proxy domain entry |
 | `stacker proxy detect` | Detect running reverse proxies |
+| `stacker list clouds` / `stacker clouds` / `stacker keys` / `stacker cloud keys` | List saved cloud credentials (`--json` for machine-readable output) |
 | `stacker cloud firewall add` | Open cloud-provider firewall ports without SSH |
 | `stacker cloud firewall remove` | Remove Stacker-managed cloud-provider firewall rules |
 | `stacker cloud firewall list` | List cloud-provider firewall rules for a server |
@@ -1402,6 +1651,10 @@ Configuration issues:
 | `stacker agent configure-firewall` | Configure guest OS firewall rules via the Status Panel agent |
 | `stacker agent history` | Show recent agent command execution history |
 | `stacker agent exec` | Execute a raw agent command with JSON parameters |
+| `stacker monitor` | Watch container health and alert on problems *(added in 0.3.2)*; `--once` for a single check, `--interval <s>` to override the poll interval. Requires `monitoring.alerts` in `stacker.yml`. |
+| `stacker pipe create` | Create a pipe. *(0.3.2)* Add `--source-endpoint`/`--target-endpoint`/`--source-fields`/`--target-fields`/`--name` for manual, non-interactive creation, and `--retry`/`--retry-backoff-ms`/`--retry-backoff-max-ms`/`--on-failure`/`--on-success` for a retry policy + lifecycle handlers |
+| `stacker pipe diff` | *(0.3.2)* Compare the declared `pipes:` block against deployed pipes (create/update/unchanged/orphan); `--json` |
+| `stacker pipe apply` | *(0.3.2)* Reconcile declared pipes into the deployment — creates missing pipes; `--prune` deletes orphans, `--dry-run` previews |
 | `stacker update` | Check for CLI updates |
 
 ### `stacker init` flags
@@ -1474,6 +1727,21 @@ stacker deploy --force-rebuild         # Force regenerate .stacker/ artifacts
 > **IP persistence:** If a cloud/server install pauses or fails after the
 > installer has reported an IP address, Stacker saves that discovered IP in the
 > local deployment context and persists it server-side when possible.
+
+### `stacker sync` flags
+
+```bash
+stacker sync                              # Synchronize current project configuration
+stacker sync --verify                     # Verify the API/database synchronization
+stacker sync --json                       # Print a machine-readable result
+stacker sync --env production             # Synchronize a selected environment
+stacker sync --deployment deployment_...  # Validate and associate a deployment hash
+```
+
+`stacker sync` only updates project metadata and app configuration through the
+Stacker API. It does not upload files to a target server, create a deployment,
+invoke Install Service, or start/restart containers. Run `stacker deploy` to
+apply the synchronized configuration to the runtime.
 
 ### Remote secrets
 

@@ -114,7 +114,7 @@ fn inject_external_network(
     changed
 }
 
-fn upsert_external_network(compose_doc: &mut serde_yaml::Value, network: &str) {
+pub(crate) fn upsert_external_network(compose_doc: &mut serde_yaml::Value, network: &str) {
     let Some(root) = compose_doc.as_mapping_mut() else {
         return;
     };
@@ -200,6 +200,8 @@ pub fn sync_configured_compose_services(
 
     let updated = serde_yaml::to_string(&compose_doc)
         .map_err(|err| CliError::ConfigValidation(format!("failed to serialize compose: {err}")))?;
+    // See helpers::compose_yaml — unquoted `2222:22` is base-60 to Docker.
+    let updated = crate::helpers::compose_yaml::quote_port_entries(&updated);
     if updated == original {
         return Ok(ComposeServiceSyncResult {
             compose_path: Some(compose_path),
@@ -261,6 +263,61 @@ fn upsert_compose_service(
     Ok(())
 }
 
+/// Render a healthcheck `test` into the shape docker compose actually expects.
+///
+/// Compose treats a *string* test as `CMD-SHELL <string>`. The `CMD` /
+/// `CMD-SHELL` prefixes are only meaningful as the first element of a *list*.
+/// So the documented stacker.yml convention — `test: "CMD curl -f ..."` — was
+/// emitted verbatim and run as `sh -c "CMD curl -f ..."`, which fails with
+/// `CMD: command not found` on every probe. Containers using it were marked
+/// unhealthy forever while the app underneath was fine.
+///
+/// Prefixed strings therefore become the list form. A `CMD` test containing
+/// shell syntax cannot run in exec form, so it degrades to `CMD-SHELL` rather
+/// than being split into nonsense argv. Unprefixed strings are already valid
+/// and are left alone.
+pub(crate) fn healthcheck_test_value(test: &str) -> serde_yaml::Value {
+    fn list(parts: impl IntoIterator<Item = String>) -> serde_yaml::Value {
+        serde_yaml::Value::Sequence(parts.into_iter().map(serde_yaml::Value::String).collect())
+    }
+
+    let trimmed = test.trim();
+
+    // An author who already wrote the list form knows what they are doing;
+    // re-quoting it as a string would break the very thing they got right.
+    if trimmed.starts_with('[') {
+        if let Ok(serde_yaml::Value::Sequence(parts)) =
+            serde_yaml::from_str::<serde_yaml::Value>(trimmed)
+        {
+            return serde_yaml::Value::Sequence(parts);
+        }
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("CMD-SHELL ") {
+        return list(["CMD-SHELL".to_string(), rest.trim().to_string()]);
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("CMD ") {
+        let rest = rest.trim();
+        let needs_shell = rest.contains("&&")
+            || rest.contains("||")
+            || rest.contains('|')
+            || rest.contains(';')
+            || rest.contains('>')
+            || rest.contains('<')
+            || rest.contains('$')
+            || rest.contains('`');
+        if needs_shell {
+            return list(["CMD-SHELL".to_string(), rest.to_string()]);
+        }
+        let mut parts = vec!["CMD".to_string()];
+        parts.extend(rest.split_whitespace().map(str::to_string));
+        return list(parts);
+    }
+
+    serde_yaml::Value::String(trimmed.to_string())
+}
+
 fn service_to_compose_value(
     service: &ServiceDefinition,
     project_networks: &[String],
@@ -282,7 +339,7 @@ fn service_to_compose_value(
         let mut hc_map = serde_yaml::Mapping::new();
         hc_map.insert(
             serde_yaml::Value::String("test".to_string()),
-            serde_yaml::Value::String(hc.test.clone()),
+            healthcheck_test_value(&hc.test),
         );
         hc_map.insert(
             serde_yaml::Value::String("interval".to_string()),
@@ -303,13 +360,71 @@ fn service_to_compose_value(
     }
     insert_string_sequence(&mut map, "volumes", &service.volumes);
     insert_string_sequence(&mut map, "depends_on", &service.depends_on);
-    if !project_networks.is_empty() {
-        insert_string_sequence(&mut map, "networks", project_networks);
+    insert_string_sequence(&mut map, "cap_add", &service.cap_add);
+    insert_string_sequence(&mut map, "cap_drop", &service.cap_drop);
+    insert_string_sequence(&mut map, "devices", &service.devices);
+    if service.privileged {
+        map.insert(
+            serde_yaml::Value::String("privileged".into()),
+            serde_yaml::Value::Bool(true),
+        );
+    }
+    if let Some(platform) = &service.platform {
+        map.insert(
+            serde_yaml::Value::String("platform".into()),
+            serde_yaml::Value::String(platform.clone()),
+        );
+    }
+    let runtime = &service.runtime;
+    if runtime.aliases.is_empty() {
+        if !project_networks.is_empty() {
+            insert_string_sequence(&mut map, "networks", project_networks);
+        }
+    } else {
+        // Aliases need the long form, on every network the service joins.
+        let default_network = ["default".to_string()];
+        let networks = if project_networks.is_empty() {
+            &default_network[..]
+        } else {
+            project_networks
+        };
+        let mut settings = serde_yaml::Mapping::new();
+        insert_string_sequence(&mut settings, "aliases", &runtime.aliases);
+        let networks: serde_yaml::Mapping = networks
+            .iter()
+            .map(|n| {
+                (
+                    serde_yaml::Value::String(n.clone()),
+                    serde_yaml::Value::Mapping(settings.clone()),
+                )
+            })
+            .collect();
+        map.insert(
+            serde_yaml::Value::String("networks".to_string()),
+            serde_yaml::Value::Mapping(networks),
+        );
     }
     map.insert(
         serde_yaml::Value::String("restart".to_string()),
-        serde_yaml::Value::String("unless-stopped".to_string()),
+        serde_yaml::Value::String(
+            runtime
+                .restart
+                .map_or("unless-stopped", |r| r.as_str())
+                .to_string(),
+        ),
     );
+    if let Some(entrypoint) = &runtime.entrypoint {
+        map.insert(
+            serde_yaml::Value::String("entrypoint".to_string()),
+            serde_yaml::Value::String(entrypoint.clone()),
+        );
+    }
+    insert_string_sequence(&mut map, "profiles", &runtime.profiles);
+    if let Some(deploy) = &runtime.deploy {
+        if let Ok(value) = serde_yaml::to_value(deploy) {
+            map.insert(serde_yaml::Value::String("deploy".to_string()), value);
+        }
+    }
     serde_yaml::Value::Mapping(map)
 }
 
@@ -450,6 +565,57 @@ mod tests {
     };
     use std::collections::HashMap;
     use tempfile::TempDir;
+
+    #[test]
+    fn healthcheck_cmd_prefix_becomes_a_list_not_a_shell_string() {
+        // The floci regression: emitted as a string, docker ran
+        // `sh -c "CMD curl ..."` -> "CMD: command not found" on every probe.
+        let v = healthcheck_test_value("CMD curl -f http://localhost:4566/_floci/health || exit 1");
+        let seq = v.as_sequence().expect("must be a list, not a string");
+        assert_eq!(seq[0].as_str(), Some("CMD-SHELL"));
+        assert_eq!(
+            seq[1].as_str(),
+            Some("curl -f http://localhost:4566/_floci/health || exit 1")
+        );
+    }
+
+    #[test]
+    fn healthcheck_plain_cmd_keeps_exec_form() {
+        let v = healthcheck_test_value("CMD pg_isready -U postgres");
+        let seq = v.as_sequence().unwrap();
+        let parts: Vec<_> = seq.iter().map(|p| p.as_str().unwrap()).collect();
+        assert_eq!(parts, vec!["CMD", "pg_isready", "-U", "postgres"]);
+    }
+
+    #[test]
+    fn healthcheck_cmd_shell_prefix_is_preserved() {
+        let v = healthcheck_test_value("CMD-SHELL curl -f http://localhost || exit 1");
+        let seq = v.as_sequence().unwrap();
+        assert_eq!(seq[0].as_str(), Some("CMD-SHELL"));
+        assert_eq!(seq[1].as_str(), Some("curl -f http://localhost || exit 1"));
+    }
+
+    #[test]
+    fn healthcheck_unprefixed_string_is_left_alone() {
+        // Already valid: compose treats a bare string as CMD-SHELL.
+        let v = healthcheck_test_value("curl -f http://localhost/health");
+        assert_eq!(v.as_str(), Some("curl -f http://localhost/health"));
+    }
+
+    #[test]
+    fn healthcheck_never_emits_a_string_starting_with_cmd() {
+        for t in [
+            "CMD curl -f http://x || exit 1",
+            "CMD-SHELL test -f /tmp/x",
+            "CMD pg_isready",
+            "CMD sh -c 'echo $HOME'",
+        ] {
+            let v = healthcheck_test_value(t);
+            if let Some(s) = v.as_str() {
+                assert!(!s.starts_with("CMD"), "still a broken shell string: {s}");
+            }
+        }
+    }
 
     #[test]
     fn inject_shared_network_all_services_is_idempotent_and_covers_all() {
@@ -609,6 +775,7 @@ mod tests {
                 config: None,
             },
             services: vec![ServiceDefinition {
+                runtime: Default::default(),
                 name: service_name.to_string(),
                 image: "myapp:latest".to_string(),
                 ports: vec!["3000:3000".to_string()],
@@ -617,6 +784,11 @@ mod tests {
                 depends_on: vec![],
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             }],
             ..Default::default()
         }
@@ -659,6 +831,7 @@ mod tests {
         // proxy points to "api" but we are syncing "smtp"
         let mut config = npm_stacker_config(dir.path(), "api");
         config.services = vec![ServiceDefinition {
+            runtime: Default::default(),
             name: "smtp".to_string(),
             image: "trydirect/smtp".to_string(),
             ports: vec![],
@@ -667,6 +840,11 @@ mod tests {
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         }];
 
         let result =
@@ -719,6 +897,7 @@ volumes:
                 ..Default::default()
             },
             services: vec![ServiceDefinition {
+                runtime: Default::default(),
                 name: "smtp".to_string(),
                 image: "trydirect/smtp".to_string(),
                 ports: vec!["1025:25".to_string()],
@@ -733,6 +912,11 @@ volumes:
                 depends_on: Vec::new(),
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             }],
             ..Default::default()
         };

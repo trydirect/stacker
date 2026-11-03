@@ -1,12 +1,17 @@
+pub mod access;
 pub mod add;
 pub mod app;
+pub mod clouds;
 pub(crate) mod compose;
 pub(crate) mod delete;
 pub mod deploy;
 pub mod discover;
 pub mod get;
+pub mod invitation;
 pub mod member;
+pub mod protection;
 pub mod secret;
+pub mod sync;
 pub mod update;
 
 pub use add::item;

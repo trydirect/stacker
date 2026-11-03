@@ -165,7 +165,7 @@ async fn activate_pipe_request(
     trigger: &str,
     poll_interval: u32,
 ) -> Result<AgentEnqueueRequest, String> {
-    let (source_endpoint, source_method, target_endpoint, target_method, field_mapping) =
+    let (source_endpoint, source_method, target_endpoint, target_method, field_mapping, config) =
         if let Some(template_id) = pipe.template_id.as_ref() {
             let templates = client
                 .list_pipe_templates(None, None)
@@ -196,6 +196,11 @@ async fn activate_pipe_request(
                     pipe.field_mapping_override
                         .clone()
                         .unwrap_or(template.field_mapping.clone()),
+                    // Instance override wins over the template's config, so the
+                    // agent receives the effective retry policy + handlers.
+                    pipe.config_override
+                        .clone()
+                        .or_else(|| template.config.clone()),
                 )
             } else {
                 (
@@ -204,6 +209,7 @@ async fn activate_pipe_request(
                     "/".to_string(),
                     "POST".to_string(),
                     serde_json::json!({}),
+                    pipe.config_override.clone(),
                 )
             }
         } else {
@@ -215,6 +221,7 @@ async fn activate_pipe_request(
                 pipe.field_mapping_override
                     .clone()
                     .unwrap_or(serde_json::json!({})),
+                pipe.config_override.clone(),
             )
         };
 
@@ -232,6 +239,9 @@ async fn activate_pipe_request(
         "field_mapping": field_mapping,
         "trigger_type": trigger,
         "poll_interval_secs": poll_interval,
+        // Effective pipe config (retry policy + on_failure/on_success handlers)
+        // so the agent can apply resilience/lifecycle behavior. Omitted when unset.
+        "config": config,
     });
 
     Ok(

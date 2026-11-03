@@ -273,8 +273,8 @@ async fn test_owner_can_read_deployment_capabilities() {
     );
 
     let body: serde_json::Value = resp.json().await.expect("Response should be JSON");
-    assert_eq!(body["deployment_hash"], "dep-cap-own");
-    assert_eq!(body["features"]["pipes"], true);
+    assert_eq!(body["item"]["deployment_hash"], "dep-cap-own");
+    assert_eq!(body["item"]["features"]["pipes"], true);
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

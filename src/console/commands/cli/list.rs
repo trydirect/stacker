@@ -404,6 +404,8 @@ mod tests {
             deployment_hash: "deployment_5cc15f7d-8c87-464a-a7c5-ee6116201f22".to_string(),
             status: "completed".to_string(),
             status_message: Some("done".to_string()),
+            error_kind: None,
+            err_description: None,
             created_at: "2026-05-06 00:35:31".to_string(),
             updated_at: "2026-05-06 00:36:31".to_string(),
         }];

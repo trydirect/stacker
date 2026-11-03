@@ -112,3 +112,32 @@ pub struct BillingCapability {
     #[serde(default)]
     pub reason: Option<String>,
 }
+
+/// One day of a Managed server for `/marketplace/billing/managed/usage`
+/// (contract: shared-fixtures/api-contracts/managed-server-billing.json).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ManagedUsageReport {
+    pub user_id: String,
+    pub deployment_hash: String,
+    pub value_minor: i64,
+    /// `<deployment_hash>:<YYYY-MM-DD>`, so a resend counts once.
+    pub identifier: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<i64>,
+}
+
+/// One row of `managed_billing_events` for `/marketplace/billing/managed/event`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ManagedBillingEvent {
+    pub user_id: String,
+    pub deployment_hash: String,
+    /// usage_started, deploy_failed, server_deleted, invoice_paid,
+    /// invoice_failed, server_suspended, server_deleted_unpaid
+    pub event: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount_minor: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}

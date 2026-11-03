@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM deployment_container\n        WHERE removed_at IS NOT NULL\n          AND removed_at < NOW() - make_interval(days => $1)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a13747602b207860a7638b11b5504961038a4709ba8026cb95890232f732d03b"
+}

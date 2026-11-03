@@ -113,7 +113,7 @@ fn deployment_events_json_fetches_structured_feed() {
     stacker_cmd()
         .current_dir(dir.path())
         .env("XDG_CONFIG_HOME", config_home.path())
-        .args(["deployment", "events", "--json"])
+        .args(["deployment", "events", "--json", "--pinned"])
         .assert()
         .success()
         .stdout(

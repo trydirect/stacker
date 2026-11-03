@@ -4,10 +4,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     db,
     helpers::{
-        extract_capabilities, has_capability, has_capability_value, remote_runtime_compose_path,
-        remote_runtime_env_path, NPM_CREDENTIAL_SOURCE_KEY,
+        extract_capabilities, has_capability, has_capability_value,
+        remote_runtime_compose_path_for, remote_runtime_env_path_for, NPM_CREDENTIAL_SOURCE_KEY,
     },
-    models::{Agent, Command, Deployment, Project, ProjectApp},
+    models::{project::sanitize_project_name, Agent, Command, Deployment, Project, ProjectApp},
 };
 
 pub const DEPLOYMENT_STATE_SCHEMA_VERSION: &str = "v1alpha1";
@@ -72,6 +72,7 @@ pub struct DeploymentAgentFeatures {
 pub struct DeploymentRuntimeState {
     pub compose_path: String,
     pub env_path: String,
+    pub stack_code: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -166,8 +167,17 @@ impl DeploymentState {
                 features,
             },
             runtime: DeploymentRuntimeState {
-                compose_path: remote_runtime_compose_path().to_string(),
-                env_path: remote_runtime_env_path().to_string(),
+                stack_code: format!("{}-{}", sanitize_project_name(&project.name), project.id),
+                compose_path: remote_runtime_compose_path_for(&format!(
+                    "{}-{}",
+                    sanitize_project_name(&project.name),
+                    project.id
+                )),
+                env_path: remote_runtime_env_path_for(&format!(
+                    "{}-{}",
+                    sanitize_project_name(&project.name),
+                    project.id
+                )),
             },
             apps,
             drift: DeploymentDriftState {

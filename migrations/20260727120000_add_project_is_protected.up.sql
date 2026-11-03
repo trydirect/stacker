@@ -1,0 +1,1 @@
+ALTER TABLE project ADD COLUMN is_protected BOOLEAN NOT NULL DEFAULT false;

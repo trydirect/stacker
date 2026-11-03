@@ -216,7 +216,7 @@ impl DeploymentLock {
     }
 
     /// Load the legacy `deployment.lock`, optionally filtering by target.
-    fn load_legacy(
+    pub(crate) fn load_legacy(
         project_dir: &Path,
         filter_target: Option<&str>,
     ) -> Result<Option<Self>, CliError> {
@@ -323,6 +323,19 @@ impl DeploymentLock {
         }
         std::fs::write(&path, target).map_err(CliError::Io)?;
         Ok(())
+    }
+
+    /// Ensure `.stacker/active-target` exists, defaulting to `local`.
+    ///
+    /// Returns `true` when the file was written, `false` when an active target
+    /// was already recorded. Used by `stacker init` so fresh projects never hit
+    /// the "No active target set" ambiguity error.
+    pub fn ensure_active_target_default(project_dir: &Path) -> Result<bool, CliError> {
+        if Self::read_active_target(project_dir)?.is_some() {
+            return Ok(false);
+        }
+        Self::write_active_target(project_dir, "local")?;
+        Ok(true)
     }
 
     /// Switch active target. For `local`, also creates the lock if missing.

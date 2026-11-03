@@ -1,10 +1,12 @@
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt;
 use std::path::Path;
 
 use crate::cli::config_parser::{
-    AppType, ComposeHealthcheck, DomainConfig, ProxyType, ServiceDefinition, StackerConfig,
+    AppType, ComposeHealthcheck, DomainConfig, ProxyType, ServiceDefinition, ServiceDeploy,
+    SslMode, StackerConfig,
 };
 use crate::cli::error::CliError;
 
@@ -31,6 +33,20 @@ pub struct ComposeService {
     pub command: Option<String>,
     /// Docker compose healthcheck for this service.
     pub healthcheck: Option<ComposeHealthcheck>,
+    pub cap_add: Vec<String>,
+    pub cap_drop: Vec<String>,
+    pub privileged: bool,
+    pub platform: Option<String>,
+    pub devices: Vec<String>,
+    /// Container `/dev/shm` size (compose `shm_size`, e.g. `"256m"`).
+    pub shm_size: Option<String>,
+    /// Container `user:` (e.g. `"0:0"`).
+    pub user: Option<String>,
+    pub entrypoint: Option<String>,
+    pub profiles: Vec<String>,
+    /// Added as `aliases:` on every network in `networks`.
+    pub aliases: Vec<String>,
+    pub deploy: Option<ServiceDeploy>,
 }
 
 impl Default for ComposeService {
@@ -50,6 +66,17 @@ impl Default for ComposeService {
             runtime: None,
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
+            shm_size: None,
+            user: None,
+            entrypoint: None,
+            profiles: Vec::new(),
+            aliases: Vec::new(),
+            deploy: None,
         }
     }
 }
@@ -66,8 +93,20 @@ impl From<&ServiceDefinition> for ComposeService {
             depends_on: svc.depends_on.clone(),
             command: svc.command.clone(),
             healthcheck: svc.healthcheck.clone(),
+            cap_add: svc.cap_add.clone(),
+            cap_drop: svc.cap_drop.clone(),
+            privileged: svc.privileged,
+            platform: svc.platform.clone(),
+            devices: svc.devices.clone(),
+            entrypoint: svc.runtime.entrypoint.clone(),
+            profiles: svc.runtime.profiles.clone(),
+            aliases: svc.runtime.aliases.clone(),
+            deploy: svc.runtime.deploy.clone(),
             ..Default::default()
         };
+        if let Some(restart) = svc.runtime.restart {
+            compose_service.restart = restart.as_str().to_string();
+        }
         crate::helpers::stacker_labels::insert_runtime_labels(
             &mut compose_service.labels,
             None::<String>,
@@ -151,16 +190,32 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
 
         // --- Proxy service ---
         if let Some(proxy_svc) = build_proxy_service(config) {
+            // Collect named volumes (e.g. Caddy's `caddy_data`/`caddy_config`
+            // persistence volumes) — without this they'd be referenced by
+            // the service but never declared under top-level `volumes:`,
+            // the same class of bug fixed for the server-side renderer in
+            // GH #236.
+            for vol in &proxy_svc.volumes {
+                if let Some(named) = extract_named_volume(vol) {
+                    if !named_volumes.contains(&named) {
+                        named_volumes.push(named);
+                    }
+                }
+            }
             compose.services.push(proxy_svc);
         }
 
         // --- Set top-level volumes ---
         compose.volumes = named_volumes;
 
-        // --- Auto-inject default_network for NginxProxyManager-proxied services ---
-        if config.proxy.proxy_type == ProxyType::NginxProxyManager
-            && !config.proxy.domains.is_empty()
-        {
+        // --- Auto-inject the shared external `default_network` onto proxied
+        // services ---
+        // Every proxy type is platform-managed: on remote deploys the proxy
+        // container is stripped from this compose (see build_config_bundle)
+        // and installed by its own backend role, which joins the external
+        // `default_network`. So the proxied app service(s) must also sit on
+        // `default_network` for the managed proxy to reach them by name/label.
+        if config.proxy.proxy_type != ProxyType::None && !config.proxy.domains.is_empty() {
             let proxied: Vec<String> = config
                 .proxy
                 .domains
@@ -181,6 +236,62 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
                 compose
                     .external_networks
                     .push("default_network".to_string());
+            }
+        }
+
+        // --- Traefik: derive router/service labels from config.proxy.domains ---
+        // Traefik routes via labels on the *target* container (unlike Nginx/Caddy,
+        // which route via a separate config file), so `build_proxy_service`
+        // alone can't wire up routing — it only starts the Traefik container.
+        if config.proxy.proxy_type == ProxyType::Traefik {
+            let has_acme = admin_email_from_config(config).is_some();
+            for domain in &config.proxy.domains {
+                let Some(target_name) = upstream_service_name_from_domain(domain) else {
+                    continue;
+                };
+                let Some(port) = upstream_port_from_domain(domain) else {
+                    continue;
+                };
+                let Some(svc) = compose.services.iter_mut().find(|s| s.name == target_name) else {
+                    continue;
+                };
+
+                let router = traefik_router_name(&domain.domain);
+                svc.labels
+                    .insert("traefik.enable".to_string(), "true".to_string());
+                svc.labels.insert(
+                    format!("traefik.http.routers.{router}.rule"),
+                    format!("Host(`{}`)", domain.domain),
+                );
+                svc.labels.insert(
+                    format!("traefik.http.services.{router}.loadbalancer.server.port"),
+                    port.to_string(),
+                );
+
+                match domain.ssl {
+                    SslMode::Off => {
+                        svc.labels.insert(
+                            format!("traefik.http.routers.{router}.entrypoints"),
+                            "web".to_string(),
+                        );
+                    }
+                    SslMode::Auto | SslMode::Manual => {
+                        svc.labels.insert(
+                            format!("traefik.http.routers.{router}.entrypoints"),
+                            "websecure".to_string(),
+                        );
+                        svc.labels.insert(
+                            format!("traefik.http.routers.{router}.tls"),
+                            "true".to_string(),
+                        );
+                        if domain.ssl == SslMode::Auto && has_acme {
+                            svc.labels.insert(
+                                format!("traefik.http.routers.{router}.tls.certresolver"),
+                                "letsencrypt".to_string(),
+                            );
+                        }
+                    }
+                }
             }
         }
 
@@ -271,6 +382,14 @@ fn build_app_service(config: &StackerConfig) -> ComposeService {
 
     // Healthcheck from app section
     svc.healthcheck = config.app.healthcheck.clone();
+    svc.cap_add = config.app.cap_add.clone();
+    svc.cap_drop = config.app.cap_drop.clone();
+    svc.privileged = config.app.privileged;
+    svc.platform = config.app.platform.clone();
+    svc.devices = config.app.devices.clone();
+    svc.depends_on = config.app.depends_on.clone();
+    svc.shm_size = config.app.shm_size.clone();
+    svc.user = config.app.user.clone();
 
     // Merge environment: top-level env first, then app-level (app wins)
     for (k, v) in &config.env {
@@ -307,6 +426,14 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
             };
             svc.volumes
                 .push("./nginx/conf.d:/etc/nginx/conf.d:ro".to_string());
+            crate::helpers::stacker_labels::insert_runtime_labels(
+                &mut svc.labels,
+                None::<String>,
+                None,
+                crate::helpers::stacker_labels::SCOPE_PLATFORM,
+                "nginx",
+                "nginx",
+            );
             Some(svc)
         }
         ProxyType::NginxProxyManager => {
@@ -341,6 +468,69 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
             };
             svc.volumes
                 .push("/var/run/docker.sock:/var/run/docker.sock:ro".to_string());
+            svc.volumes.push("traefik_certs:/letsencrypt".to_string());
+
+            // Static config passed via CLI flags (Traefik supports this in
+            // place of a traefik.yml file). `exposedbydefault=false` means
+            // only services carrying `traefik.enable=true` labels — the
+            // ones generated below from `config.proxy.domains` — get a
+            // router; nothing else on the Docker network is exposed.
+            let mut args = vec![
+                "--providers.docker=true".to_string(),
+                "--providers.docker.exposedbydefault=false".to_string(),
+                "--entrypoints.web.address=:80".to_string(),
+                "--entrypoints.websecure.address=:443".to_string(),
+            ];
+            if let Some(email) = admin_email_from_config(config) {
+                args.push(
+                    "--certificatesresolvers.letsencrypt.acme.httpchallenge=true".to_string(),
+                );
+                args.push(
+                    "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+                        .to_string(),
+                );
+                args.push(format!(
+                    "--certificatesresolvers.letsencrypt.acme.email={}",
+                    email
+                ));
+                args.push(
+                    "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+                        .to_string(),
+                );
+            }
+            svc.command = Some(args.join(" "));
+            crate::helpers::stacker_labels::insert_runtime_labels(
+                &mut svc.labels,
+                None::<String>,
+                None,
+                crate::helpers::stacker_labels::SCOPE_PLATFORM,
+                "traefik",
+                "traefik",
+            );
+            Some(svc)
+        }
+        ProxyType::Caddy => {
+            let mut svc = ComposeService {
+                name: "caddy".to_string(),
+                image: Some("caddy:2-alpine".to_string()),
+                ports: vec!["80:80".to_string(), "443:443".to_string()],
+                depends_on: vec!["app".to_string()],
+                ..Default::default()
+            };
+            svc.volumes
+                .push("./Caddyfile:/etc/caddy/Caddyfile:ro".to_string());
+            // Named volumes so Caddy's ACME state/certificates survive
+            // container recreation instead of re-issuing on every restart.
+            svc.volumes.push("caddy_data:/data".to_string());
+            svc.volumes.push("caddy_config:/config".to_string());
+            crate::helpers::stacker_labels::insert_runtime_labels(
+                &mut svc.labels,
+                None::<String>,
+                None,
+                crate::helpers::stacker_labels::SCOPE_PLATFORM,
+                "caddy",
+                "caddy",
+            );
             Some(svc)
         }
         ProxyType::None => None,
@@ -362,6 +552,49 @@ fn upstream_service_name_from_domain(domain: &DomainConfig) -> Option<String> {
     }
 }
 
+/// Extract the port from a DomainConfig upstream like `svc:3000` or `http://svc:3000`.
+fn upstream_port_from_domain(domain: &DomainConfig) -> Option<u16> {
+    let s = domain
+        .upstream
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let host = s.split('/').next()?;
+    host.split(':').nth(1)?.parse().ok()
+}
+
+/// Admin email for ACME/Let's Encrypt registration, sourced from
+/// `install.inputs.admin_email` (a free-form marketplace-style install
+/// input, not a dedicated config field). Absent this, Traefik still
+/// terminates TLS (its own self-signed default cert) but without an ACME
+/// certresolver, since Traefik's ACME setup hard-requires a non-empty email.
+fn admin_email_from_config(config: &StackerConfig) -> Option<String> {
+    config
+        .install
+        .inputs
+        .get("admin_email")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// Sanitize a domain into a Traefik router/service name: alphanumerics only,
+/// everything else collapsed to `-` (router names must not contain `.`
+/// reliably across all label-parsing edge cases, so we normalize).
+fn traefik_router_name(domain: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for ch in domain.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
 /// Extract a named volume from a volume string like "my-data:/var/lib/data".
 /// Returns `None` for bind mounts (starting with `.` or `/`).
 fn extract_named_volume(vol_str: &str) -> Option<String> {
@@ -379,8 +612,73 @@ fn extract_named_volume(vol_str: &str) -> Option<String> {
 ///
 /// This handles strings that contain spaces, colons, or special characters
 /// that would otherwise break YAML parsing (e.g. `command:`, `healthcheck.test:`).
-fn yaml_quote(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+///
+/// Control characters are escaped rather than emitted literally. A raw newline
+/// inside a double-quoted scalar is *folded* into a space by every YAML parser,
+/// which silently corrupts multiline values (GH #251): a multiline
+/// `GITLAB_OMNIBUS_CONFIG` arrived at the container as a single line of Ruby.
+pub(crate) fn yaml_quote(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped.push('"');
+    escaped
+}
+
+/// Whether `value` can be emitted as a literal block scalar (`|`) without
+/// changing what a parser reads back.
+///
+/// Block scalars keep multiline values readable, but they cannot represent
+/// every string: leading indentation on the first line needs an explicit
+/// indentation indicator, trailing spaces are stripped by parsers, and
+/// trailing blank lines depend on chomping this helper does not emit. Those
+/// cases fall back to an escaped double-quoted scalar, which is always exact.
+fn yaml_block_scalar_safe(value: &str) -> bool {
+    if !value.contains('\n') {
+        return false;
+    }
+    if value.chars().any(|ch| ch.is_control() && ch != '\n') {
+        return false;
+    }
+    if value.starts_with(' ') || value.ends_with("\n\n") {
+        return false;
+    }
+    !value.split('\n').any(|line| line.ends_with(' '))
+}
+
+/// Emit a `key: value` mapping entry at `indent`, picking a scalar style that
+/// survives a parse round-trip. Multiline values become literal block scalars;
+/// everything else is double-quoted with escapes.
+fn push_yaml_entry(out: &mut String, indent: &str, key: &str, value: &str) {
+    if !yaml_block_scalar_safe(value) {
+        out.push_str(&format!("{indent}{key}: {}\n", yaml_quote(value)));
+        return;
+    }
+
+    // A single trailing newline is exactly what clip chomping (`|`) restores;
+    // no trailing newline needs strip chomping (`|-`).
+    let (body, chomp) = match value.strip_suffix('\n') {
+        Some(rest) => (rest, "|"),
+        None => (value, "|-"),
+    };
+
+    out.push_str(&format!("{indent}{key}: {chomp}\n"));
+    for line in body.split('\n') {
+        if line.is_empty() {
+            out.push('\n');
+        } else {
+            out.push_str(&format!("{indent}  {line}\n"));
+        }
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -415,6 +713,32 @@ impl ComposeDefinition {
                 }
             }
 
+            if let Some(ref platform) = svc.platform {
+                out.push_str(&format!("    platform: {}\n", yaml_quote(platform)));
+            }
+            if let Some(ref shm_size) = svc.shm_size {
+                out.push_str(&format!("    shm_size: {}\n", yaml_quote(shm_size)));
+            }
+            if let Some(ref user) = svc.user {
+                out.push_str(&format!("    user: {}\n", yaml_quote(user)));
+            }
+            if svc.privileged {
+                out.push_str("    privileged: true\n");
+            }
+            for (key, values) in [
+                ("cap_add", &svc.cap_add),
+                ("cap_drop", &svc.cap_drop),
+                ("devices", &svc.devices),
+                ("profiles", &svc.profiles),
+            ] {
+                if !values.is_empty() {
+                    out.push_str(&format!("    {key}:\n"));
+                    for value in values {
+                        out.push_str(&format!("      - {}\n", yaml_quote(value)));
+                    }
+                }
+            }
+
             if !svc.ports.is_empty() {
                 out.push_str("    ports:\n");
                 for p in &svc.ports {
@@ -427,12 +751,16 @@ impl ComposeDefinition {
                 let mut keys: Vec<&String> = svc.environment.keys().collect();
                 keys.sort();
                 for k in keys {
-                    out.push_str(&format!("      {}: \"{}\"\n", k, svc.environment[k]));
+                    push_yaml_entry(&mut out, "      ", k, &svc.environment[k]);
                 }
             }
 
             if let Some(ref cmd) = svc.command {
                 out.push_str(&format!("    command: {}\n", yaml_quote(cmd)));
+            }
+
+            if let Some(ref entrypoint) = svc.entrypoint {
+                out.push_str(&format!("    entrypoint: {}\n", yaml_quote(entrypoint)));
             }
 
             if !svc.volumes.is_empty() {
@@ -451,18 +779,41 @@ impl ComposeDefinition {
 
             if let Some(ref hc) = svc.healthcheck {
                 out.push_str("    healthcheck:\n");
-                out.push_str(&format!("      test: {}\n", yaml_quote(&hc.test)));
+                out.push_str(&format!(
+                    "      test: {}\n",
+                    render_healthcheck_test(&hc.test)
+                ));
                 out.push_str(&format!("      interval: {}\n", hc.interval));
                 out.push_str(&format!("      timeout: {}\n", hc.timeout));
                 out.push_str(&format!("      retries: {}\n", hc.retries));
             }
 
-            out.push_str(&format!("    restart: {}\n", svc.restart));
+            // `no` unquoted is a boolean to YAML 1.1 readers.
+            if svc.restart == "no" {
+                out.push_str("    restart: \"no\"\n");
+            } else {
+                out.push_str(&format!("    restart: {}\n", svc.restart));
+            }
+
+            if let Some(ref deploy) = svc.deploy {
+                out.push_str("    deploy:\n");
+                let body = serde_yaml::to_string(deploy).unwrap_or_default();
+                for line in body.lines().filter(|l| !l.is_empty() && *l != "---") {
+                    out.push_str(&format!("      {}\n", line));
+                }
+            }
 
             if !svc.networks.is_empty() {
                 out.push_str("    networks:\n");
                 for n in &svc.networks {
-                    out.push_str(&format!("      - {}\n", n));
+                    if svc.aliases.is_empty() {
+                        out.push_str(&format!("      - {}\n", n));
+                    } else {
+                        out.push_str(&format!("      {}:\n        aliases:\n", n));
+                        for alias in &svc.aliases {
+                            out.push_str(&format!("          - {}\n", yaml_quote(alias)));
+                        }
+                    }
                 }
             }
 
@@ -471,7 +822,7 @@ impl ComposeDefinition {
                 let mut keys: Vec<&String> = svc.labels.keys().collect();
                 keys.sort();
                 for k in keys {
-                    out.push_str(&format!("      {}: \"{}\"\n", k, svc.labels[k]));
+                    push_yaml_entry(&mut out, "      ", k, &svc.labels[k]);
                 }
             }
 
@@ -520,6 +871,626 @@ impl fmt::Display for ComposeDefinition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.render())
     }
+}
+
+/// Replace literal environment values with `${VAR}` references for a set of
+/// env var names.  This is used during **bake** so the snapshot's compose file
+/// never contains the author's secrets — Docker Compose resolves `${VAR}` from
+/// the env file (`/etc/stacker/env`) at runtime.
+///
+/// Only environment blocks inside service definitions are touched; other parts
+/// of the compose file (labels, volumes, etc.) are left alone.
+///
+/// `env_keys` is the set of env var names whose values should be
+/// parameterized.  Typically this is every key declared in the author's
+/// `config_contract` with `mutability: generated` plus any `provided` fields.
+///
+/// `aliases` maps a compose key to the variable the author actually referenced
+/// in `stacker.yml`. A service's env key need not be the name the value is
+/// stored under — `MYSQL_PASSWORD: "${DB_PASSWORD}"` feeds one secret to a
+/// container that insists on its own name. Emitting `${MYSQL_PASSWORD}` there
+/// produces a reference nothing defines: compose resolves an unknown variable
+/// to the empty string with only a warning, so the container starts with a
+/// blank password and crash-loops. Pass [`env_reference_aliases`] so the
+/// reference keeps the name the env file really carries.
+pub fn parameterize_compose_env_vars(
+    compose_content: &str,
+    env_keys: &std::collections::HashSet<String>,
+) -> String {
+    parameterize_compose_env_vars_with_aliases(
+        compose_content,
+        env_keys,
+        &std::collections::HashMap::new(),
+    )
+}
+
+/// Collect `KEY -> VAR` for every `KEY: "${VAR}"` in the *unresolved*
+/// `stacker.yml`, where VAR differs from KEY.
+///
+/// The parsed config cannot answer this: `${VAR}` is resolved to its literal at
+/// load time, so by the time a compose file is rendered the author's reference
+/// is gone. Read the raw YAML text instead — only the exact whole-value form
+/// `${VAR}` counts, since a value that merely embeds a variable (a DSN, a URL)
+/// cannot be replaced by a single reference.
+pub fn env_reference_aliases(raw_stacker_yml: &str) -> std::collections::HashMap<String, String> {
+    // Per service ("service/KEY"), and by KEY alone only where every service
+    // that declares KEY references the same variable: one name may reference
+    // different variables in two services (deployment #1363, Supabase's db and
+    // Langfuse's postgres both set POSTGRES_PASSWORD).
+    let reference = regex::Regex::new(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$").expect("valid regex");
+    let doc: serde_yaml::Value = serde_yaml::from_str(raw_stacker_yml).unwrap_or_default();
+
+    let mut declared: Vec<(String, String, String)> = Vec::new(); // (service, key, referenced)
+    let mut collect = |service: &str, env: Option<&serde_yaml::Value>| {
+        let Some(serde_yaml::Value::Mapping(map)) = env else {
+            return;
+        };
+        for (key, value) in map {
+            let (Some(key), Some(value)) = (key.as_str(), value.as_str()) else {
+                continue;
+            };
+            let referenced = reference
+                .captures(value.trim())
+                .map(|caps| caps[1].to_string())
+                .unwrap_or_default();
+            declared.push((service.to_string(), key.to_string(), referenced));
+        }
+    };
+    collect("app", doc.get("app").and_then(|app| app.get("environment")));
+    // The top-level `env:` is file-wide: no compose service is named "*", so it
+    // only counts towards the by-KEY aliases, as every reference did before.
+    collect("*", doc.get("env"));
+    if let Some(serde_yaml::Value::Sequence(services)) = doc.get("services") {
+        for svc in services {
+            if let Some(name) = svc.get("name").and_then(serde_yaml::Value::as_str) {
+                collect(name, svc.get("environment"));
+            }
+        }
+    }
+
+    let mut aliases = std::collections::HashMap::new();
+    let mut by_key: std::collections::HashMap<&str, std::collections::BTreeSet<&str>> =
+        std::collections::HashMap::new();
+    for (service, key, referenced) in &declared {
+        // A literal value or an embedded reference counts as "itself" here.
+        let target = if referenced.is_empty() {
+            key.as_str()
+        } else {
+            referenced.as_str()
+        };
+        by_key.entry(key.as_str()).or_default().insert(target);
+        if !referenced.is_empty() && referenced != key {
+            aliases.insert(format!("{service}/{key}"), referenced.clone());
+        }
+    }
+    for (key, targets) in by_key {
+        if targets.len() == 1 {
+            let target = targets.into_iter().next().unwrap_or(key);
+            if target != key {
+                aliases.insert(key.to_string(), target.to_string());
+            }
+        }
+    }
+
+    aliases
+}
+
+/// [`parameterize_compose_env_vars`], but emitting the author's own variable
+/// name where one differs from the compose key.
+pub fn parameterize_compose_env_vars_with_aliases(
+    compose_content: &str,
+    env_keys: &std::collections::HashSet<String>,
+    aliases: &std::collections::HashMap<String, String>,
+) -> String {
+    if env_keys.is_empty() {
+        return compose_content.to_string();
+    }
+
+    let mut in_environment = false;
+    let mut env_indent = 0usize;
+    let mut result = String::with_capacity(compose_content.len());
+    // The compose service the current line belongs to (`  name:` under
+    // `services:`), so a service's own reference wins over the file-wide one.
+    let mut in_services = false;
+    let mut service = String::new();
+    let lookup = |service: &str, key: &str| -> Option<String> {
+        aliases
+            .get(&format!("{service}/{key}"))
+            .or_else(|| aliases.get(key))
+            .cloned()
+    };
+
+    for line in compose_content.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+
+        if indent == 0 && !trimmed.is_empty() {
+            in_services = trimmed == "services:";
+        } else if in_services && indent == 2 && trimmed.ends_with(':') {
+            service = trimmed.trim_end_matches(':').to_string();
+        }
+
+        // Track whether we're inside an `environment:` block belonging to a
+        // service.  The block ends when we hit a line at the same or shallower
+        // indent that isn't blank.
+        if trimmed == "environment:" {
+            in_environment = true;
+            env_indent = indent;
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+
+        if in_environment {
+            // A blank line or a line at the same / shallower indent ends the block.
+            if trimmed.is_empty() || indent <= env_indent {
+                in_environment = false;
+            }
+        }
+
+        if in_environment {
+            // Compose accepts either form inside `environment:`; a hand-written
+            // compose (`deploy.compose_file`) commonly uses the list one.
+            //
+            //   environment:            environment:
+            //     KEY: value              - KEY=value
+            if let Some(entry) = trimmed.strip_prefix("- ") {
+                if let Some((key, _value)) = entry.split_once('=') {
+                    let key = key.trim();
+                    if is_env_identifier(key) && env_keys.contains(key) {
+                        let reference = lookup(&service, key).unwrap_or_else(|| key.to_string());
+                        result.push_str(&line[..indent]);
+                        result.push_str("- ");
+                        result.push_str(key);
+                        result.push_str("=${");
+                        result.push_str(&reference);
+                        result.push_str("}\n");
+                        continue;
+                    }
+                }
+            } else if let Some((key, _rest)) = trimmed.split_once(':') {
+                // Match "      KEY: value" — the key must be a valid env identifier.
+                let key = key.trim();
+                if is_env_identifier(key) && env_keys.contains(key) {
+                    let reference = lookup(&service, key).unwrap_or_else(|| key.to_string());
+                    // Preserve the original indent and replace the value.
+                    let prefix = &line[..indent + key.len()];
+                    // Find where the value starts (after "KEY: ").
+                    result.push_str(prefix);
+                    result.push_str(": ${");
+                    result.push_str(&reference);
+                    result.push_str("}\n");
+                    continue;
+                }
+            }
+        }
+
+        result.push_str(line);
+        result.push('\n');
+    }
+
+    result
+}
+
+/// Shortest value we will treat as a secret when searching *inside* other
+/// values. Short strings ("admin", "postgres", a port) collide with ordinary
+/// text and would corrupt the compose file.
+const MIN_EMBEDDED_SECRET_LEN: usize = 12;
+
+/// Two protected fields resolved to the same literal value, so the compose
+/// cannot be parameterized unambiguously.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddedSecretConflict {
+    /// The contract field names that share one value, sorted.
+    pub keys: Vec<String>,
+}
+
+impl std::fmt::Display for EmbeddedSecretConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the same secret value is declared under {} protected fields ({}). \
+             Each is regenerated independently per buyer, so they would receive \
+             different values and the stack would fail to authenticate. Declare \
+             one field and reference it from the others.",
+            self.keys.len(),
+            self.keys.join(", ")
+        )
+    }
+}
+
+/// Replace secret values that appear *inside* a larger value with a `${KEY}`
+/// reference — the case [`parameterize_compose_env_vars`] structurally cannot
+/// reach, because it matches whole values by key name.
+///
+/// The motivating case is a DSN: `DATABASE_URL:
+/// postgresql://user:<password>@host/db` carries the database password inside
+/// its value, under a key name (`DATABASE_URL`) that no secret-name heuristic
+/// recognises. Every existing protection layer keys off the *variable name*, so
+/// such a credential is invisible to all of them at once and stays literal in
+/// the baked image.
+///
+/// `env_values` are the build box's resolved `KEY=value` pairs; `protected` are
+/// the contract fields with `mutability: generated`/`provided`, i.e. the ones
+/// that will be regenerated on the buyer's box and therefore can be referenced
+/// safely.
+pub fn parameterize_embedded_secret_values(
+    compose_content: &str,
+    env_values: &std::collections::BTreeMap<String, String>,
+    protected: &std::collections::BTreeSet<String>,
+) -> Result<String, EmbeddedSecretConflict> {
+    // Every place a literal value is known by a name: the build box's .env plus
+    // the compose's own `KEY: value` pairs (a value interpolated into a service
+    // env block has no .env entry of its own).
+    let mut names_by_value: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+
+    for (key, value) in env_values
+        .iter()
+        .chain(compose_literal_env_pairs(compose_content).iter())
+    {
+        if value.len() < MIN_EMBEDDED_SECRET_LEN {
+            continue;
+        }
+        names_by_value
+            .entry(value.clone())
+            .or_default()
+            .insert(key.clone());
+    }
+
+    // A value reachable under two *protected* names diverges at regeneration
+    // time — refuse rather than bake an image that cannot boot.
+    let mut substitutions: Vec<(String, String)> = Vec::new();
+    for (value, names) in &names_by_value {
+        let protected_names: Vec<String> = names
+            .iter()
+            .filter(|name| protected.contains(*name))
+            .cloned()
+            .collect();
+
+        match protected_names.len() {
+            0 => continue, // not a managed secret; nothing regenerates it
+            1 => substitutions.push((value.clone(), protected_names[0].clone())),
+            _ => {
+                return Err(EmbeddedSecretConflict {
+                    keys: protected_names,
+                })
+            }
+        }
+    }
+
+    // Longest first, so a value that contains another is replaced whole.
+    substitutions.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(&b.0)));
+
+    // Environment blocks and the other fields that carry values a container
+    // runs with - command, entrypoint, healthcheck: a secret there would
+    // otherwise ship in the snapshot as the author's literal. Compose
+    // interpolates `${KEY}` in those fields too. image, volumes, ports and the
+    // rest are left as they are.
+    let mut result = String::with_capacity(compose_content.len());
+    for (line, carries_values) in value_bearing_lines(compose_content) {
+        let mut rewritten = line.to_string();
+        if carries_values {
+            for (value, key) in &substitutions {
+                if rewritten.contains(value.as_str()) {
+                    rewritten = rewritten.replace(value.as_str(), &format!("${{{key}}}"));
+                }
+            }
+        }
+        result.push_str(&rewritten);
+        result.push('\n');
+    }
+    Ok(result)
+}
+
+/// Service keys whose values a container runs with.
+const VALUE_BEARING_KEYS: [&str; 4] = ["environment", "command", "entrypoint", "healthcheck"];
+
+/// Pair every line with whether it holds a value of one of
+/// [`VALUE_BEARING_KEYS`]: the key's own line when the value is inline
+/// (`command: redis-server ...`), and every line of its block, which ends at
+/// the first non-blank line indented at or above the key.
+fn value_bearing_lines(compose_content: &str) -> Vec<(&str, bool)> {
+    let mut block_indent: Option<usize> = None;
+    let mut out = Vec::new();
+
+    for line in compose_content.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+
+        if let Some(start) = block_indent {
+            if !trimmed.is_empty() && indent <= start {
+                block_indent = None;
+            }
+        }
+        if block_indent.is_some() {
+            out.push((line, true));
+            continue;
+        }
+
+        let key = trimmed.split(':').next().unwrap_or("");
+        if trimmed.contains(':') && VALUE_BEARING_KEYS.contains(&key) {
+            block_indent = Some(indent);
+            let inline = trimmed[key.len() + 1..].trim();
+            out.push((line, !inline.is_empty()));
+            continue;
+        }
+        out.push((line, false));
+    }
+
+    out
+}
+
+/// The literal `KEY: value` pairs declared in service `environment:` blocks.
+fn compose_literal_env_pairs(compose_content: &str) -> std::collections::BTreeMap<String, String> {
+    let mut pairs = std::collections::BTreeMap::new();
+
+    for_each_environment_line(compose_content, |line| {
+        if let Some((key, value)) = line.trim().split_once(':') {
+            let key = key.trim();
+            let value = value.trim().trim_matches('"').trim_matches('\'');
+            if is_env_identifier(key) && !value.is_empty() && !value.starts_with("${") {
+                pairs.insert(key.to_string(), value.to_string());
+            }
+        }
+    });
+
+    pairs
+}
+
+/// Apply `rewrite` to every line inside a service `environment:` block,
+/// leaving the rest of the document untouched.
+fn rewrite_environment_lines(
+    compose_content: &str,
+    mut rewrite: impl FnMut(&str) -> String,
+) -> String {
+    let mut result = String::with_capacity(compose_content.len());
+
+    for (line, in_environment) in environment_lines(compose_content) {
+        if in_environment {
+            result.push_str(&rewrite(line));
+        } else {
+            result.push_str(line);
+        }
+        result.push('\n');
+    }
+
+    result
+}
+
+fn for_each_environment_line(compose_content: &str, mut visit: impl FnMut(&str)) {
+    for (line, in_environment) in environment_lines(compose_content) {
+        if in_environment {
+            visit(line);
+        }
+    }
+}
+
+/// Pair every line with whether it sits inside a service `environment:` block.
+///
+/// Shares the block-tracking rule used by [`parameterize_compose_env_vars`]:
+/// the block ends at the first non-blank line indented at or above the
+/// `environment:` key itself.
+fn environment_lines(compose_content: &str) -> Vec<(&str, bool)> {
+    let mut in_environment = false;
+    let mut env_indent = 0usize;
+    let mut out = Vec::new();
+
+    for line in compose_content.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+
+        if trimmed == "environment:" {
+            in_environment = true;
+            env_indent = indent;
+            out.push((line, false));
+            continue;
+        }
+
+        if in_environment && (trimmed.is_empty() || indent <= env_indent) {
+            in_environment = false;
+        }
+
+        out.push((line, in_environment));
+    }
+
+    out
+}
+
+/// The `${VAR}` names a compose file references, in sorted order.
+///
+/// Captured at bake time and pinned to the snapshot so the clone path can
+/// verify the buyer's environment satisfies the image *before* a server is
+/// created. Compose resolves an unsatisfied reference to an empty string and
+/// only warns, so without this check the failure surfaces as a misconfigured
+/// stack rather than a refused deploy.
+pub fn collect_env_var_references(compose_content: &str) -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    let bytes = compose_content.as_bytes();
+    let mut i = 0usize;
+
+    while i + 1 < bytes.len() {
+        // `$$` is Compose's escape — the text is emitted literally and never
+        // interpolated, so neither `$` may start a reference.
+        if bytes[i] == b'$' && bytes[i + 1] == b'$' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] != b'$' || bytes[i + 1] != b'{' {
+            i += 1;
+            continue;
+        }
+        // A reference never spans lines: bound the search so an unterminated
+        // `${` cannot swallow the next line's reference along with it.
+        let Some(end) = closing_brace_on_line(&compose_content[i + 2..]) else {
+            // Unterminated `${` — skip it and keep scanning. Abandoning the rest
+            // of the document here would silently under-report the references
+            // that follow.
+            i += 2;
+            continue;
+        };
+        let raw = &compose_content[i + 2..i + 2 + end];
+        // Compose allows ${VAR:-default} / ${VAR-default} / ${VAR:?err}.
+        let name = raw.split([':', '-', '?', '+']).next().unwrap_or("").trim();
+        if is_env_identifier(name) {
+            names.insert(name.to_string());
+        }
+        i += 2 + end + 1;
+    }
+
+    names
+}
+
+/// A `${VAR}` in the baked compose that nothing will fill on the buyer's machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnresolvedReference {
+    pub name: String,
+}
+
+/// Put back the literal value of every `${VAR}` the contract does **not** cover,
+/// and report the ones that cannot be resolved.
+///
+/// Stage 4 (`parameterize_compose_env_vars`, in the CLI) turns two different
+/// things into references: contract fields, and plain top-level `env:` keys. For
+/// an ordinary deploy both are fine — the `.env` travels next to the compose and
+/// stays intact. For a baked image they are not: at first boot the buyer's
+/// machine overwrites that `.env` wholesale from `/etc/stacker/env`, which only
+/// ever holds contract fields and the buyer's own values. A reference to
+/// anything else would resolve to an empty string, and Compose only warns.
+///
+/// So the image keeps references *only* for values that have a source on the
+/// buyer's machine, and everything else goes back to being a literal — which is
+/// correct, because those values are the same for every buyer.
+///
+/// Left untouched: `$$`-escaped text (Compose never interpolates it) and
+/// `${VAR:-default}` forms that carry their own fallback.
+pub fn resolve_non_contract_references(
+    compose_content: &str,
+    env_values: &std::collections::BTreeMap<String, String>,
+    protected: &BTreeSet<String>,
+) -> (String, Vec<UnresolvedReference>) {
+    let mut out = String::with_capacity(compose_content.len());
+    let mut unresolved = Vec::new();
+    let bytes = compose_content.as_bytes();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        // `$$` is Compose's escape: it is emitted literally, never interpolated.
+        // Copy both bytes untouched so we do not mistake the second `$` for the
+        // start of a reference.
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'$' {
+            out.push_str("$$");
+            i += 2;
+            continue;
+        }
+
+        if bytes[i] != b'$' || i + 1 >= bytes.len() || bytes[i + 1] != b'{' {
+            out.push(compose_content[i..].chars().next().unwrap_or('\0'));
+            i += compose_content[i..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            continue;
+        }
+
+        let Some(end) = closing_brace_on_line(&compose_content[i + 2..]) else {
+            // Unterminated `${` — copy it and carry on rather than abandoning
+            // the rest of the document.
+            out.push_str("${");
+            i += 2;
+            continue;
+        };
+
+        let raw = &compose_content[i + 2..i + 2 + end];
+        let whole = &compose_content[i..i + 2 + end + 1];
+        let has_default = raw.contains(":-") || raw.contains(":?") || raw.contains('-');
+        let name = raw.split([':', '-', '?', '+']).next().unwrap_or("").trim();
+
+        if !is_env_identifier(name) || protected.contains(name) {
+            // Not a reference we manage, or one the buyer's machine will fill.
+            out.push_str(whole);
+        } else if let Some(value) = env_values.get(name) {
+            out.push_str(value);
+        } else if has_default {
+            // Compose supplies the fallback itself; nothing is missing.
+            out.push_str(whole);
+        } else {
+            out.push_str(whole);
+            unresolved.push(UnresolvedReference {
+                name: name.to_string(),
+            });
+        }
+
+        i += 2 + end + 1;
+    }
+
+    unresolved.sort_by(|a, b| a.name.cmp(&b.name));
+    unresolved.dedup();
+    (out, unresolved)
+}
+
+/// The contract fields the sanitized compose still references — exactly the set
+/// the buyer's machine has to fill.
+///
+/// Derived from the contract rather than from the text of the file: a reference
+/// is only "required" if something is expected to supply it, and the only
+/// suppliers are the regeneration commands and the buyer's own values, both of
+/// which are driven by the contract.
+pub fn required_env_keys(compose_content: &str, protected: &BTreeSet<String>) -> BTreeSet<String> {
+    collect_env_var_references(compose_content)
+        .into_iter()
+        .filter(|name| protected.contains(name))
+        .collect()
+}
+
+/// Offset of the `}` that closes a `${` opened at the start of `rest`, or
+/// `None` when the line ends first — a reference never spans lines, and letting
+/// the search run on would consume the next line's reference too.
+fn closing_brace_on_line(rest: &str) -> Option<usize> {
+    let line_end = rest.find('\n').unwrap_or(rest.len());
+    rest[..line_end].find('}')
+}
+
+/// Render a healthcheck `test` in the form Docker actually expects.
+///
+/// Docker wraps a plain *string* in `CMD-SHELL` on its own, so a string that
+/// already spells the prefix out is wrapped twice and the container ends up
+/// trying to run a program named `CMD-SHELL`:
+///
+/// ```text
+/// /bin/sh: 1: CMD-SHELL: not found
+/// ```
+///
+/// The prefix only means anything in the list form — and the prefix form is
+/// what the stacker.yml reference tells authors to write, so it is converted
+/// rather than rejected.
+///
+/// The decision itself lives in [`crate::cli::compose_service_sync::healthcheck_test_value`],
+/// which the server-side sync path already uses; this only renders its result
+/// as inline YAML. One rule, two call sites.
+fn render_healthcheck_test(test: &str) -> String {
+    match crate::cli::compose_service_sync::healthcheck_test_value(test) {
+        serde_yaml::Value::Sequence(parts) => {
+            let rendered = parts
+                .iter()
+                .filter_map(serde_yaml::Value::as_str)
+                .map(yaml_quote)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[{rendered}]")
+        }
+        serde_yaml::Value::String(plain) => yaml_quote(&plain),
+        other => yaml_quote(other.as_str().unwrap_or_default()),
+    }
+}
+
+/// Returns `true` when `s` looks like a POSIX env-variable name.
+fn is_env_identifier(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .enumerate()
+            .all(|(i, c)| c.is_ascii_alphanumeric() || c == '_' || (i == 0 && c == '.'))
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -681,6 +1652,7 @@ services:
         config.app_present = false; // simulate no declared app: section
         config.app.image = Some("myorg/app:1.0".to_string());
         config.services = vec![ServiceDefinition {
+            runtime: Default::default(),
             name: "db".to_string(),
             image: "postgres:16".to_string(),
             ports: vec![],
@@ -689,6 +1661,11 @@ services:
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         }];
 
         let names = service_names(&config);
@@ -724,6 +1701,7 @@ services:
     #[test]
     fn test_compose_includes_additional_services() {
         let svc = ServiceDefinition {
+            runtime: Default::default(),
             name: "postgres".into(),
             image: "postgres:16".into(),
             ports: vec!["5432:5432".into()],
@@ -732,6 +1710,11 @@ services:
             depends_on: Vec::new(),
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = ConfigBuilder::new()
             .name("with-db")
@@ -799,6 +1782,230 @@ services:
     }
 
     #[test]
+    fn test_compose_caddy_proxy() {
+        let config = ConfigBuilder::new()
+            .name("caddy-app")
+            .app_type(AppType::Python)
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::Caddy,
+                auto_detect: true,
+                domains: Vec::new(),
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let caddy = compose
+            .services
+            .iter()
+            .find(|s| s.name == "caddy")
+            .expect("caddy service should be present");
+        assert_eq!(caddy.image.as_deref(), Some("caddy:2-alpine"));
+        assert!(caddy.ports.contains(&"80:80".to_string()));
+        assert!(caddy.ports.contains(&"443:443".to_string()));
+        assert!(caddy.depends_on.contains(&"app".to_string()));
+        assert!(caddy
+            .volumes
+            .contains(&"./Caddyfile:/etc/caddy/Caddyfile:ro".to_string()));
+    }
+
+    // Regression test: the proxy service's named volumes (Caddy's
+    // `caddy_data`/`caddy_config`) must be declared under top-level
+    // `volumes:`, the same class of bug fixed for the server-side renderer
+    // in GH #236 — a service referencing a named volume that's never
+    // declared produces an invalid compose file.
+    #[test]
+    fn test_compose_caddy_named_volumes_declared_at_top_level() {
+        let config = ConfigBuilder::new()
+            .name("caddy-app")
+            .app_type(AppType::Python)
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::Caddy,
+                auto_detect: true,
+                domains: Vec::new(),
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        assert!(compose.volumes.contains(&"caddy_data".to_string()));
+        assert!(compose.volumes.contains(&"caddy_config".to_string()));
+
+        let yaml = compose.render();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let top_level_volumes = doc
+            .get("volumes")
+            .and_then(|v| v.as_mapping())
+            .cloned()
+            .unwrap_or_default();
+        assert!(top_level_volumes.contains_key(serde_yaml::Value::String("caddy_data".to_string())));
+        assert!(
+            top_level_volumes.contains_key(serde_yaml::Value::String("caddy_config".to_string()))
+        );
+    }
+
+    // Regression tests: Traefik was previously a container-only stub — no
+    // labels were ever generated from `config.proxy.domains`, so it never
+    // actually routed anything (see GH discussion following #237). These
+    // cover the label-injection logic added to close that gap.
+
+    fn traefik_config_with_domain(ssl: SslMode) -> StackerConfig {
+        ConfigBuilder::new()
+            .name("traefik-app")
+            .app_type(AppType::Node)
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::Traefik,
+                auto_detect: true,
+                domains: vec![DomainConfig {
+                    domain: "app.example.com".to_string(),
+                    ssl,
+                    upstream: "app:3000".to_string(),
+                }],
+                config: None,
+            })
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_compose_traefik_labels_route_to_upstream_service() {
+        let config = traefik_config_with_domain(SslMode::Off);
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let app = compose.services.iter().find(|s| s.name == "app").unwrap();
+
+        assert_eq!(
+            app.labels.get("traefik.enable").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            app.labels
+                .get("traefik.http.routers.app-example-com.rule")
+                .map(String::as_str),
+            Some("Host(`app.example.com`)")
+        );
+        assert_eq!(
+            app.labels
+                .get("traefik.http.services.app-example-com.loadbalancer.server.port")
+                .map(String::as_str),
+            Some("3000")
+        );
+        assert_eq!(
+            app.labels
+                .get("traefik.http.routers.app-example-com.entrypoints")
+                .map(String::as_str),
+            Some("web"),
+            "SslMode::Off should route through the plain web entrypoint, no TLS label"
+        );
+        assert!(!app
+            .labels
+            .contains_key("traefik.http.routers.app-example-com.tls"));
+    }
+
+    #[test]
+    fn test_compose_traefik_labels_enable_tls_without_certresolver_when_no_admin_email() {
+        let config = traefik_config_with_domain(SslMode::Auto);
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let app = compose.services.iter().find(|s| s.name == "app").unwrap();
+
+        assert_eq!(
+            app.labels
+                .get("traefik.http.routers.app-example-com.entrypoints")
+                .map(String::as_str),
+            Some("websecure")
+        );
+        assert_eq!(
+            app.labels
+                .get("traefik.http.routers.app-example-com.tls")
+                .map(String::as_str),
+            Some("true")
+        );
+        assert!(
+            !app.labels
+                .contains_key("traefik.http.routers.app-example-com.tls.certresolver"),
+            "no admin_email configured, so no ACME certresolver should be wired up"
+        );
+    }
+
+    #[test]
+    fn test_compose_traefik_labels_use_acme_certresolver_when_admin_email_present() {
+        let mut config = traefik_config_with_domain(SslMode::Auto);
+        config.install.inputs.insert(
+            "admin_email".to_string(),
+            serde_json::json!("ops@example.com"),
+        );
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let app = compose.services.iter().find(|s| s.name == "app").unwrap();
+        assert_eq!(
+            app.labels
+                .get("traefik.http.routers.app-example-com.tls.certresolver")
+                .map(String::as_str),
+            Some("letsencrypt")
+        );
+
+        let traefik = compose
+            .services
+            .iter()
+            .find(|s| s.name == "traefik")
+            .unwrap();
+        let command = traefik.command.as_deref().unwrap_or_default();
+        assert!(command.contains("--certificatesresolvers.letsencrypt.acme.email=ops@example.com"));
+        assert!(command.contains("--certificatesresolvers.letsencrypt.acme.httpchallenge=true"));
+    }
+
+    #[test]
+    fn test_compose_traefik_static_config_and_certs_volume() {
+        let config = traefik_config_with_domain(SslMode::Off);
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let traefik = compose
+            .services
+            .iter()
+            .find(|s| s.name == "traefik")
+            .unwrap();
+
+        let command = traefik.command.as_deref().unwrap_or_default();
+        assert!(command.contains("--providers.docker=true"));
+        assert!(command.contains("--providers.docker.exposedbydefault=false"));
+        assert!(command.contains("--entrypoints.web.address=:80"));
+        assert!(command.contains("--entrypoints.websecure.address=:443"));
+
+        assert!(compose.volumes.contains(&"traefik_certs".to_string()));
+        let yaml = compose.render();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        assert!(doc["volumes"]
+            .as_mapping()
+            .unwrap()
+            .contains_key(serde_yaml::Value::String("traefik_certs".to_string())));
+    }
+
+    #[test]
+    fn test_compose_traefik_skips_domain_with_unresolvable_upstream_service() {
+        let config = ConfigBuilder::new()
+            .name("traefik-app")
+            .app_type(AppType::Node)
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::Traefik,
+                auto_detect: true,
+                domains: vec![DomainConfig {
+                    domain: "ghost.example.com".to_string(),
+                    ssl: SslMode::Off,
+                    upstream: "nonexistent-service:9999".to_string(),
+                }],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        // Must not panic — an upstream naming a service that doesn't exist
+        // in the compose is silently skipped rather than erroring the build.
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let app = compose.services.iter().find(|s| s.name == "app").unwrap();
+        assert!(!app.labels.contains_key("traefik.enable"));
+    }
+
+    #[test]
     fn test_compose_render_omits_obsolete_version() {
         let config = minimal_config(AppType::Static);
         let compose = ComposeDefinition::try_from(&config).unwrap();
@@ -827,6 +2034,7 @@ services:
     #[test]
     fn test_compose_render_contains_volumes_section() {
         let svc = ServiceDefinition {
+            runtime: Default::default(),
             name: "redis".into(),
             image: "redis:7".into(),
             ports: Vec::new(),
@@ -835,6 +2043,11 @@ services:
             depends_on: Vec::new(),
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = ConfigBuilder::new()
             .name("with-vol")
@@ -847,6 +2060,27 @@ services:
         let yaml = compose.render();
         assert!(yaml.contains("volumes:"));
         assert!(yaml.contains("  redis-data:"));
+    }
+
+    /// `app.shm_size`, `app.user` and `app.depends_on` were accepted by the
+    /// parser but never reached the generated compose (silently dropped).
+    /// They must be rendered for the app service.
+    #[test]
+    fn test_compose_app_renders_shm_size_user_depends_on() {
+        let mut config = minimal_config(AppType::Static);
+        config.app.shm_size = Some("256m".to_string());
+        config.app.user = Some("0:0".to_string());
+        config.app.depends_on = vec!["postgres".to_string()];
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let yaml = compose.render();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let app = doc.get("services").and_then(|s| s.get("app")).unwrap();
+        assert_eq!(app.get("shm_size").and_then(|v| v.as_str()), Some("256m"));
+        assert_eq!(app.get("user").and_then(|v| v.as_str()), Some("0:0"));
+        let depends = app.get("depends_on").and_then(|v| v.as_sequence()).unwrap();
+        assert_eq!(depends.len(), 1);
+        assert_eq!(depends[0].as_str(), Some("postgres"));
     }
 
     #[test]
@@ -907,6 +2141,7 @@ services:
     #[test]
     fn test_service_definition_to_compose_service() {
         let svc_def = ServiceDefinition {
+            runtime: Default::default(),
             name: "mysql".into(),
             image: "mysql:8".into(),
             ports: vec!["3306:3306".into()],
@@ -915,6 +2150,11 @@ services:
             depends_on: Vec::new(),
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
 
         let compose_svc = ComposeService::from(&svc_def);
@@ -933,6 +2173,7 @@ services:
     #[test]
     fn service_definition_adds_project_scope_labels() {
         let svc_def = ServiceDefinition {
+            runtime: Default::default(),
             name: "smtp".into(),
             image: "trydirect/smtp:latest".into(),
             ports: Vec::new(),
@@ -941,6 +2182,11 @@ services:
             depends_on: Vec::new(),
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
 
         let compose_svc = ComposeService::from(&svc_def);
@@ -1024,6 +2270,84 @@ services:
     fn test_extract_named_volume_ignores_bind_mount() {
         assert_eq!(extract_named_volume("./data:/app/data"), None);
         assert_eq!(extract_named_volume("/host/path:/container"), None);
+    }
+
+    /// Read one service's rendered `environment` value back through a real
+    /// YAML parser. Asserting on the raw text would pass for output that a
+    /// parser silently folds, which is the whole failure mode here.
+    fn parse_env_value(yaml: &str, service: &str, key: &str) -> String {
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(yaml).expect("rendered compose must be valid YAML");
+        doc["services"][service]["environment"][key]
+            .as_str()
+            .unwrap_or_else(|| panic!("{key} must render as a string scalar"))
+            .to_string()
+    }
+
+    /// GH #251: a multiline env value was emitted as a double-quoted scalar
+    /// with raw newlines, which YAML folds into spaces. GitLab's omnibus
+    /// config reached the container as one line of Ruby and `gitlab-ctl
+    /// reconfigure` failed on the syntax error.
+    #[test]
+    fn multiline_env_value_survives_a_yaml_round_trip() {
+        let omnibus = "external_url 'http://git.example.com'\n                       nginx['listen_port'] = 80\n                       gitlab_rails['gitlab_shell_ssh_port'] = 2222\n";
+
+        let config = ConfigBuilder::new()
+            .name("gitlab")
+            .app_type(AppType::Custom)
+            .app_image("gitlab/gitlab-ce:18.10.1-ce.0")
+            .env("GITLAB_OMNIBUS_CONFIG", omnibus)
+            .build()
+            .unwrap();
+
+        let yaml = ComposeDefinition::try_from(&config).unwrap().render();
+
+        assert!(
+            yaml.contains("GITLAB_OMNIBUS_CONFIG: |"),
+            "multiline value should use a literal block scalar:\n{yaml}"
+        );
+        assert_eq!(
+            parse_env_value(&yaml, "app", "GITLAB_OMNIBUS_CONFIG"),
+            omnibus,
+            "newlines must survive; folding them corrupts the omnibus config"
+        );
+    }
+
+    /// Values that a block scalar cannot represent exactly (trailing spaces on
+    /// a line) fall back to a quoted scalar with escapes — still exact.
+    #[test]
+    fn env_values_needing_escapes_round_trip() {
+        let tricky = "line one has a trailing space \nsays \"hi\" and a \\ backslash";
+
+        let config = ConfigBuilder::new()
+            .name("tricky")
+            .app_type(AppType::Custom)
+            .app_image("busybox")
+            .env("TRICKY", tricky)
+            .build()
+            .unwrap();
+
+        let yaml = ComposeDefinition::try_from(&config).unwrap().render();
+
+        assert_eq!(parse_env_value(&yaml, "app", "TRICKY"), tricky);
+    }
+
+    #[test]
+    fn yaml_quote_escapes_control_characters() {
+        assert_eq!(yaml_quote("a\nb"), "\"a\\nb\"");
+        assert_eq!(yaml_quote("a\tb"), "\"a\\tb\"");
+        assert_eq!(yaml_quote("say \"hi\""), "\"say \\\"hi\\\"\"");
+    }
+
+    #[test]
+    fn block_scalar_is_rejected_when_it_would_not_round_trip() {
+        assert!(yaml_block_scalar_safe("a\nb"));
+        assert!(yaml_block_scalar_safe("a\nb\n"));
+        assert!(!yaml_block_scalar_safe("single line"));
+        assert!(!yaml_block_scalar_safe(" leading space\nb"));
+        assert!(!yaml_block_scalar_safe("trailing space \nb"));
+        assert!(!yaml_block_scalar_safe("a\nb\n\n"));
+        assert!(!yaml_block_scalar_safe("a\r\nb"));
     }
 
     #[test]
@@ -1112,6 +2436,7 @@ services:
     #[test]
     fn npm_proxy_injects_default_network_into_proxied_service() {
         let svc = ServiceDefinition {
+            runtime: Default::default(),
             name: "api".into(),
             image: "myapp:latest".into(),
             ports: vec!["8080:8080".into()],
@@ -1120,6 +2445,11 @@ services:
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = ConfigBuilder::new()
             .name("npm-proxied")
@@ -1161,6 +2491,7 @@ services:
     #[test]
     fn npm_proxy_does_not_inject_into_unproxied_service() {
         let smtp = ServiceDefinition {
+            runtime: Default::default(),
             name: "smtp".into(),
             image: "trydirect/smtp".into(),
             ports: vec![],
@@ -1169,6 +2500,11 @@ services:
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = ConfigBuilder::new()
             .name("partial-proxy")
@@ -1196,8 +2532,54 @@ services:
     }
 
     #[test]
-    fn non_npm_proxy_does_not_inject_default_network() {
+    fn every_proxy_type_labels_its_service_platform_scoped() {
+        // The synthesized proxy for every proxy type must carry
+        // `my.stacker.scope: platform` so the remote-bundle strip removes it
+        // and the backend role becomes its sole owner (no double-deploy).
+        for (proxy_type, service_name) in [
+            (ProxyType::Nginx, "nginx"),
+            (ProxyType::NginxProxyManager, "proxy-manager"),
+            (ProxyType::Traefik, "traefik"),
+            (ProxyType::Caddy, "caddy"),
+        ] {
+            let config = ConfigBuilder::new()
+                .name("proxy-scope-app")
+                .app_type(AppType::Node)
+                .proxy(ProxyConfig {
+                    proxy_type,
+                    auto_detect: false,
+                    domains: vec![],
+                    config: None,
+                })
+                .build()
+                .unwrap();
+
+            let compose = ComposeDefinition::try_from(&config).unwrap();
+            let proxy = compose
+                .services
+                .iter()
+                .find(|svc| svc.name == service_name)
+                .unwrap_or_else(|| panic!("{service_name} proxy service should be present"));
+            assert_eq!(
+                proxy
+                    .labels
+                    .get(crate::helpers::stacker_labels::SCOPE)
+                    .map(String::as_str),
+                Some(crate::helpers::stacker_labels::SCOPE_PLATFORM),
+                "{service_name} proxy must be platform-scoped"
+            );
+        }
+    }
+
+    #[test]
+    fn non_npm_proxy_injects_default_network_onto_proxied_service() {
+        // Every proxy type is platform-managed: on remote deploys the proxy
+        // container is stripped from this compose and installed by its own
+        // backend role, which joins the external `default_network`. So the
+        // proxied service must also join `default_network` for the managed
+        // proxy to reach it. (Previously only NginxProxyManager did this.)
         let svc = ServiceDefinition {
+            runtime: Default::default(),
             name: "web".into(),
             image: "nginx:latest".into(),
             ports: vec![],
@@ -1206,6 +2588,11 @@ services:
             depends_on: vec![],
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         };
         let config = ConfigBuilder::new()
             .name("traefik-app")
@@ -1226,8 +2613,19 @@ services:
 
         let compose = ComposeDefinition::try_from(&config).unwrap();
         assert!(
-            compose.external_networks.is_empty(),
-            "Traefik proxy should not inject default_network"
+            compose
+                .external_networks
+                .contains(&"default_network".to_string()),
+            "Traefik proxy should inject the external default_network"
+        );
+        let web = compose
+            .services
+            .iter()
+            .find(|svc| svc.name == "web")
+            .expect("proxied 'web' service present");
+        assert!(
+            web.networks.contains(&"default_network".to_string()),
+            "the proxied service should join default_network"
         );
     }
 
@@ -1251,5 +2649,630 @@ services:
             "No runtime should appear in:\n{}",
             output
         );
+    }
+
+    /// A container that insists on its own variable name is fed from one the
+    /// author defined: `MYSQL_PASSWORD: "${DB_PASSWORD}"`. Emitting
+    /// `${MYSQL_PASSWORD}` there names something no `.env` defines — compose
+    /// resolves it to the empty string with a warning, and mysql crash-loops
+    /// on "Database is uninitialized and password option is not specified".
+    #[test]
+    fn an_alias_keeps_the_name_the_env_file_actually_defines() {
+        let compose = "\
+services:
+  db:
+    image: mysql:8
+    environment:
+      MYSQL_PASSWORD: placeholder-value # pragma: allowlist secret
+      MYSQL_ROOT_PASSWORD: placeholder-value # pragma: allowlist secret
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("MYSQL_PASSWORD".to_string());
+        keys.insert("MYSQL_ROOT_PASSWORD".to_string());
+
+        let mut aliases = std::collections::HashMap::new();
+        aliases.insert("MYSQL_PASSWORD".to_string(), "DB_PASSWORD".to_string());
+        aliases.insert(
+            "MYSQL_ROOT_PASSWORD".to_string(),
+            "DB_ROOT_PASSWORD".to_string(),
+        );
+
+        let result = parameterize_compose_env_vars_with_aliases(compose, &keys, &aliases);
+        assert!(
+            result.contains("MYSQL_PASSWORD: ${DB_PASSWORD}"),
+            "the reference must name the variable the env file carries:\n{result}"
+        );
+        assert!(
+            result.contains("MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}"),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn a_key_without_an_alias_still_references_itself() {
+        let compose = "\
+services:
+  app:
+    environment:
+      SECRET_KEY: placeholder-value # pragma: allowlist secret
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("SECRET_KEY".to_string());
+
+        let result = parameterize_compose_env_vars_with_aliases(
+            compose,
+            &keys,
+            &std::collections::HashMap::new(),
+        );
+        assert!(result.contains("SECRET_KEY: ${SECRET_KEY}"), "{result}");
+    }
+
+    #[test]
+    fn the_list_form_of_an_environment_block_honours_aliases() {
+        let compose = "\
+services:
+  db:
+    environment:
+      - MYSQL_PASSWORD=placeholder-value # pragma: allowlist secret
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("MYSQL_PASSWORD".to_string());
+        let mut aliases = std::collections::HashMap::new();
+        aliases.insert("MYSQL_PASSWORD".to_string(), "DB_PASSWORD".to_string());
+
+        let result = parameterize_compose_env_vars_with_aliases(compose, &keys, &aliases);
+        assert!(
+            result.contains("- MYSQL_PASSWORD=${DB_PASSWORD}"),
+            "{result}"
+        );
+    }
+
+    /// Deployment #1363 (local-ai-packaged, 2026-10-15): Supabase's `db` and
+    /// Langfuse's `postgres` both declare POSTGRES_PASSWORD, referencing
+    /// different variables. One map for the whole file gave Supabase's db the
+    /// Langfuse password, and auth/rest/storage restarted forever.
+    #[test]
+    fn one_env_name_keeps_each_services_own_reference() {
+        let raw = r#"
+services:
+  - name: db
+    environment:
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+  - name: postgres
+    environment:
+      POSTGRES_PASSWORD: "${LANGFUSE_POSTGRES_PASSWORD}"
+  - name: auth
+    environment:
+      DB_PASS: ${POSTGRES_PASSWORD}
+"#;
+        let compose = "\
+services:
+  db:
+    environment:
+      POSTGRES_PASSWORD: placeholder-value # pragma: allowlist secret
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: placeholder-value # pragma: allowlist secret
+  auth:
+    environment:
+      - DB_PASS=placeholder-value # pragma: allowlist secret
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("POSTGRES_PASSWORD".to_string());
+        keys.insert("DB_PASS".to_string());
+
+        let result =
+            parameterize_compose_env_vars_with_aliases(compose, &keys, &env_reference_aliases(raw));
+
+        let db = result.split("  postgres:").next().unwrap();
+        let postgres = result
+            .split("  postgres:")
+            .nth(1)
+            .unwrap()
+            .split("  auth:")
+            .next()
+            .unwrap();
+        assert!(
+            db.contains("POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}"),
+            "{result}"
+        );
+        assert!(
+            postgres.contains("POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD}"),
+            "{result}"
+        );
+        assert!(
+            result.contains("- DB_PASS=${POSTGRES_PASSWORD}"),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn aliases_are_read_from_the_unresolved_stacker_yml() {
+        let raw = r#"
+app:
+  environment:
+    DB_PASSWORD: "${DB_PASSWORD}"
+    WEBUI_URL: "https://${commonDomain}"
+services:
+  - name: db
+    environment:
+      MYSQL_PASSWORD: "${DB_PASSWORD}"
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MYSQL_DATABASE: ampache
+"#;
+        let aliases = env_reference_aliases(raw);
+
+        assert_eq!(
+            aliases.get("MYSQL_PASSWORD").map(String::as_str),
+            Some("DB_PASSWORD")
+        );
+        // Quoting is the author's choice, not a signal.
+        assert_eq!(
+            aliases.get("MYSQL_ROOT_PASSWORD").map(String::as_str),
+            Some("DB_ROOT_PASSWORD")
+        );
+        // A key that references its own name needs no alias.
+        assert!(!aliases.contains_key("DB_PASSWORD"));
+        // A value that merely embeds a variable cannot become one reference.
+        assert!(!aliases.contains_key("WEBUI_URL"));
+        // A plain literal is not a reference at all.
+        assert!(!aliases.contains_key("MYSQL_DATABASE"));
+    }
+
+    #[test]
+    fn parameterize_replaces_secret_values_with_env_refs() {
+        let compose = "\
+services:
+  app:
+    image: trydirect/stackpilot:latest
+    ports:
+      - \"8080:8000\"
+    environment:
+      ADMIN_PASSWORD: fedcba9876543210fedcba9876543210
+      ADMIN_USER: admin
+      DATABASE_URL: postgresql://stackpilot:0123456789abcdef0123456789abcdef@db:5432/stackpilot
+      SECRET_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+      OLLAMA_MODEL: llama3.1
+    restart: unless-stopped
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("ADMIN_PASSWORD".to_string());
+        keys.insert("SECRET_KEY".to_string());
+        keys.insert("DATABASE_URL".to_string());
+
+        let result = parameterize_compose_env_vars(compose, &keys);
+
+        assert!(
+            result.contains("ADMIN_PASSWORD: ${ADMIN_PASSWORD}"),
+            "admin pw:\n{result}"
+        );
+        assert!(
+            result.contains("SECRET_KEY: ${SECRET_KEY}"),
+            "secret key:\n{result}"
+        );
+        assert!(
+            result.contains("DATABASE_URL: ${DATABASE_URL}"),
+            "db url:\n{result}"
+        );
+        // Non-secret values stay as-is.
+        assert!(
+            result.contains("ADMIN_USER: admin"),
+            "admin user:\n{result}"
+        );
+        assert!(
+            result.contains("OLLAMA_MODEL: llama3.1"),
+            "model:\n{result}"
+        );
+    }
+
+    #[test]
+    fn parameterize_leaves_non_env_blocks_alone() {
+        let compose = "\
+services:
+  app:
+    image: myapp:latest
+    environment:
+      SECRET_KEY: abc123
+    labels:
+      my.stacker.service: myapp
+    volumes:
+      - app_data:/app/data
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("SECRET_KEY".to_string());
+
+        let result = parameterize_compose_env_vars(compose, &keys);
+
+        assert!(
+            result.contains("SECRET_KEY: ${SECRET_KEY}"),
+            "secret:\n{result}"
+        );
+        assert!(
+            result.contains("my.stacker.service: myapp"),
+            "label:\n{result}"
+        );
+        assert!(result.contains("- app_data:/app/data"), "volume:\n{result}");
+    }
+
+    // ── embedded secret values (secrets inside a larger value) ──────────────
+
+    fn env_map(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn key_set(keys: &[&str]) -> std::collections::BTreeSet<String> {
+        keys.iter().map(|k| k.to_string()).collect()
+    }
+
+    #[test]
+    fn embedded_secret_inside_a_dsn_is_parameterized() {
+        // The case whole-value replacement structurally cannot reach.
+        let compose = "\
+services:
+  app:
+    environment:
+      DATABASE_URL: postgresql://stackpilot:0123456789abcdef0123456789abcdef@db:5432/stackpilot
+";
+        let env = env_map(&[("POSTGRES_PASSWORD", "0123456789abcdef0123456789abcdef")]);
+        let result =
+            parameterize_embedded_secret_values(compose, &env, &key_set(&["POSTGRES_PASSWORD"]))
+                .expect("no conflict");
+
+        assert!(
+            result.contains("postgresql://stackpilot:${POSTGRES_PASSWORD}@db:5432/stackpilot"),
+            "password replaced in place:\n{result}"
+        );
+        assert!(
+            !result.contains("0123456789abcdef0123456789abcdef"),
+            "no literal left:\n{result}"
+        );
+    }
+
+    /// BUGS (2026-10-15): only environment blocks were rewritten, so a secret
+    /// in a command or a healthcheck (Langfuse's redis `--requirepass`,
+    /// realtime's `Authorization: Bearer <ANON_KEY>`) shipped in the snapshot
+    /// as the author's literal - every buyer got the same value.
+    #[test]
+    fn a_secret_outside_environment_blocks_is_parameterized_too() {
+        let compose = "\
+services:
+  redis:
+    command: redis-server --requirepass 0123456789abcdef0123456789abcdef
+    healthcheck:
+      test: [\"CMD\", \"redis-cli\", \"-a\", \"0123456789abcdef0123456789abcdef\", \"ping\"]
+  realtime:
+    entrypoint: [\"sh\", \"-c\", \"curl -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.anon' http://x\"]
+";
+        let env = env_map(&[
+            ("REDIS_AUTH", "0123456789abcdef0123456789abcdef"),
+            ("ANON_KEY", "eyJhbGciOiJIUzI1NiJ9.anon"),
+        ]);
+        let result = parameterize_embedded_secret_values(
+            compose,
+            &env,
+            &key_set(&["REDIS_AUTH", "ANON_KEY"]),
+        )
+        .expect("no conflict");
+
+        assert!(
+            result.contains("--requirepass ${REDIS_AUTH}"),
+            "command parameterized:\n{result}"
+        );
+        assert!(
+            result.contains("\"-a\", \"${REDIS_AUTH}\""),
+            "healthcheck parameterized:\n{result}"
+        );
+        assert!(
+            result.contains("Bearer ${ANON_KEY}"),
+            "entrypoint parameterized:\n{result}"
+        );
+        assert!(
+            !result.contains("0123456789abcdef0123456789abcdef") && !result.contains(".anon'"),
+            "no literal left:\n{result}"
+        );
+    }
+
+    #[test]
+    fn short_values_are_left_alone() {
+        // "admin" would otherwise corrupt every word containing it.
+        let compose = "services:\n  app:\n    environment:\n      ADMIN_USER: admin\n      GREETING: administrator\n";
+        let env = env_map(&[("ADMIN_USER", "admin")]);
+        let result = parameterize_embedded_secret_values(compose, &env, &key_set(&["ADMIN_USER"]))
+            .expect("no conflict");
+        assert!(
+            result.contains("GREETING: administrator"),
+            "untouched:\n{result}"
+        );
+    }
+
+    #[test]
+    fn undeclared_values_are_left_alone() {
+        // Nothing regenerates it on the buyer's box, so a ${REF} would resolve empty.
+        let compose =
+            "services:\n  app:\n    environment:\n      URL: http://host/aaaaaaaaaaaaaaaa\n";
+        let env = env_map(&[("SOME_KEY", "aaaaaaaaaaaaaaaa")]);
+        let result =
+            parameterize_embedded_secret_values(compose, &env, &std::collections::BTreeSet::new())
+                .expect("no conflict");
+        assert!(
+            result.contains("aaaaaaaaaaaaaaaa"),
+            "left literal:\n{result}"
+        );
+    }
+
+    #[test]
+    fn one_value_under_two_protected_names_is_refused() {
+        // stackpilot's DB_PASSWORD/POSTGRES_PASSWORD duplication: both are
+        // `generated`, so regeneration would hand them different values.
+        let compose = "\
+services:
+  db:
+    environment:
+      POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef
+";
+        let env = env_map(&[("DB_PASSWORD", "0123456789abcdef0123456789abcdef")]);
+        let err = parameterize_embedded_secret_values(
+            compose,
+            &env,
+            &key_set(&["DB_PASSWORD", "POSTGRES_PASSWORD"]),
+        )
+        .expect_err("duplicate must be refused");
+
+        assert_eq!(
+            err.keys,
+            vec!["DB_PASSWORD".to_string(), "POSTGRES_PASSWORD".to_string()]
+        );
+    }
+
+    #[test]
+    fn non_environment_blocks_are_never_rewritten() {
+        let compose = "\
+services:
+  app:
+    image: myapp:0123456789abcdef0123456789abcdef
+    environment:
+      TOKEN: 0123456789abcdef0123456789abcdef
+";
+        let env = env_map(&[("TOKEN", "0123456789abcdef0123456789abcdef")]);
+        let result = parameterize_embedded_secret_values(compose, &env, &key_set(&["TOKEN"]))
+            .expect("no conflict");
+
+        assert!(
+            result.contains("image: myapp:0123456789abcdef0123456789abcdef"),
+            "image digest untouched:\n{result}"
+        );
+        assert!(
+            result.contains("TOKEN: ${TOKEN}"),
+            "env replaced:\n{result}"
+        );
+    }
+
+    #[test]
+    fn collects_env_var_reference_skips_escaped_and_survives_unterminated() {
+        // `$$` is Compose's escape — the container sees literal `${HOME}` and
+        // nothing is interpolated, so it is not a reference.
+        let escaped = "services:\n  app:\n    command: sh -c 'echo $${HOME}'\n";
+        assert!(
+            collect_env_var_references(escaped).is_empty(),
+            "escaped text must not count as a reference"
+        );
+
+        // A stray `${` must not discard everything after it.
+        let broken =
+            "services:\n  app:\n    environment:\n      A: ${BROKEN\n      B: ${REAL_ONE}\n";
+        assert!(
+            collect_env_var_references(broken).contains("REAL_ONE"),
+            "scanning must continue past an unterminated reference"
+        );
+    }
+
+    #[test]
+    fn collects_env_var_references_with_defaults_and_ignores_literals() {
+        let compose = "\
+services:
+  app:
+    image: app:latest
+    environment:
+      A: ${ALPHA}
+      B: ${BETA:-fallback}
+      C: ${GAMMA?required}
+      D: plain-value
+";
+        let refs = collect_env_var_references(compose);
+        let found: Vec<&str> = refs.iter().map(String::as_str).collect();
+        assert_eq!(found, vec!["ALPHA", "BETA", "GAMMA"]);
+    }
+
+    #[test]
+    fn collects_env_var_reference_embedded_in_a_dsn() {
+        let compose =
+            "services:\n  app:\n    environment:\n      DATABASE_URL: postgres://u:${PW}@h/db\n";
+        assert!(collect_env_var_references(compose).contains("PW"));
+    }
+
+    // ── references that survive into the baked image ───────────────────────
+
+    #[test]
+    fn non_contract_reference_goes_back_to_its_literal() {
+        // A top-level `env:` key is turned into a reference at deploy time, but
+        // nothing fills it on the buyer's machine — the .env there is replaced
+        // wholesale from /etc/stacker/env, which only holds contract fields.
+        let compose = "services:\n  app:\n    environment:\n      REGION: ${REGION}\n";
+        let env = env_map(&[("REGION", "fsn1")]);
+
+        let (out, unresolved) =
+            resolve_non_contract_references(compose, &env, &std::collections::BTreeSet::new());
+
+        assert!(
+            out.contains("REGION: fsn1"),
+            "put back as a literal:\n{out}"
+        );
+        assert!(unresolved.is_empty(), "nothing missing: {unresolved:?}");
+    }
+
+    #[test]
+    fn contract_reference_is_kept_as_a_reference() {
+        let compose =
+            "services:\n  db:\n    environment:\n      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}\n";
+        let env = env_map(&[("POSTGRES_PASSWORD", "aaaaaaaaaaaaaaaa")]);
+
+        let (out, _) =
+            resolve_non_contract_references(compose, &env, &key_set(&["POSTGRES_PASSWORD"]));
+
+        assert!(
+            out.contains("POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}"),
+            "the buyer's machine fills this one:\n{out}"
+        );
+        assert!(
+            !out.contains("aaaaaaaaaaaaaaaa"),
+            "the author's value must not come back:\n{out}"
+        );
+    }
+
+    #[test]
+    fn escaped_and_defaulted_references_are_left_untouched() {
+        let compose = "services:\n  app:\n    environment:\n      LOG: ${LOG_LEVEL:-info}\n\
+                       \x20     CMD: echo $${HOME}\n";
+        let (out, unresolved) = resolve_non_contract_references(
+            compose,
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeSet::new(),
+        );
+
+        assert!(out.contains("${LOG_LEVEL:-info}"), "default kept:\n{out}");
+        assert!(out.contains("$${HOME}"), "escape kept:\n{out}");
+        assert!(
+            unresolved.is_empty(),
+            "neither needs a source: {unresolved:?}"
+        );
+    }
+
+    #[test]
+    fn a_reference_with_no_value_and_no_default_is_reported() {
+        let compose = "services:\n  app:\n    environment:\n      TOKEN: ${MISSING}\n";
+        let (_, unresolved) = resolve_non_contract_references(
+            compose,
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeSet::new(),
+        );
+
+        assert_eq!(
+            unresolved,
+            vec![UnresolvedReference {
+                name: "MISSING".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn required_keys_come_from_the_contract_not_the_file_text() {
+        let compose = "services:\n  app:\n    environment:\n\
+                       \x20     SECRET_KEY: ${SECRET_KEY}\n\
+                       \x20     LOG: ${LOG_LEVEL:-info}\n\
+                       \x20     CMD: echo $${HOME}\n\
+                       \x20     REGION: ${REGION}\n";
+
+        let required = required_env_keys(compose, &key_set(&["SECRET_KEY"]));
+        let found: Vec<&str> = required.iter().map(String::as_str).collect();
+
+        assert_eq!(
+            found,
+            vec!["SECRET_KEY"],
+            "only contract fields have a source on the buyer's machine"
+        );
+    }
+
+    /// M5 — Compose accepts `environment:` as a list as well as a mapping, and
+    /// a user-supplied compose (`deploy.compose_file`) often uses the list form.
+    /// Missing it leaves the author's secrets literal in the snapshot.
+    #[test]
+    fn parameterize_handles_the_list_form_of_environment() {
+        let compose = "\
+services:
+  db:
+    environment:
+      - POSTGRES_PASSWORD=aaaaaaaaaaaaaaaa
+      - POSTGRES_USER=stackpilot
+";
+        let mut keys = std::collections::HashSet::new();
+        keys.insert("POSTGRES_PASSWORD".to_string());
+
+        let result = parameterize_compose_env_vars(compose, &keys);
+
+        assert!(
+            result.contains("- POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"),
+            "list entry replaced:\n{result}"
+        );
+        assert!(
+            result.contains("- POSTGRES_USER=stackpilot"),
+            "undeclared entry untouched:\n{result}"
+        );
+    }
+
+    #[test]
+    fn parameterize_list_form_leaves_undeclared_keys_alone() {
+        let compose = "services:\n  app:\n    environment:\n      - LOG_LEVEL=debug\n";
+        let keys = std::collections::HashSet::new();
+        assert_eq!(parameterize_compose_env_vars(compose, &keys), compose);
+    }
+
+    // ── healthcheck test form ──────────────────────────────────────────────
+
+    /// Docker wraps a *string* `test` in `CMD-SHELL` itself, so a string that
+    /// already carries the prefix is wrapped twice and the container tries to
+    /// execute a program literally named `CMD-SHELL`:
+    ///
+    ///     /bin/sh: 1: CMD-SHELL: not found
+    ///
+    /// The prefix is only meaningful in the list form, and the prefix form is
+    /// what `docs/STACKER_YML_REFERENCE.md` tells authors to write.
+    #[test]
+    fn healthcheck_cmd_shell_prefix_becomes_a_list() {
+        let rendered = render_healthcheck_test("CMD-SHELL pg_isready -d app -U app");
+        assert_eq!(rendered, r#"["CMD-SHELL", "pg_isready -d app -U app"]"#);
+    }
+
+    /// `CMD` runs the argv directly, so each word is its own element.
+    #[test]
+    fn healthcheck_cmd_prefix_becomes_an_argv_list() {
+        let rendered = render_healthcheck_test("CMD redis-cli ping");
+        assert_eq!(rendered, r#"["CMD", "redis-cli", "ping"]"#);
+    }
+
+    /// Without a prefix the string form is correct — Docker supplies the shell.
+    #[test]
+    fn healthcheck_without_a_prefix_stays_a_string() {
+        let rendered = render_healthcheck_test("curl -f http://localhost/health");
+        assert_eq!(rendered, r#""curl -f http://localhost/health""#);
+    }
+
+    /// The list form an author wrote by hand must survive untouched.
+    #[test]
+    fn healthcheck_already_a_list_is_left_alone() {
+        let rendered = render_healthcheck_test(r#"["CMD", "true"]"#);
+        assert_eq!(rendered, r#"["CMD", "true"]"#);
+    }
+
+    /// A value that merely starts with the letters CMD is not a prefix.
+    #[test]
+    fn healthcheck_cmdline_is_not_mistaken_for_a_prefix() {
+        let rendered = render_healthcheck_test("cmdline-check --fast");
+        assert_eq!(rendered, r#""cmdline-check --fast""#);
+    }
+
+    #[test]
+    fn healthcheck_quotes_are_escaped_inside_the_list() {
+        let rendered = render_healthcheck_test(r#"CMD-SHELL test "$(id -u)" = 0"#);
+        assert_eq!(rendered, r#"["CMD-SHELL", "test \"$(id -u)\" = 0"]"#);
+    }
+
+    #[test]
+    fn parameterize_no_keys_returns_original() {
+        let compose = "services:\n  app:\n    environment:\n      FOO: bar\n";
+        let keys = std::collections::HashSet::new();
+        assert_eq!(parameterize_compose_env_vars(compose, &keys), compose);
     }
 }

@@ -31,6 +31,12 @@ pub struct StackTemplate {
     pub price: Option<f64>,
     pub billing_cycle: Option<String>,
     pub currency: Option<String>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub daily_rate: Option<f64>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub monthly_cap: Option<f64>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
     pub approved_at: Option<DateTime<Utc>>,
@@ -96,6 +102,14 @@ pub struct StackTemplateVersion {
     pub definition_format: Option<String>,
     pub changelog: Option<String>,
     pub is_latest: Option<bool>,
+    /// Author-declared per-field policy (`config_contract`), stored in its own
+    /// `stack_template_version.config_contract` column. `#[sqlx(default)]` so the
+    /// many SELECTs that don't list the column still map (they get `None`); the
+    /// federation reads (`get_latest_version`, `get_latest_version_by_template`,
+    /// `get_by_slug_with_latest`) do list it so the webhook can deliver it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub config_contract: Option<serde_json::Value>,
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -377,9 +391,143 @@ pub struct TemplateAnalytics {
     pub conversion_rate: f64,
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Listing description rules (marketplace review requirements)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Minimum length of `short_description`, in characters (trimmed).
+pub const SHORT_DESCRIPTION_MIN_CHARS: usize = 20;
+/// Maximum length of `short_description`, in characters (trimmed).
+pub const SHORT_DESCRIPTION_MAX_CHARS: usize = 200;
+/// Minimum length of `long_description`, in characters (trimmed).
+pub const LONG_DESCRIPTION_MIN_CHARS: usize = 100;
+/// Maximum length of `long_description`, in characters (trimmed).
+pub const LONG_DESCRIPTION_MAX_CHARS: usize = 5000;
+
+/// A listing description that fails [`validate_listing_descriptions`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescriptionRuleViolation {
+    /// The offending field: `short_description` or `long_description`.
+    pub field: &'static str,
+    /// Human-readable explanation including the expected range.
+    pub message: String,
+}
+
+/// All listing description violations for the given values — one per field at
+/// most, so a caller can report every problem at once (`stacker config
+/// validate`).
+pub fn listing_description_violations(
+    short_description: Option<&str>,
+    long_description: Option<&str>,
+) -> Vec<DescriptionRuleViolation> {
+    let mut violations = Vec::new();
+    if let Err(violation) = validate_description(
+        "short_description",
+        short_description,
+        SHORT_DESCRIPTION_MIN_CHARS,
+        SHORT_DESCRIPTION_MAX_CHARS,
+    ) {
+        violations.push(violation);
+    }
+    if let Err(violation) = validate_description(
+        "long_description",
+        long_description,
+        LONG_DESCRIPTION_MIN_CHARS,
+        LONG_DESCRIPTION_MAX_CHARS,
+    ) {
+        violations.push(violation);
+    }
+    violations
+}
+
+/// Enforce the listing description requirements from
+/// `docs/MARKETPLACE_PUBLISH.md` ("Required metadata"): a short description of
+/// 20-200 characters and a long description of 100-5000 characters. Marketplace
+/// review rejects templates whose descriptions are missing or too short, so the
+/// submit paths (`stacker submit` and `POST /api/templates/{id}/submit`) check
+/// them before a submission reaches a reviewer. Reports the first violation;
+/// use [`listing_description_violations`] to collect all of them.
+pub fn validate_listing_descriptions(
+    short_description: Option<&str>,
+    long_description: Option<&str>,
+) -> Result<(), DescriptionRuleViolation> {
+    listing_description_violations(short_description, long_description)
+        .into_iter()
+        .next()
+        .map_or(Ok(()), Err)
+}
+
+fn validate_description(
+    field: &'static str,
+    value: Option<&str>,
+    min_chars: usize,
+    max_chars: usize,
+) -> Result<(), DescriptionRuleViolation> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Err(DescriptionRuleViolation {
+            field,
+            message: format!("{field} is missing ({min_chars}-{max_chars} characters required)"),
+        });
+    };
+    let len = value.chars().count();
+    if len < min_chars {
+        return Err(DescriptionRuleViolation {
+            field,
+            message: format!("{field} is too short: {len} characters, minimum {min_chars}"),
+        });
+    }
+    if len > max_chars {
+        return Err(DescriptionRuleViolation {
+            field,
+            message: format!("{field} is too long: {len} characters, maximum {max_chars}"),
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{InfrastructureRequirements, MarketplaceVendorProfile};
+    use super::{InfrastructureRequirements, MarketplaceVendorProfile, StackTemplateVersion};
+
+    // TDD (red): the federation fix (docs/MARKETPLACE_FIELD_POLICY.md §8) requires the
+    // model to CARRY config_contract so the marketplace webhook builder can read
+    // `latest_version.config_contract`. Today the column exists in the DB
+    // (stack_template_version.config_contract, via db::marketplace::set/get_config_contract)
+    // but is NOT mapped on this struct, so it is silently dropped on (de)serialize —
+    // which is exactly why the policy never federates. Failing until the field is added.
+    #[test]
+    fn stack_template_version_carries_config_contract() {
+        let raw = serde_json::json!({
+            "id": "11111111-1111-1111-1111-111111111111",
+            "template_id": "22222222-2222-2222-2222-222222222222",
+            "version": "1.0.0",
+            "stack_definition": "services: {}\n",
+            "assets": {},
+            "config_contract": {
+                "services": {
+                    "web": {
+                        "fields": {
+                            "JWT_SECRET": { "mutability": "generated", "type": "hex", "length": 32 }
+                        }
+                    }
+                }
+            }
+        });
+
+        let version: StackTemplateVersion =
+            serde_json::from_value(raw).expect("deserialize StackTemplateVersion");
+        let round_trip = serde_json::to_value(&version).expect("serialize StackTemplateVersion");
+
+        assert!(
+            round_trip.get("config_contract").is_some(),
+            "StackTemplateVersion must map the config_contract column so the webhook \
+             payload can federate it; it is being dropped (federation gap §8)"
+        );
+        assert_eq!(
+            round_trip["config_contract"]["services"]["web"]["fields"]["JWT_SECRET"]["mutability"],
+            "generated"
+        );
+    }
 
     #[test]
     fn infrastructure_requirements_default_is_empty() {
@@ -431,5 +579,105 @@ mod tests {
         assert_eq!("not_started", profile.onboarding_status);
         assert!(!profile.payouts_enabled);
         assert_eq!(serde_json::json!({}), profile.metadata);
+    }
+
+    fn short_of(len: usize) -> String {
+        "s".repeat(len)
+    }
+
+    fn long_of(len: usize) -> String {
+        "l".repeat(len)
+    }
+
+    #[test]
+    fn listing_descriptions_missing_are_violations() {
+        let missing_short =
+            super::validate_listing_descriptions(None, Some(&long_of(100))).unwrap_err();
+        assert_eq!("short_description", missing_short.field);
+        assert!(
+            missing_short.message.contains("missing"),
+            "{}",
+            missing_short.message
+        );
+
+        let missing_long =
+            super::validate_listing_descriptions(Some(&short_of(20)), None).unwrap_err();
+        assert_eq!("long_description", missing_long.field);
+        assert!(
+            missing_long.message.contains("missing"),
+            "{}",
+            missing_long.message
+        );
+
+        let blank =
+            super::validate_listing_descriptions(Some("   "), Some(&long_of(100))).unwrap_err();
+        assert_eq!("short_description", blank.field);
+        assert!(blank.message.contains("missing"), "{}", blank.message);
+    }
+
+    #[test]
+    fn listing_descriptions_boundaries() {
+        assert!(
+            super::validate_listing_descriptions(Some(&short_of(20)), Some(&long_of(100))).is_ok()
+        );
+        assert!(
+            super::validate_listing_descriptions(Some(&short_of(200)), Some(&long_of(5000)))
+                .is_ok()
+        );
+
+        let too_short_short =
+            super::validate_listing_descriptions(Some(&short_of(19)), Some(&long_of(100)))
+                .unwrap_err();
+        assert_eq!("short_description", too_short_short.field);
+        assert!(
+            too_short_short.message.contains("too short"),
+            "{}",
+            too_short_short.message
+        );
+
+        let too_long_short =
+            super::validate_listing_descriptions(Some(&short_of(201)), Some(&long_of(100)))
+                .unwrap_err();
+        assert_eq!("short_description", too_long_short.field);
+        assert!(
+            too_long_short.message.contains("too long"),
+            "{}",
+            too_long_short.message
+        );
+
+        let too_short_long =
+            super::validate_listing_descriptions(Some(&short_of(20)), Some(&long_of(99)))
+                .unwrap_err();
+        assert_eq!("long_description", too_short_long.field);
+        assert!(
+            too_short_long.message.contains("too short"),
+            "{}",
+            too_short_long.message
+        );
+
+        let too_long_long =
+            super::validate_listing_descriptions(Some(&short_of(20)), Some(&long_of(5001)))
+                .unwrap_err();
+        assert_eq!("long_description", too_long_long.field);
+        assert!(
+            too_long_long.message.contains("too long"),
+            "{}",
+            too_long_long.message
+        );
+    }
+
+    #[test]
+    fn listing_descriptions_count_trimmed_characters() {
+        let padded = format!("{}   ", short_of(20));
+        let padded_long = format!("  {}", long_of(100));
+        assert!(super::validate_listing_descriptions(Some(&padded), Some(&padded_long)).is_ok());
+    }
+
+    #[test]
+    fn listing_description_violations_collects_every_field() {
+        let violations = super::listing_description_violations(Some("x"), Some("y"));
+        assert_eq!(2, violations.len());
+        assert_eq!("short_description", violations[0].field);
+        assert_eq!("long_description", violations[1].field);
     }
 }

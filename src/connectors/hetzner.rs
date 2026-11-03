@@ -24,6 +24,65 @@ pub struct HetznerSnapshot {
     pub image_id: Option<i64>,
 }
 
+/// Request to clone a server from a baked snapshot image — the user-side of the
+/// immutable-deploy model. All the fragile work already happened at bake time;
+/// deploy = create a server FROM the snapshot and inject cloud-init at first boot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HetznerCreateServerRequest {
+    pub name: String,
+    /// e.g. "cpx11".
+    pub server_type: String,
+    /// e.g. "fsn1".
+    pub location: String,
+    /// The baked snapshot's image id (from `HetznerSnapshot.image_id`). In
+    /// Hetzner a snapshot IS an image, so it is passed as the `image` field.
+    pub image_id: i64,
+    pub ssh_key_ids: Vec<i64>,
+    /// cloud-init user-data injected at first boot: per-user env, secrets and the
+    /// small deterministic config render (domain/TLS). The ONLY per-deploy variance.
+    pub user_data: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HetznerProvisionedServer {
+    pub id: i64,
+    pub public_ipv4: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HetznerSshKey {
+    pub id: i64,
+    pub name: String,
+}
+
+/// A single inbound/outbound rule for a Hetzner cloud firewall.
+#[derive(Debug, Clone, Serialize)]
+pub struct HetznerFirewallRule {
+    pub direction: String,
+    pub protocol: String,
+    pub port: String,
+    pub source_ips: Vec<String>,
+}
+
+/// Response from `POST /firewalls`.
+#[derive(Debug, Deserialize)]
+struct HetznerCreateFirewallResponse {
+    firewall: HetznerFirewallBody,
+}
+
+#[derive(Debug, Deserialize)]
+struct HetznerFirewallBody {
+    id: i64,
+    name: String,
+}
+
+/// Result returned after creating a firewall.
+#[derive(Debug, Clone)]
+pub struct HetznerFirewallResult {
+    pub id: i64,
+    pub name: String,
+}
+
 #[async_trait]
 pub trait HetznerCloudConnector: Send + Sync {
     async fn create_server_snapshot(
@@ -33,11 +92,46 @@ pub trait HetznerCloudConnector: Send + Sync {
         description: &str,
     ) -> Result<HetznerSnapshot, ConnectorError>;
 
-    async fn list_server_types(
+    /// Clone a new server from a baked snapshot image (immutable deploy).
+    async fn create_server_from_image(
         &self,
         token: &str,
-        location: Option<&str>,
-    ) -> Result<Vec<String>, ConnectorError>;
+        request: HetznerCreateServerRequest,
+    ) -> Result<HetznerProvisionedServer, ConnectorError>;
+
+    /// List all server-type names. Note: Hetzner's `/server_types` endpoint is
+    /// global and does not support a location filter, so this cannot answer
+    /// per-region availability — use `validate_server_type_availability` for that.
+    async fn list_server_types(&self, token: &str) -> Result<Vec<String>, ConnectorError>;
+
+    /// Register a public key on the Hetzner account (`POST /ssh_keys`).
+    /// Returns the key id needed for `HetznerCreateServerRequest::ssh_key_ids`.
+    async fn add_ssh_key(
+        &self,
+        token: &str,
+        name: &str,
+        public_key: &str,
+    ) -> Result<HetznerSshKey, ConnectorError>;
+
+    /// Create a cloud firewall and attach it to a server in a single API call.
+    async fn create_firewall(
+        &self,
+        token: &str,
+        name: &str,
+        rules: Vec<HetznerFirewallRule>,
+        server_id: i64,
+    ) -> Result<HetznerFirewallResult, ConnectorError>;
+
+    /// Resolve a snapshot target to the provider's server id without acting on
+    /// it. Exposed so a caller that is about to modify the machine can confirm
+    /// the provider actually knows it first — a wrong id discovered after the
+    /// build box has been sanitized costs the whole box, since sanitizing
+    /// removes the operator's own SSH access.
+    async fn resolve_snapshot_target(
+        &self,
+        token: &str,
+        target: &HetznerSnapshotTarget,
+    ) -> Result<i64, ConnectorError>;
 }
 
 #[derive(Clone)]
@@ -103,6 +197,14 @@ impl HetznerCloudClient {
 
 #[async_trait]
 impl HetznerCloudConnector for HetznerCloudClient {
+    async fn resolve_snapshot_target(
+        &self,
+        token: &str,
+        target: &HetznerSnapshotTarget,
+    ) -> Result<i64, ConnectorError> {
+        self.resolve_server_id(token, target).await
+    }
+
     async fn create_server_snapshot(
         &self,
         token: &str,
@@ -127,7 +229,7 @@ impl HetznerCloudConnector for HetznerCloudClient {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(status_to_error(status, "Hetzner snapshot request failed"));
+            return Err(error_with_body(response, "Hetzner snapshot request failed").await);
         }
 
         let body: HetznerCreateImageResponse = response
@@ -148,15 +250,57 @@ impl HetznerCloudConnector for HetznerCloudClient {
         })
     }
 
-    async fn list_server_types(
+    async fn create_server_from_image(
         &self,
         token: &str,
-        location: Option<&str>,
-    ) -> Result<Vec<String>, ConnectorError> {
-        let url = match location {
-            Some(loc) => format!("{}/server_types?location={}", self.base_url, loc),
-            None => format!("{}/server_types", self.base_url),
-        };
+        request: HetznerCreateServerRequest,
+    ) -> Result<HetznerProvisionedServer, ConnectorError> {
+        let mut payload = json!({
+            "name": request.name,
+            "server_type": request.server_type,
+            "location": request.location,
+            // A snapshot is an image; cloning from it means passing it as `image`.
+            "image": request.image_id,
+            "start_after_create": true,
+        });
+        if !request.ssh_key_ids.is_empty() {
+            payload["ssh_keys"] = json!(request.ssh_key_ids);
+        }
+        if let Some(user_data) = &request.user_data {
+            payload["user_data"] = json!(user_data);
+        }
+
+        let response = self
+            .http_client
+            .post(format!("{}/servers", self.base_url))
+            .bearer_auth(token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(ConnectorError::from)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(error_with_body(response, "Hetzner create-server-from-image failed").await);
+        }
+
+        let body: HetznerCreateServerResponse = response
+            .json()
+            .await
+            .map_err(|err| ConnectorError::InvalidResponse(err.to_string()))?;
+        let public_ipv4 = body
+            .server
+            .public_net
+            .and_then(|net| net.ipv4)
+            .map(|ipv4| ipv4.ip);
+        Ok(HetznerProvisionedServer {
+            id: body.server.id,
+            public_ipv4,
+        })
+    }
+
+    async fn list_server_types(&self, token: &str) -> Result<Vec<String>, ConnectorError> {
+        let url = format!("{}/server_types", self.base_url);
 
         let response = self
             .http_client
@@ -181,16 +325,439 @@ impl HetznerCloudConnector for HetznerCloudClient {
 
         Ok(body.server_types.into_iter().map(|t| t.name).collect())
     }
+
+    async fn add_ssh_key(
+        &self,
+        token: &str,
+        name: &str,
+        public_key: &str,
+    ) -> Result<HetznerSshKey, ConnectorError> {
+        let url = format!("{}/ssh_keys", self.base_url);
+        let response = self
+            .http_client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "name": name,
+                "public_key": public_key,
+            }))
+            .send()
+            .await
+            .map_err(ConnectorError::from)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(status_to_error(
+                status,
+                "Hetzner SSH key registration failed",
+            ));
+        }
+
+        #[derive(Deserialize)]
+        struct SshKeyResponse {
+            ssh_key: HetznerSshKey,
+        }
+        let body: SshKeyResponse = response
+            .json()
+            .await
+            .map_err(|err| ConnectorError::InvalidResponse(err.to_string()))?;
+
+        Ok(body.ssh_key)
+    }
+
+    async fn create_firewall(
+        &self,
+        token: &str,
+        name: &str,
+        rules: Vec<HetznerFirewallRule>,
+        server_id: i64,
+    ) -> Result<HetznerFirewallResult, ConnectorError> {
+        let url = format!("{}/firewalls", self.base_url);
+
+        let hetzner_rules: Vec<serde_json::Value> = rules
+            .iter()
+            .map(|r| {
+                json!({
+                    "direction": r.direction,
+                    "protocol": r.protocol,
+                    "port": r.port,
+                    "source_ips": r.source_ips,
+                })
+            })
+            .collect();
+
+        let payload = json!({
+            "name": name,
+            "rules": hetzner_rules,
+            "apply_to": [{ "server": { "id": server_id } }],
+        });
+
+        let response = self
+            .http_client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(ConnectorError::from)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(error_with_body(response, "Hetzner create-firewall failed").await);
+        }
+
+        let body: HetznerCreateFirewallResponse = response
+            .json()
+            .await
+            .map_err(|err| ConnectorError::InvalidResponse(err.to_string()))?;
+
+        Ok(HetznerFirewallResult {
+            id: body.firewall.id,
+            name: body.firewall.name,
+        })
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Server-type × region availability validation
+//
+// Shared by the deploy route handler AND the CLI local-orchestrator path so the
+// pre-flight guard is identical in both. `/server_types` is global and does NOT
+// honor a `?location=` filter — per-region availability comes from each entry's
+// `locations[].available`. Hetzner removed `/datacenters` (HTTP 410
+// `deprecated_api_endpoint`) and moved the signal there in the 2025-09-24
+// "per location server types" change.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Resolve the Hetzner API base URL, honoring `STACKER_HETZNER_API_URL` (used by
+/// tests to point at a mock) then falling back to the public API.
+pub fn api_base_url() -> String {
+    std::env::var("STACKER_HETZNER_API_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "https://api.hetzner.cloud/v1".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// Look up the public IPv4 of a Hetzner server by its name.
+///
+/// Used to reconcile `server.srv_ip` when a deploy provisioned a server but the
+/// install service never reported the IP back (deployment ends `paused`/`failed`
+/// with `srv_ip` null). Hetzner assigns a public IPv4 at creation, so the IP is
+/// available on the provider side even when the later Ansible step failed.
+///
+/// Returns `Ok(None)` when no server matches the name or the match has no IPv4
+/// yet; `Err` only on transport/HTTP/parse failure so callers can decide whether
+/// to retry.
+pub async fn fetch_server_ipv4_by_name(
+    base_url: &str,
+    token: &str,
+    name: &str,
+) -> Result<Option<String>, ConnectorError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Ok(None);
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(ConnectorError::from)?;
+
+    let response = client
+        .get(format!("{}/servers", base_url.trim_end_matches('/')))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(ConnectorError::from)?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(status_to_error(status, "Hetzner server lookup failed"));
+    }
+
+    let body: HetznerServersResponse = response
+        .json()
+        .await
+        .map_err(|err| ConnectorError::InvalidResponse(err.to_string()))?;
+
+    Ok(body
+        .servers
+        .iter()
+        .find(|server| server.name == name)
+        .and_then(hetzner_server_ip)
+        .map(str::to_string))
+}
+
+/// Validate that `server_type` can be created in `region` on Hetzner.
+///
+/// Fails open (returns `Ok`) on any transport/HTTP/parse error so a Hetzner
+/// outage never blocks deploys. Returns `Err(msg)` only when we positively know
+/// the type is unknown, deprecated, or not offered in a region we can see.
+pub async fn validate_server_type_availability(
+    base_url: &str,
+    token: &str,
+    server_type: &str,
+    region: Option<&str>,
+) -> Result<(), String> {
+    let server_type = server_type.trim();
+    if server_type.is_empty() || token.trim().is_empty() {
+        return Ok(());
+    }
+
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+    {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::warn!(
+                "Could not initialize Hetzner API client: {}; proceeding",
+                err
+            );
+            return Ok(());
+        }
+    };
+
+    let server_types = match fetch_hetzner_json::<HetznerServerTypesResponse>(
+        &client,
+        &format!("{}/server_types", base_url),
+        token,
+        "server types",
+    )
+    .await
+    {
+        Some(body) => body.server_types,
+        None => return Ok(()),
+    };
+
+    // Per-location availability rides on the same payload, so no second call:
+    // /datacenters (the old source) was removed by Hetzner.
+    evaluate_server_type_availability(&server_types, server_type, region)
+}
+
+/// GET a Hetzner JSON endpoint, returning `None` (and logging a warning) on any
+/// transport, HTTP, or deserialization error so callers can fail open.
+async fn fetch_hetzner_json<T: serde::de::DeserializeOwned>(
+    client: &reqwest::Client,
+    url: &str,
+    token: &str,
+    what: &str,
+) -> Option<T> {
+    let response = match client.get(url).bearer_auth(token).send().await {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::warn!(
+                "Could not reach Hetzner API for {}: {}; proceeding",
+                what,
+                err
+            );
+            return None;
+        }
+    };
+
+    if !response.status().is_success() {
+        tracing::warn!(
+            "Hetzner {} API returned HTTP {}; skipping server type validation",
+            what,
+            response.status().as_u16()
+        );
+        return None;
+    }
+
+    match response.json::<T>().await {
+        Ok(body) => Some(body),
+        Err(err) => {
+            tracing::warn!(
+                "Invalid Hetzner {} response: {}; skipping validation",
+                what,
+                err
+            );
+            None
+        }
+    }
+}
+
+/// Pure availability check, split out from I/O so it is unit-testable.
+///
+/// - Unknown type name → error (not offered by Hetzner at all).
+/// - Deprecated type → error (cannot create new servers).
+/// - `region` given, known to Hetzner (advertised in some type's `locations`),
+///   and the type is not offered there or is flagged out of stock → error
+///   naming the region. This is the case region-blind validation missed:
+///   `/server_types?location=…` is ignored by Hetzner, so a globally-existing
+///   type like `cpx21` falsely passed even when unavailable in e.g. `nbg1`.
+/// - `region` unknown to Hetzner, or the payload carried no per-location
+///   `locations` data → fail open.
+fn evaluate_server_type_availability(
+    server_types: &[HetznerServerTypeEntry],
+    server_type: &str,
+    region: Option<&str>,
+) -> Result<(), String> {
+    use std::collections::HashSet;
+
+    let active_type_names = |ids: Option<&HashSet<i64>>| -> String {
+        let names: Vec<&str> = server_types
+            .iter()
+            .filter(|t| t.deprecated.is_none())
+            .filter(|t| ids.map_or(true, |set| set.contains(&t.id)))
+            .map(|t| t.name.as_str())
+            .collect();
+        if names.is_empty() {
+            "none found".to_string()
+        } else {
+            names.join(", ")
+        }
+    };
+
+    let entry = match server_types
+        .iter()
+        .find(|t| t.name.eq_ignore_ascii_case(server_type))
+    {
+        Some(entry) => entry,
+        None => {
+            return Err(format!(
+                "Server type '{}' is not available in Hetzner. Available types: {}",
+                server_type,
+                active_type_names(None)
+            ));
+        }
+    };
+
+    if entry.deprecated.is_some() {
+        return Err(format!(
+            "Server type '{}' is deprecated in Hetzner and can no longer be used to create new servers. \
+             Set `deploy.cloud.size` in stacker.yml to an active type: {}",
+            server_type,
+            active_type_names(None)
+        ));
+    }
+
+    let Some(region) = region.map(str::trim).filter(|r| !r.is_empty()) else {
+        return Ok(());
+    };
+
+    // Known regions = every location advertised across all server types. This
+    // tells "Hetzner doesn't know this region" (fail open) apart from "this
+    // type isn't offered there" (reject) — the role `/datacenters` used to play
+    // before Hetzner removed that endpoint.
+    let known_regions: HashSet<&str> = server_types
+        .iter()
+        .flat_map(|t| t.locations.iter())
+        .filter_map(HetznerServerTypeLocation::name)
+        .collect();
+
+    // No per-location data at all, none for this type, or a region no type
+    // advertises: we cannot prove unavailability, so never block.
+    if known_regions.is_empty() || entry.locations.is_empty() || !known_regions.contains(region) {
+        return Ok(());
+    }
+
+    match entry.locations.iter().find(|loc| loc.supports(region)) {
+        // Offered here and not flagged out of stock. A missing `available`
+        // flag is unknown, so it fails open rather than blocking a deploy.
+        Some(loc) if loc.available != Some(false) => Ok(()),
+        // Known location, but the type is not offered there or is temporarily
+        // out of stock — reject, listing what IS placeable instead.
+        _ => {
+            let available_ids: HashSet<i64> = server_types
+                .iter()
+                .filter(|t| t.deprecated.is_none())
+                .filter(|t| {
+                    t.locations
+                        .iter()
+                        .any(|loc| loc.supports(region) && loc.available != Some(false))
+                })
+                .map(|t| t.id)
+                .collect();
+
+            Err(format!(
+                "Server type '{}' is not available in Hetzner location '{}'. \
+                 Set `deploy.cloud.region` or `deploy.cloud.size` in stacker.yml. \
+                 Types available in '{}': {}",
+                server_type,
+                region,
+                region,
+                active_type_names(Some(&available_ids))
+            ))
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct HetznerServerTypesResponse {
+    #[serde(default)]
+    server_types: Vec<HetznerServerTypeEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HetznerServerTypeEntry {
+    /// Numeric id — used when listing what is placeable in a location.
+    id: i64,
+    name: String,
+    /// Non-null when Hetzner has deprecated this type (ISO-8601 timestamp).
+    #[serde(default)]
+    deprecated: Option<String>,
+    /// Locations this type is offered in, each carrying the live `available`
+    /// flag. This replaced the removed `/datacenters` endpoint (HTTP 410) in
+    /// Hetzner's 2025-09-24 "per location server types" change.
+    #[serde(default)]
+    locations: Vec<HetznerServerTypeLocation>,
+}
+
+/// One entry of `server_types[].locations`. The wire format is FLAT —
+/// `{"id": 1, "name": "nbg1", "deprecation": null, "recommended": true,
+/// "available": true}` — confirmed by Hetzner's OpenAPI spec and hcloud-go's
+/// `schema.ServerTypeLocation`; hcloud-python's nested `location` wrapper is
+/// constructed client-side and never appears on the wire.
+#[derive(Debug, Deserialize)]
+struct HetznerServerTypeLocation {
+    #[serde(default)]
+    name: String,
+    /// `false` = supported but currently not orderable. Missing/null is
+    /// treated as unknown and never blocks a deploy.
+    #[serde(default)]
+    available: Option<bool>,
+}
+
+impl HetznerServerTypeLocation {
+    fn name(&self) -> Option<&str> {
+        (!self.name.is_empty()).then_some(self.name.as_str())
+    }
+
+    fn supports(&self, region: &str) -> bool {
+        self.name()
+            .is_some_and(|name| name.eq_ignore_ascii_case(region))
+    }
 }
 
 fn status_to_error(status: reqwest::StatusCode, message: &str) -> ConnectorError {
     match status.as_u16() {
-        401 | 403 => {
-            ConnectorError::Unauthorized("Hetzner rejected the saved cloud token".to_string())
-        }
+        // 401 is genuine auth; 403 is forbidden for many reasons (permissions,
+        // resource limits, protection) — do NOT claim "rejected token" for it.
+        401 => ConnectorError::Unauthorized("Hetzner rejected the API token (401)".to_string()),
+        403 => ConnectorError::HttpError(format!(
+            "{message} forbidden (403) — check token permissions or account/resource limits"
+        )),
         404 => ConnectorError::NotFound(message.to_string()),
         429 => ConnectorError::RateLimited("Hetzner API rate limit exceeded".to_string()),
         _ => ConnectorError::HttpError(format!("{} with status {}", message, status.as_u16())),
+    }
+}
+
+/// Build an error that INCLUDES Hetzner's response body, so the real cause
+/// (e.g. `resource_limit_exceeded: image limit exceeded`) is surfaced instead of
+/// a misleading generic status message.
+async fn error_with_body(response: reqwest::Response, context: &str) -> ConnectorError {
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    let snippet = body.trim();
+    match status.as_u16() {
+        401 => ConnectorError::Unauthorized(format!("{context}: {snippet}")),
+        429 => ConnectorError::RateLimited(format!("{context}: {snippet}")),
+        404 => ConnectorError::NotFound(format!("{context}: {snippet}")),
+        _ => ConnectorError::HttpError(format!("{context}: HTTP {}: {snippet}", status.as_u16())),
     }
 }
 
@@ -251,6 +818,11 @@ struct HetznerCreateImageResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct HetznerCreateServerResponse {
+    server: HetznerServer,
+}
+
+#[derive(Debug, Deserialize)]
 struct HetznerAction {
     id: i64,
     status: String,
@@ -265,22 +837,253 @@ struct HetznerActionResource {
     resource_type: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct HetznerServerTypesResponse {
-    #[serde(default)]
-    server_types: Vec<HetznerServerType>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HetznerServerType {
-    name: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use wiremock::matchers::{body_partial_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn stype(id: i64, name: &str, deprecated: Option<&str>) -> HetznerServerTypeEntry {
+        HetznerServerTypeEntry {
+            id,
+            name: name.to_string(),
+            deprecated: deprecated.map(ToOwned::to_owned),
+            locations: Vec::new(),
+        }
+    }
+
+    /// Attach Hetzner's per-location availability to a server type: offered
+    /// (available) in `available`, supported-but-out-of-stock in `out_of_stock`
+    /// — the `server_types[].locations` payload shape.
+    fn offered_in(
+        mut entry: HetznerServerTypeEntry,
+        available: &[&str],
+        out_of_stock: &[&str],
+    ) -> HetznerServerTypeEntry {
+        entry.locations = available
+            .iter()
+            .map(|name| (*name, true))
+            .chain(out_of_stock.iter().map(|name| (*name, false)))
+            .map(|(name, available)| HetznerServerTypeLocation {
+                name: name.to_string(),
+                available: Some(available),
+            })
+            .collect();
+        entry
+    }
+
+    // The regression from the bug report: `cpx21` exists globally, so a
+    // region-blind `/server_types` check falsely passes, but Hetzner does not
+    // offer it in `nbg1`, so Terraform later died with "unsupported location".
+    #[test]
+    fn server_type_unavailable_in_region_is_rejected() {
+        let types = vec![
+            offered_in(stype(22, "cpx11", None), &["fsn1", "nbg1"], &[]),
+            // cpx21 (id 23) is NOT offered in nbg1
+            offered_in(stype(23, "cpx21", None), &["fsn1"], &[]),
+        ];
+
+        let err = evaluate_server_type_availability(&types, "cpx21", Some("nbg1"))
+            .expect_err("cpx21 must be rejected in nbg1");
+        assert!(err.contains("cpx21"), "error should name the type: {err}");
+        assert!(err.contains("nbg1"), "error should name the region: {err}");
+        assert!(
+            err.contains("cpx11"),
+            "error should list available types: {err}"
+        );
+    }
+
+    #[test]
+    fn server_type_available_in_region_passes() {
+        let types = vec![
+            offered_in(stype(22, "cpx11", None), &["fsn1"], &[]),
+            offered_in(stype(23, "cpx21", None), &["fsn1"], &[]),
+        ];
+        assert!(evaluate_server_type_availability(&types, "cpx21", Some("fsn1")).is_ok());
+    }
+
+    #[test]
+    fn region_matching_is_case_insensitive() {
+        let types = vec![offered_in(stype(23, "cpx21", None), &["fsn1"], &[])];
+        assert!(evaluate_server_type_availability(&types, "CPX21", Some("FSN1")).is_ok());
+    }
+
+    // Supported in the location but flagged `available: false` (temporarily
+    // out of stock) — the live signal that used to come from /datacenters.
+    #[test]
+    fn out_of_stock_in_known_region_is_rejected() {
+        let types = vec![
+            offered_in(stype(22, "cpx11", None), &["nbg1"], &[]),
+            offered_in(stype(23, "cpx21", None), &[], &["nbg1"]),
+        ];
+
+        let err = evaluate_server_type_availability(&types, "cpx21", Some("nbg1"))
+            .expect_err("out-of-stock type must be rejected in nbg1");
+        assert!(err.contains("cpx21"), "error should name the type: {err}");
+        assert!(err.contains("nbg1"), "error should name the region: {err}");
+    }
+
+    // A location entry without the `available` flag is unknown data — it must
+    // never be the reason a deploy is blocked.
+    #[test]
+    fn missing_available_flag_fails_open() {
+        let mut entry = stype(23, "cpx21", None);
+        entry.locations = vec![HetznerServerTypeLocation {
+            name: "fsn1".to_string(),
+            available: None,
+        }];
+
+        assert!(evaluate_server_type_availability(&[entry], "cpx21", Some("fsn1")).is_ok());
+    }
+
+    #[test]
+    fn deprecated_server_type_is_rejected() {
+        let types = vec![
+            offered_in(
+                stype(1, "cx11", Some("2024-01-01T00:00:00+00:00")),
+                &["fsn1"],
+                &[],
+            ),
+            offered_in(stype(22, "cpx11", None), &["fsn1"], &[]),
+        ];
+        let err = evaluate_server_type_availability(&types, "cx11", Some("fsn1"))
+            .expect_err("deprecated type must be rejected");
+        assert!(err.contains("deprecated"), "err: {err}");
+        assert!(err.contains("cpx11"), "should suggest active type: {err}");
+    }
+
+    #[test]
+    fn unknown_server_type_is_rejected() {
+        let types = vec![offered_in(stype(22, "cpx11", None), &["fsn1"], &[])];
+        let err = evaluate_server_type_availability(&types, "does-not-exist", Some("fsn1"))
+            .expect_err("unknown type must be rejected");
+        assert!(err.contains("does-not-exist"), "err: {err}");
+    }
+
+    // Fail-open guarantees: no region, unknown region, and missing
+    // per-location data must never block a deploy on the region dimension.
+    #[test]
+    fn no_region_skips_region_check() {
+        let types = vec![stype(23, "cpx21", None)];
+        assert!(evaluate_server_type_availability(&types, "cpx21", None).is_ok());
+    }
+
+    #[test]
+    fn unknown_region_fails_open() {
+        let types = vec![offered_in(stype(23, "cpx21", None), &["fsn1"], &[])];
+        // Region not advertised by any type — we cannot prove unavailability.
+        assert!(evaluate_server_type_availability(&types, "cpx21", Some("ash")).is_ok());
+    }
+
+    #[test]
+    fn missing_location_data_fails_open_on_region() {
+        let types = vec![stype(23, "cpx21", None)];
+        // Simulates a payload without per-location data: existence still
+        // checked, region skipped.
+        assert!(evaluate_server_type_availability(&types, "cpx21", Some("nbg1")).is_ok());
+    }
+
+    // End-to-end through the HTTP layer against a mock Hetzner: the
+    // /server_types payload itself carries the per-location availability that
+    // used to live on the now-removed /datacenters endpoint.
+    #[tokio::test]
+    async fn validate_rejects_type_missing_in_region_via_http() {
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/server_types"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "server_types": [
+                    {"id": 22, "name": "cpx11", "locations": [
+                        {"id": 1, "name": "fsn1", "available": true},
+                        {"id": 2, "name": "nbg1", "available": true}
+                    ]},
+                    {"id": 23, "name": "cpx21", "locations": [
+                        {"id": 1, "name": "fsn1", "available": true}
+                    ]}
+                ]
+            })))
+            .mount(&api)
+            .await;
+
+        let err = validate_server_type_availability(&api.uri(), "tok", "cpx21", Some("nbg1"))
+            .await
+            .expect_err("cpx21 not in nbg1");
+        assert!(err.contains("nbg1"), "err: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_server_ipv4_by_name_returns_ip_for_match() {
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/servers"))
+            .and(header("authorization", "Bearer tok"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "servers": [
+                    {"id": 1, "name": "other", "public_net": {"ipv4": {"ip": "1.1.1.1"}}},
+                    {"id": 2, "name": "nocodb-419", "public_net": {"ipv4": {"ip": "203.0.113.7"}}}
+                ]
+            })))
+            .mount(&api)
+            .await;
+
+        let ip = fetch_server_ipv4_by_name(&api.uri(), "tok", "nocodb-419")
+            .await
+            .unwrap();
+        assert_eq!(ip.as_deref(), Some("203.0.113.7"));
+    }
+
+    #[tokio::test]
+    async fn fetch_server_ipv4_by_name_returns_none_when_absent() {
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/servers"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "servers": [{"id": 1, "name": "other", "public_net": {"ipv4": {"ip": "1.1.1.1"}}}]
+            })))
+            .mount(&api)
+            .await;
+
+        let ip = fetch_server_ipv4_by_name(&api.uri(), "tok", "missing")
+            .await
+            .unwrap();
+        assert!(ip.is_none());
+    }
+
+    #[tokio::test]
+    async fn validate_fails_open_when_server_types_unavailable() {
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/server_types"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&api)
+            .await;
+
+        // Existence unknown too → everything fails open.
+        assert!(
+            validate_server_type_availability(&api.uri(), "tok", "cpx21", Some("nbg1"))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_fails_open_when_location_data_missing() {
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/server_types"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "server_types": [{"id": 23, "name": "cpx21"}]
+            })))
+            .mount(&api)
+            .await;
+
+        // Existence passes, no per-location data → region check skipped → Ok.
+        assert!(
+            validate_server_type_availability(&api.uri(), "tok", "cpx21", Some("nbg1"))
+                .await
+                .is_ok()
+        );
+    }
 
     #[tokio::test]
     async fn create_snapshot_resolves_server_by_public_ip_without_live_api() {
@@ -377,7 +1180,7 @@ mod tests {
             .await;
 
         let client = HetznerCloudClient::new(api.uri()).unwrap();
-        let types = client.list_server_types("test-token", None).await.unwrap();
+        let types = client.list_server_types("test-token").await.unwrap();
 
         assert_eq!(types, vec!["cx22", "cx32", "cx42"]);
     }
@@ -392,7 +1195,7 @@ mod tests {
             .await;
 
         let client = HetznerCloudClient::new(api.uri()).unwrap();
-        let result = client.list_server_types("bad-token", None).await;
+        let result = client.list_server_types("bad-token").await;
 
         assert!(matches!(result, Err(ConnectorError::Unauthorized(_))));
     }

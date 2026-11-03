@@ -9,6 +9,27 @@
 
 **Build, deploy, and manage containerised applications with a single config file.**
 
+<br>
+
+<img alt="Deploying Directus (Node + Postgres) to an existing server with Stacker" src="docs/demos/directus-deploy.gif" width="720">
+
+<sub>Real deploys, one command each. See <a href="https://github.com/trydirect/stacker-project-examples/tree/main/stacker-projects">stacker-project-examples</a>.</sub>
+
+<details>
+<summary>More demos — n8n · Gotify</summary>
+
+<br>
+
+**n8n** (workflow automation, Node + Postgres)
+
+<img alt="Deploying n8n with Stacker" src="docs/demos/n8n-deploy.gif" width="720">
+
+**Gotify** (push-notification server, single container)
+
+<img alt="Deploying Gotify with Stacker" src="docs/demos/gotify-deploy.gif" width="720">
+
+</details>
+
 </div>
 
 Stacker is a platform for turning any project into a deployable Docker stack. Add a `stacker.yml` to your repo, and Stacker generates Dockerfiles, docker-compose definitions, reverse-proxy configs, and deploys locally or to cloud providers — optionally with AI assistance.
@@ -32,6 +53,23 @@ stacker init              # auto-detects project type, generates stacker.yml
 stacker deploy            # builds and runs locally via docker compose
 stacker status            # check running containers
 ```
+
+### Synchronize project configuration without deploying
+
+Use `stacker sync` for fast developer iteration. It updates project metadata
+and app configuration in Stacker, but does not create a deployment, contact a
+target server, or start containers.
+
+```bash
+stacker sync                              # synchronize the current project
+stacker sync --verify                     # verify the synchronized result
+stacker sync --json                       # machine-readable result
+stacker sync --deployment deployment_...  # pin to a project deployment
+```
+
+Runtime files are uploaded and containers are started only by a subsequent
+`stacker deploy`. Sensitive environment values are omitted from project
+metadata; store new secrets with `stacker secrets`.
 
 ### Deploy from any GitHub repo
 
@@ -131,6 +169,10 @@ monitoring:
   healthcheck:
     endpoint: /health
     interval: 30s
+  alerts:                       # container-down alarm for `stacker monitor` (0.3.2)
+    interval: 30
+    target:
+      terminal: true            # or: { url: "https://ntfy.example.com/alerts" }
 ```
 
 Full schema reference: [docs/STACKER_YML_REFERENCE.md](docs/STACKER_YML_REFERENCE.md)
@@ -175,12 +217,16 @@ The end-user tool. No server required for local deploys.
 |---------|-------------|
 | `stacker init` | Detect project type, generate `stacker.yml` + `.stacker/` artifacts |
 | `stacker deploy` | Build & deploy the stack (local, cloud, or server). Cloud deploys also install a local SSH backup key when possible. `--runtime kata\|runc` selects container runtime |
+| `stacker sync` | Synchronize project metadata and app configuration with Stacker without creating a deployment, contacting a server, or starting containers |
 | `stacker status` | Show running containers and health |
 | `stacker logs` | View container logs (`--follow`, `--service`, `--tail`) |
+| `stacker deployment state` / `stacker deployment status` | Show canonical deployment state (defaults to latest; `--pinned` uses stacker.yml hash) |
+| `stacker deployment events` | Show structured deployment events (`--pinned` uses stacker.yml hash) |
+| `stacker deployment rollback` | Preview or apply a deployment rollback |
 | `stacker secrets` | Manage local `.env` secrets or remote Vault-backed `service` / `server` secrets |
-| `stacker list deployments` / `stacker deployments` | List deployments on the Stacker server |
+| `stacker list deployments` / `stacker deployments` / `stacker ps` | List deployments on the Stacker server |
 | `stacker list servers` / `stacker servers` | List saved servers |
-| `stacker list clouds` / `stacker clouds` | List saved cloud credentials |
+| `stacker list clouds` / `stacker clouds` / `stacker keys` / `stacker cloud keys` | List saved cloud credentials |
 | `stacker list ssh-keys` / `stacker ssh-keys` | List per-server SSH key status |
 | `stacker destroy` | Tear down the deployed stack |
 | `stacker config validate` | Validate `stacker.yml` syntax |
@@ -215,7 +261,9 @@ The end-user tool. No server required for local deploys.
 | `stacker pipe scan` | Discover local endpoints/resources from running containers (when target is `local`) |
 | `stacker pipe scan --containers [filter]` | Discover local endpoints/resources for matching containers |
 | `stacker pipe scan --app <app>` | Probe a remote app for API endpoints |
-| `stacker pipe create <src> <tgt>` | Create a data pipe between two containers (interactive) |
+| `stacker pipe create <src> <tgt>` | Create a data pipe between two containers (interactive; or non-interactive with `--source-endpoint`/`--target-endpoint`/`--name` — added in 0.3.2). `--retry`/`--on-failure`/`--on-success` attach a retry policy + lifecycle handlers |
+| `stacker pipe diff` | Compare the declared `pipes:` block against deployed pipes (added in 0.3.2) |
+| `stacker pipe apply` | Reconcile declared pipes into the deployment; `--prune` removes orphans, `--dry-run` previews (added in 0.3.2) |
 | `stacker pipe list` | List pipe instances for the current deployment |
 | `stacker pipe activate <id>` | Activate a pipe (start listening for triggers) |
 | `stacker pipe deactivate <id>` | Pause an active pipe |
@@ -223,6 +271,7 @@ The end-user tool. No server required for local deploys.
 | `stacker pipe deploy <id>` | Promote a local pipe to a remote deployment |
 | `stacker pipe history <id>` | View execution history for a pipe |
 | `stacker pipe replay <exec-id>` | Re-run a previous pipe execution |
+| `stacker monitor` | Watch container health and alert on problems (added in 0.3.2); `--once` for a single check (cron-friendly). Configure via `monitoring.alerts` in `stacker.yml` |
 | `stacker target [local\|cloud\|server]` | Switch deployment target mode |
 | `stacker env [local\|dev\|prod]` | Show or persist the active deploy environment/profile used by app-only updates |
 | `stacker whoami` | Show the active login, subscription plan, and current project deployment context |
@@ -239,7 +288,11 @@ stacker deploy --target local     # docker compose up (default)
 stacker deploy --target cloud     # Terraform + Ansible → cloud provider
 stacker deploy --target server    # deploy to existing server via SSH
 stacker deploy --dry-run          # preview generated files without executing
+stacker sync --verify              # sync and verify project configuration only
 ```
+
+`stacker sync` is database/API synchronization, not a remote file upload. Use
+`stacker deploy` to apply the synchronized configuration to a target server.
 
 After a successful cloud deploy, Stacker creates or reuses a local backup key at
 `~/.config/stacker/ssh/server-<id>_ed25519` (or under `$XDG_CONFIG_HOME`) and
@@ -352,7 +405,9 @@ curl -sL https://marketplace.try.direct/<purchase-token>/install.sh | sh
 - **Agent control** — `stacker agent` subcommand to manage remote Status Panel agents (health, logs, restart, deploy, proxy) with `--json` output
 - **SSH key management** — generate, view, upload, and repair server SSH keys
   (Vault-backed), with automatic local backup SSH access after cloud deploy
-- **Reverse proxy** — auto-detects Nginx / Nginx Proxy Manager, configures domains + SSL
+- **Reverse proxy** — Traefik (labels), Caddy (Caddyfile), and Nginx Proxy Manager, platform-managed and driven by `proxy.domains` end-to-end (0.3.2)
+- **Container-health alarm** — `stacker monitor` watches container health and alerts on problems (terminal, webhook, or pipe), configured via `monitoring.alerts` (0.3.2)
+- **Declarative pipes (IaC)** — declare pipes in `stacker.yml` and reconcile with `stacker pipe diff` / `pipe apply [--prune]` (0.3.2)
 - **Cloud deployment** — Hetzner, DigitalOcean, AWS, Linode, with provider firewall operations and paused/failed install IP retention
 - **MCP Server** — 85+ tools, including deployment, agent control, config, proxy, firewall, and remote service secret management
 - **Marketplace** — submit stacks for review, auto-publish on approval, check status from CLI
@@ -496,6 +551,7 @@ cargo test user_service_client     # User Service connector
 cargo test marketplace_webhook     # Marketplace webhook flows
 cargo test deployment_validator    # Deployment validation
 cargo test --test security_cli     # CLI endpoint IDOR security tests
+SQLX_OFFLINE=true cargo test --lib -- proxy_domains 2>&1 | tail -10
 ```
 
 ---
@@ -518,7 +574,6 @@ See [docs/kata/](docs/kata/README.md) for the full setup guide, network constrai
 ## Documentation
 
 - [stacker.yml reference](docs/STACKER_YML_REFERENCE.md) — full configuration schema
-- [CLI implementation plan](docs/STACKER_CLI_PLAN.md) — architecture and design decisions
 - [Changelog](CHANGELOG.md) — release history
 - [Kata Containers guide](docs/kata/README.md) — hardware-isolated containers with KVM
 

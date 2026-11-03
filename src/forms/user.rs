@@ -61,6 +61,9 @@ pub struct User {
     #[serde(rename = "suspension_hints")]
     pub suspension_hints: Option<SuspensionHints>,
     pub role: String,
+    /// Every role of the user; `role` carries one of them in no fixed order.
+    #[serde(default)]
+    pub roles: Vec<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -129,6 +132,15 @@ pub struct SuspensionHints {
     pub reason: String,
 }
 
+/// The role Casbin checks. `root` is the User Service role that grants admin
+/// access, so a user who has it is an admin whichever role `role` carries.
+fn access_role(role: String, roles: &[String]) -> String {
+    if roles.iter().any(|r| r == "root") {
+        return "root".to_string();
+    }
+    role
+}
+
 impl TryInto<UserModel> for UserForm {
     type Error = String;
     fn try_into(self) -> Result<UserModel, Self::Error> {
@@ -138,10 +150,44 @@ impl TryInto<UserModel> for UserForm {
             last_name: self.user.last_name.unwrap_or("Noname".to_string()),
             email: self.user.email,
             email_confirmed: self.user.email_confirmed,
-            role: self.user.role,
+            role: access_role(self.user.role, &self.user.roles),
             mfa_verified: self.user.mfa_verified.unwrap_or(false)
                 || self.user.two_factor_verified.unwrap_or(false),
             access_token: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn me(roles: serde_json::Value) -> UserModel {
+        let mut user = serde_json::json!({
+            "_id": "u1", "email": "u@example.com", "email_confirmed": true,
+            "deployments_left": 1, "role": "creator", "currency": null,
+            "password_change_required": false, "billing_first_name": null, "billing_last_name": null
+        });
+        if !roles.is_null() {
+            user["roles"] = roles;
+        }
+        let form: UserForm = serde_json::from_value(serde_json::json!({ "user": user })).unwrap();
+        form.try_into().unwrap()
+    }
+
+    #[test]
+    fn root_among_the_roles_is_the_access_role() {
+        // `role` holds one role in no fixed order: creator here, root as well.
+        assert_eq!(me(serde_json::json!(["creator", "root"])).role, "root");
+    }
+
+    #[test]
+    fn without_root_the_single_role_stays() {
+        assert_eq!(me(serde_json::json!(["creator", "user"])).role, "creator");
+        assert_eq!(
+            me(serde_json::Value::Null).role,
+            "creator",
+            "an older /me without `roles`"
+        );
     }
 }

@@ -68,7 +68,7 @@ Feature: MCP WebSocket Server
       """
     Then the MCP response should have result
     And the MCP tool response should not be an error
-    And the MCP tool text response should contain "\"runtimeComposePath\": \"/home/trydirect/project/docker-compose.yml\""
+    And the MCP tool text response should contain "\"runtimeComposePath\": \"/home/trydirect/proj-deployment_ai_eval-"
     When I send an MCP tools/call request for "get_deployment_plan" with arguments:
       """
       {"deployment_hash":"deployment_ai_eval","operation":"deploy"}

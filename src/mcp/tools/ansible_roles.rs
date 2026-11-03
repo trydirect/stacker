@@ -127,6 +127,15 @@ fn scan_roles_from_filesystem() -> Result<Vec<String>, String> {
 
 /// Get detailed information about a specific role from filesystem
 fn get_role_details_from_fs(role_name: &str) -> Result<AnsibleRole, String> {
+    // A role name is one directory under ROLES_BASE_PATH. An absolute path
+    // would replace the base in join(), and ".." would climb out of it.
+    let mut components = std::path::Path::new(role_name).components();
+    if !matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    ) {
+        return Err(format!("Role '{}' not found in filesystem", role_name));
+    }
     let role_path = PathBuf::from(ROLES_BASE_PATH).join(role_name);
 
     if !role_path.exists() {
@@ -480,76 +489,34 @@ pub struct DeployRoleTool;
 
 #[async_trait]
 impl ToolHandler for DeployRoleTool {
-    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolContent, String> {
-        #[derive(Deserialize)]
-        struct Args {
-            server_ip: String,
-            role_name: String,
-            variables: HashMap<String, Value>,
-            #[serde(default)]
-            ssh_user: Option<String>,
-            #[serde(default)]
-            ssh_key_path: Option<String>,
-        }
-
-        let params: Args =
-            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
-
-        // Validate role exists
-        let role = get_role_details_from_fs(&params.role_name)?;
-
-        // Validate variables
-        let mut errors = vec![];
-        for (var_name, var_def) in &role.variables {
-            if var_def.required && !params.variables.contains_key(var_name) {
-                errors.push(format!("Required variable '{}' is missing", var_name));
-            }
-        }
-
-        if !errors.is_empty() {
-            return Ok(ToolContent::Text {
-                text: serde_json::to_string(&json!({
-                    "status": "validation_failed",
-                    "errors": errors,
-                }))
-                .unwrap(),
-            });
-        }
-
-        // TODO: Implement actual Ansible playbook execution
-        // This would interface with the Install Service or execute ansible-playbook directly
-        // For now, return a placeholder response
-
-        let ssh_user = params.ssh_user.unwrap_or_else(|| "root".to_string());
-        let ssh_key = params
-            .ssh_key_path
-            .unwrap_or_else(|| "/root/.ssh/id_rsa".to_string());
-
-        let result = json!({
-            "status": "queued",
-            "message": "Role deployment has been queued for execution",
-            "deployment": {
-                "role_name": role.name,
-                "server_ip": params.server_ip,
-                "ssh_user": ssh_user,
-                "ssh_key_path": ssh_key,
-                "variables": params.variables,
-            },
-            "note": "This tool currently queues the deployment. Integration with Install Service pending."
-        });
-
-        Ok(ToolContent::Text {
-            text: serde_json::to_string(&result).unwrap(),
-        })
+    /// Always refuses.
+    ///
+    /// This tool never deployed anything. It validated the role and its
+    /// variables, then answered `{"status":"queued"}` with a note that Install
+    /// Service integration was pending. An AI client cannot tell that apart
+    /// from a real deployment, so it would report the role as deployed and move
+    /// on — the worst of the two failure modes. Refusing is honest.
+    ///
+    /// Wiring it up means handing the role name and variables to the Install
+    /// Service, which owns Ansible execution; until then there is nothing here
+    /// to queue onto.
+    async fn execute(&self, _args: Value, _context: &ToolContext) -> Result<ToolContent, String> {
+        Err(
+            "deploy_role is not implemented: Stacker cannot execute Ansible roles itself, \
+             and this tool previously answered \"queued\" for a deployment that never ran. \
+             Use validate_role_vars to check a role's variables, and deploy through the \
+             Install Service."
+                .to_string(),
+        )
     }
 
     fn schema(&self) -> Tool {
         Tool {
             name: "deploy_role".to_string(),
-            description: "Deploy an Ansible role to a remote server via SSH. \
-                Validates configuration, generates playbook, and executes on target. \
-                Requires SSH access credentials (key-based authentication). \
-                Used for SSH deployment method in Stack Builder."
+            description: "NOT IMPLEMENTED — always returns an error. Stacker cannot \
+                execute Ansible roles itself; role deployment belongs to the Install \
+                Service. Do not call this tool and do not report a role as deployed. \
+                Use validate_role_vars to check a role's variables."
                 .to_string(),
             input_schema: json!({
                 "type": "object",

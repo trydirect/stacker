@@ -175,6 +175,7 @@ fn collect_compose_services(
             };
 
             services.push(ServiceDefinition {
+                runtime: Default::default(),
                 name: service_name.to_string(),
                 image,
                 ports: mapping_sequence(definition, "ports")
@@ -189,6 +190,11 @@ fn collect_compose_services(
                 depends_on: compose_depends_on(definition),
                 command: None,
                 healthcheck: None,
+                cap_add: Vec::new(),
+                cap_drop: Vec::new(),
+                privileged: false,
+                platform: None,
+                devices: Vec::new(),
             });
         }
     }

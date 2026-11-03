@@ -6,7 +6,31 @@ pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::Server>, Str
     tracing::info!("Fetch server {}", id);
     sqlx::query_as!(
         models::Server,
-        r#"SELECT * FROM server WHERE id=$1 LIMIT 1 "#,
+        r#"
+        SELECT
+            id,
+            user_id,
+            project_id,
+            cloud_id,
+            region,
+            zone,
+            server,
+            os,
+            disk_type,
+            created_at,
+            updated_at,
+            srv_ip,
+            ssh_port,
+            ssh_user,
+            vault_key_path,
+            connection_mode,
+            key_status,
+            name,
+            host_key_fingerprint
+        FROM server
+        WHERE id=$1
+        LIMIT 1
+        "#,
         id
     )
     .fetch_one(pool)
@@ -27,7 +51,25 @@ pub async fn fetch_by_user(pool: &PgPool, user_id: &str) -> Result<Vec<models::S
         models::Server,
         r#"
         SELECT
-            *
+            id,
+            user_id,
+            project_id,
+            cloud_id,
+            region,
+            zone,
+            server,
+            os,
+            disk_type,
+            created_at,
+            updated_at,
+            srv_ip,
+            ssh_port,
+            ssh_user,
+            vault_key_path,
+            connection_mode,
+            key_status,
+            name,
+            host_key_fingerprint
         FROM server
         WHERE user_id=$1
         "#,
@@ -96,7 +138,25 @@ pub async fn fetch_by_project(
         models::Server,
         r#"
         SELECT
-            *
+            id,
+            user_id,
+            project_id,
+            cloud_id,
+            region,
+            zone,
+            server,
+            os,
+            disk_type,
+            created_at,
+            updated_at,
+            srv_ip,
+            ssh_port,
+            ssh_user,
+            vault_key_path,
+            connection_mode,
+            key_status,
+            name,
+            host_key_fingerprint
         FROM server
         WHERE project_id=$1
         "#,
@@ -199,7 +259,26 @@ pub async fn update(pool: &PgPool, mut server: models::Server) -> Result<models:
             key_status=$15,
             name=$16
         WHERE id = $1
-        RETURNING *
+        RETURNING
+            id,
+            user_id,
+            project_id,
+            cloud_id,
+            region,
+            zone,
+            server,
+            os,
+            disk_type,
+            created_at,
+            updated_at,
+            srv_ip,
+            ssh_port,
+            ssh_user,
+            vault_key_path,
+            connection_mode,
+            key_status,
+            name,
+            host_key_fingerprint
         "#,
         server.id,
         server.user_id,
@@ -249,7 +328,26 @@ pub async fn update_ssh_key_status(
             key_status = $3,
             updated_at = NOW() at time zone 'utc'
         WHERE id = $1
-        RETURNING *
+        RETURNING
+            id,
+            user_id,
+            project_id,
+            cloud_id,
+            region,
+            zone,
+            server,
+            os,
+            disk_type,
+            created_at,
+            updated_at,
+            srv_ip,
+            ssh_port,
+            ssh_user,
+            vault_key_path,
+            connection_mode,
+            key_status,
+            name,
+            host_key_fingerprint
         "#,
         server_id,
         vault_key_path,
@@ -279,7 +377,26 @@ pub async fn update_connection_mode(
             connection_mode = $2,
             updated_at = NOW() at time zone 'utc'
         WHERE id = $1
-        RETURNING *
+        RETURNING
+            id,
+            user_id,
+            project_id,
+            cloud_id,
+            region,
+            zone,
+            server,
+            os,
+            disk_type,
+            created_at,
+            updated_at,
+            srv_ip,
+            ssh_port,
+            ssh_user,
+            vault_key_path,
+            connection_mode,
+            key_status,
+            name,
+            host_key_fingerprint
         "#,
         server_id,
         connection_mode
@@ -308,9 +425,35 @@ pub async fn update_srv_ip(
         SET
             srv_ip = $2,
             ssh_port = COALESCE($3, ssh_port),
+            -- A new address means a new machine, so a pin for the old one must
+            -- not carry over; a re-provisioned server legitimately presents a
+            -- new host key. $2 is cast because it is also compared below.
+            host_key_fingerprint = CASE
+                WHEN server.srv_ip IS DISTINCT FROM $2::varchar THEN NULL
+                ELSE server.host_key_fingerprint
+            END,
             updated_at = NOW() at time zone 'utc'
         WHERE project_id = $1
-        RETURNING *
+        RETURNING
+            id,
+            user_id,
+            project_id,
+            cloud_id,
+            region,
+            zone,
+            server,
+            os,
+            disk_type,
+            created_at,
+            updated_at,
+            srv_ip,
+            ssh_port,
+            ssh_user,
+            vault_key_path,
+            connection_mode,
+            key_status,
+            name,
+            host_key_fingerprint
         "#,
         project_id,
         Some(srv_ip.to_string()),
@@ -321,6 +464,59 @@ pub async fn update_srv_ip(
     .map_err(|err| {
         tracing::error!("Failed to update server IP: {:?}", err);
         "Failed to update server IP".to_string()
+    })
+}
+
+/// Pin the SSH host key fingerprint observed for a server (trust on first use).
+///
+/// Only ever called when the stored pin was empty and a connection succeeded.
+/// An existing pin is never overwritten here: a mismatch is refused at connect
+/// time instead, so a server that starts presenting a different key needs a
+/// deliberate re-pin rather than silently adopting the new one.
+#[tracing::instrument(name = "Pin server SSH host key fingerprint.")]
+pub async fn update_host_key_fingerprint(
+    pool: &PgPool,
+    server_id: i32,
+    host_key_fingerprint: &str,
+) -> Result<models::Server, String> {
+    sqlx::query_as!(
+        models::Server,
+        r#"
+        UPDATE server
+        SET
+            host_key_fingerprint = $2,
+            updated_at = NOW() at time zone 'utc'
+        WHERE id = $1
+          AND host_key_fingerprint IS NULL
+        RETURNING
+            id,
+            user_id,
+            project_id,
+            cloud_id,
+            region,
+            zone,
+            server,
+            os,
+            disk_type,
+            created_at,
+            updated_at,
+            srv_ip,
+            ssh_port,
+            ssh_user,
+            vault_key_path,
+            connection_mode,
+            key_status,
+            name,
+            host_key_fingerprint
+        "#,
+        server_id,
+        host_key_fingerprint,
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to pin server host key fingerprint: {:?}", err);
+        "Failed to pin server host key fingerprint".to_string()
     })
 }
 

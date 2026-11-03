@@ -54,6 +54,43 @@ fn app_networks_json(
     }
 }
 
+/// The healthcheck in the shape the config renderer reads: `test` as a list.
+fn healthcheck_json(hc: &crate::cli::config_parser::ComposeHealthcheck) -> Value {
+    let test = match crate::cli::compose_service_sync::healthcheck_test_value(&hc.test) {
+        serde_yaml::Value::Sequence(parts) => parts
+            .iter()
+            .filter_map(|p| p.as_str().map(str::to_string))
+            .collect::<Vec<_>>(),
+        _ => vec!["CMD-SHELL".to_string(), hc.test.clone()],
+    };
+    json!({
+        "test": test,
+        "interval": hc.interval,
+        "timeout": hc.timeout,
+        "retries": hc.retries,
+    })
+}
+
+/// `project_app.runtime`: the settings with no column of their own.
+fn app_runtime_json(app: &ProjectFormApp) -> Option<Value> {
+    let mut runtime = serde_json::Map::new();
+    for (key, values) in [
+        ("cap_add", &app.cap_add),
+        ("cap_drop", &app.cap_drop),
+        ("devices", &app.devices),
+        ("profiles", &app.profiles),
+        ("aliases", &app.aliases),
+    ] {
+        if !values.is_empty() {
+            runtime.insert(key.to_string(), json!(values));
+        }
+    }
+    if let Some(deploy) = &app.deploy {
+        runtime.insert("deploy".to_string(), json!(deploy));
+    }
+    (!runtime.is_empty()).then_some(Value::Object(runtime))
+}
+
 fn build_project_app(
     project_id: i32,
     deploy_order: i32,
@@ -84,8 +121,12 @@ fn build_project_app(
     project_app.command = non_empty_string(app.command.as_deref());
     project_app.entrypoint = non_empty_string(app.entrypoint.as_deref());
     project_app.networks = app_networks_json(app, all_networks);
+    project_app.depends_on = (!app.depends_on.is_empty()).then(|| json!(app.depends_on));
+    project_app.healthcheck = app.healthcheck.as_ref().map(healthcheck_json);
+    project_app.runtime = app_runtime_json(app);
     project_app.enabled = Some(true);
     project_app.deploy_order = Some(deploy_order);
+    project_app.config_contract = app.config_contract.clone();
 
     project_app
 }
@@ -160,13 +201,24 @@ pub(crate) async fn sync_project_level_apps_from_form(
         .map(|app| (app.code.clone(), app.id))
         .collect::<HashMap<_, _>>();
 
-    for mut desired_app in desired_apps {
+    for desired_app in desired_apps {
         if let Some(existing_id) = existing_by_code.remove(&desired_app.code) {
-            desired_app.id = existing_id;
-            desired_app.deployment_id = None;
-            db::project_app::update(pool, &desired_app).await?;
+            let mut app = desired_app;
+            app.id = existing_id;
+            app.deployment_id = None;
+            db::project_app::update(pool, &app).await?;
+            if let Some(contract) = app.config_contract.clone() {
+                db::project_app::set_config_contract(pool, project_id, &app.code, contract)
+                    .await?;
+            }
         } else {
+            let code = desired_app.code.clone();
+            let contract = desired_app.config_contract.clone();
             db::project_app::insert(pool, &desired_app).await?;
+            if let Some(contract) = contract {
+                db::project_app::set_config_contract(pool, project_id, &code, contract)
+                    .await?;
+            }
         }
     }
 
@@ -302,5 +354,77 @@ mod tests {
         let apps = project_level_apps_from_form(42, &form);
 
         assert!(apps.is_empty());
+    }
+
+    #[test]
+    fn project_level_apps_from_form_propagates_config_contract() {
+        let form: ProjectForm = serde_json::from_value(json!({
+            "custom": {
+                "custom_stack_code": "contract-project",
+                "project_name": "Contract project",
+                "networks": [
+                    {"id": "net-1", "name": "default_network"}
+                ],
+                "web": [{
+                    "_id": "web-1",
+                    "name": "Website",
+                    "code": "website",
+                    "type": "web",
+                    "custom": true,
+                    "dockerhub_image": "nginx:1.27",
+                    "domain": "example.com",
+                    "restart": "always",
+                    "network": ["net-1"],
+                    "environment": [{"key": "JWT_SECRET", "value": "auto"}],
+                    "shared_ports": [{"host_port": "80", "container_port": "8080"}],
+                    "volumes": [],
+                    "config_contract": {
+                        "services": {
+                            "web": {
+                                "fields": {
+                                    "JWT_SECRET": { "mutability": "generated" }
+                                }
+                            }
+                        }
+                    }
+                }],
+                "service": [{
+                    "_id": "svc-1",
+                    "name": "Redis",
+                    "code": "redis",
+                    "type": "service",
+                    "custom": true,
+                    "dockerhub_image": "redis:7-alpine",
+                    "domain": "",
+                    "restart": "unless-stopped",
+                    "network": ["net-1"],
+                    "environment": [],
+                    "shared_ports": [],
+                    "volumes": []
+                }],
+                "feature": []
+            }
+        }))
+        .expect("project form should deserialize");
+
+        let apps = project_level_apps_from_form(42, &form);
+
+        assert_eq!(
+            apps[0].config_contract,
+            Some(json!({
+                "services": {
+                    "web": {
+                        "fields": {
+                            "JWT_SECRET": { "mutability": "generated" }
+                        }
+                    }
+                }
+            })),
+            "config_contract should be propagated from form app to project app"
+        );
+        assert_eq!(
+            apps[1].config_contract, None,
+            "apps without config_contract should remain None"
+        );
     }
 }

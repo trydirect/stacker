@@ -10,6 +10,16 @@ use reqwest::StatusCode;
 use serde_json::{json, Value};
 use sqlx::Row;
 
+use tokio::sync::OnceCell;
+
+static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
+
+async fn app() -> common::TestApp {
+    common::get_or_init_app_fresh(&APP_CONFIG)
+        .await
+        .expect("Failed to start test app")
+}
+
 async fn insert_approved_template(pool: &sqlx::PgPool, slug: &str) -> uuid::Uuid {
     sqlx::query(
         r#"INSERT INTO stack_template (
@@ -125,10 +135,7 @@ services:
 
 #[tokio::test]
 async fn anonymous_user_cannot_see_password_values_in_template_detail() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     let slug = "redact-test-anon-v1";
     seed_template_with_sensitive_json_definition(&app.db_pool, slug).await;
@@ -202,10 +209,7 @@ async fn anonymous_user_cannot_see_password_values_in_template_detail() {
 
 #[tokio::test]
 async fn authenticated_user_also_receives_redacted_stack_definition() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     let slug = "redact-test-auth-v1";
     seed_template_with_sensitive_json_definition(&app.db_pool, slug).await;
@@ -251,10 +255,7 @@ async fn authenticated_user_also_receives_redacted_stack_definition() {
 
 #[tokio::test]
 async fn v1_template_detail_also_redacts_sensitive_fields() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     let slug = "redact-test-v1-path";
     seed_template_with_sensitive_json_definition(&app.db_pool, slug).await;
@@ -292,10 +293,7 @@ async fn v1_template_detail_also_redacts_sensitive_fields() {
 
 #[tokio::test]
 async fn yaml_stack_definition_has_passwords_redacted() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     let slug = "redact-test-yaml-format";
     seed_template_with_sensitive_yaml_definition(&app.db_pool, slug).await;

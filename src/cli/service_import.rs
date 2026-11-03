@@ -154,6 +154,7 @@ pub fn import_plan_from_compose_str(
         has_mail_server_shape |= looks_like_mail_server(source_name, &image, &ports);
 
         services.push(ServiceDefinition {
+            runtime: Default::default(),
             name: destination_name.clone(),
             image: image.clone(),
             ports: ports.clone(),
@@ -162,6 +163,11 @@ pub fn import_plan_from_compose_str(
             depends_on: depends_on.clone(),
             command: None,
             healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
         });
         reviews.push(ImportedServiceReview {
             source_name: source_name.to_string(),
@@ -377,14 +383,7 @@ fn is_placeholder_value(value: &str) -> bool {
 }
 
 fn is_sensitive_env_key(key: &str) -> bool {
-    let upper = key.to_ascii_uppercase();
-    upper.contains("PASSWORD")
-        || upper.contains("PASS")
-        || upper.contains("SECRET")
-        || upper.contains("TOKEN")
-        || upper.contains("KEY")
-        || upper.contains("CREDENTIAL")
-        || upper.contains("PRIVATE")
+    crate::helpers::redact::is_sensitive_env_key(key)
 }
 
 fn compose_depends_on(mapping: &Mapping) -> Vec<String> {

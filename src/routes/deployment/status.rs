@@ -32,6 +32,15 @@ pub struct DeploymentStatusResponse {
     /// Human-readable status/error message from the deployment pipeline.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_message: Option<String>,
+    /// Stable machine-readable failure class (e.g. `port_conflict`), from
+    /// `metadata.available_options.error_kind`. Shape pinned by
+    /// `config/shared-fixtures/deploy-failure-payload.json`. `None` for
+    /// deployments that predate the contract or didn't fail classification.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+    /// Remediation text for the classified failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub err_description: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -50,12 +59,24 @@ impl From<models::Deployment> for DeploymentStatusResponse {
             .and_then(|v| v.as_str())
             .map(String::from);
 
+        let available_options = d.metadata.get("available_options");
+        let error_kind = available_options
+            .and_then(|v| v.get("error_kind"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let err_description = available_options
+            .and_then(|v| v.get("err_description"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
         Self {
             id: d.id,
             project_id: d.project_id,
             deployment_hash: d.deployment_hash,
             status: d.status,
             status_message,
+            error_kind,
+            err_description,
             created_at: d.created_at,
             updated_at: d.updated_at,
         }
@@ -99,6 +120,8 @@ pub async fn status_by_hash_handler(
                 deployment_hash: installation.deployment_hash.unwrap_or(hash),
                 status: installation.status.unwrap_or_else(|| "unknown".to_string()),
                 status_message: installation.domain,
+                error_kind: None,
+                err_description: None,
                 created_at: parse_legacy_timestamp(installation.created_at.as_deref()),
                 updated_at: parse_legacy_timestamp(installation.updated_at.as_deref()),
             };

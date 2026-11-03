@@ -1,7 +1,10 @@
 pub mod agent_dispatcher;
+pub mod agent_sweeper;
+pub mod agent_token;
 pub mod config_renderer;
 pub mod dag_executor;
 pub mod deploy_plan;
+pub mod deployment_container_sweeper;
 pub mod deployment_events;
 pub mod deployment_identifier;
 pub mod deployment_state;
@@ -13,10 +16,14 @@ pub mod handoff;
 pub mod install_authorization_sweeper;
 pub mod log_cache;
 pub mod marketplace_access;
+pub mod managed_usage;
+pub mod managed_usage_sweeper;
 pub mod marketplace_assets;
 pub mod payout_provider;
 pub mod project;
 pub mod project_app_service;
+pub mod project_cleanup_notifier;
+pub mod server_cleanup_notifier;
 mod rating;
 pub mod resilience_engine;
 pub mod step_executor;
@@ -55,7 +62,10 @@ pub use explain::{
 };
 pub use handoff::InMemoryHandoffStore;
 pub use log_cache::LogCacheService;
-pub use marketplace_access::{validate_marketplace_template_access, MarketplaceAccessError};
+pub use marketplace_access::{
+    map_access_error, validate_marketplace_template_access,
+    validate_marketplace_template_access_with_mode, AccessMode, MarketplaceAccessError,
+};
 pub use marketplace_assets::{
     build_asset_key, presign_asset_download, presign_asset_upload, MarketplaceAssetStorageError,
     MarketplaceAssetUploadRequest, PresignedMarketplaceAssetResponse,

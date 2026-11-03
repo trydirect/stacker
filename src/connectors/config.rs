@@ -8,6 +8,43 @@ pub struct ConnectorConfig {
     pub payment_service: Option<PaymentServiceConfig>,
     pub events: Option<EventsConfig>,
     pub dockerhub_service: Option<DockerHubConnectorConfig>,
+    pub hetzner: Option<HetznerConfig>,
+}
+
+/// TryDirect-managed Hetzner Cloud credentials used by the immutable clone
+/// deploy path (badge → `POST /api/v1/deploy/clone`). The token is read from
+/// the `HETZNER_TOKEN` env var; never serialized into config files.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HetznerConfig {
+    /// Override Hetzner API base URL (default https://api.hetzner.cloud/v1).
+    #[serde(default = "HetznerConfig::default_base_url")]
+    pub base_url: String,
+    /// Managed Hetzner Cloud API token. Loaded from `HETZNER_TOKEN` env.
+    #[serde(skip)]
+    pub token: Option<String>,
+}
+
+impl Default for HetznerConfig {
+    fn default() -> Self {
+        Self {
+            base_url: Self::default_base_url(),
+            token: None,
+        }
+    }
+}
+
+impl HetznerConfig {
+    fn default_base_url() -> String {
+        "https://api.hetzner.cloud/v1".to_string()
+    }
+
+    pub fn from_env() -> Self {
+        Self {
+            base_url: std::env::var("HETZNER_API_BASE_URL")
+                .unwrap_or_else(|_| Self::default_base_url()),
+            token: std::env::var("HETZNER_TOKEN").ok(),
+        }
+    }
 }
 
 /// User Service connector configuration
@@ -108,6 +145,7 @@ impl Default for ConnectorConfig {
             payment_service: Some(PaymentServiceConfig::default()),
             events: Some(EventsConfig::default()),
             dockerhub_service: Some(DockerHubConnectorConfig::default()),
+            hetzner: Some(HetznerConfig::default()),
         }
     }
 }

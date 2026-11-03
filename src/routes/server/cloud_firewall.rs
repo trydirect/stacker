@@ -458,9 +458,8 @@ fn non_empty_secret(value: Option<String>) -> Option<String> {
 mod tests {
     use super::*;
     use crate::forms::CloudForm;
-    use std::sync::Mutex;
+    use crate::helpers::cloud::security::security_key_test_lock as env_lock;
 
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
     const TEST_SECURITY_KEY: &str = "01234567890123456789012345678901";
 
     fn encrypted_cloud(token: &str) -> models::Cloud {
@@ -492,7 +491,7 @@ mod tests {
 
     #[test]
     fn prepare_cloud_firewall_credentials_decodes_saved_token() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _lock = env_lock::lock();
         std::env::set_var("SECURITY_KEY", TEST_SECURITY_KEY);
         let cloud = encrypted_cloud("live-hcloud-token");
         let encrypted_token = cloud.cloud_token.clone();

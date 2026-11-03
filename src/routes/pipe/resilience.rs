@@ -13,6 +13,14 @@ use crate::models::User;
 // Ownership helper
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// The answer for a DLQ entry the caller is not allowed to see.
+///
+/// Identical to the answer for an entry that does not exist, so the wording
+/// cannot be used to tell one from the other.
+fn dlq_entry_not_visible() -> actix_web::Error {
+    JsonResponse::<String>::not_found("DLQ entry not found")
+}
+
 async fn verify_instance_owner(
     pool: &PgPool,
     instance_id: &uuid::Uuid,
@@ -122,11 +130,15 @@ pub async fn get_dlq_handler(
 
     let entry = match entry {
         Some(e) => e,
-        None => return Err(JsonResponse::<String>::not_found("DLQ entry not found")),
+        None => return Err(dlq_entry_not_visible()),
     };
 
-    // Verify ownership
-    verify_instance_owner(pg_pool.get_ref(), &entry.pipe_instance_id, &user.id).await?;
+    // A refusal must read exactly like the missing-entry answer above,
+    // otherwise the wording reveals that the entry exists.
+    super::mask_refusal_as(
+        verify_instance_owner(pg_pool.get_ref(), &entry.pipe_instance_id, &user.id).await,
+        dlq_entry_not_visible,
+    )?;
 
     Ok(JsonResponse::build()
         .set_item(Some(entry))
@@ -149,10 +161,15 @@ pub async fn retry_dlq_handler(
 
     let entry = match entry {
         Some(e) => e,
-        None => return Err(JsonResponse::<String>::not_found("DLQ entry not found")),
+        None => return Err(dlq_entry_not_visible()),
     };
 
-    verify_instance_owner(pg_pool.get_ref(), &entry.pipe_instance_id, &user.id).await?;
+    // A refusal must read exactly like the missing-entry answer above,
+    // otherwise the wording reveals that the entry exists.
+    super::mask_refusal_as(
+        verify_instance_owner(pg_pool.get_ref(), &entry.pipe_instance_id, &user.id).await,
+        dlq_entry_not_visible,
+    )?;
 
     let updated = db::resilience::retry_dlq_entry(pg_pool.get_ref(), &entry_id)
         .await
@@ -182,10 +199,15 @@ pub async fn discard_dlq_handler(
 
     let entry = match entry {
         Some(e) => e,
-        None => return Err(JsonResponse::<String>::not_found("DLQ entry not found")),
+        None => return Err(dlq_entry_not_visible()),
     };
 
-    verify_instance_owner(pg_pool.get_ref(), &entry.pipe_instance_id, &user.id).await?;
+    // A refusal must read exactly like the missing-entry answer above,
+    // otherwise the wording reveals that the entry exists.
+    super::mask_refusal_as(
+        verify_instance_owner(pg_pool.get_ref(), &entry.pipe_instance_id, &user.id).await,
+        dlq_entry_not_visible,
+    )?;
 
     db::resilience::discard_dlq_entry(pg_pool.get_ref(), &entry_id)
         .await

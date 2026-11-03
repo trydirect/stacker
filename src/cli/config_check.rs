@@ -65,9 +65,9 @@ pub fn check_inventory(
         }
 
         let present = present_keys.get(&target).cloned().unwrap_or_default();
-        let secret_keys = contract.secret.into_iter().collect::<BTreeSet<_>>();
+        let secret_keys = contract.secret_keys().into_iter().collect::<BTreeSet<_>>();
 
-        for key in contract.required {
+        for key in contract.required_keys() {
             if !present.contains(&key) {
                 missing_required.push(ConfigCheckItem {
                     secret: secret_keys.contains(&key),
@@ -77,7 +77,7 @@ pub fn check_inventory(
             }
         }
 
-        for key in contract.optional {
+        for key in contract.optional_keys() {
             if !present.contains(&key) {
                 missing_optional.push(ConfigCheckItem {
                     secret: secret_keys.contains(&key),

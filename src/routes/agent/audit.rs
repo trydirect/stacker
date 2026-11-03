@@ -1,10 +1,10 @@
 use crate::db::agent_audit_log as audit_db;
-use crate::helpers::JsonResponse;
 use crate::models::agent_audit_log::{AgentAuditLog, AuditBatchRequest};
-use actix_web::error::ErrorUnauthorized;
-use actix_web::{get, post, web, HttpRequest, HttpResponse, Result};
+use crate::{helpers, models};
+use actix_web::{get, post, web, HttpResponse, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::sync::Arc;
 
 // ── POST /api/v1/agent/audit ───────────────────────────────────────────────
 
@@ -13,27 +13,21 @@ pub struct IngestResponse {
     pub accepted: usize,
 }
 
-/// Receive a batch of audit events from the Status Panel.
+/// Receive a batch of audit events from the Status Panel agent.
 ///
-/// Auth: `X-Internal-Key` header must match the `INTERNAL_SERVICES_ACCESS_KEY`
-/// environment variable.
+/// Auth: agent token via `X-Agent-Id` and `Bearer` headers (handled by
+/// middleware). The installation hash must belong to the authenticated agent.
 #[tracing::instrument(name = "Agent audit ingest", skip_all)]
 #[post("/audit")]
 pub async fn agent_audit_ingest_handler(
-    req: HttpRequest,
+    agent: helpers::AuthenticatedAgent,
     body: web::Json<AuditBatchRequest>,
     pool: web::Data<PgPool>,
 ) -> Result<HttpResponse> {
-    // Validate internal service key
-    let expected = std::env::var("INTERNAL_SERVICES_ACCESS_KEY").unwrap_or_default();
-    let provided = req
-        .headers()
-        .get("x-internal-key")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
-
-    if expected.is_empty() || provided != expected {
-        return Err(ErrorUnauthorized("invalid internal key"));
+    if agent.deployment_hash != body.installation_hash {
+        return Err(helpers::JsonResponse::forbidden(
+            "Not authorized for this installation",
+        ));
     }
 
     // Short-circuit on empty batch
@@ -44,7 +38,7 @@ pub async fn agent_audit_ingest_handler(
     let accepted = audit_db::insert_batch(&pool, &body.installation_hash, &body.events)
         .await
         .map_err(|err| {
-            JsonResponse::<()>::build()
+            helpers::JsonResponse::<()>::build()
                 .internal_server_error(format!("Failed to store audit events: {}", err))
         })?;
 
@@ -68,8 +62,36 @@ pub struct AuditQueryParams {
 pub async fn agent_audit_query_handler(
     params: web::Query<AuditQueryParams>,
     pool: web::Data<PgPool>,
+    settings: web::Data<crate::configuration::Settings>,
+    caller_user: Option<web::ReqData<std::sync::Arc<crate::models::User>>>,
 ) -> Result<HttpResponse> {
     let limit = params.limit.unwrap_or(50).min(100).max(1);
+
+    // `installation_hash` is optional, and omitting it made `fetch_recent`
+    // return the most recent events across *every* installation — a
+    // cross-tenant read available to any authenticated user, since Casbin
+    // grants this route to `group_user`. Non-admins must now name an
+    // installation and prove they own it.
+    let user = caller_user
+        .as_deref()
+        .ok_or_else(|| helpers::JsonResponse::<String>::forbidden("Authentication required"))?;
+
+    let is_admin = matches!(user.role.as_str(), "admin_service" | "group_admin" | "root");
+
+    if !is_admin {
+        let installation_hash = params.installation_hash.as_deref().ok_or_else(|| {
+            helpers::JsonResponse::<String>::bad_request("installation_hash is required")
+        })?;
+
+        crate::routes::agent::guard::authorize_deployment_access(
+            &pool,
+            settings.get_ref(),
+            installation_hash,
+            None,
+            Some(user),
+        )
+        .await?;
+    }
 
     let logs: Vec<AgentAuditLog> = audit_db::fetch_recent(
         &pool,
@@ -79,7 +101,7 @@ pub async fn agent_audit_query_handler(
     )
     .await
     .map_err(|err| {
-        JsonResponse::<()>::build()
+        helpers::JsonResponse::<()>::build()
             .internal_server_error(format!("Failed to fetch audit log: {}", err))
     })?;
 

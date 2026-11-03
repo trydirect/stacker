@@ -16,7 +16,7 @@ pub struct NotificationsResponse {
 #[tracing::instrument(name = "Agent list notifications", skip_all)]
 #[get("/notifications")]
 pub async fn notifications_handler(
-    agent: web::ReqData<Arc<models::Agent>>,
+    agent: helpers::AuthenticatedAgent,
     query: web::Query<NotificationsQuery>,
 ) -> Result<impl Responder> {
     if agent.deployment_hash != query.deployment_hash {

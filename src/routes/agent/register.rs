@@ -10,6 +10,11 @@ pub struct RegisterAgentRequest {
     pub capabilities: Vec<String>,
     pub system_info: serde_json::Value,
     pub agent_version: String,
+    /// The owner's user id (the same id `deployment.user_id` holds), sent by the
+    /// registering service. Used only to record the owner of a deployment
+    /// Stacker has no row for; see [`link_unknown_deployment`].
+    #[serde(default)]
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -31,17 +36,6 @@ pub struct RegisterAgentResponseData {
 }
 
 /// Generate a secure random agent token (86 characters)
-fn generate_agent_token() -> String {
-    use rand::Rng;
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut rng = rand::thread_rng();
-    (0..86)
-        .map(|_| {
-            let idx = rng.gen_range(0..CHARSET.len());
-            CHARSET[idx] as char
-        })
-        .collect()
-}
 
 #[tracing::instrument(name = "Register agent", skip_all)]
 #[post("/register")]
@@ -51,6 +45,24 @@ pub async fn register_handler(
     vault_client: web::Data<helpers::VaultClient>,
     req: HttpRequest,
 ) -> Result<HttpResponse> {
+    // Service-to-service only. A registering agent has no credential yet — that
+    // is what it is here to obtain — so the endpoint is granted to
+    // `group_anonymous` in Casbin and authorised by the shared key instead, the
+    // same arrangement `agent_audit_ingest_handler` uses. Its caller is the
+    // Ansible statuspanel role, which runs on the controller and holds the key.
+    //
+    // `deployment_hash` alone is not sufficient authorisation: it is an
+    // identifier, not a secret, and appears in the dashboard, in URLs and in
+    // logs.
+    crate::helpers::internal_key::require_internal_key(&req)?;
+
+    link_unknown_deployment(
+        agent_pool.as_ref(),
+        &payload.deployment_hash,
+        payload.user_id.as_deref(),
+    )
+    .await;
+
     // 1. Check if agent already registered (idempotent operation)
     let existing_agent =
         db::agent::fetch_by_deployment_hash(agent_pool.as_ref(), &payload.deployment_hash)
@@ -76,28 +88,22 @@ pub async fn register_handler(
                 helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err)
             })?;
 
-        // Try to fetch existing token from Vault
-        let agent_token = vault_client
-            .fetch_agent_token(&payload.deployment_hash)
-            .await
-            .unwrap_or_else(|_| {
-                tracing::warn!("Existing agent found but token missing in Vault, regenerating");
-                let new_token = generate_agent_token();
-                let vault = vault_client.clone();
-                let hash = payload.deployment_hash.clone();
-                let token = new_token.clone();
-                actix_web::rt::spawn(async move {
-                    for retry in 0..3 {
-                        if vault.store_agent_token(&hash, &token).await.is_ok() {
-                            tracing::info!("Token restored to Vault for {}", hash);
-                            break;
-                        }
-                        tokio::time::sleep(tokio::time::Duration::from_secs(2_u64.pow(retry)))
-                            .await;
-                    }
-                });
-                new_token
-            });
+        // Re-issue rather than reading the old token back. Verification now
+        // compares against the digest in Postgres, so the previous
+        // `fetch_agent_token(..).unwrap_or_else(regenerate)` has no value to
+        // recover — and it regenerated on *any* Vault error, rotating a
+        // healthy agent's credential over a network blip.
+        let agent_token = crate::services::agent_token::issue(
+            agent_pool.as_ref(),
+            vault_client.as_ref(),
+            existing.id,
+            &payload.deployment_hash,
+        )
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to issue agent token on re-registration: {}", err);
+            helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err)
+        })?;
 
         let response = RegisterAgentResponseWrapper {
             data: RegisterAgentResponseData {
@@ -119,8 +125,6 @@ pub async fn register_handler(
     agent.version = Some(payload.agent_version.clone());
     agent.system_info = Some(payload.system_info.clone());
 
-    let agent_token = generate_agent_token();
-
     // 4. Insert to DB first (source of truth)
     let saved_agent = db::agent::insert(agent_pool.as_ref(), agent)
         .await
@@ -129,31 +133,23 @@ pub async fn register_handler(
             helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err)
         })?;
 
-    // 5. Store token in Vault asynchronously with retry (best-effort)
-    let vault = vault_client.clone();
-    let hash = payload.deployment_hash.clone();
-    let token = agent_token.clone();
-    actix_web::rt::spawn(async move {
-        for retry in 0..3 {
-            match vault.store_agent_token(&hash, &token).await {
-                Ok(_) => {
-                    tracing::info!("Token stored in Vault for {} (attempt {})", hash, retry + 1);
-                    break;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to store token in Vault (attempt {}): {:?}",
-                        retry + 1,
-                        e
-                    );
-                    if retry < 2 {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(2_u64.pow(retry)))
-                            .await;
-                    }
-                }
-            }
-        }
-    });
+    // 5. Issue the token: digest to Postgres, value to Vault, both awaited.
+    //
+    // Previously this was a detached spawn and the response went out
+    // immediately, so a failed store handed the agent a credential nothing
+    // could verify — and a poll arriving first was rejected with "Token not
+    // found in Vault", which is what made tests/agent_command_flow.rs flaky.
+    let agent_token = crate::services::agent_token::issue(
+        agent_pool.as_ref(),
+        vault_client.as_ref(),
+        saved_agent.id,
+        &payload.deployment_hash,
+    )
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to issue agent token on registration: {}", err);
+        helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err)
+    })?;
 
     let audit_log = models::AuditLog::new(
         Some(saved_agent.id),
@@ -193,4 +189,90 @@ pub async fn register_handler(
     );
 
     Ok(HttpResponse::Created().json(response))
+}
+
+/// Record who owns a deployment Stacker has no row for.
+///
+/// A deployment provisioned outside Stacker has no row here.
+/// Installing the agent on it registered an agent for a hash with no
+/// `deployment` row, so nothing in Stacker said whose it was, and every
+/// ownership check on the agent routes answered 404 - the dashboard said
+/// "Deployment not registered with the agent yet" while the agent was online.
+/// The caller is trusted (internal key), so the owner it names is recorded
+/// here, the way `command/create.rs` records the caller for `deploy_app`.
+///
+/// A known deployment is never touched, so its owner cannot be changed this
+/// way. Failures are logged, not returned: the agent must still register.
+async fn link_unknown_deployment(
+    pool: &sqlx::PgPool,
+    deployment_hash: &str,
+    user_id: Option<&str>,
+) {
+    let Some(user_id) = user_id.map(str::trim).filter(|id| !id.is_empty()) else {
+        return;
+    };
+
+    match db::deployment::fetch_by_deployment_hash(pool, deployment_hash).await {
+        Ok(Some(_)) => return,
+        Ok(None) => {}
+        Err(err) => {
+            tracing::error!(
+                "Agent registration: could not look up deployment {}: {}",
+                deployment_hash,
+                err
+            );
+            return;
+        }
+    }
+
+    let metadata = serde_json::json!({
+        "auto_created": true,
+        "source": "agent_register",
+        "deployment_hash": deployment_hash,
+    });
+    let project = models::Project::new(
+        user_id.to_string(),
+        format!(
+            "deployment-{}",
+            deployment_hash.chars().take(8).collect::<String>()
+        ),
+        metadata.clone(),
+        serde_json::json!({}),
+    );
+    let project = match db::project::insert(pool, project).await {
+        Ok(project) => project,
+        Err(err) => {
+            tracing::error!(
+                "Agent registration: could not create project for {}: {}",
+                deployment_hash,
+                err
+            );
+            return;
+        }
+    };
+
+    let deployment = models::Deployment::new(
+        project.id,
+        Some(user_id.to_string()),
+        deployment_hash.to_string(),
+        "completed".to_string(),
+        "runc".to_string(),
+        metadata,
+    );
+    if let Err(err) = db::deployment::insert(pool, deployment).await {
+        // Most likely a concurrent registration linked it first (the hash is
+        // unique); drop the project this attempt created for nothing.
+        tracing::warn!(
+            "Agent registration: could not create deployment for {}: {}",
+            deployment_hash,
+            err
+        );
+        if let Err(err) = db::project::delete(pool, project.id, user_id).await {
+            tracing::error!(
+                "Agent registration: could not remove unused project {}: {}",
+                project.id,
+                err
+            );
+        }
+    }
 }

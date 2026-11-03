@@ -6,7 +6,7 @@ use crate::models::{
 };
 use chrono::{Duration, Utc};
 use serde_json::{Map, Value};
-use sqlx::{PgPool, Row};
+use sqlx::{PgConnection, PgPool, Row};
 use tracing::Instrument;
 
 pub const SLUG_UNIQUE_CONSTRAINT: &str = "stack_template_slug_key";
@@ -291,6 +291,7 @@ pub async fn get_by_slug_and_user(
     })
 }
 
+#[derive(Debug)]
 pub enum SlugLookupError {
     NotFound,
     Internal,
@@ -362,6 +363,7 @@ pub async fn get_by_slug_with_latest(
             definition_format,
             changelog,
             is_latest,
+            config_contract,
             created_at
         FROM stack_template_version WHERE template_id = $1 AND is_latest = true LIMIT 1"#,
     )
@@ -400,6 +402,7 @@ pub async fn get_latest_version(
             definition_format,
             changelog,
             is_latest,
+            config_contract,
             created_at
         FROM stack_template_version WHERE template_id = $1 AND is_latest = true LIMIT 1"#,
     )
@@ -651,6 +654,127 @@ pub async fn set_latest_version(
     Ok(rec)
 }
 
+/// Link the latest `stack_template_version` row to the project it was
+/// authored/tested against. Not part of the `StackTemplateVersion` struct
+/// (which is fetched by many read paths via column-name-based `FromRow`) —
+/// kept as a narrow, dedicated accessor so only the publish-gate call sites
+/// that actually need it touch this column.
+pub async fn set_source_project_id(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    source_project_id: i32,
+) -> Result<(), String> {
+    let query_span =
+        tracing::info_span!("marketplace_set_source_project_id", template_id = %template_id);
+
+    sqlx::query(
+        r#"UPDATE stack_template_version
+           SET source_project_id = $2
+           WHERE template_id = $1 AND is_latest = true"#,
+    )
+    .bind(template_id)
+    .bind(source_project_id)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("set_source_project_id error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(())
+}
+
+/// Read back the source project linked via [`set_source_project_id`].
+/// Checks the latest version first, then falls back to any version —
+/// `source_project_id` is semantically tied to the template, not a
+/// specific version, and `resubmit_with_new_version` may create a new
+/// latest row before the caller has a chance to re-set it.
+pub async fn get_source_project_id(
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+) -> Result<Option<i32>, String> {
+    let query_span =
+        tracing::info_span!("marketplace_get_source_project_id", template_id = %template_id);
+
+    sqlx::query_scalar::<_, Option<i32>>(
+        r#"SELECT source_project_id
+           FROM stack_template_version
+           WHERE template_id = $1
+             AND source_project_id IS NOT NULL
+           ORDER BY is_latest DESC, created_at DESC
+           LIMIT 1"#,
+    )
+    .bind(template_id)
+    .fetch_optional(pool)
+    .instrument(query_span)
+    .await
+    .map(|row| row.flatten())
+    .map_err(|e| {
+        tracing::error!("get_source_project_id error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
+/// Persist the author-declared `config_contract` (field policy: which env
+/// vars are fixed/editable/generated) alongside the latest version. Kept as
+/// a dedicated accessor for the same reason as [`set_source_project_id`] —
+/// it isn't part of the shared `StackTemplateVersion` struct fetched by
+/// every version-listing query.
+pub async fn set_config_contract(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    config_contract: serde_json::Value,
+) -> Result<(), String> {
+    let query_span =
+        tracing::info_span!("marketplace_set_config_contract", template_id = %template_id);
+
+    sqlx::query(
+        r#"UPDATE stack_template_version
+           SET config_contract = $2
+           WHERE template_id = $1 AND is_latest = true"#,
+    )
+    .bind(template_id)
+    .bind(config_contract)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("set_config_contract error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(())
+}
+
+/// Read back the field policy set via [`set_config_contract`]. Returns
+/// `Value::Null` when nothing has been declared (legacy templates, or a
+/// version that never set one) — callers should treat that as "no fields
+/// declared", not an error.
+pub async fn get_config_contract(
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+) -> Result<serde_json::Value, String> {
+    let query_span =
+        tracing::info_span!("marketplace_get_config_contract", template_id = %template_id);
+
+    sqlx::query_scalar::<_, Option<serde_json::Value>>(
+        r#"SELECT config_contract
+           FROM stack_template_version
+           WHERE template_id = $1 AND is_latest = true
+           LIMIT 1"#,
+    )
+    .bind(template_id)
+    .fetch_optional(pool)
+    .instrument(query_span)
+    .await
+    .map(|row| row.flatten().unwrap_or(serde_json::Value::Null))
+    .map_err(|e| {
+        tracing::error!("get_config_contract error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
 pub async fn upsert_latest_version(
     pool: &PgPool,
     template_id: &uuid::Uuid,
@@ -816,6 +940,90 @@ pub async fn update_metadata(
     .await
     .map_err(|e| {
         tracing::error!("update_metadata error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(res.rows_affected() > 0)
+}
+
+/// Update a template's metadata as an administrator, whatever its status.
+///
+/// `update_metadata` refuses anything outside draft/rejected/needs_changes and
+/// `update_metadata_for_resubmit` refuses draft/submitted/under_review, because
+/// both model an *author* editing their own listing through the review
+/// workflow. An admin correcting a published listing is not in that workflow,
+/// so the status gate does not apply - same reasoning as `admin_update_pricing`
+/// just below. Status itself still moves only through approve/reject/unapprove.
+#[allow(clippy::too_many_arguments)]
+pub async fn admin_update_metadata(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    name: Option<&str>,
+    short_description: Option<&str>,
+    long_description: Option<&str>,
+    category_code: Option<&str>,
+    tags: Option<serde_json::Value>,
+    tech_stack: Option<serde_json::Value>,
+    infrastructure_requirements: Option<serde_json::Value>,
+    price: Option<f64>,
+    billing_cycle: Option<&str>,
+    required_plan_name: Option<&str>,
+    currency: Option<&str>,
+    public_ports: Option<serde_json::Value>,
+    vendor_url: Option<&str>,
+) -> Result<bool, String> {
+    let query_span =
+        tracing::info_span!("marketplace_admin_update_metadata", template_id = %template_id);
+
+    if let Some(category_code) = category_code {
+        sqlx::query(r#"INSERT INTO stack_category (name) VALUES ($1) ON CONFLICT DO NOTHING"#)
+            .bind(category_code)
+            .execute(pool)
+            .instrument(query_span.clone())
+            .await
+            .map_err(|e| {
+                tracing::error!("admin_update_metadata category upsert error: {:?}", e);
+                "Internal Server Error".to_string()
+            })?;
+    }
+
+    let res = sqlx::query(
+        r#"UPDATE stack_template SET
+            name = COALESCE($2, name),
+            short_description = COALESCE($3, short_description),
+            long_description = COALESCE($4, long_description),
+            category_id = COALESCE((SELECT id FROM stack_category WHERE name = $5), category_id),
+            tags = COALESCE($6, tags),
+            tech_stack = COALESCE($7, tech_stack),
+            infrastructure_requirements = COALESCE($8, infrastructure_requirements),
+            price = COALESCE($9, price),
+            billing_cycle = COALESCE($10, billing_cycle),
+            required_plan_name = COALESCE($11, required_plan_name),
+            currency = COALESCE($12, currency),
+            public_ports = COALESCE($13, public_ports),
+            vendor_url = COALESCE($14, vendor_url),
+            updated_at = now()
+        WHERE id = $1::uuid"#,
+    )
+    .bind(template_id)
+    .bind(name)
+    .bind(short_description)
+    .bind(long_description)
+    .bind(category_code)
+    .bind(tags)
+    .bind(tech_stack)
+    .bind(infrastructure_requirements)
+    .bind(price)
+    .bind(billing_cycle)
+    .bind(required_plan_name)
+    .bind(currency)
+    .bind(public_ports)
+    .bind(vendor_url)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("admin_update_metadata error: {:?}", e);
         "Internal Server Error".to_string()
     })?;
 
@@ -1579,7 +1787,7 @@ pub async fn list_versions_by_template(
         r#"
         SELECT id, template_id, version, stack_definition, config_files, assets, seed_jobs,
                post_deploy_hooks, update_mode_capabilities, definition_format, changelog,
-               is_latest, created_at
+               is_latest, config_contract, created_at
         FROM stack_template_version
         WHERE template_id = $1
         ORDER BY created_at DESC
@@ -1606,7 +1814,7 @@ pub async fn get_latest_version_by_template(
         r#"
         SELECT id, template_id, version, stack_definition, config_files, assets, seed_jobs,
                post_deploy_hooks, update_mode_capabilities, definition_format, changelog,
-               is_latest, created_at
+               is_latest, config_contract, created_at
         FROM stack_template_version
         WHERE template_id = $1 AND is_latest = true
         LIMIT 1
@@ -2173,6 +2381,8 @@ pub async fn admin_update_pricing(
     billing_cycle: Option<&str>,
     required_plan_name: Option<&str>,
     currency: Option<&str>,
+    daily_rate: Option<f64>,
+    monthly_cap: Option<f64>,
 ) -> Result<bool, String> {
     let query_span = tracing::info_span!(
         "marketplace_admin_update_pricing",
@@ -2190,7 +2400,9 @@ pub async fn admin_update_pricing(
             price = COALESCE($2, price),
             billing_cycle = COALESCE($3, billing_cycle),
             required_plan_name = COALESCE($4, required_plan_name),
-            currency = COALESCE($5, currency)
+            currency = COALESCE($5, currency),
+            daily_rate = COALESCE($6, daily_rate),
+            monthly_cap = COALESCE($7, monthly_cap)
         WHERE id = $1"#,
     )
     .bind(*template_id)
@@ -2198,6 +2410,8 @@ pub async fn admin_update_pricing(
     .bind(billing_cycle)
     .bind(required_plan_name)
     .bind(currency)
+    .bind(daily_rate)
+    .bind(monthly_cap)
     .execute(pool)
     .instrument(query_span)
     .await
@@ -2237,27 +2451,87 @@ pub async fn update_verifications(
     Ok(res.rows_affected() > 0)
 }
 
-/// Increment view_count for a marketplace template
+/// Writes one view/deploy event to both event tables: `marketplace_template_event`
+/// feeds creator analytics, `marketplace_event` is the raw event log.
+async fn insert_event_rows(
+    conn: &mut PgConnection,
+    template_id: &uuid::Uuid,
+    event_type: &str,
+    viewer_user_id: Option<&str>,
+    deployer_user_id: Option<&str>,
+    cloud_provider: Option<&str>,
+    metadata: &serde_json::Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"INSERT INTO marketplace_template_event
+            (template_id, event_type, user_id, viewer_user_id, deployer_user_id, cloud_provider, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
+    )
+    .bind(*template_id)
+    .bind(event_type)
+    .bind(viewer_user_id.or(deployer_user_id))
+    .bind(viewer_user_id)
+    .bind(deployer_user_id)
+    .bind(cloud_provider)
+    .bind(metadata)
+    .execute(&mut *conn)
+    .await?;
+
+    sqlx::query(
+        r#"INSERT INTO marketplace_event
+            (template_id, event_type, viewer_user_id, deployer_user_id, cloud_provider, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6)"#,
+    )
+    .bind(*template_id)
+    .bind(event_type)
+    .bind(viewer_user_id)
+    .bind(deployer_user_id)
+    .bind(cloud_provider)
+    .bind(metadata)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Increment view_count for a marketplace template and record a view event
 pub async fn increment_view_count(pool: &PgPool, template_id: &uuid::Uuid) -> Result<bool, String> {
     let query_span =
         tracing::info_span!("marketplace_increment_view_count", template_id = %template_id);
 
+    let internal = |e: sqlx::Error| {
+        tracing::error!("increment_view_count error: {:?}", e);
+        "Internal Server Error".to_string()
+    };
+    let mut tx = pool.begin().await.map_err(internal)?;
     let res = sqlx::query(
         r#"UPDATE stack_template SET view_count = COALESCE(view_count, 0) + 1 WHERE id = $1"#,
     )
     .bind(*template_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .instrument(query_span)
     .await
-    .map_err(|e| {
-        tracing::error!("increment_view_count error: {:?}", e);
-        "Internal Server Error".to_string()
-    })?;
+    .map_err(internal)?;
 
-    Ok(res.rows_affected() > 0)
+    let found = res.rows_affected() > 0;
+    if found {
+        insert_event_rows(
+            &mut tx,
+            template_id,
+            "view",
+            None,
+            None,
+            None,
+            &serde_json::json!({}),
+        )
+        .await
+        .map_err(internal)?;
+    }
+    tx.commit().await.map_err(internal)?;
+    Ok(found)
 }
 
-/// Increment deploy_count for a marketplace template
+/// Increment deploy_count for a marketplace template.
+/// No event is recorded: this counter is unauthenticated; verified deploy events come from `record_deploy_complete_once`.
 pub async fn increment_deploy_count(
     pool: &PgPool,
     template_id: &uuid::Uuid,
@@ -2363,6 +2637,21 @@ pub async fn record_deploy_complete_once(
         "Internal Server Error".to_string()
     })?;
 
+    insert_event_rows(
+        &mut tx,
+        template_id,
+        "deploy",
+        None,
+        None,
+        None,
+        &serde_json::json!({ "source": "deploy-complete" }),
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("record_deploy_complete_once event error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
     tx.commit().await.map_err(|e| {
         tracing::error!("record_deploy_complete_once commit error: {:?}", e);
         "Internal Server Error".to_string()
@@ -2372,37 +2661,74 @@ pub async fn record_deploy_complete_once(
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// TDD Stub Functions for Metrics/Analytics
-// These are intentionally unimplemented - tests will FAIL until implemented
+// Metrics/Analytics
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Insert a view event into marketplace_event table
-///
-/// TDD stub - unimplemented. Requires:
-/// - marketplace_event table migration
-/// - INSERT query with template_id, event_type='view', viewer_user_id, occurred_at, metadata
+/// Insert a view event (both event tables) in one transaction
 pub async fn insert_view_event(
-    _pool: &PgPool,
-    _template_id: uuid::Uuid,
-    _viewer_user_id: &str,
-    _metadata: serde_json::Value,
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+    viewer_user_id: &str,
+    metadata: serde_json::Value,
 ) -> Result<(), String> {
-    Err("insert_view_event not implemented - requires marketplace_event table".to_string())
+    insert_event_tx(
+        pool,
+        &template_id,
+        "view",
+        Some(viewer_user_id),
+        None,
+        None,
+        &metadata,
+    )
+    .await
 }
 
-/// Insert a deploy event into marketplace_event table
-///
-/// TDD stub - unimplemented. Requires:
-/// - marketplace_event table migration with cloud_provider column
-/// - INSERT query with template_id, event_type='deploy', deployer_user_id, cloud_provider, occurred_at, metadata
+/// Insert a deploy event (both event tables) in one transaction
 pub async fn insert_deploy_event(
-    _pool: &PgPool,
-    _template_id: uuid::Uuid,
-    _deployer_user_id: &str,
-    _cloud_provider: &str,
-    _metadata: serde_json::Value,
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+    deployer_user_id: &str,
+    cloud_provider: &str,
+    metadata: serde_json::Value,
 ) -> Result<(), String> {
-    Err("insert_deploy_event not implemented - requires marketplace_event table".to_string())
+    insert_event_tx(
+        pool,
+        &template_id,
+        "deploy",
+        None,
+        Some(deployer_user_id),
+        Some(cloud_provider),
+        &metadata,
+    )
+    .await
+}
+
+async fn insert_event_tx(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    event_type: &str,
+    viewer: Option<&str>,
+    deployer: Option<&str>,
+    cloud: Option<&str>,
+    metadata: &serde_json::Value,
+) -> Result<(), String> {
+    let internal = |e: sqlx::Error| {
+        tracing::error!("insert {} event error: {:?}", event_type, e);
+        "Internal Server Error".to_string()
+    };
+    let mut tx = pool.begin().await.map_err(internal)?;
+    insert_event_rows(
+        &mut tx,
+        template_id,
+        event_type,
+        viewer,
+        deployer,
+        cloud,
+        metadata,
+    )
+    .await
+    .map_err(internal)?;
+    tx.commit().await.map_err(internal)
 }
 
 /// Get vendor analytics for all templates owned by creator_user_id
@@ -2646,4 +2972,50 @@ pub async fn get_template_events_by_creator(
     _end_date: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<Vec<crate::models::marketplace::MarketplaceEvent>, String> {
     Err("get_template_events_by_creator not implemented - requires owner-scoped query".to_string())
+}
+
+/// Fetch an approved template by slug. Used by the one-click clone endpoint
+/// to look up billing_cycle and pricing fields.
+pub async fn get_approved_by_slug(
+    pool: &PgPool,
+    slug: &str,
+) -> Result<Option<StackTemplate>, String> {
+    sqlx::query_as::<_, StackTemplate>(
+        r#"SELECT
+            t.id,
+            t.creator_user_id,
+            t.creator_name,
+            t.name,
+            t.slug,
+            t.short_description,
+            t.long_description,
+            c.name AS category_code,
+            t.product_id,
+            t.tags,
+            t.tech_stack,
+            t.status,
+            t.is_configurable,
+            t.view_count,
+            t.deploy_count,
+            t.required_plan_name,
+            t.price,
+            t.billing_cycle,
+            t.currency,
+            t.daily_rate::float8,
+            t.monthly_cap::float8,
+            t.created_at,
+            t.updated_at,
+            t.approved_at,
+            t.verifications,
+            t.infrastructure_requirements,
+            t.public_ports,
+            t.vendor_url
+        FROM stack_template t
+        LEFT JOIN stack_category c ON t.category_id = c.id
+        WHERE t.slug = $1 AND t.status = 'approved'"#,
+    )
+    .bind(slug)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("get_approved_by_slug: {}", e))
 }

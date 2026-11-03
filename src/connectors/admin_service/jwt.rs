@@ -8,11 +8,48 @@ pub struct JwtClaims {
     pub exp: i64,
 }
 
+/// Environment variable holding the key the admin service signs its JWTs
+/// with (HS256; the same secret PostgREST signs admin logins with).
+pub const ADMIN_JWT_SECRET_ENV: &str = "ADMIN_JWT_SECRET";
+
+/// Check that `token` is an HS256 JWT signed with `secret`.
+///
+/// The claims decide the Casbin role, so a token whose signature is not
+/// checked lets anyone choose their role, `group_admin` included.
+pub fn verify_jwt_signature(token: &str, secret: &str) -> Result<(), String> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use hmac::{Hmac, Mac};
+
+    if secret.is_empty() {
+        return Err("JWT signing key is not configured".to_string());
+    }
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return Err("Invalid JWT format".to_string());
+    }
+    let header: serde_json::Value = URL_SAFE_NO_PAD
+        .decode(parts[0])
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .ok_or_else(|| "Invalid JWT header".to_string())?;
+    if header.get("alg").and_then(|alg| alg.as_str()) != Some("HS256") {
+        return Err("Unsupported JWT algorithm".to_string());
+    }
+    let signature = URL_SAFE_NO_PAD
+        .decode(parts[2])
+        .map_err(|_| "Invalid JWT signature encoding".to_string())?;
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes())
+        .map_err(|_| "Invalid JWT signing key".to_string())?;
+    mac.update(parts[0].as_bytes());
+    mac.update(b".");
+    mac.update(parts[1].as_bytes());
+    mac.verify_slice(&signature)
+        .map_err(|_| "JWT signature does not match".to_string())
+}
+
 /// Parse and validate JWT payload from internal admin services
 ///
-/// WARNING: This verifies expiration only, not cryptographic signature.
-/// Use only for internal service-to-service auth where issuer is trusted.
-/// For production with untrusted clients, add full JWT verification.
+/// Does not check the signature: call `verify_jwt_signature` first.
 pub fn parse_jwt_claims(token: &str) -> Result<JwtClaims, String> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 

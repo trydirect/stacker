@@ -48,7 +48,8 @@ services:
     depends_on:
       stackerdb:
         condition: service_healthy
-    entrypoint: ["/app/server"]
+    # No entrypoint override: the image boots through /app/entrypoint.sh so
+    # pending sqlx migrations are applied before /app/server starts.
 
   # MQ Listener - Consumes deployment progress messages from Install Service
   # and updates deployment status in Stacker database
@@ -104,11 +105,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    build:
-      context: ./stackerdb
-      dockerfile: Dockerfile
-    image: trydirect/stackerdb:18.3-pgcron
+    image: trydirect/stackerdb:${STACKERDB_TAG:-latest}
     restart: always
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+      - -c
+      - cron.database_name=stacker
     ports:
       - 5432:5432
     env_file:

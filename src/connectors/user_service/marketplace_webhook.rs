@@ -43,6 +43,14 @@ pub struct MarketplaceWebhookPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub billing_cycle: Option<String>,
 
+    /// Daily rate for deployment_daily billing (USD)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daily_rate: Option<f64>,
+
+    /// Monthly cap for deployment_daily billing (USD)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monthly_cap: Option<f64>,
+
     /// Currency code (USD, EUR, etc.)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
@@ -105,6 +113,10 @@ pub struct MarketplaceWebhookPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vendor_email: Option<String>,
 
+    /// New vendor verification_status, for the vendor_verification_changed action.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_status: Option<String>,
+
     /// Full stack/compose definition from the latest template version. This is
     /// the field the User Service caches so `/applications` can serve a
     /// deployable definition (install-service Flow 4). Present on
@@ -125,6 +137,16 @@ pub struct MarketplaceWebhookPayload {
     /// Version string of the federated definition.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+
+    /// Author-declared per-field policy (`config_contract`) for the federated
+    /// version. The User Service must persist this and forward it into the
+    /// install payload so the Install Service can regenerate `mutability:
+    /// generated` fields per buyer. It lives in its OWN column upstream and is
+    /// NOT embedded in `stack_definition`, so it must travel here explicitly —
+    /// otherwise buyers receive the author's literal secrets (see
+    /// docs/MARKETPLACE_FIELD_POLICY.md §8).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_contract: Option<serde_json::Value>,
 }
 
 /// Returns the JSON value only when it carries content — filters out `null`,
@@ -234,6 +256,9 @@ impl MarketplaceWebhookSender {
             definition_format: latest_version.and_then(|v| v.definition_format.clone()),
             config_files: latest_version.and_then(|v| non_empty_json(&v.config_files)),
             version: latest_version.map(|v| v.version.clone()),
+            config_contract: latest_version
+                .and_then(|v| v.config_contract.clone())
+                .and_then(|c| non_empty_json(&c)),
             stack_template_id: template.id.to_string(),
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),
@@ -244,6 +269,8 @@ impl MarketplaceWebhookSender {
                 .or_else(|| template.long_description.clone()),
             price: template.price,
             billing_cycle: template.billing_cycle.clone(),
+            daily_rate: template.daily_rate,
+            monthly_cap: template.monthly_cap,
             currency: template.currency.clone(),
             vendor_user_id: Some(vendor_id.to_string()),
             vendor_name: template.creator_name.clone(),
@@ -274,6 +301,7 @@ impl MarketplaceWebhookSender {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -300,6 +328,9 @@ impl MarketplaceWebhookSender {
             definition_format: latest_version.and_then(|v| v.definition_format.clone()),
             config_files: latest_version.and_then(|v| non_empty_json(&v.config_files)),
             version: latest_version.map(|v| v.version.clone()),
+            config_contract: latest_version
+                .and_then(|v| v.config_contract.clone())
+                .and_then(|c| non_empty_json(&c)),
             stack_template_id: template.id.to_string(),
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),
@@ -310,6 +341,8 @@ impl MarketplaceWebhookSender {
                 .or_else(|| template.long_description.clone()),
             price: template.price,
             billing_cycle: template.billing_cycle.clone(),
+            daily_rate: template.daily_rate,
+            monthly_cap: template.monthly_cap,
             currency: template.currency.clone(),
             vendor_user_id: Some(vendor_id.to_string()),
             vendor_name: template.creator_name.clone(),
@@ -340,6 +373,7 @@ impl MarketplaceWebhookSender {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -364,6 +398,7 @@ impl MarketplaceWebhookSender {
             definition_format: None,
             config_files: None,
             version: None,
+            config_contract: None,
             stack_template_id: template.id.to_string(),
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),
@@ -374,6 +409,8 @@ impl MarketplaceWebhookSender {
                 .or_else(|| template.long_description.clone()),
             price: template.price,
             billing_cycle: template.billing_cycle.clone(),
+            daily_rate: template.daily_rate,
+            monthly_cap: template.monthly_cap,
             currency: template.currency.clone(),
             vendor_user_id: Some(vendor_id.to_string()),
             vendor_name: template.creator_name.clone(),
@@ -404,6 +441,7 @@ impl MarketplaceWebhookSender {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -429,6 +467,7 @@ impl MarketplaceWebhookSender {
             definition_format: None,
             config_files: None,
             version: None,
+            config_contract: None,
             stack_template_id: template.id.to_string(),
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),
@@ -439,6 +478,8 @@ impl MarketplaceWebhookSender {
                 .or_else(|| template.long_description.clone()),
             price: template.price,
             billing_cycle: template.billing_cycle.clone(),
+            daily_rate: template.daily_rate,
+            monthly_cap: template.monthly_cap,
             currency: template.currency.clone(),
             vendor_user_id: Some(vendor_id.to_string()),
             vendor_name: template.creator_name.clone(),
@@ -469,6 +510,7 @@ impl MarketplaceWebhookSender {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -494,6 +536,7 @@ impl MarketplaceWebhookSender {
             definition_format: None,
             config_files: None,
             version: None,
+            config_contract: None,
             stack_template_id: template.id.to_string(),
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),
@@ -504,6 +547,8 @@ impl MarketplaceWebhookSender {
                 .or_else(|| template.long_description.clone()),
             price: template.price,
             billing_cycle: template.billing_cycle.clone(),
+            daily_rate: template.daily_rate,
+            monthly_cap: template.monthly_cap,
             currency: template.currency.clone(),
             vendor_user_id: Some(vendor_id.to_string()),
             vendor_name: template.creator_name.clone(),
@@ -534,6 +579,7 @@ impl MarketplaceWebhookSender {
             review_reason: review_reason.map(str::to_string),
             next_action_hint: Some(next_action_hint.to_string()),
             vendor_email: None,
+            verification_status: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -559,6 +605,7 @@ impl MarketplaceWebhookSender {
             definition_format: None,
             config_files: None,
             version: None,
+            config_contract: None,
             stack_template_id: template.id.to_string(),
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),
@@ -569,6 +616,8 @@ impl MarketplaceWebhookSender {
                 .or_else(|| template.long_description.clone()),
             price: template.price,
             billing_cycle: template.billing_cycle.clone(),
+            daily_rate: template.daily_rate,
+            monthly_cap: template.monthly_cap,
             currency: template.currency.clone(),
             vendor_user_id: Some(vendor_id.to_string()),
             vendor_name: template.creator_name.clone(),
@@ -602,6 +651,7 @@ impl MarketplaceWebhookSender {
                     .to_string(),
             ),
             vendor_email: None,
+            verification_status: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -624,6 +674,7 @@ impl MarketplaceWebhookSender {
             definition_format: None,
             config_files: None,
             version: None,
+            config_contract: None,
             stack_template_id: stack_template_id.to_string(),
             external_id: stack_template_id.to_string(),
             code: None,
@@ -632,6 +683,8 @@ impl MarketplaceWebhookSender {
             price: None,
             billing_cycle: None,
             currency: None,
+            daily_rate: None,
+            monthly_cap: None,
             vendor_user_id: None,
             vendor_name: None,
             category: None,
@@ -647,6 +700,7 @@ impl MarketplaceWebhookSender {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -658,6 +712,7 @@ impl MarketplaceWebhookSender {
         &self,
         template: &models::marketplace::StackTemplate,
         vendor_id: &str,
+        reason: Option<&str>,
     ) -> Result<WebhookResponse, ConnectorError> {
         let span = tracing::info_span!(
             "send_template_unpublished_webhook",
@@ -671,6 +726,7 @@ impl MarketplaceWebhookSender {
             definition_format: None,
             config_files: None,
             version: None,
+            config_contract: None,
             stack_template_id: template.id.to_string(),
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),
@@ -681,6 +737,8 @@ impl MarketplaceWebhookSender {
                 .or_else(|| template.long_description.clone()),
             price: template.price,
             billing_cycle: template.billing_cycle.clone(),
+            daily_rate: template.daily_rate,
+            monthly_cap: template.monthly_cap,
             currency: template.currency.clone(),
             vendor_user_id: Some(vendor_id.to_string()),
             vendor_name: template.creator_name.clone(),
@@ -708,9 +766,44 @@ impl MarketplaceWebhookSender {
             view_count: template.view_count,
             approved_at: template.approved_at.map(|dt| dt.to_rfc3339()),
             required_plan_name: template.required_plan_name.clone(),
-            review_reason: None,
+            review_reason: reason.map(str::to_string),
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
+        };
+
+        self.send_webhook(&payload).instrument(span).await
+    }
+
+    /// Send a vendor verification status change webhook to User Service.
+    ///
+    /// Unlike every other sender in this file, this is not template-scoped -
+    /// `admin_unapprove`/`update_vendor_profile*` operate on the vendor
+    /// account directly and may have no approved template at all. The vendor
+    /// was never told why their account was (un)verified until this existed
+    /// (found 2026-10-04 alongside the admin-ui bug that made the field
+    /// unreachable in the first place).
+    pub async fn send_vendor_verification_changed(
+        &self,
+        vendor_user_id: &str,
+        verification_status: &str,
+        reason: Option<&str>,
+    ) -> Result<WebhookResponse, ConnectorError> {
+        let span = tracing::info_span!(
+            "send_vendor_verification_changed_webhook",
+            vendor_user_id = vendor_user_id,
+            verification_status = verification_status
+        );
+
+        let payload = MarketplaceWebhookPayload {
+            action: "vendor_verification_changed".to_string(),
+            vendor_user_id: Some(vendor_user_id.to_string()),
+            // Reuses review_reason rather than adding a dedicated field -
+            // same "why" semantics as every other admin-decision webhook
+            // (template_review_rejected, template_unpublished).
+            review_reason: reason.map(str::to_string),
+            verification_status: Some(verification_status.to_string()),
+            ..Default::default()
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -839,6 +932,7 @@ mod tests {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
             infrastructure_requirements: None,
             ..Default::default()
         };
@@ -865,6 +959,8 @@ mod tests {
             price: None,
             billing_cycle: None,
             currency: None,
+            daily_rate: None,
+            monthly_cap: None,
             vendor_user_id: None,
             vendor_name: None,
             category: None,
@@ -879,6 +975,7 @@ mod tests {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
             infrastructure_requirements: None,
             ..Default::default()
         };
@@ -915,6 +1012,7 @@ mod tests {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
             infrastructure_requirements: None,
             ..Default::default()
         };
@@ -951,6 +1049,7 @@ mod tests {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
             infrastructure_requirements: None,
             ..Default::default()
         };
@@ -973,6 +1072,8 @@ mod tests {
             price: None, // Free template
             billing_cycle: None,
             currency: None,
+            daily_rate: None,
+            monthly_cap: None,
             vendor_user_id: None,
             vendor_name: None,
             category: Some("CMS".to_string()),
@@ -987,6 +1088,7 @@ mod tests {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
             infrastructure_requirements: None,
             ..Default::default()
         };
@@ -1087,6 +1189,7 @@ mod tests {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
             infrastructure_requirements: None,
             ..Default::default()
         };
@@ -1111,6 +1214,8 @@ mod tests {
             price: None,
             billing_cycle: None,
             currency: None,
+            daily_rate: None,
+            monthly_cap: None,
             vendor_user_id: None,
             vendor_name: None,
             category: None,
@@ -1125,6 +1230,7 @@ mod tests {
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,
+            verification_status: None,
             infrastructure_requirements: None,
             ..Default::default()
         };

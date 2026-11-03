@@ -1,8 +1,8 @@
 use uuid::Uuid;
 
 use super::types::{
-    AuthorizationHandle, BillingCapability, CategoryInfo, PlanDefinition, ProductInfo,
-    StackResponse, UserPlanInfo, UserProfile,
+    AuthorizationHandle, BillingCapability, CategoryInfo, ManagedBillingEvent, ManagedUsageReport,
+    PlanDefinition, ProductInfo, StackResponse, UserPlanInfo, UserProfile,
 };
 use crate::connectors::errors::ConnectorError;
 
@@ -138,5 +138,32 @@ pub trait UserServiceConnector: Send + Sync {
         auth_token: &str,
         authorization_id: &str,
         reason: &str,
+    ) -> Result<(), ConnectorError>;
+
+    /// Partial capture for deployment_daily billing.
+    /// Captures `amount_minor` from the existing hold, leaving the rest
+    /// available for future daily charges.
+    async fn daily_capture_install_charge(
+        &self,
+        auth_token: &str,
+        authorization_id: &str,
+        amount_minor: i64,
+        deployment_hash: &str,
+    ) -> Result<AuthorizationHandle, ConnectorError>;
+
+    /// Send one day of a Managed server to the meter (the User Service resolves
+    /// the billing email and calls payment). `PaymentRequired` when the user
+    /// has no payment method.
+    async fn report_managed_usage(
+        &self,
+        service_token: &str,
+        usage: &ManagedUsageReport,
+    ) -> Result<(), ConnectorError>;
+
+    /// Add one row to the User Service's `managed_billing_events`.
+    async fn record_managed_billing_event(
+        &self,
+        service_token: &str,
+        event: &ManagedBillingEvent,
     ) -> Result<(), ConnectorError>;
 }

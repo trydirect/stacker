@@ -28,10 +28,11 @@ Feature: Agent Commands
     Then the response status should be 200
     And the response JSON at "/item/type" should be "health"
 
-  Scenario: Cancel a queued command fails due to ID mismatch bug
+  Scenario: Cancel a queued command
     Given I have created a command for deployment "bdd-cmd-deploy" with type "health"
     When I cancel the stored command for deployment "bdd-cmd-deploy"
-    Then the response status should be 500
+    Then the response status should be 200
+    And the response JSON at "/item/status" should be "cancelled"
 
   Scenario: Create a command with parameters
     When I create a command for deployment "bdd-cmd-deploy" with type "restart_service" and parameters
@@ -68,10 +69,13 @@ Feature: Agent Commands
     And I list commands for deployment "bdd-cmd-deploy"
     Then the response status should be 404
 
-  Scenario: Create command auto-creates deployment when hash unknown
+  # A hash the caller does not own - not in Stacker and not among the caller's
+  # User Service installations - must not be claimed by queueing a command for
+  # it. 500 when User Service is unreachable, as in this test environment.
+  Scenario: Create command for a deployment hash the caller does not own is refused
     When I create a command for deployment "bdd-cmd-auto-create" with type "health"
-    Then the response status should be 201
-    And the response JSON at "/item/deployment_hash" should be "bdd-cmd-auto-create"
+    Then the response status should be one of "404,500"
+    And no deployment exists with hash "bdd-cmd-auto-create"
 
   Scenario: Create health command for all containers
     When I create a health-all command for deployment "bdd-cmd-deploy"

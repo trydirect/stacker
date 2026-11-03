@@ -2,6 +2,16 @@ mod common;
 
 use common::{USER_A_ID, USER_A_TOKEN, USER_B_TOKEN};
 
+use tokio::sync::OnceCell;
+
+static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
+
+async fn app() -> &'static common::TwoUserTestApp {
+    common::get_or_init_two_user_app(&APP)
+        .await
+        .expect("Failed to start test app")
+}
+
 /// Chat endpoints use (user_id, project_id) as the lookup key.
 /// Isolation is enforced server-side: the handler always uses the authenticated
 /// user's ID, so User B cannot see or mutate User A's chat history.
@@ -29,10 +39,11 @@ async fn test_list_chats_only_returns_own() {
     // User A saves a chat for a specific project
     insert_chat(&app.db_pool, USER_A_ID, TEST_PROJECT_ID).await;
 
-    // User B queries the same project_id → should get 404 (no chat for B)
+    // User B queries the same project_id → lookup is scoped to the
+    // authenticated user, so User B gets a 200 with a null item (see routes/chat/get.rs)
     let resp = client
         .get(format!(
-            "{}/chat/history?project_id={}",
+            "{}/api/chat/history?project_id={}",
             &app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
@@ -40,9 +51,13 @@ async fn test_list_chats_only_returns_own() {
         .await
         .expect("Failed to send request");
 
-    assert_eq!(
-        resp.status().as_u16(),
-        404,
+    assert!(
+        resp.status().is_success(),
+        "User B should not see User A's chat history (unexpected status)"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["item"].is_null(),
         "User B should not see User A's chat history"
     );
 }
@@ -56,10 +71,10 @@ async fn test_get_chat_rejects_other_user() {
 
     insert_chat(&app.db_pool, USER_A_ID, TEST_PROJECT_ID).await;
 
-    // User B GET on the same project_id → 404
+    // User B GET on the same project_id → 200 with a null item (scoped to user)
     let resp = client
         .get(format!(
-            "{}/chat/history?project_id={}",
+            "{}/api/chat/history?project_id={}",
             &app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
@@ -67,10 +82,14 @@ async fn test_get_chat_rejects_other_user() {
         .await
         .expect("Failed to send request");
 
-    assert_eq!(
-        resp.status().as_u16(),
-        404,
-        "User B GET on User A's chat should return 404"
+    assert!(
+        resp.status().is_success(),
+        "User B GET on User A's chat should not error"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["item"].is_null(),
+        "User B GET on User A's chat should not return User A's chat"
     );
 }
 
@@ -86,7 +105,7 @@ async fn test_update_chat_rejects_other_user() {
     // User B upserts chat for the same project_id.
     // This should create a SEPARATE chat for User B, not overwrite User A's.
     let resp = client
-        .put(format!("{}/chat/history", &app.address))
+        .put(format!("{}/api/chat/history", &app.address))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .header("Content-Type", "application/json")
         .body(
@@ -108,7 +127,7 @@ async fn test_update_chat_rejects_other_user() {
     // Verify User A's chat is untouched
     let resp = client
         .get(format!(
-            "{}/chat/history?project_id={}",
+            "{}/api/chat/history?project_id={}",
             &app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
@@ -139,7 +158,7 @@ async fn test_delete_chat_rejects_other_user() {
     // User B deletes → only deletes B's own (nonexistent) chat
     let resp = client
         .delete(format!(
-            "{}/chat/history?project_id={}",
+            "{}/api/chat/history?project_id={}",
             &app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
@@ -153,7 +172,7 @@ async fn test_delete_chat_rejects_other_user() {
     // Verify User A's chat still exists
     let resp = client
         .get(format!(
-            "{}/chat/history?project_id={}",
+            "{}/api/chat/history?project_id={}",
             &app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
@@ -176,7 +195,7 @@ async fn test_owner_can_access_own_chat() {
 
     // User A creates chat via API
     let resp = client
-        .put(format!("{}/chat/history", &app.address))
+        .put(format!("{}/api/chat/history", &app.address))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .header("Content-Type", "application/json")
         .body(
@@ -198,7 +217,7 @@ async fn test_owner_can_access_own_chat() {
     // User A can GET own chat
     let resp = client
         .get(format!(
-            "{}/chat/history?project_id={}",
+            "{}/api/chat/history?project_id={}",
             &app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
@@ -217,7 +236,7 @@ async fn test_owner_can_access_own_chat() {
     // User A can DELETE own chat
     let resp = client
         .delete(format!(
-            "{}/chat/history?project_id={}",
+            "{}/api/chat/history?project_id={}",
             &app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
@@ -233,12 +252,18 @@ async fn test_owner_can_access_own_chat() {
     // Confirm it's gone
     let resp = client
         .get(format!(
-            "{}/chat/history?project_id={}",
+            "{}/api/chat/history?project_id={}",
             &app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
         .await
         .expect("Failed to send request");
-    assert_eq!(resp.status().as_u16(), 404, "Deleted chat should be gone");
+    assert!(
+        resp.status().is_success(),
+        "GET after delete should not error, got {}",
+        resp.status()
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["item"].is_null(), "Deleted chat should be gone");
 }

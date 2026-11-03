@@ -10,6 +10,36 @@ use std::sync::{Mutex, OnceLock};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
+use tokio::sync::OnceCell;
+
+// A fresh `PgPool` per test, bound to that test's own runtime.
+//
+// This suite shared one `&'static TestApp` (and so one pool) across every test
+// in the file. Each `#[tokio::test]` runs on its own runtime, and a pool's
+// connections and background tasks belong to whichever runtime first
+// established them; once that test returns and its runtime is dropped, those
+// connections are dead TCP that the pool still hands out. A later test's
+// `acquire()` then blocks for the full 120s `acquire_timeout` and fails with
+// `PoolTimedOut`, which looked like database exhaustion but was not: only 12
+// connections were open server-side against a limit of 100.
+//
+// The server itself still starts once, on the persistent runtime; only the pool
+// is per test. Same pattern as the other suites in this directory.
+static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
+
+/// Replacement long description for the resubmit flow test. Long enough for
+/// the submit gate (`models::validate_listing_descriptions`, 100-5000 chars) —
+/// review rejects shorter ones.
+const UPDATED_LONG_DESCRIPTION: &str = "Updated long description covering the template's \
+use cases, requirements and customisation options in enough detail for the marketplace \
+listing page and the review checklist.";
+
+async fn app() -> common::TestApp {
+    common::get_or_init_app_fresh(&APP_CONFIG)
+        .await
+        .expect("Failed to start test app")
+}
+
 fn create_admin_jwt() -> String {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
@@ -23,7 +53,8 @@ fn create_admin_jwt() -> String {
     let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string());
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string());
 
-    format!("{}.{}.{}", header_b64, payload_b64, "test_signature")
+    let signature = common::sign_test_jwt(&header_b64, &payload_b64);
+    format!("{}.{}.{}", header_b64, payload_b64, signature)
 }
 
 async fn insert_template(
@@ -94,15 +125,36 @@ fn find_marketplace_sync_payload(requests: &[Request], expected_action: &str) ->
     })
 }
 
+/// The admin handlers answer first and send the webhook afterwards from a
+/// detached `tokio::spawn`, so the request reaches the mock some time after
+/// the response. Poll for it: a fixed 200 ms sleep was too short on a loaded
+/// CI runner and failed the suite at random.
+async fn wait_for_marketplace_sync_payload(
+    mock_user_service: &MockServer,
+    expected_action: &str,
+) -> Option<Value> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let requests = mock_user_service
+            .received_requests()
+            .await
+            .expect("Should capture webhook request");
+        if let Some(payload) = find_marketplace_sync_payload(&requests, expected_action) {
+            return Some(payload);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test]
 async fn admin_can_mark_template_needs_changes_and_creator_can_see_reason() {
     // Hold env_lock to prevent concurrent webhook-triggering tests from cross-contaminating
     // each other's mock servers via shared env vars (URL_SERVER_USER etc.)
     let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     let template_id = insert_template(
         &app.db_pool,
@@ -163,10 +215,7 @@ async fn admin_can_mark_template_needs_changes_and_creator_can_see_reason() {
 
 #[tokio::test]
 async fn admin_cannot_mark_approved_template_as_needs_changes() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
 
     let template_id = insert_template(
         &app.db_pool,
@@ -204,10 +253,7 @@ async fn admin_cannot_mark_approved_template_as_needs_changes() {
 #[tokio::test]
 async fn admin_approval_sends_template_published_webhook() {
     let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let mock_user_service = MockServer::start().await;
     let _url_server_user = EnvGuard::set("URL_SERVER_USER", &mock_user_service.uri());
     let _user_service_url = EnvGuard::set("USER_SERVICE_URL", &mock_user_service.uri());
@@ -248,13 +294,8 @@ async fn admin_approval_sends_template_published_webhook() {
 
     assert_eq!(StatusCode::OK, admin_response.status());
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    let requests = mock_user_service
-        .received_requests()
+    let payload = wait_for_marketplace_sync_payload(&mock_user_service, "template_published")
         .await
-        .expect("Should capture webhook request");
-    let payload = find_marketplace_sync_payload(&requests, "template_published")
         .expect("Approval should send template_published marketplace webhook");
 
     assert_eq!("template_published", payload["action"]);
@@ -265,10 +306,7 @@ async fn admin_approval_sends_template_published_webhook() {
 #[tokio::test]
 async fn admin_rejection_sends_template_review_rejected_webhook() {
     let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let mock_user_service = MockServer::start().await;
     let _url_server_user = EnvGuard::set("URL_SERVER_USER", &mock_user_service.uri());
     let _user_service_url = EnvGuard::set("USER_SERVICE_URL", &mock_user_service.uri());
@@ -309,13 +347,8 @@ async fn admin_rejection_sends_template_review_rejected_webhook() {
 
     assert_eq!(StatusCode::OK, admin_response.status());
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    let requests = mock_user_service
-        .received_requests()
+    let payload = wait_for_marketplace_sync_payload(&mock_user_service, "template_review_rejected")
         .await
-        .expect("Should capture webhook request");
-    let payload = find_marketplace_sync_payload(&requests, "template_review_rejected")
         .expect("Rejection should send template_review_rejected marketplace webhook");
 
     assert_eq!("template_review_rejected", payload["action"]);
@@ -329,10 +362,7 @@ async fn admin_rejection_sends_template_review_rejected_webhook() {
 #[tokio::test]
 async fn admin_unapprove_sends_template_unpublished_webhook() {
     let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let mock_user_service = MockServer::start().await;
     let _url_server_user = EnvGuard::set("URL_SERVER_USER", &mock_user_service.uri());
     let _user_service_url = EnvGuard::set("USER_SERVICE_URL", &mock_user_service.uri());
@@ -372,26 +402,98 @@ async fn admin_unapprove_sends_template_unpublished_webhook() {
 
     assert_eq!(StatusCode::OK, admin_response.status());
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    let requests = mock_user_service
-        .received_requests()
+    let payload = wait_for_marketplace_sync_payload(&mock_user_service, "template_unpublished")
         .await
-        .expect("Should capture webhook request");
-    let payload = find_marketplace_sync_payload(&requests, "template_unpublished")
         .expect("Unapprove should send template_unpublished marketplace webhook");
 
     assert_eq!("template_unpublished", payload["action"]);
     assert_eq!(template_id, payload["stack_template_id"]);
+    // The admin's reason was collected (and already persisted - see
+    // latest_review["review_reason"] above) but never reached the vendor:
+    // send_template_unpublished() hardcoded review_reason: None regardless
+    // of what the admin typed (found 2026-10-04 - a real vendor had no idea
+    // why their stack was taken down).
+    assert_eq!(
+        "Temporarily hidden from the marketplace.",
+        payload["review_reason"]
+    );
+}
+
+#[tokio::test]
+async fn admin_vendor_profile_verification_change_notifies_vendor_with_reason() {
+    // Neither the vendor nor the admin got any notification at all when
+    // verification_status changed - update_vendor_profile_handler just
+    // upserted the row and returned, with no webhook of any kind (found
+    // 2026-10-04, same investigation as the unapprove-reason bug above).
+    let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let app = app().await;
+    let mock_user_service = MockServer::start().await;
+    let _url_server_user = EnvGuard::set("URL_SERVER_USER", &mock_user_service.uri());
+    let _user_service_url = EnvGuard::set("USER_SERVICE_URL", &mock_user_service.uri());
+    let _user_service_base_url = EnvGuard::set("USER_SERVICE_BASE_URL", &mock_user_service.uri());
+    let _stacker_service_token = EnvGuard::set("STACKER_SERVICE_TOKEN", "stacker-test-token");
+
+    Mock::given(method("POST"))
+        .and(path("/marketplace/sync"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "message": "ok",
+            "product_id": null
+        })))
+        .mount(&mock_user_service)
+        .await;
+
+    let template_id = insert_template(
+        &app.db_pool,
+        common::USER_A_ID,
+        "verification-change-template",
+        "approved",
+    )
+    .await;
+
+    let admin_response = reqwest::Client::new()
+        .patch(format!(
+            "{}/api/admin/templates/{}/vendor-profile",
+            app.address, template_id
+        ))
+        .header("Authorization", format!("Bearer {}", create_admin_jwt()))
+        .json(&json!({
+            "verification_status": "unverified",
+            "reason": "KYC documents expired - please re-submit."
+        }))
+        .send()
+        .await
+        .expect("Failed to send admin vendor-profile request");
+
+    assert_eq!(StatusCode::OK, admin_response.status());
+
+    let payload =
+        wait_for_marketplace_sync_payload(&mock_user_service, "vendor_verification_changed")
+            .await
+            .expect("Verification change should send vendor_verification_changed webhook");
+
+    assert_eq!("vendor_verification_changed", payload["action"]);
+    assert_eq!(common::USER_A_ID, payload["vendor_user_id"]);
+    assert_eq!("unverified", payload["verification_status"]);
+    assert_eq!(
+        "KYC documents expired - please re-submit.",
+        payload["review_reason"]
+    );
 }
 
 #[tokio::test]
 async fn admin_detail_lists_extended_version_contract_for_resubmitted_templates() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
+
+    let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
+    common::create_test_deployment(
+        &app.db_pool,
+        common::USER_A_ID,
+        project_id,
+        &format!("dpl-{}", uuid::Uuid::new_v4()),
+    )
+    .await;
 
     let create_response = client
         .post(format!("{}/api/templates", app.address))
@@ -400,6 +502,7 @@ async fn admin_detail_lists_extended_version_contract_for_resubmitted_templates(
             "name": "Admin Contract Mirror Template",
             "slug": "admin-contract-mirror-template",
             "version": "1.0.0",
+            "source_project_id": project_id,
             "stack_definition": {
                 "services": {
                     "web": { "image": "nginx:1.27" }
@@ -480,7 +583,7 @@ async fn admin_detail_lists_extended_version_contract_for_resubmitted_templates(
         .json(&json!({
             "name": "Admin Contract Mirror Template v2",
             "short_description": "Updated short description",
-            "long_description": "Updated long description",
+            "long_description": UPDATED_LONG_DESCRIPTION,
             "category_code": "developer-tools",
             "version": "1.1.0",
             "stack_definition": {
@@ -569,7 +672,7 @@ async fn admin_detail_lists_extended_version_contract_for_resubmitted_templates(
         detail_body["item"]["short_description"]
     );
     assert_eq!(
-        json!("Updated long description"),
+        json!(UPDATED_LONG_DESCRIPTION),
         detail_body["item"]["long_description"]
     );
     assert_eq!(
@@ -684,11 +787,17 @@ async fn admin_detail_lists_extended_version_contract_for_resubmitted_templates(
 
 #[tokio::test]
 async fn resubmit_same_version_updates_latest_version_in_place() {
-    let app = match common::spawn_app().await {
-        Some(app) => app,
-        None => return,
-    };
+    let app = app().await;
     let client = reqwest::Client::new();
+
+    let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
+    common::create_test_deployment(
+        &app.db_pool,
+        common::USER_A_ID,
+        project_id,
+        &format!("dpl-{}", uuid::Uuid::new_v4()),
+    )
+    .await;
 
     let create_response = client
         .post(format!("{}/api/templates", app.address))
@@ -696,7 +805,10 @@ async fn resubmit_same_version_updates_latest_version_in_place() {
         .json(&json!({
             "name": "Same Version Resubmit Template",
             "slug": "same-version-resubmit-template",
+            "short_description": "Listing metadata for the same-version resubmit flow.",
+            "long_description": UPDATED_LONG_DESCRIPTION,
             "version": "1.0.0",
+            "source_project_id": project_id,
             "stack_definition": {
                 "services": {
                     "web": { "image": "nginx:1.27" }
@@ -790,5 +902,158 @@ async fn resubmit_same_version_updates_latest_version_in_place() {
             }
         }),
         versions[0]["stack_definition"]
+    );
+}
+
+#[tokio::test]
+async fn detect_secrets_flags_undeclared_field_without_blocking() {
+    let app = app().await;
+    let client = reqwest::Client::new();
+
+    let create_response = client
+        .post(format!("{}/api/templates", app.address))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .json(&json!({
+            "name": "Legacy Undeclared Secret Template",
+            "slug": "legacy-undeclared-secret-template",
+            "version": "1.0.0",
+            "stack_definition": {
+                "services": {
+                    "auth": { "environment": { "JWT_SECRET": "author-literal-value" } }
+                }
+            }
+        }))
+        .send()
+        .await
+        .expect("Failed to create marketplace template");
+    assert_eq!(StatusCode::CREATED, create_response.status());
+    let create_body: Value = create_response
+        .json()
+        .await
+        .expect("Create response should be valid JSON");
+    let template_id = create_body["item"]["id"]
+        .as_str()
+        .expect("Created template should include an id")
+        .to_string();
+
+    // Simulate a template approved before the field-policy feature existed.
+    sqlx::query(
+        r#"UPDATE stack_template SET status = 'approved', approved_at = NOW() WHERE id = $1"#,
+    )
+    .bind(uuid::Uuid::parse_str(&template_id).expect("Template id should be a UUID"))
+    .execute(&app.db_pool)
+    .await
+    .expect("Failed to approve legacy template");
+
+    let scan_response = client
+        .post(format!(
+            "{}/api/admin/templates/{}/detect-secrets",
+            app.address, template_id
+        ))
+        .header("Authorization", format!("Bearer {}", create_admin_jwt()))
+        .send()
+        .await
+        .expect("Failed to run detect-secrets scan");
+    assert_eq!(StatusCode::OK, scan_response.status());
+
+    let body: Value = scan_response
+        .json()
+        .await
+        .expect("Scan response should be valid JSON");
+    assert_eq!(json!(false), body["item"]["secrets_manifest_generated"]);
+    let missing = body["item"]["missing_generated_secret_fields"]
+        .as_array()
+        .expect("Should list missing fields");
+    assert!(missing.iter().any(|v| v == "JWT_SECRET"));
+
+    // The scan does not block/change status — it only flags for admin visibility.
+    let detail_response = client
+        .get(format!(
+            "{}/api/admin/templates/{}",
+            app.address, template_id
+        ))
+        .header("Authorization", format!("Bearer {}", create_admin_jwt()))
+        .send()
+        .await
+        .expect("Failed to fetch admin template detail");
+    assert_eq!(StatusCode::OK, detail_response.status());
+    let detail_body: Value = detail_response
+        .json()
+        .await
+        .expect("Admin detail response should be valid JSON");
+    assert_eq!(json!("approved"), detail_body["item"]["status"]);
+    assert_eq!(
+        json!(false),
+        detail_body["item"]["verifications"]["secrets_manifest_generated"]
+    );
+}
+
+#[tokio::test]
+async fn detect_secrets_marks_complete_when_all_secret_fields_declared() {
+    let app = app().await;
+    let client = reqwest::Client::new();
+
+    let create_response = client
+        .post(format!("{}/api/templates", app.address))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .json(&json!({
+            "name": "Legacy Declared Secret Template",
+            "slug": "legacy-declared-secret-template",
+            "version": "1.0.0",
+            "stack_definition": {
+                "services": {
+                    "auth": { "environment": { "JWT_SECRET": "author-literal-value" } }
+                }
+            },
+            "config_contract": {
+                "services": {
+                    "auth": {
+                        "fields": {
+                            "JWT_SECRET": { "mutability": "generated", "type": "hex", "length": 32 }
+                        }
+                    }
+                }
+            }
+        }))
+        .send()
+        .await
+        .expect("Failed to create marketplace template");
+    assert_eq!(StatusCode::CREATED, create_response.status());
+    let create_body: Value = create_response
+        .json()
+        .await
+        .expect("Create response should be valid JSON");
+    let template_id = create_body["item"]["id"]
+        .as_str()
+        .expect("Created template should include an id")
+        .to_string();
+
+    sqlx::query(
+        r#"UPDATE stack_template SET status = 'approved', approved_at = NOW() WHERE id = $1"#,
+    )
+    .bind(uuid::Uuid::parse_str(&template_id).expect("Template id should be a UUID"))
+    .execute(&app.db_pool)
+    .await
+    .expect("Failed to approve template");
+
+    let scan_response = client
+        .post(format!(
+            "{}/api/admin/templates/{}/detect-secrets",
+            app.address, template_id
+        ))
+        .header("Authorization", format!("Bearer {}", create_admin_jwt()))
+        .send()
+        .await
+        .expect("Failed to run detect-secrets scan");
+    assert_eq!(StatusCode::OK, scan_response.status());
+
+    let body: Value = scan_response
+        .json()
+        .await
+        .expect("Scan response should be valid JSON");
+    assert_eq!(json!(true), body["item"]["secrets_manifest_generated"]);
+    assert_eq!(
+        json!(Vec::<String>::new()),
+        body["item"]["missing_generated_secret_fields"]
     );
 }

@@ -1,4 +1,6 @@
-use actix_web::error::{ErrorBadRequest, ErrorForbidden, ErrorInternalServerError, ErrorNotFound};
+use actix_web::error::{
+    ErrorBadRequest, ErrorForbidden, ErrorInternalServerError, ErrorNotFound, ErrorUnauthorized,
+};
 use actix_web::web::Json;
 use actix_web::{Error, HttpResponse};
 use serde_derive::Serialize;
@@ -96,6 +98,13 @@ where
         ErrorForbidden(self.set_msg(msg).to_string())
     }
 
+    /// HTTP 401 — the caller presented no credential this route accepts.
+    /// Distinct from `forbidden`, which means the credential was understood
+    /// and is not allowed to do this.
+    pub(crate) fn unauthorized<I: Into<String>>(self, msg: I) -> Error {
+        ErrorUnauthorized(self.set_msg(msg).to_string())
+    }
+
     /// HTTP 402 Payment Required — used by the per-install billing gate
     /// when a template requires payment and the user has no viable payment
     /// method (or an authorize was declined by user_service).
@@ -147,5 +156,9 @@ impl JsonResponse<String> {
 
     pub fn forbidden<I: Into<String>>(msg: I) -> Error {
         JsonResponse::<String>::build().forbidden(msg.into())
+    }
+
+    pub fn unauthorized<I: Into<String>>(msg: I) -> Error {
+        JsonResponse::<String>::build().unauthorized(msg.into())
     }
 }

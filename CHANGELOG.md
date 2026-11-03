@@ -4,6 +4,276 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed — Marketplace vendor profile safety
+
+- The public vendor profile derives `avatar_url` from the account email via Gravatar (identicon) and ignores the client-supplied value; a migration clears stored non-Gravatar URLs.
+- `website_url` on a vendor profile now rejects non-http(s) schemes before it is rendered into a link.
+
+### Fixed — Fail-closed configuration and OAuth
+
+- A configuration file that does not parse stops the service instead of silently starting on defaults; with no configuration file at all, defaults still apply.
+- OAuth refuses the token when the auth server is unreachable, at any address — the loopback/localhost test-user fallback is gone.
+
+### Fixed — Quick Deploy clone
+
+- A root admin may smoke-clone an unpromoted bake (`channel: "unstable"`), matching the access that already allowed `POST /api/admin/bake`.
+
+## [0.3.5] — 2026-10-19
+
+### Added — Managed server billing
+
+- Quick Deploy Managed servers record usage per server with daily rates, day-by-day reports, a meter sweeper, and suspension of unpaid VMs; clone bills the Managed server before it runs.
+- The User Service connector reports Managed server usage and billing events; internal endpoints expose the usage data.
+
+### Added — Teams and roles
+
+- Share projects with members and invite them by email; the owner decides whether members get server access.
+- Members can list the project's servers and see their own deployments; the User Service learns which role a user holds on a deployment; a root-role user is treated as admin regardless of `/me` order.
+
+### Added — Configuration and services
+
+- `config_contract` fields accept `pattern` and `max_length`; `length` now means exactly that length.
+- `stacker.yml` services support `restart`, `entrypoint`, `profiles`, `aliases`, `deploy`, `cap_add`, `cap_drop`, and `devices`; `deploy.replicas` accepts a `${VAR}` reference or a device count.
+
+### Added — Marketplace and bake
+
+- Start a bake from the API (`POST /api/admin/bake`); the bake is built in CI and shipped in the Docker image, picks its build box by Hetzner `server_id`, and records the server type that `validate` returns with the rates.
+- Quick Deploy is plan-independent: no Pro check on the one-click path.
+
+### Fixed — Security and authorization
+
+- Admin service JWT signatures are verified; agent routes respond 401 instead of 500; deployment, project, cloud, and command ownership is checked across the API and marketplace purchase tokens must be plain.
+- A marketplace resubmit no longer silently makes a stack free, and the free-deploy access gate is closed.
+
+### Fixed — Deploy correctness
+
+- Failed deploys exit 1 and print the failure verdict once; `config validate` fails on error-severity issues; unknown fields in `app:` are denied.
+- Generated compose bind mounts resolve against the project root; host IPs of loopback port mappings stay in the deploy payload and off the internet; Hetzner availability reads from `server_types.locations`; preflight expands port ranges and resolves `${VAR:-default}` before probing.
+- Destroy reports a remote stack instead of "absent" and never tears down under a guessed project name; a fresh box does not boot without its schema.
+
+### Improved — Operations and CI
+
+- Vault health checks use the same TLS settings as the Vault client; admin notifications cover verification-status changes and unapprove reasons; CI frees `target/debug` before the release build; `casbin_admin_template_update` has its own migration version.
+
+## [0.3.4] — 2026-09-24
+
+### Added — Marketplace config contracts
+
+- Added volume policy declarations to `config_contract` and preserved them through serialization and baking.
+- Kept config contracts intact during project synchronization and marketplace template updates.
+
+### Fixed — Build and configuration safety
+
+- Prevented secrets from being embedded in baked snapshots by parameterizing protected environment values.
+- Hardened build-box sanitization and rejected empty service and proxy routing declarations.
+- Corrected healthcheck command serialization and preserved configuration structure during updates.
+
+### Improved — Release builds
+
+- Reused CI-built binaries for release images to avoid redundant builds.
+
+## [0.3.3] — 2026-09-18
+
+### Added — Chat session management
+
+- Added chat session endpoints with archive and per-message encryption.
+- Added Casbin RBAC rules for `/api/chat` routes.
+
+### Added — Agent hardening & ownership
+
+- Enforced per-tenant ownership on `/v1/agent` routes.
+- Agent tokens now verified against a stored digest instead of round-tripping Vault.
+- Agent authentication fails closed on Vault errors.
+- Agent registration requires the service key; marketplace registration returns 501.
+- Accept aggregate `all_health` report from agents for container status.
+- Return `project_id` in agent snapshots and one-click clone endpoint.
+- Container scope classified from Docker label, not container name.
+- Moved `rotate-token` from the console binary to the CLI (`stacker agent rotate-token`).
+
+### Added — Marketplace field policy & secret federation
+
+- Added `config_contract` field-policy support (`fixed`/`editable`/`generated` + types: `hex`, `alphanumeric`, `uuid`, `derived_jwt`).
+- At publish, `generated`-field values are stripped from the stored `stack_definition` (fail-closed).
+- `derived_jwt` fields signed on cloned boxes via HMAC.
+- Config contract federated to the User Service.
+- Added `backfill_field_policy` one-shot tool to re-gate the existing catalog.
+- Policy-driven `generate-secrets.sh` reads `mutability:generated` field policy instead of hardcoding `openssl rand`.
+- Added `DisplayType` enum and `display` field to `FieldPolicy`.
+
+### Added — Project synchronization & one-click deploy
+
+- Added `stacker sync` to synchronize declarative project and app configuration
+  with Stacker without creating a deployment, contacting a target server, or
+  starting containers.
+- Added `stacker sync --verify`, `--json`, `--env`, and `--deployment` options.
+- Added `PUT /api/v1/project/{id}/sync` for authenticated project configuration
+  synchronization.
+- Added centralized sensitive environment-name redaction and validation for
+  marketplace asset and seed-job metadata.
+- One-click clone now registers the server in inventory and creates a cloud firewall.
+- One-click clone seeds `project_app` records for the Applications panel.
+
+### Added — Deployment lifecycle & cleanup
+
+- Added `deployment_container` table to track containers per deployment (replaces name inference).
+- Added deployment container sweeper for stale containers.
+- Added stale project and server cleanup with notification (`cleanup-notify` binary).
+- Added scheduled audit-log cleanup cron job.
+- Added env size validator.
+
+### Added — Security & infrastructure
+
+- mTLS for Vault access; Vault client reports missing CA.
+- `yaml_quote` now escapes control characters (`\n`, `\r`, `\t`).
+- Docker preflight check (`docker info`) before deploy.
+- New `W003` warning: `deploy.server.ssh_key` silently ignored on cloud deploys.
+
+### Fixed — SSH key authorization
+
+- Cloud deploy now fails when SSH key cannot be stored (was a silent warning).
+- Cloud deploy fails when no SSH access is verified after provisioning.
+- SSH key authorization retried while the VM boots; both Vault-managed and user keys authorized independently.
+- User's configured SSH key from `deploy.cloud.ssh_key` authorized through the correct endpoint.
+
+### Fixed — CLI & config
+
+- Fixed `server --dry-run` no longer runs a real Docker deploy (#238).
+- Fixed 500 on `PUT /cloud/{id}`: owner set before conversion.
+- Fixed #251: escape env/label values so multiline config survives YAML.
+- Ports validated by range, not by digit count.
+- Port values in `stacker.yml` handled correctly when unquoted.
+- Healthcheck `test` field emitted in the form docker compose expects (CMD list vs CMD-SHELL).
+
+### Fixed — Database & migrations
+
+- Fixed migration version collisions breaking CI.
+- Guard optional cron job lookup to prevent panics.
+- Reconcile audit-log cleanup cron after extension install.
+- Restored `sqlx prepare` with missing `config_contract` field.
+
+### Fixed — Auth & Casbin
+
+- Added missing Casbin rules for admin `detect-secrets` endpoint.
+- Agent auth accepts both Vault response shapes for the token.
+- Credentials tests no longer read the developer's own config.
+
+### Fixed — Marketplace BDD
+
+- BDD marketplace analytics fixtures: cast `template_id` to UUID.
+- BDD marketplace scenarios: seed `source_project_id` + deployment.
+
+## [0.3.2] — 2026-08-26
+
+### Added — Container-health monitoring & alerts (`stacker monitor`)
+
+- New `stacker monitor` command: watches the deployment's live container health
+  (via the Status Panel agent) and raises an alert when a container is not
+  running, then again when everything recovers. Edge-triggered — it notifies
+  once per transition, not on every poll.
+- `stacker monitor --once` runs a single check and exits (cron-friendly);
+  without it, the command loops on an interval. `--interval <seconds>` overrides
+  the configured poll interval.
+- New `monitoring.alerts` block in `stacker.yml` configures the alarm:
+
+  ```yaml
+  monitoring:
+    alerts:
+      interval: 60          # poll interval, seconds (default 60)
+      on_recovery: true     # also notify when containers recover (default true)
+      target:
+        terminal: true                                   # terminal + desktop notification
+        # url: "https://ntfy.example.com/alerts"         # or: HTTP webhook
+        # method: POST
+        # pipe: oncall-notify                            # or: run a declared pipe (deferred)
+  ```
+
+- Alert state is persisted to `.stacker/monitor.state`, so `--once` invocations
+  stay edge-triggered across cron runs.
+- The alarm logic lives in a new, dependency-free `health-monitor` crate (pure
+  health evaluation + transition detection), reusable by the CLI and, later, the
+  agent.
+
+### Added — Declarative pipes (Infrastructure-as-Code)
+
+- New `pipes:` block in `stacker.yml` declares pipes as committable config
+  (name, source/target, endpoints, fields, trigger, retry, handlers) — the
+  same surface as the `pipe create` flags, now version-controllable.
+- `stacker pipe diff` compares the declared `pipes:` against what is deployed
+  and prints a plan: `create` (declared, not deployed), `update` (differs, with
+  the exact field changes), `unchanged`, and `orphan` (deployed, not declared).
+  `--json` for scripting; a clean tree reports "In sync".
+- `stacker pipe apply` reconciles the declaration into the deployment: creates
+  declared-but-missing pipes (template + instance) and, with `--prune`, deletes
+  deployed pipes not in `stacker.yml`. `--dry-run` shows the plan without acting;
+  re-running is idempotent.
+
+### Added — Manual pipe endpoints & non-interactive `pipe create`
+
+- `stacker pipe create` now accepts explicit endpoints, bypassing endpoint
+  discovery entirely: `--source-endpoint "METHOD /path"`,
+  `--target-endpoint "METHOD /path"`, `--source-fields`, `--target-fields`, and
+  `--name`. This lets any app (or arbitrary HTTP endpoint) be piped — including
+  apps whose APIs aren't at auto-discoverable paths — and makes pipe creation
+  fully scriptable.
+
+### Added — Pipe resilience: retry policy & lifecycle handlers
+
+- `stacker pipe create` gained `--retry <n>`, `--retry-backoff-ms <base>`,
+  `--retry-backoff-max-ms <max>`, `--on-failure <pipe>`, and
+  `--on-success <pipe>`. These are persisted in the pipe's typed config
+  (retry policy + handler references) so the runtime can honor them.
+
+### Added — Reverse-proxy routing (traefik, caddy, nginx-proxy-manager)
+
+- `proxy.type` now produces working routing for all supported proxies:
+  Traefik via container labels, Caddy via a generated `Caddyfile`, and
+  Nginx Proxy Manager via auto-created proxy hosts — all driven by
+  `proxy.domains` (`{domain, upstream, ssl}`), which is now forwarded end-to-end
+  to the Install Service.
+- Proxies are **platform-managed**: the synthesized proxy service is stripped
+  from the compose shipped to the server (deployed by its own role instead), so
+  a `proxy:` block no longer double-deploys the proxy or collides on ports
+  80/443/81.
+- For `--target local`, the CLI now renders the proxy config file itself
+  (`.stacker/Caddyfile`) so the bind mount is a real file locally.
+
+### Fixed — Proxy config validation & port-conflict detection
+
+- New `W003` warning: a `proxy:` block plus a service publishing the same
+  ingress host port (80/443/81) is flagged as a likely conflict.
+- Fixed `W001` host-port comparison to correctly handle the
+  `ip:host:container` binding form (previously produced false positives and
+  false negatives on loopback bindings).
+
+### Fixed — SSH backup key saved during provisioning
+
+- The local emergency SSH backup keypair is now saved the moment the server
+  first appears during a cloud deploy's watch loop, instead of only after the
+  watch completes. Interrupting the watch (timeout / Ctrl-C / network) no longer
+  loses SSH access to a successfully-deployed server.
+
+### Fixed — Remote compose cleanup
+
+- Stripping a platform-managed proxy from the remote compose now also prunes the
+  named volumes only that proxy used (e.g. `caddy_data`/`caddy_config`), instead
+  of leaving orphaned top-level volume declarations.
+
+### Added — Deployment command aliases and `--pinned` flag
+
+- Added `stacker deployment status` as a visible alias for `stacker deployment state`.
+- Added `stacker ps` as a visible alias for `stacker deployments`.
+- `stacker deployment state` and `stacker deployment events` now default to the
+  latest deployment from the server instead of the `deployment_hash` stored in
+  the local `stacker.yml`. Use `--pinned` to read the hash from `stacker.yml`
+  instead (the previous default behavior). The `--deployment <hash>` flag
+  continues to take highest priority.
+
+### Added — `stacker keys` and `stacker cloud keys` aliases
+
+- Added `stacker keys` as a top-level shortcut for `stacker list clouds`.
+- Added `stacker cloud keys` as a nested alias under the `cloud` command group.
+- Both aliases dispatch to the same `ListCloudsCommand` and accept `--json`.
+
 ### Added — Remote project initialization via `--from-github`
 
 - Added `stacker init --from-github <url>` (short flag: `-g`) to automatically

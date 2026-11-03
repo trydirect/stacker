@@ -7,6 +7,7 @@
 //! Vault Path Template: {prefix}/{deployment_hash}/apps/{app_name}/config
 
 use anyhow::Result;
+use reqwest::Certificate;
 use reqwest::Client;
 use reqwest::Identity;
 use serde::{Deserialize, Serialize};
@@ -157,6 +158,20 @@ impl VaultService {
                         Err(e) => {
                             tracing::warn!(
                                 "Failed to load mTLS identity for Vault service from env: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+
+                if let Ok(ca_pem) = std::env::var("VAULT_CACERT") {
+                    match Certificate::from_pem(ca_pem.as_bytes()) {
+                        Ok(ca) => {
+                            builder = builder.add_root_certificate(ca);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to load CA certificate from VAULT_CACERT: {}",
                                 e
                             );
                         }

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE project_invitation\n        SET status = $2::VARCHAR,\n            accepted_by = $3,\n            accepted_at = CASE WHEN $2::VARCHAR = 'accepted' THEN NOW() ELSE accepted_at END\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Varchar",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "44ff1877c9f64fe348ea0022c27af0e18acf31714e4655a87770918d82c17619"
+}

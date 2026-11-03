@@ -553,3 +553,98 @@ fn test_category_info_deserialization() {
     assert_eq!(category.title, "AI Agents");
     assert_eq!(category.priority, Some(5));
 }
+
+fn managed_usage() -> super::ManagedUsageReport {
+    super::ManagedUsageReport {
+        user_id: "user-1".to_string(),
+        deployment_hash: "deployment_abc".to_string(),
+        value_minor: 86,
+        identifier: "deployment_abc:2026-10-16".to_string(),
+        timestamp: Some(1792108800),
+    }
+}
+
+/// Contract: shared-fixtures/api-contracts/managed-server-billing.json
+#[tokio::test]
+async fn report_managed_usage_posts_the_day_with_the_service_token() {
+    let mut server = Server::new_async().await;
+    let mock = server
+        .mock("POST", "/api/1.0/marketplace/billing/managed/usage")
+        .match_header("authorization", "Bearer service-token")
+        .match_body(Matcher::Json(json!({
+            "user_id": "user-1",
+            "deployment_hash": "deployment_abc",
+            "value_minor": 86,
+            "identifier": "deployment_abc:2026-10-16",
+            "timestamp": 1792108800
+        })))
+        .with_status(200)
+        .with_body(json!({"identifier": "deployment_abc:2026-10-16"}).to_string())
+        .create_async()
+        .await;
+
+    let client = UserServiceClient::new_public(&server.url());
+    client
+        .report_managed_usage("service-token", &managed_usage())
+        .await
+        .expect("usage reported");
+    mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn report_managed_usage_without_a_card_is_payment_required() {
+    let mut server = Server::new_async().await;
+    let _mock = server
+        .mock("POST", "/api/1.0/marketplace/billing/managed/usage")
+        .with_status(402)
+        .with_body(json!({"reason": "no_payment_method"}).to_string())
+        .create_async()
+        .await;
+
+    let client = UserServiceClient::new_public(&server.url());
+    let err = client
+        .report_managed_usage("service-token", &managed_usage())
+        .await
+        .expect_err("402 is an error");
+    assert!(
+        matches!(
+            err,
+            crate::connectors::errors::ConnectorError::PaymentRequired(_)
+        ),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn record_managed_billing_event_posts_one_event() {
+    let mut server = Server::new_async().await;
+    let mock = server
+        .mock("POST", "/api/1.0/marketplace/billing/managed/event")
+        .match_header("authorization", "Bearer service-token")
+        .match_body(Matcher::Json(json!({
+            "user_id": "user-1",
+            "deployment_hash": "deployment_abc",
+            "event": "server_deleted"
+        })))
+        .with_status(200)
+        .with_body(json!({"id": "6f1c6a3e-0000-0000-0000-000000000000"}).to_string())
+        .create_async()
+        .await;
+
+    let client = UserServiceClient::new_public(&server.url());
+    client
+        .record_managed_billing_event(
+            "service-token",
+            &super::ManagedBillingEvent {
+                user_id: "user-1".to_string(),
+                deployment_hash: "deployment_abc".to_string(),
+                event: "server_deleted".to_string(),
+                amount_minor: None,
+                currency: None,
+                metadata: None,
+            },
+        )
+        .await
+        .expect("event recorded");
+    mock.assert_async().await;
+}

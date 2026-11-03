@@ -1,0 +1,15 @@
+{
+  "type": "health",
+  "deployment_hash": "deployment_5fbda840-8d25-4c19-9e16-b7e2ba33bc4d",
+  "app_code": "floci",
+  "status": "ok",
+  "container_state": "running",
+  "last_heartbeat_at": "2026-09-06T10:45:48Z",
+  "metrics": {
+    "cpu_pct": 0.17623701691627502,
+    "mem_limit_bytes": 8122089472,
+    "mem_pct": 2.0495407581329346,
+    "mem_usage_mb": 158.75390625
+  },
+  "errors": []
+}

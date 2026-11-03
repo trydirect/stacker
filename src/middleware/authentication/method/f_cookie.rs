@@ -3,7 +3,7 @@ use crate::middleware::authentication::get_header;
 use actix_web::{dev::ServiceRequest, web, HttpMessage};
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Authenticate with cookie")]
+#[tracing::instrument(name = "Authenticate with cookie", skip_all)]
 pub async fn try_cookie(req: &mut ServiceRequest) -> Result<bool, String> {
     // Get Cookie header
     let cookie_header = get_header::<String>(&req, "cookie")?;

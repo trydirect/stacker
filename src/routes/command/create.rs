@@ -9,6 +9,7 @@ use crate::project_app::{
     store_configs_to_vault_from_params, store_registry_auth_command_to_vault,
     upsert_app_config_for_deploy, REGISTRY_AUTH_VAULT_KEY,
 };
+use crate::routes::project::access::{self, Need};
 use crate::services::env_model::reconcile_env_file_content;
 use crate::services::{AppConfig, ConfigRenderer, ProjectAppService, VaultService};
 use actix_web::{post, web, Responder, Result};
@@ -61,6 +62,16 @@ pub async fn create_handler(
         return Err(JsonResponse::<()>::build().bad_request("command_type is required"));
     }
 
+    // A queued command runs on the deployment's server: only its owner may queue one.
+    access::resolve_team_deployment(
+        pg_pool.get_ref(),
+        settings.get_ref(),
+        user.as_ref(),
+        &req.deployment_hash,
+        Need::Manage,
+    )
+    .await?;
+
     let validated_parameters =
         status_panel::validate_command_parameters(&req.command_type, &req.parameters).map_err(
             |err| {
@@ -89,7 +100,24 @@ pub async fn create_handler(
             .and_then(|v| v.as_i64())
             .map(|v| v as i32)
         {
-            Some(id) => Some(id),
+            // The app config is written into this project: the caller must
+            // own it or be a member allowed to change it.
+            Some(id) => match db::project::fetch(pg_pool.get_ref(), id).await {
+                Ok(Some(project))
+                    if matches!(
+                        access::access_of(pg_pool.get_ref(), &project, &user.id).await,
+                        Ok(Some(found)) if found.allows(Need::Manage)
+                    ) =>
+                {
+                    Some(id)
+                }
+                Ok(_) => {
+                    return Err(JsonResponse::<()>::build().not_found("Project not found"));
+                }
+                Err(err) => {
+                    return Err(JsonResponse::<()>::build().internal_server_error(err));
+                }
+            },
             None => {
                 // Auto-lookup project_id from deployment_hash
                 match crate::db::deployment::fetch_by_deployment_hash(
@@ -631,22 +659,23 @@ pub(crate) async fn enrich_deploy_app_with_compose(
                 merged_file_count = merged_into_bundle,
                 "Merged rendered runtime env into deploy_app config bundle env files"
             );
+        } else {
+            // No existing .env entry to merge into — add as a new config file
+            let env_file = json!({
+                "content": env_config.content,
+                "content_type": env_config.content_type,
+                "destination_path": env_config.destination_path,
+                "file_mode": env_config.file_mode,
+                "owner": env_config.owner,
+                "group": env_config.group,
+                "force_overwrite": force_config_overwrite,
+                "drift_check": {
+                    "enabled": true,
+                    "hash_source": "stacker-render-header"
+                },
+            });
+            config_files.push(env_file);
         }
-
-        let env_file = json!({
-            "content": env_config.content,
-            "content_type": env_config.content_type,
-            "destination_path": env_config.destination_path,
-            "file_mode": env_config.file_mode,
-            "owner": env_config.owner,
-            "group": env_config.group,
-            "force_overwrite": force_config_overwrite,
-            "drift_check": {
-                "enabled": true,
-                "hash_source": "stacker-render-header"
-            },
-        });
-        config_files.push(env_file);
     } else {
         match vault.fetch_app_config(deployment_hash, &env_key).await {
             Ok(env_config) => {

@@ -10,7 +10,10 @@ mod hydrate {
     use crate::db;
     use crate::helpers::JsonResponse;
     use crate::models::{Project, ProjectApp};
-    use crate::services::{AppConfig, ProjectAppService, VaultError, VaultService};
+    use crate::services::{
+        runtime_env_contract_response, AppConfig, ProjectAppService, RuntimeEnvContractResponse,
+        VaultError, VaultService,
+    };
 
     #[derive(Debug, Clone, serde::Serialize)]
     pub struct ConfigFile {
@@ -58,6 +61,7 @@ mod hydrate {
         pub created_at: chrono::DateTime<chrono::Utc>,
         pub updated_at: chrono::DateTime<chrono::Utc>,
         pub parent_app_code: Option<String>,
+        pub runtime_env_contract: RuntimeEnvContractResponse,
     }
 
     impl HydratedProjectApp {
@@ -91,6 +95,7 @@ mod hydrate {
                 created_at: app.created_at,
                 updated_at: app.updated_at,
                 parent_app_code: app.parent_app_code,
+                runtime_env_contract: runtime_env_contract_response(),
             }
         }
     }
@@ -320,22 +325,6 @@ mod hydrate {
     }
 
     fn redact_sensitive_env_vars(env: Value) -> Value {
-        const SENSITIVE_PATTERNS: &[&str] = &[
-            "password",
-            "passwd",
-            "secret",
-            "token",
-            "key",
-            "api_key",
-            "apikey",
-            "auth",
-            "credential",
-            "private",
-            "cert",
-            "ssl",
-            "tls",
-        ];
-
         let normalized = normalize_environment(env);
         let Some(obj) = normalized.as_object() else {
             return normalized;
@@ -344,11 +333,7 @@ mod hydrate {
         let redacted = obj
             .iter()
             .map(|(key, value)| {
-                let key_lower = key.to_lowercase();
-                let is_sensitive = SENSITIVE_PATTERNS
-                    .iter()
-                    .any(|pattern| key_lower.contains(pattern));
-                if is_sensitive {
+                if crate::helpers::redact::is_sensitive_env_key(&key) {
                     (key.clone(), Value::String("[REDACTED]".to_string()))
                 } else {
                     (key.clone(), value.clone())

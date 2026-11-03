@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE project_invitation SET status = 'revoked'\n        WHERE id = $1 AND project_id = $2 AND status = 'pending'\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "21d155be152fc09e77d35f66d8a29cbdcbf07809f700e396c4b627e1e889c3d7"
+}

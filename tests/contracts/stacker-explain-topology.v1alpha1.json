@@ -3,9 +3,9 @@
   "deploymentHash": "deployment_state_online",
   "target": "cloud",
   "localComposePath": "docker/prod/compose.yml",
-  "runtimeComposePath": "/home/trydirect/project/docker-compose.yml",
+  "runtimeComposePath": "/home/trydirect/test-project/docker-compose.yml",
   "localAuthoringEnvPath": "docker/prod/.env",
-  "runtimeEnvPath": "/home/trydirect/project/.env",
+  "runtimeEnvPath": "/home/trydirect/test-project/.env",
   "services": [
     {
       "code": "device-api",

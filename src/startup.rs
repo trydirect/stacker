@@ -24,13 +24,25 @@ fn project_scope(path: &str) -> actix_web::Scope {
         .service(crate::routes::project::member::add)
         .service(crate::routes::project::member::list)
         .service(crate::routes::project::member::delete)
+        // Literal /invitations/... paths before the /{id} routes below.
+        .service(crate::routes::project::invitation::pending)
+        .service(crate::routes::project::invitation::show)
+        .service(crate::routes::project::invitation::accept)
+        .service(crate::routes::project::invitation::create)
+        .service(crate::routes::project::invitation::list)
+        .service(crate::routes::project::invitation::revoke)
+        .service(crate::routes::project::invitation::seats)
+        .service(crate::routes::project::clouds::list)
         .service(crate::routes::project::compose::add)
         .service(crate::routes::project::get::list)
         .service(crate::routes::project::get::shared_list)
         .service(crate::routes::project::get::item)
         .service(crate::routes::project::add::item)
         .service(crate::routes::project::update::item)
+        .service(crate::routes::project::sync::item)
         .service(crate::routes::project::delete::item)
+        .service(crate::routes::project::protection::toggle)
+        .service(crate::routes::project::member::set_server_access)
         .service(crate::routes::project::app::list_apps)
         .service(crate::routes::project::app::create_app)
         .service(crate::routes::project::app::get_app)
@@ -116,6 +128,23 @@ pub async fn run(
         user_service_connector.get_ref().clone(),
         settings.per_install_billing_enabled,
     );
+    // Reports each running day of a Quick Deploy Managed server to the
+    // Stripe meter through the User Service, and hands servers unpaid for 3
+    // days of suspension to the admins. Without it the servers are not billed.
+    crate::services::managed_usage_sweeper::spawn(
+        api_pool.get_ref().clone(),
+        user_service_connector.get_ref().clone(),
+    );
+    // Deletes container rows retired more than a month ago. Housekeeping only:
+    // it touches nothing the dashboard shows, and skipping it costs a slowly
+    // growing table rather than correctness.
+    crate::services::deployment_container_sweeper::spawn(api_pool.get_ref().clone());
+    // Removes dead agent rows (no live deployment, no recent activity) and
+    // rows with structurally invalid deployment_hash. Runs daily; skipping it
+    // means the agents table slowly accumulates noise that obscures real
+    // problems.
+    crate::services::agent_sweeper::spawn(api_pool.get_ref().clone());
+
     let payout_provider = crate::services::init_payout_provider(&settings.payouts)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;
     let payout_provider = web::Data::new(payout_provider);
@@ -135,6 +164,40 @@ pub async fn run(
         };
         error::InternalError::new(msg, http::StatusCode::BAD_REQUEST).into()
     });
+
+    // Shared Redis connection for the public /api/audit/* rate limiter.
+    // Fail-soft: if Redis is unavailable at boot, the endpoints still run
+    // (protected by the body-size cap) without the shared limiter.
+    let audit_rl_cfg = crate::helpers::rate_limit::AuditRateLimitConfig::from_env();
+    let audit_redis: Option<redis::aio::ConnectionManager> = {
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/0".to_string());
+        match redis::Client::open(redis_url.as_str()) {
+            Ok(client) => {
+                match tokio::time::timeout(
+                    Duration::from_secs(2),
+                    redis::aio::ConnectionManager::new(client),
+                )
+                .await
+                {
+                    Ok(Ok(cm)) => Some(cm),
+                    Ok(Err(err)) => {
+                        tracing::warn!("audit rate limiter: Redis unavailable at startup ({err}); running without the shared limiter");
+                        None
+                    }
+                    Err(_) => {
+                        tracing::warn!("audit rate limiter: Redis connection timed out; running without the shared limiter");
+                        None
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!("audit rate limiter: invalid REDIS_URL ({err})");
+                None
+            }
+        }
+    };
+
     let server = HttpServer::new(move || {
         App::new()
             .wrap(
@@ -162,6 +225,12 @@ pub async fn run(
             .app_data(oauth_http_client.clone())
             .app_data(oauth_cache.clone())
             .app_data(payout_provider.clone())
+            .configure({
+                let redis = audit_redis.clone();
+                let cfg = audit_rl_cfg.clone();
+                move |c| crate::routes::audit::configure(c, redis.clone(), cfg.clone())
+            })
+            .configure(crate::routes::oneclick_deploy::configure)
             .service(
                 web::scope("/health_check")
                     .service(routes::health_check)
@@ -230,8 +299,16 @@ pub async fn run(
             .service(
                 web::scope("/api")
                     .service(
+                        web::scope("/internal/managed-usage")
+                            .service(crate::routes::managed_usage::suspend)
+                            .service(crate::routes::managed_usage::start)
+                            .service(crate::routes::managed_usage::fail)
+                            .service(crate::routes::managed_usage::stop),
+                    )
+                    .service(
                         web::scope("/agreement")
                             .service(crate::routes::agreement::user_add_handler)
+                            .service(crate::routes::agreement::get_by_name_handler)
                             .service(crate::routes::agreement::get_handler)
                             .service(crate::routes::agreement::accept_handler),
                     )
@@ -240,52 +317,57 @@ pub async fn run(
                         web::scope("/vendors")
                             .service(crate::routes::marketplace::public::vendor_detail_handler),
                     )
-                             .service(
-                                  web::scope("/templates")
-                                      .service(crate::routes::marketplace::public::list_handler)
-                                      .service(crate::routes::marketplace::creator::mine_handler)
-                                      .service(crate::routes::marketplace::creator::analytics_handler)
-                                      .service(
-                                          crate::routes::marketplace::creator::self_vendor_profile_handler,
-                                      )
-                                      .service(
-                                          crate::routes::marketplace::creator::update_vendor_public_profile_handler,
-                                      )
-                                     .service(
-                                         crate::routes::marketplace::creator::create_onboarding_link_handler,
-                                     )
-                                     .service(
-                                         crate::routes::marketplace::creator::complete_onboarding_handler,
-                                     )
-                                     .service(crate::routes::marketplace::creator::my_reviews_handler)
-                                    .service(
-                                        crate::routes::marketplace::creator::vendor_profile_status_handler,
-                                    )
-                                    .service(crate::routes::marketplace::template_rating::summary_handler)
-                                    .service(crate::routes::marketplace::template_rating::my_rating_handler)
-                                    .service(crate::routes::marketplace::template_rating::upsert_handler)
-                                    .service(crate::routes::marketplace::template_rating::delete_handler)
-                                     .service(crate::routes::marketplace::creator::create_handler)
-                                      .service(crate::routes::marketplace::creator::update_handler)
-                                      .service(
-                                          crate::routes::marketplace::creator::presign_asset_upload_handler,
-                                      )
-                                      .service(
-                                          crate::routes::marketplace::creator::finalize_asset_upload_handler,
-                                      )
-                                      .service(
-                                          crate::routes::marketplace::creator::presign_asset_download_handler,
-                                      )
-                                      .service(crate::routes::marketplace::creator::submit_handler)
-                                      .service(crate::routes::marketplace::creator::resubmit_handler)
-                                     .service(crate::routes::marketplace::public::detail_handler)
-                                     .service(crate::routes::marketplace::install::install_handler)
-                                     .service(crate::routes::marketplace::public::increment_view_count_handler)
-                                     .service(crate::routes::marketplace::public::increment_deploy_count_handler),
+                    .service(
+                        web::scope("/templates")
+                            .service(crate::routes::marketplace::public::list_handler)
+                            .service(crate::routes::marketplace::creator::mine_handler)
+                            .service(crate::routes::marketplace::creator::analytics_handler)
+                            .service(
+                                crate::routes::marketplace::creator::self_vendor_profile_handler,
+                            )
+                            .service(
+                                crate::routes::marketplace::creator::update_vendor_public_profile_handler,
+                            )
+                            .service(
+                                crate::routes::marketplace::creator::create_onboarding_link_handler,
+                            )
+                            .service(
+                                crate::routes::marketplace::creator::complete_onboarding_handler,
+                            )
+                            .service(crate::routes::marketplace::creator::my_reviews_handler)
+                            .service(
+                                crate::routes::marketplace::creator::vendor_profile_status_handler,
+                            )
+                            .service(crate::routes::marketplace::template_rating::summary_handler)
+                            .service(crate::routes::marketplace::template_rating::my_rating_handler)
+                            .service(crate::routes::marketplace::template_rating::upsert_handler)
+                            .service(crate::routes::marketplace::template_rating::delete_handler)
+                            .service(crate::routes::marketplace::creator::create_handler)
+                            .service(crate::routes::marketplace::creator::update_handler)
+                            .service(
+                                crate::routes::marketplace::creator::presign_asset_upload_handler,
+                            )
+                            .service(
+                                crate::routes::marketplace::creator::finalize_asset_upload_handler,
+                            )
+                            .service(
+                                crate::routes::marketplace::creator::presign_asset_download_handler,
+                            )
+                            .service(crate::routes::marketplace::creator::submit_handler)
+                            .service(crate::routes::marketplace::creator::resubmit_handler)
+                            .service(crate::routes::marketplace::public::detail_handler)
+                            .service(crate::routes::marketplace::install::install_handler)
+                            .service(
+                                crate::routes::marketplace::public::increment_view_count_handler,
+                            )
+                            .service(
+                                crate::routes::marketplace::public::increment_deploy_count_handler,
+                            ),
                     )
                     .service(
                         web::scope("/v1/agent")
                             .service(routes::agent::register_handler)
+                            .service(routes::agent::rotate_token_handler)
                             .service(routes::agent::enqueue_handler)
                             .service(routes::agent::wait_handler)
                             .service(routes::agent::report_handler)
@@ -314,6 +396,7 @@ pub async fn run(
                             .service(crate::routes::marketplace::public::download_stack_handler)
                             .service(crate::routes::marketplace::public::deploy_complete_handler)
                             .service(crate::routes::marketplace::payout_webhook::webhook_handler)
+                            // Answers 501; see routes::marketplace::agent.
                             .service(web::scope("/agents").service(
                                 crate::routes::marketplace::agent::register_marketplace_agent_handler,
                             )),
@@ -321,6 +404,7 @@ pub async fn run(
                     .service(
                         web::scope("/v1/deployments")
                             .service(routes::deployment::capabilities_handler)
+                            .service(routes::deployment::member_access_handler)
                             .service(routes::deployment::events_handler)
                             .service(routes::deployment::list_handler)
                             .service(routes::deployment::plan_handler)
@@ -389,6 +473,12 @@ pub async fn run(
                     .service(
                         web::scope("/admin")
                             .service(
+                                web::scope("/bake")
+                                    .service(crate::routes::admin_bake::start_handler)
+                                    .service(crate::routes::admin_bake::status_handler)
+                                    .service(crate::routes::admin_bake::promote_handler),
+                            )
+                            .service(
                                 web::scope("/templates")
                                     .service(
                                         crate::routes::marketplace::admin::list_submitted_handler,
@@ -401,7 +491,9 @@ pub async fn run(
                                      )
                                      .service(crate::routes::marketplace::admin::unapprove_handler)
                                      .service(crate::routes::marketplace::admin::security_scan_handler)
+                                     .service(crate::routes::marketplace::admin::detect_secrets_handler)
                                      .service(crate::routes::marketplace::admin::pricing_handler)
+                                     .service(crate::routes::marketplace::admin::update_template_handler)
                                      .service(crate::routes::marketplace::admin::update_verifications_handler)
                                      .service(crate::routes::marketplace::admin::update_vendor_profile_handler),
                              )
@@ -413,8 +505,44 @@ pub async fn run(
                              .service(
                                  web::scope("/marketplace")
                                      .service(crate::routes::marketplace::admin::list_plans_handler),
+                             )
+                             .service(
+                                 web::scope("/notifications")
+                                     .service(crate::routes::admin_notifications::list_handler)
+                                     .service(
+                                         crate::routes::admin_notifications::unread_count_handler,
+                                     )
+                                     // literal paths before /{id}, which would
+                                     // otherwise match them as an id first
+                                     .service(
+                                         crate::routes::admin_notifications::mark_all_read_handler,
+                                     )
+                                     .service(crate::routes::admin_notifications::update_handler),
+                             )
+                             .service(
+                                 web::scope("/chat")
+                                     .service(crate::routes::chat::admin::recent),
                              ),
-                    ),
+                    )
+                    .service(
+                        web::scope("/chat")
+                            .service(crate::routes::chat::get::item)
+                            .service(crate::routes::chat::upsert::item)
+                            .service(crate::routes::chat::delete::item)
+                            // Multi-session (dialog) endpoints for the Stack Builder page.
+                            // Register the more specific /sessions/... routes before the
+                            // legacy /history routes; all are user-scoped.
+                            .service(crate::routes::chat::sessions::list::item)
+                            .service(crate::routes::chat::sessions::create::item)
+                            .service(crate::routes::chat::sessions::messages::item)
+                            .service(crate::routes::chat::sessions::append::item)
+                            .service(crate::routes::chat::sessions::replace::item)
+                            .service(crate::routes::chat::sessions::rename::item)
+                            .service(crate::routes::chat::sessions::archive::archive)
+                            .service(crate::routes::chat::sessions::archive::unarchive)
+                            .service(crate::routes::chat::sessions::delete::item),
+                    )
+                    ,
             )
             .service(
                 web::scope("/cloud")
@@ -442,6 +570,7 @@ pub async fn run(
                     .service(crate::routes::server::ssh_key::get_public_key)
                     .service(crate::routes::server::ssh_key::authorize_public_key)
                     .service(crate::routes::server::ssh_key::validate_key)
+                    .service(crate::routes::server::ssh_key::validate_all)
                     .service(crate::routes::server::ssh_key::delete_key),
             )
             .service(
@@ -449,12 +578,6 @@ pub async fn run(
                     .service(crate::routes::agreement::user_add_handler)
                     .service(crate::routes::agreement::get_handler)
                     .service(crate::routes::agreement::accept_handler),
-            )
-            .service(
-                web::scope("/chat")
-                    .service(crate::routes::chat::get::item)
-                    .service(crate::routes::chat::upsert::item)
-                    .service(crate::routes::chat::delete::item),
             )
             .service(web::resource("/mcp").route(web::get().to(mcp::mcp_websocket)))
             .service(
