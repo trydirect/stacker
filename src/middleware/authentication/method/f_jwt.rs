@@ -7,7 +7,7 @@ use actix_web::dev::ServiceRequest;
 use actix_web::HttpMessage;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Authenticate with JWT (admin service)")]
+#[tracing::instrument(name = "Authenticate with JWT (admin service)", skip_all)]
 pub async fn try_jwt(req: &mut ServiceRequest) -> Result<bool, String> {
     let authorization = get_header::<String>(req, "authorization")?;
     if authorization.is_none() {

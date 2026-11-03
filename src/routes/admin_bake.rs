@@ -1,13 +1,18 @@
-//! `POST /api/admin/bake` and `GET /api/admin/bake/{id}`: bake a deployed
+//! `POST /api/admin/bake`, `GET /api/admin/bake/{id}` and
+//! `POST /api/admin/bake/{id}/promote`: bake a deployed
 //! build box into a Quick Deploy snapshot without the operator typing its IP,
 //! SSH key or version.
 //!
 //! Everything that can be checked without touching the box is checked before
-//! the job starts, and answered at once: the deployment and its server, the
-//! approved template with a usable contract, a health URL on the box, and the
-//! box being one Hetzner knows. Only then does the job connect, check that
+//! the job starts, and answered at once: the deployment (the caller's own,
+//! not a Quick Deploy server) and its server, the approved template with a
+//! usable contract, a health URL on the box, and the box being one Hetzner
+//! knows. Only then does the job connect, check that
 //! every service is up, sanitize the box, snapshot it and record the snapshot.
 //! The box is never removed: the result lists it for the operator.
+//!
+//! The snapshot lands on the `unstable` channel, which no buyer gets. After a
+//! green smoke clone the harness promotes it to `latest`.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -22,7 +27,7 @@ use crate::connectors::hetzner::{
 };
 use crate::db;
 use crate::helpers::bake_job::{
-    check_compose_services, check_health_url, project_dir_from_compose_ls,
+    check_compose_services, check_health_url, probe_health, project_dir_from_compose_ls,
 };
 use crate::helpers::{JsonResponse, VaultClient};
 use crate::models;
@@ -55,11 +60,32 @@ struct Prepared {
     target: HetznerSnapshotTarget,
 }
 
-async fn prepare(pool: &PgPool, form: &BakeRequest) -> Result<Prepared, actix_web::Error> {
+async fn prepare(
+    pool: &PgPool,
+    admin: &models::User,
+    form: &BakeRequest,
+) -> Result<Prepared, actix_web::Error> {
     let deployment = db::deployment::fetch(pool, form.deployment_id)
         .await
         .map_err(JsonResponse::internal_server_error)?
         .ok_or_else(|| JsonResponse::not_found("deployment not found"))?;
+
+    // Sanitizing wipes the box, so a bake takes only the caller's own build box:
+    // a mistyped id must not reach someone else's server. A service token owns
+    // no box. A Quick Deploy server is a buyer's even when the caller made it.
+    if deployment.user_id.as_deref() != Some(admin.id.as_str()) {
+        return Err(JsonResponse::forbidden(
+            "a bake takes only your own build box; this deployment is not yours",
+        ));
+    }
+    if db::managed_usage::fetch_by_hash(pool, &deployment.deployment_hash)
+        .await
+        .map_err(JsonResponse::internal_server_error)?
+        .is_some()
+    {
+        return Err(JsonResponse::<()>::build()
+            .conflict("this deployment is a Quick Deploy server, not a build box"));
+    }
 
     let servers: Vec<models::Server> = db::server::fetch_by_project(pool, deployment.project_id)
         .await
@@ -181,7 +207,7 @@ pub async fn start_handler(
     vault_client: web::Data<VaultClient>,
 ) -> Result<impl Responder> {
     let form = form.into_inner();
-    let prepared = prepare(pg_pool.get_ref(), &form).await?;
+    let prepared = prepare(pg_pool.get_ref(), &admin, &form).await?;
 
     if db::bake_job::running_for_server(pg_pool.get_ref(), prepared.server.id)
         .await
@@ -242,20 +268,7 @@ async fn run_job(
 ) -> Result<(i64, i32), String> {
     use crate::helpers::ssh_client::{disconnect_ssh, exec_remote, open_ssh, HostKeyPolicy};
 
-    let response = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?
-        .get(health_url)
-        .send()
-        .await
-        .map_err(|e| format!("health check: {health_url} unreachable: {e}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "health check: {health_url} returned {}",
-            response.status()
-        ));
-    }
+    probe_health(health_url).await?;
 
     let private_key_pem = vault
         .fetch_ssh_key(&p.server.user_id, p.server.id)
@@ -341,7 +354,7 @@ async fn run_job(
             .map(serde_json::Value::String)
             .collect(),
     );
-    let row = db::baked_snapshot::record(
+    let row = db::baked_snapshot::record_unstable(
         pool,
         &record.stack,
         &record.version,
@@ -371,4 +384,44 @@ pub async fn status_handler(
         .map_err(JsonResponse::internal_server_error)?
         .ok_or_else(|| JsonResponse::not_found("bake not found"))?;
     Ok(JsonResponse::build().set_item(job).ok("OK"))
+}
+
+/// `POST /api/admin/bake/{id}/promote`: the smoke clone of this bake passed, so
+/// its snapshot becomes `latest` and the previous `latest` becomes `stable`.
+#[tracing::instrument(name = "Promote a bake (admin)", skip_all)]
+#[post("/{id}/promote")]
+pub async fn promote_handler(
+    _admin: web::ReqData<Arc<models::User>>, // role enforced by Casbin
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| JsonResponse::bad_request("invalid bake id"))?;
+    let job = db::bake_job::fetch(pg_pool.get_ref(), id)
+        .await
+        .map_err(JsonResponse::internal_server_error)?
+        .ok_or_else(|| JsonResponse::not_found("bake not found"))?;
+    let Some(snapshot_id) = job.snapshot_id.filter(|_| job.status == "done") else {
+        return Err(JsonResponse::<()>::build().conflict(format!(
+            "the bake is {}, it has no snapshot to promote",
+            job.status
+        )));
+    };
+    let moves = db::bake_registry::promote(pg_pool.get_ref(), snapshot_id)
+        .await
+        .map_err(|e| match e {
+            db::bake_registry::PromoteError::Db(e) => JsonResponse::internal_server_error(e),
+            other => JsonResponse::<()>::build().conflict(other.to_string()),
+        })?;
+    let state = db::bake_registry::state_for_snapshot(pg_pool.get_ref(), snapshot_id)
+        .await
+        .map_err(JsonResponse::internal_server_error)?;
+    Ok(JsonResponse::build()
+        .set_item(serde_json::json!({
+            "snapshot_id": snapshot_id,
+            "promoted": moves.is_some(),
+            "latest": state.latest,
+            "stable": state.stable,
+        }))
+        .ok("OK"))
 }

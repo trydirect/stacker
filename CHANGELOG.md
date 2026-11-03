@@ -4,6 +4,57 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed — Marketplace vendor profile safety
+
+- The public vendor profile derives `avatar_url` from the account email via Gravatar (identicon) and ignores the client-supplied value; a migration clears stored non-Gravatar URLs.
+- `website_url` on a vendor profile now rejects non-http(s) schemes before it is rendered into a link.
+
+### Fixed — Fail-closed configuration and OAuth
+
+- A configuration file that does not parse stops the service instead of silently starting on defaults; with no configuration file at all, defaults still apply.
+- OAuth refuses the token when the auth server is unreachable, at any address — the loopback/localhost test-user fallback is gone.
+
+### Fixed — Quick Deploy clone
+
+- A root admin may smoke-clone an unpromoted bake (`channel: "unstable"`), matching the access that already allowed `POST /api/admin/bake`.
+
+## [0.3.5] — 2026-10-19
+
+### Added — Managed server billing
+
+- Quick Deploy Managed servers record usage per server with daily rates, day-by-day reports, a meter sweeper, and suspension of unpaid VMs; clone bills the Managed server before it runs.
+- The User Service connector reports Managed server usage and billing events; internal endpoints expose the usage data.
+
+### Added — Teams and roles
+
+- Share projects with members and invite them by email; the owner decides whether members get server access.
+- Members can list the project's servers and see their own deployments; the User Service learns which role a user holds on a deployment; a root-role user is treated as admin regardless of `/me` order.
+
+### Added — Configuration and services
+
+- `config_contract` fields accept `pattern` and `max_length`; `length` now means exactly that length.
+- `stacker.yml` services support `restart`, `entrypoint`, `profiles`, `aliases`, `deploy`, `cap_add`, `cap_drop`, and `devices`; `deploy.replicas` accepts a `${VAR}` reference or a device count.
+
+### Added — Marketplace and bake
+
+- Start a bake from the API (`POST /api/admin/bake`); the bake is built in CI and shipped in the Docker image, picks its build box by Hetzner `server_id`, and records the server type that `validate` returns with the rates.
+- Quick Deploy is plan-independent: no Pro check on the one-click path.
+
+### Fixed — Security and authorization
+
+- Admin service JWT signatures are verified; agent routes respond 401 instead of 500; deployment, project, cloud, and command ownership is checked across the API and marketplace purchase tokens must be plain.
+- A marketplace resubmit no longer silently makes a stack free, and the free-deploy access gate is closed.
+
+### Fixed — Deploy correctness
+
+- Failed deploys exit 1 and print the failure verdict once; `config validate` fails on error-severity issues; unknown fields in `app:` are denied.
+- Generated compose bind mounts resolve against the project root; host IPs of loopback port mappings stay in the deploy payload and off the internet; Hetzner availability reads from `server_types.locations`; preflight expands port ranges and resolves `${VAR:-default}` before probing.
+- Destroy reports a remote stack instead of "absent" and never tears down under a guessed project name; a fresh box does not boot without its schema.
+
+### Improved — Operations and CI
+
+- Vault health checks use the same TLS settings as the Vault client; admin notifications cover verification-status changes and unapprove reasons; CI frees `target/debug` before the release build; `casbin_admin_template_update` has its own migration version.
+
 ## [0.3.4] — 2026-09-24
 
 ### Added — Marketplace config contracts

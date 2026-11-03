@@ -28,6 +28,7 @@ pub(crate) mod compressor;
 pub mod dockerhub;
 pub mod env_path;
 pub mod fs;
+pub mod gravatar;
 pub(crate) mod ip;
 pub mod stacker_labels;
 

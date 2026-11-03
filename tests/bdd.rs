@@ -2,6 +2,8 @@
 mod vault_kv_mock;
 
 mod steps;
+#[path = "common/test_databases.rs"]
+mod test_databases;
 
 use cucumber::World as _;
 use steps::StepWorld;

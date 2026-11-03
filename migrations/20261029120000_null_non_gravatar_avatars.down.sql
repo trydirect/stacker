@@ -1,0 +1,1 @@
+-- Data cleanup migration: cleared external avatar URLs cannot be restored.

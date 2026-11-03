@@ -2,6 +2,7 @@ pub mod agent;
 pub mod agent_audit_log;
 pub(crate) mod agreement;
 pub mod bake_job;
+pub mod bake_registry;
 pub mod baked_snapshot;
 pub mod chat;
 pub mod chat_admin;

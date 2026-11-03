@@ -16,6 +16,8 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use wiremock::MockServer;
+mod test_databases;
+pub use test_databases::drop_at_exit;
 static ACCESS_CONTROL_CONF_READY: OnceLock<()> = OnceLock::new();
 
 /// Long-lived runtime handle for test infrastructure (server + pool).
@@ -768,6 +770,10 @@ pub async fn configure_database(config: &DatabaseSettings) -> Result<PgPool, sql
     connection
         .execute(format!(r#"CREATE DATABASE "{}""#, config.database_name).as_str())
         .await?;
+    drop_at_exit(
+        &config.connection_string_without_db(),
+        &config.database_name,
+    );
 
     // Run migrations on a dedicated single-connection pool so the advisory lock
     // and any DDL catalog locks are fully released before the server pool is

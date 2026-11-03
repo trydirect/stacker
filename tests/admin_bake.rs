@@ -2,6 +2,9 @@
 //! build box is refused at once, with no job recorded and nothing done to the
 //! box. Hetzner is a wiremock; `HETZNER_TOKEN` / `HETZNER_API_BASE_URL` are
 //! process-wide, so every case runs inside one test.
+//!
+//! A bake takes only the caller's own build box: sanitizing wipes the box, so
+//! a mistyped `deployment_id` must never reach a buyer's server.
 
 mod common;
 
@@ -56,12 +59,42 @@ async fn seed_template(pool: &sqlx::PgPool, slug: &str, status: &str, contract: 
     .expect("seed version");
 }
 
+/// An admin signed in through the User Service: User A with the
+/// `group_admin` role, the way the bake harness calls with its CLI token.
+async fn spawn_admin_app() -> Option<common::TestApp> {
+    let auth = MockServer::start().await;
+    let user = stacker::forms::user::User {
+        id: common::USER_A_ID.to_string(),
+        email: common::USER_A_EMAIL.to_string(),
+        role: "group_admin".to_string(),
+        email_confirmed: true,
+        ..Default::default()
+    };
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(stacker::forms::user::UserForm { user }),
+        )
+        .mount(&auth)
+        .await;
+    let mut configuration =
+        stacker::configuration::get_configuration().expect("Failed to get configuration");
+    configuration.auth_url = format!("{}/me", auth.uri());
+    // The mock must outlive the app, which lives for the rest of the test.
+    std::mem::forget(auth);
+    common::spawn_app_with_configuration(configuration).await
+}
+
 /// A deployment whose project has one server at `ip`.
 async fn seed_build_box(pool: &sqlx::PgPool, ip: &str) -> i32 {
-    let project = common::create_test_project(pool, common::USER_A_ID).await;
+    seed_build_box_of(pool, ip, common::USER_A_ID).await
+}
+
+/// A deployment of `owner` whose project has one server at `ip`.
+async fn seed_build_box_of(pool: &sqlx::PgPool, ip: &str, owner: &str) -> i32 {
+    let project = common::create_test_project(pool, owner).await;
     let hash = format!("bake-{}", uuid::Uuid::new_v4());
-    let deployment = common::create_test_deployment(pool, common::USER_A_ID, project, &hash).await;
-    let server = common::create_test_server(pool, common::USER_A_ID, project, "active", None).await;
+    let deployment = common::create_test_deployment(pool, owner, project, &hash).await;
+    let server = common::create_test_server(pool, owner, project, "active", None).await;
     sqlx::query("UPDATE server SET srv_ip = $2 WHERE id = $1")
         .bind(server)
         .bind(ip)
@@ -96,9 +129,13 @@ async fn job_count(pool: &sqlx::PgPool) -> i64 {
 }
 
 async fn post(app: &common::TestApp, body: Value) -> (u16, Value) {
+    post_as(app, "admin-user-token", body).await
+}
+
+async fn post_as(app: &common::TestApp, token: &str, body: Value) -> (u16, Value) {
     let resp = reqwest::Client::new()
         .post(format!("{}/api/admin/bake", app.address))
-        .bearer_auth(admin_jwt())
+        .bearer_auth(token)
         .json(&body)
         .send()
         .await
@@ -109,7 +146,7 @@ async fn post(app: &common::TestApp, body: Value) -> (u16, Value) {
 
 #[tokio::test]
 async fn a_bake_is_refused_before_the_box_is_touched_and_accepted_when_everything_checks_out() {
-    let Some(app) = common::spawn_app().await else {
+    let Some(app) = spawn_admin_app().await else {
         return;
     };
     let hetzner = MockServer::start().await;
@@ -137,6 +174,18 @@ async fn a_bake_is_refused_before_the_box_is_touched_and_accepted_when_everythin
     let deployment = seed_build_box(&app.db_pool, BOX_IP).await;
     let unknown_box = seed_build_box(&app.db_pool, "198.51.100.9").await;
     let health = format!("http://{BOX_IP}/health");
+    // Someone else's server at a known IP, and a buyer's Quick Deploy server.
+    let other_users_box = seed_build_box_of(&app.db_pool, BOX_IP, common::USER_B_ID).await;
+    let quick_deploy_box = seed_build_box(&app.db_pool, BOX_IP).await;
+    sqlx::query(
+        r#"INSERT INTO managed_usage (deployment_hash, user_id, stack, server_type, daily_rate_minor, monthly_cap_minor)
+           SELECT deployment_hash, user_id, $2, 'cpx22', 100, 3000 FROM deployment WHERE id = $1"#,
+    )
+    .bind(quick_deploy_box)
+    .bind(STACK)
+    .execute(&app.db_pool)
+    .await
+    .expect("seed managed usage");
 
     for (body, expected, why) in [
         (
@@ -164,6 +213,16 @@ async fn a_bake_is_refused_before_the_box_is_touched_and_accepted_when_everythin
             409,
             "box Hetzner does not know",
         ),
+        (
+            json!({"deployment_id": other_users_box, "stack": STACK, "health_url": health}),
+            403,
+            "another user's server",
+        ),
+        (
+            json!({"deployment_id": quick_deploy_box, "stack": STACK, "health_url": health}),
+            409,
+            "a Quick Deploy server is a buyer's, not a build box",
+        ),
     ] {
         let (status, resp) = post(&app, body).await;
         assert_eq!(status, expected, "{why}: {resp}");
@@ -173,6 +232,16 @@ async fn a_bake_is_refused_before_the_box_is_touched_and_accepted_when_everythin
             "{why}: no job may be recorded"
         );
     }
+
+    // A service token owns no build box, so it cannot bake one.
+    let (status, resp) = post_as(
+        &app,
+        &admin_jwt(),
+        json!({"deployment_id": deployment, "stack": STACK, "health_url": health}),
+    )
+    .await;
+    assert_eq!(status, 403, "admin_service: {resp}");
+    assert_eq!(job_count(&app.db_pool).await, 0, "admin_service: no job");
 
     let (status, resp) = post(
         &app,
@@ -203,7 +272,7 @@ async fn a_bake_is_refused_before_the_box_is_touched_and_accepted_when_everythin
     let id = job["id"].as_str().unwrap();
     let status = reqwest::Client::new()
         .get(format!("{}/api/admin/bake/{id}", app.address))
-        .bearer_auth(admin_jwt())
+        .bearer_auth("admin-user-token")
         .send()
         .await
         .unwrap();

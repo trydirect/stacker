@@ -7,3 +7,6 @@ pub use getheader::*;
 pub use manager::*;
 pub use manager_middleware::*;
 pub use method::OAuthCache;
+
+#[cfg(test)]
+mod span_secrets_tests;
