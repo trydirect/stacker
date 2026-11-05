@@ -12,4 +12,4 @@ WORKDIR /app
 RUN npm install -g serve
 COPY --from=builder /app/dist ./dist
 EXPOSE 3456
-CMD ["serve", "-s", "dist", "-l", "3456"]
+CMD ["serve", "dist", "-l", "3456"]
