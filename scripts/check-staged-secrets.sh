@@ -115,6 +115,8 @@ findings=$(printf '%s\n' "$added" | awk -v keyre="$SECRET_KEY_RE" '
     }
 
     # 2. A long hex or base64 blob as a value, whatever the key is called.
+    #    Cargo.lock checksums are public crate hashes, not secrets.
+    path ~ /Cargo[.]lock$/ && content ~ /checksum = / { next }
     value ~ /^[0-9a-fA-F]{32,}$/ {
         print path ":" lineno ": " length(value) "-char hex value"
         next
