@@ -1,6 +1,6 @@
 "use strict";
 // ============================================================
-// Stacker Website — TypeScript Interactions
+// Stacker Website - TypeScript Interactions
 // Particle system, typing effect, scroll animations, counters
 // ============================================================
 class ParticleSystem {
@@ -198,7 +198,7 @@ class ScrollAnimator {
         document.querySelectorAll('[data-animate]').forEach((el) => {
             const rect = el.getBoundingClientRect();
             if (rect.top < vh) {
-                // Element is already in the viewport — show it immediately
+                // Element is already in the viewport - show it immediately
                 const delay = parseInt(el.dataset.delay || '0', 10);
                 setTimeout(() => el.classList.add('is-visible'), delay);
             }

@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>How to Deploy an AI-Built Startup Without Burning Cash on Hosting - Stacker Blog</title>
+  <meta name="description" content="AI tools let anyone build an app in hours. But hosting costs can eat your runway. Learn how to deploy an AI-built startup on your own server with Stacker - simple steps, huge savings.">
+  <meta name="keywords" content="AI startup, hosting costs, self-hosting, Stacker, deploy AI app, cheap hosting, own server, Docker, startup deployment, AI coding tools">
+  <meta name="author" content="TryDirect Engineering">
+  <meta name="published" content="2026-11-04">
+  <meta name="theme-color" content="#7e57c2">
+  <link rel="icon" type="image/png" href="../assets/stacker-logo.png">
+  <link rel="stylesheet" href="../styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="nav" id="nav">
+    <div class="nav__inner">
+      <a href="../index.html" class="nav__logo">
+        <img src="../assets/stacker-logomark.png" alt="Stacker" class="nav__logo-img">
+        <span class="nav__logo-text">stacker</span>
+      </a>
+      <div class="nav__links" id="navLinks">
+        <a href="../index.html#features" class="nav__link">Features</a>
+        <a href="../index.html#release" class="nav__link">Release</a>
+        <a href="../index.html#ai" class="nav__link">AI Engine</a>
+        <a href="../index.html#examples" class="nav__link">Examples</a>
+        <a href="../index.html#commands" class="nav__link">Commands</a>
+        <a href="../index.html#providers" class="nav__link">Providers</a>
+        <a href="index.html" class="nav__link nav__link--active">Blog</a>
+      </div>
+      <div class="nav__actions">
+        <a href="https://github.com/trydirect/stacker" target="_blank" rel="noopener" class="nav__github">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+          <span>GitHub</span>
+        </a>
+        <a href="https://try.direct" target="_blank" rel="noopener" class="btn btn--accent btn--sm">TryDirect Platform</a>
+      </div>
+      <button class="nav__mobile-toggle" id="mobileToggle" aria-label="Toggle menu">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
+  </nav>
+
+  <main class="article-page">
+    <div class="container container--narrow">
+      <article class="article">
+        <header class="article__header">
+          <div class="article__meta">
+            <span class="article__tag">AI &amp; Startups</span>
+            <time datetime="2026-11-04">November 4, 2026</time>
+            <span class="article__read-time">10 min read</span>
+          </div>
+          <h1 class="article__title">How to Deploy an AI-Built Startup Without Burning Cash on Hosting</h1>
+          <p class="article__lead">
+            AI tools let anyone build a working app in hours. But hosting costs can eat your runway before you get your first customer. Here's how to deploy on your own server for a fraction of the price.
+          </p>
+        </header>
+
+        <div class="article__content">
+          <h2>The AI Startup Boom</h2>
+          <p>
+            Something fundamental changed in 2025–2026. Tools like Cursor, v0, Bolt, Claude, and ChatGPT made it possible for anyone - not just engineers - to build a working product in a weekend. You describe what you want, the AI writes the code, and suddenly you have a SaaS, a marketplace, an internal tool, or a mobile backend that actually works.
+          </p>
+          <p>
+            This is great news for founders. The cost of building software dropped to nearly zero. But the cost of <em>running</em> software didn't.
+          </p>
+
+          <h2>The Hosting Cost Trap</h2>
+          <p>
+            Here's the problem most AI-built startups hit: the app works on your laptop, but to put it in front of real users you need a server. And the "easy" hosting options are expensive.
+          </p>
+          <p>
+            Let's look at the typical monthly cost for a small startup running a web app, a database, Redis, and a few background workers:
+          </p>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Platform</th>
+                <th>Monthly Cost</th>
+                <th>What You Get</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Vercel / Netlify</td>
+                <td>$20–$250+</td>
+                <td>Frontend only, no database</td>
+              </tr>
+              <tr>
+                <td>Railway / Render</td>
+                <td>$50–$300+</td>
+                <td>Full-stack, but usage-based pricing spikes fast</td>
+              </tr>
+              <tr>
+                <td>Heroku</td>
+                <td>$100–$500+</td>
+                <td>Easy but expensive at scale</td>
+              </tr>
+              <tr>
+                <td>AWS / GCP (managed)</td>
+                <td>$100–$500+</td>
+                <td>Powerful but complex, requires DevOps knowledge</td>
+              </tr>
+              <tr>
+                <td><strong>Your own server + Stacker</strong></td>
+                <td><strong>$5–$20</strong></td>
+                <td><strong>Full control, everything included</strong></td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="article__callout">
+            <strong>The math is simple.</strong> A $5–$20/month VPS (Hetzner, DigitalOcean, Contabo) can run a production web app, PostgreSQL, Redis, a reverse proxy with SSL, and background workers. That's 10–50x cheaper than managed platforms.
+          </div>
+
+          <h2>Why Stacker?</h2>
+          <p>
+            The problem with self-hosting has always been the operational overhead. You need to know Docker, networking, SSL certificates, reverse proxies, database backups, firewall rules… It's a full-time job.
+          </p>
+          <p>
+            <strong>Stacker removes that overhead.</strong> It's a single CLI tool that takes your project - the one AI generated for you - and deploys it to your own server in a few commands. No YAML file hell, no Kubernetes, no manual nginx configuration.
+          </p>
+
+          <h2>Step-by-Step: Deploy Your AI-Built App</h2>
+          <p>
+            Let's say you built a SaaS with Next.js (frontend), PostgreSQL (database), and Redis (caching) using Cursor or ChatGPT. Here's how to get it live on your own server.
+          </p>
+
+          <h3>1. Get a Cheap Server</h3>
+          <p>
+            Rent a VPS from any provider. Hetzner is the best value in Europe (CX22: 2 vCPU, 4 GB RAM, 40 GB disk for ~€5/month). DigitalOcean and Vultr are good alternatives. You need roughly 2–4 GB of RAM for most small apps.
+          </p>
+
+          <h3>2. Add a <code>stacker.yml</code> to Your Project</h3>
+          <p>
+            This is the only file you add. It tells Stacker what your app is, what services it needs, and where to deploy:
+          </p>
+<pre><code># stacker.yml
+name: my-startup
+app:
+  type: node
+  ports:
+    - "3000:3000"
+  environment:
+    NODE_ENV: production
+
+services:
+  - name: postgres
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: pg_isready -U postgres
+
+  - name: redis
+    image: redis:7-alpine
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+
+volumes:
+  pgdata: {}
+
+deploy:
+  target: server
+  server:
+    host: 123.45.67.89
+    user: root
+    ssh_key: ~/.ssh/id_ed25519
+
+proxy:
+  type: nginx
+  domains:
+    - domain: myapp.com
+      ssl: auto
+      upstream: app:3000</code></pre>
+
+          <h3>3. Deploy</h3>
+          <p>
+            One command:
+          </p>
+<pre><code>stacker deploy</code></pre>
+          <p>
+            That's it. Stacker will:
+          </p>
+          <ul>
+            <li>Detect your project type and generate a Dockerfile</li>
+            <li>Build a Docker Compose stack from your <code>stacker.yml</code></li>
+            <li>Copy everything to your server over SSH</li>
+            <li>Start all containers (app, database, Redis)</li>
+            <li>Configure nginx with automatic SSL (Let's Encrypt)</li>
+            <li>Set up firewall rules to open only the ports you need</li>
+          </ul>
+          <p>
+            Your app is now live at <code>myapp.com</code>.
+          </p>
+
+          <h2>What If You Need More Services?</h2>
+          <p>
+            Most real apps need more than just a web server and a database. Maybe you want analytics, a queue, file storage, or monitoring. Stacker handles multi-service stacks natively:
+          </p>
+<pre><code>services:
+  - name: postgres
+    image: postgres:16-alpine
+  - name: redis
+    image: redis:7-alpine
+  - name: rabbitmq
+    image: rabbitmq:3-management
+  - name: minio
+    image: minio/minio
+    command: server /data
+  - name: worker
+    image: myapp/worker:latest
+    command: python worker.py</code></pre>
+          <p>
+            All services run in isolated containers on the same Docker network. They can talk to each other by service name (<code>postgres</code>, <code>redis</code>, <code>rabbitmq</code>) - no IP addresses, no manual networking.
+          </p>
+
+          <h2>The Cost Comparison: Real Numbers</h2>
+          <p>
+            Let's compare a realistic startup setup over 12 months:
+          </p>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Setup</th>
+                <th>Monthly</th>
+                <th>Yearly</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Railway (web + DB + Redis + worker)</td>
+                <td>~$150</td>
+                <td>~$1,800</td>
+              </tr>
+              <tr>
+                <td>Vercel + PlanetScale + Upstash</td>
+                <td>~$80</td>
+                <td>~$960</td>
+              </tr>
+              <tr>
+                <td>Heroku (dyno + Postgres + Redis)</td>
+                <td>~$250</td>
+                <td>~$3,000</td>
+              </tr>
+              <tr>
+                <td><strong>Hetzner VPS + Stacker</strong></td>
+                <td><strong>~$8</strong></td>
+                <td><strong>~$96</strong></td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="article__callout">
+            <strong>That's $800–$2,900 saved per year.</strong> For a bootstrapped startup, that's real runway - months of server costs covered by the savings alone.
+          </div>
+
+          <h2>Common Concerns</h2>
+
+          <h3>"What about uptime?"</h3>
+          <p>
+            A Hetzner CX22 has a 99.9% uptime SLA. For most startups, that's better than you need. If you outgrow one server, Stacker supports multi-server deployments too. And you can always set up a simple status page to monitor your services.
+          </p>
+
+          <h3>"What about backups?"</h3>
+          <p>
+            Stacker uses named Docker volumes for persistent data. You can back up your database with a simple cron job, or use <code>stacker agent</code> to manage remote operations. Don't rely on your hosting provider's backups as your only safety net - a 5-minute <code>pg_dump</code> cron job is enough for most startups.
+          </p>
+
+          <h3>"What about security?"</h3>
+          <p>
+            Stacker handles SSL automatically (Let's Encrypt). It also configures firewall rules so only necessary ports are open. The <code>stacker.yml</code> format supports <code>config_contract</code> to declare which fields are secrets - Stacker generates strong values automatically and stores them securely.
+          </p>
+
+          <h3>"I don't know Docker. Is this still for me?"</h3>
+          <p>
+            Yes. Stacker auto-detects your project type (Node, Python, Rust, Go, PHP, or static) and generates the Docker configuration for you. You never write a Dockerfile. The <code>stacker.yml</code> above is the entire configuration.
+          </p>
+
+          <h2>What About AI-Generated Projects Specifically?</h2>
+          <p>
+            AI tools produce projects that follow standard conventions: <code>package.json</code> for Node, <code>requirements.txt</code> for Python, <code>Cargo.toml</code> for Rust. Stacker's auto-detection works perfectly with these. The same tools that generated your app in hours now deploy it in seconds.
+          </p>
+          <p>
+            The workflow looks like this:
+          </p>
+          <ol>
+            <li><strong>Build</strong> with Cursor / v0 / Claude / ChatGPT (hours, not weeks)</li>
+            <li><strong>Test</strong> locally on your laptop</li>
+            <li><strong>Deploy</strong> with <code>stacker deploy</code> (seconds, not days)</li>
+            <li><strong>Iterate</strong> - push changes with <code>stacker deploy</code> again</li>
+          </ol>
+          <p>
+            Total infrastructure cost: under $10/month. Total time spent on operations: minutes.
+          </p>
+
+          <h2>Getting Started</h2>
+          <p>
+            Ready to try it? Here's what you need:
+          </p>
+          <ul>
+            <li><strong>A server</strong> - any VPS with 2+ GB RAM (~$5/month on Hetzner)</li>
+            <li><strong>Stacker</strong> - install with one command: <code>curl -fsSL https://get.stacker.my | sh</code></li>
+            <li><strong>Your project</strong> - the one you already built with AI</li>
+          </ul>
+          <p>
+            Then add your <code>stacker.yml</code>, run <code>stacker deploy</code>, and you're live.
+          </p>
+
+          <h2>The Bottom Line</h2>
+          <p>
+            AI lowered the cost of building software to near zero. Stacker lowers the cost of running it to near zero. Together, they let a solo founder or small team build and ship a real product for less than the price of a coffee subscription.
+          </p>
+          <p>
+            The next time an AI tool gives you a working app in a weekend, don't pay $200/month to put it online. Get a $5 server, add a <code>stacker.yml</code>, and deploy.
+          </p>
+
+          <div class="article__cta">
+            <h3>Ready to deploy?</h3>
+            <p>Stacker is open source. Star it on GitHub and try it on your next project.</p>
+            <a href="https://github.com/trydirect/stacker" target="_blank" rel="noopener" class="btn btn--primary btn--lg">Get Stacker on GitHub</a>
+          </div>
+        </div>
+
+        <footer class="article__footer">
+          <a href="index.html" class="article__back">&larr; Back to Blog</a>
+        </footer>
+      </article>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__inner">
+        <div class="footer__brand">
+          <img src="../assets/stacker-logomark.png" alt="Stacker" class="footer__logo">
+          <span class="footer__text">Stacker by TryDirect</span>
+        </div>
+        <div class="footer__links">
+          <a href="https://github.com/trydirect/stacker" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://try.direct" target="_blank" rel="noopener">Platform</a>
+          <a href="index.html">Blog</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script src="../main.js"></script>
+</body>
+</html>

@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Stacker v0.3.5 — AI Infrastructure CLI by TryDirect</title>
-  <meta name="description" content="Stacker v0.3.5 scans your project, deploys to cloud or bare metal, manages remote service secrets, cloud firewalls, agents, and app pipes — all from your terminal.">
+  <title>Stacker v0.3.5 - AI Infrastructure CLI by TryDirect</title>
+  <meta name="description" content="Stacker v0.3.5 scans your project, deploys to cloud or bare metal, manages remote service secrets, cloud firewalls, agents, and app pipes - all from your terminal.">
   <meta name="theme-color" content="#7e57c2">
   <link rel="icon" type="image/png" href="assets/stacker-logo.png">
   <link rel="stylesheet" href="styles.css">
@@ -39,6 +39,7 @@
         <a href="#examples" class="nav__link">Examples</a>
         <a href="#commands" class="nav__link">Commands</a>
         <a href="#providers" class="nav__link">Providers</a>
+        <a href="blog/index.html" class="nav__link">Blog</a>
       </div>
       <div class="nav__actions">
         <a href="https://github.com/trydirect/stacker" target="_blank" rel="noopener" class="nav__github">
@@ -70,7 +71,7 @@
         <p class="hero__subtitle" data-animate="fade-up" data-delay="200">
           Stacker scans your project, generates a production-ready <code>stacker.yml</code>,
           deploys to cloud or bare metal, manages remote agents, links apps with pipes,
-          and ships marketplace-ready stacks — all from your terminal.
+          and ships marketplace-ready stacks - all from your terminal.
         </p>
         <div class="hero__actions" data-animate="fade-up" data-delay="300">
           <a href="#quickstart" class="btn btn--primary btn--lg">
@@ -195,14 +196,14 @@
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
           </div>
           <h3 class="feature-card__title">Service Catalog</h3>
-          <p class="feature-card__desc">20+ built-in service templates — Postgres, Redis, WordPress, Elasticsearch, and more. Add with <code>stacker service add</code> or let AI update the stack for you.</p>
+          <p class="feature-card__desc">20+ built-in service templates - Postgres, Redis, WordPress, Elasticsearch, and more. Add with <code>stacker service add</code> or let AI update the stack for you.</p>
         </div>
         <div class="feature-card" data-animate="fade-up" data-delay="100">
           <div class="feature-card__icon feature-card__icon--ssh">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>
           </div>
           <h3 class="feature-card__title">SSH Key Management</h3>
-          <p class="feature-card__desc">Generate, view, and upload SSH keys for your servers — all stored securely in HashiCorp Vault. No manual key juggling.</p>
+          <p class="feature-card__desc">Generate, view, and upload SSH keys for your servers - all stored securely in HashiCorp Vault. No manual key juggling.</p>
         </div>
       </div>
     </div>
@@ -213,7 +214,7 @@
     <div class="container">
       <div class="section__header" data-animate="fade-up">
         <span class="section__label">Latest Release</span>
-        <h2 class="section__title">Stacker v0.3.5<br><span class="gradient-text">— config sync, per-install secrets &amp; safer marketplace snapshots.</span></h2>
+        <h2 class="section__title">Stacker v0.3.5<br><span class="gradient-text">- config sync, per-install secrets &amp; safer marketplace snapshots.</span></h2>
         <p class="section__desc">Releases v0.3.3 through v0.3.5 bring <code>stacker sync</code> for pushing configuration without a deploy, field policies that generate fresh secrets for every marketplace install, secret-free baked snapshots with author-declared volume policies, and cloud deploys that stop with an error instead of a warning when SSH access can't be verified.</p>
       </div>
       <div class="release__grid">
@@ -225,7 +226,7 @@
         <article class="release-card" data-animate="fade-up" data-delay="100">
           <span class="release-card__eyebrow">Marketplace</span>
           <h3 class="release-card__title">Field policies &amp; generated secrets</h3>
-          <p class="release-card__desc">Mark each field in <code>config_contract</code> as <code>fixed</code>, <code>editable</code>, or <code>generated</code>. Generated values — <code>hex</code>, <code>alphanumeric</code>, <code>uuid</code>, <code>derived_jwt</code> — are stripped at publish and created fresh on every install, so no two buyers share a secret.</p>
+          <p class="release-card__desc">Mark each field in <code>config_contract</code> as <code>fixed</code>, <code>editable</code>, or <code>generated</code>. Generated values - <code>hex</code>, <code>alphanumeric</code>, <code>uuid</code>, <code>derived_jwt</code> - are stripped at publish and created fresh on every install, so no two buyers share a secret.</p>
         </article>
         <article class="release-card" data-animate="fade-up" data-delay="200">
           <span class="release-card__eyebrow">Bake</span>
@@ -240,7 +241,7 @@
         <article class="release-card" data-animate="fade-up" data-delay="0">
           <span class="release-card__eyebrow">Monitoring</span>
           <h3 class="release-card__title">stacker monitor</h3>
-          <p class="release-card__desc">A built-in container-down alarm. Declare a <code>monitoring.alerts</code> block and get notified — terminal, webhook (ntfy/Slack), or pipe — the moment a container stops and when it recovers. Edge-triggered and cron-friendly with <code>--once</code>.</p>
+          <p class="release-card__desc">A built-in container-down alarm. Declare a <code>monitoring.alerts</code> block and get notified - terminal, webhook (ntfy/Slack), or pipe - the moment a container stops and when it recovers. Edge-triggered and cron-friendly with <code>--once</code>.</p>
         </article>
         <article class="release-card" data-animate="fade-up" data-delay="100">
           <span class="release-card__eyebrow">Pipes</span>
@@ -250,12 +251,12 @@
         <article class="release-card" data-animate="fade-up" data-delay="200">
           <span class="release-card__eyebrow">Pipes</span>
           <h3 class="release-card__title">Manual endpoints &amp; retries</h3>
-          <p class="release-card__desc">Create pipes non-interactively with <code>--source-endpoint</code> / <code>--target-endpoint</code> — works for any HTTP API. Attach a retry policy and <code>--on-failure</code> / <code>--on-success</code> handlers.</p>
+          <p class="release-card__desc">Create pipes non-interactively with <code>--source-endpoint</code> / <code>--target-endpoint</code> - works for any HTTP API. Attach a retry policy and <code>--on-failure</code> / <code>--on-success</code> handlers.</p>
         </article>
         <article class="release-card" data-animate="fade-up" data-delay="300">
           <span class="release-card__eyebrow">Proxy</span>
           <h3 class="release-card__title">Reverse-proxy routing</h3>
-          <p class="release-card__desc">Working routing for Traefik (labels), Caddy (Caddyfile), and Nginx Proxy Manager (proxy hosts), all driven by <code>proxy.domains</code> — platform-managed, so no double-deploy or port collisions.</p>
+          <p class="release-card__desc">Working routing for Traefik (labels), Caddy (Caddyfile), and Nginx Proxy Manager (proxy hosts), all driven by <code>proxy.domains</code> - platform-managed, so no double-deploy or port collisions.</p>
         </article>
         <article class="release-card" data-animate="fade-up" data-delay="0">
           <span class="release-card__eyebrow">Config</span>
@@ -287,7 +288,7 @@
       <div class="section__header" data-animate="fade-up">
         <span class="section__label">AI Engine</span>
         <h2 class="section__title">Your infrastructure,<br><span class="gradient-text">understood by AI.</span></h2>
-        <p class="section__desc">Stacker's AI engine doesn't just guess — it deeply analyzes your project to generate the perfect deployment configuration.</p>
+        <p class="section__desc">Stacker's AI engine doesn't just guess - it deeply analyzes your project to generate the perfect deployment configuration.</p>
       </div>
       <div class="ai-section__flow" data-animate="fade-up" data-delay="100">
         <div class="ai-step">
@@ -518,7 +519,7 @@
             <code class="command-card__cmd">stacker init</code>
             <span class="command-card__flag">--with-ai</span>
           </div>
-          <p class="command-card__desc">Scan your project and generate <code>stacker.yml</code> — with optional AI assistance.</p>
+          <p class="command-card__desc">Scan your project and generate <code>stacker.yml</code> - with optional AI assistance.</p>
         </div>
         <div class="command-card" data-command="deploy">
           <div class="command-card__header">
@@ -531,7 +532,7 @@
             <code class="command-card__cmd">stacker sync</code>
             <span class="command-card__flag">--verify</span>
           </div>
-          <p class="command-card__desc">Push project and app configuration to Stacker without deploying — no server contact, no containers started.</p>
+          <p class="command-card__desc">Push project and app configuration to Stacker without deploying - no server contact, no containers started.</p>
         </div>
         <div class="command-card" data-command="logs">
           <div class="command-card__header">
@@ -583,7 +584,7 @@
             <code class="command-card__cmd">stacker service</code>
             <span class="command-card__flag">add &lt;name&gt;</span>
           </div>
-          <p class="command-card__desc">Add services from 20+ built-in templates — Postgres, Redis, WordPress, and more. Auto-adds dependencies.</p>
+          <p class="command-card__desc">Add services from 20+ built-in templates - Postgres, Redis, WordPress, and more. Auto-adds dependencies.</p>
         </div>
         <div class="command-card" data-command="pipe">
           <div class="command-card__header">

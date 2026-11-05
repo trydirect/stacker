@@ -1,5 +1,5 @@
 // ============================================================
-// Stacker Website — TypeScript Interactions
+// Stacker Website - TypeScript Interactions
 // Particle system, typing effect, scroll animations, counters
 // ============================================================
 
@@ -248,7 +248,7 @@ class ScrollAnimator {
     document.querySelectorAll('[data-animate]').forEach((el) => {
       const rect = (el as HTMLElement).getBoundingClientRect();
       if (rect.top < vh) {
-        // Element is already in the viewport — show it immediately
+        // Element is already in the viewport - show it immediately
         const delay = parseInt((el as HTMLElement).dataset.delay || '0', 10);
         setTimeout(() => (el as HTMLElement).classList.add('is-visible'), delay);
       } else {
