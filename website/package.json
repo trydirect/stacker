@@ -5,7 +5,8 @@
   "scripts": {
     "build": "tsc && cp src/index.html dist/ && cp src/styles.css dist/ && cp -r assets dist/ && cp -r src/blog dist/blog",
     "dev": "tsc --watch",
-    "serve": "npx serve dist -p 3456"
+    "serve": "npx serve dist -p 3456",
+    "test": "node tests/serving.mjs"
   },
   "devDependencies": {
     "typescript": "^5.3.0",
