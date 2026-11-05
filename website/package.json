@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Stacker CLI - Modern landing page",
   "scripts": {
-    "build": "tsc && cp src/index.html dist/ && cp src/styles.css dist/ && cp -r assets dist/",
+    "build": "tsc && cp src/index.html dist/ && cp src/styles.css dist/ && cp -r assets dist/ && cp -r src/blog dist/blog",
     "dev": "tsc --watch",
     "serve": "npx serve dist -p 3456"
   },
