@@ -18,6 +18,10 @@ All notable changes to this project will be documented in this file.
 
 - A root admin may smoke-clone an unpromoted bake (`channel: "unstable"`), matching the access that already allowed `POST /api/admin/bake`.
 
+### Fixed — Website blog serving
+
+- `stacker.my/blog` and its article URLs serve the blog pages again: the website image no longer runs `serve` in SPA mode, which rewrote every blog path to the landing page.
+
 ## [0.3.5] — 2026-10-19
 
 ### Added — Managed server billing
