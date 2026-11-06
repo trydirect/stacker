@@ -9,6 +9,7 @@ on:
       - main
       - testing
       - dev
+      - website
     paths:
       - 'website/**'
       - '.github/workflows/stacker-website.yml'
