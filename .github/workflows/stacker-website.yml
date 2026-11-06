@@ -45,6 +45,17 @@ jobs:
             type=sha,prefix={{branch}}-,format=short
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Serving regression test
+        working-directory: ./website
+        run: |
+          npm ci
+          npm test
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
