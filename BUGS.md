@@ -768,3 +768,55 @@ other projects.
 ## 23. ❌ WITHDRAWN - "resubmit keeps the old version's contract"
 
 Not a bug. The resubmit was refused (400, `MARKETPLACE_CONFIG_CONTRACT_SECRET_POLICY_REQUIRED`), so no new version was created and the bake used the only stored one. The refusal was hidden by an output filter on the reporter's side.
+
+## 24. `stacker install` writes a stacker.yml that `stacker deploy` cannot parse
+
+**Confirmed, reproduced 2026-11-06, `stacker-cli v0.3.4`.**
+
+### Observed
+
+```
+stacker install n8n --name n8n-tiktok-demo      # project #813, "Wrote stacker.yml"
+stacker deploy --dry-run
+  ✗ Failed to parse stacker.yml: invalid value at `marketplace.no_secrets_confirmation`:
+    invalid type: string "***REDACTED***", expected a boolean at line 100 column 28
+```
+
+The file the CLI just wrote cannot be read back by the same CLI. Line 102 of the
+generated file is:
+
+```yaml
+  no_secrets_confirmation: '***REDACTED***'
+```
+
+`marketplace.no_secrets_confirmation` is a boolean. Something in the install
+path runs the template through the same redaction that masks secret values, and
+the mask is applied to a non-secret boolean field by name or by blanket policy.
+
+The password fields in the same file are also `'***REDACTED***'`
+(`ADMIN_PASSWORD`, `N8N_ENCRYPTION_KEY`, `POSTGRES_PASSWORD` at lines 126, 132,
+134, 150). Those are strings, so they parse, and they are presumably intended -
+the values are generated at deploy time. Only the boolean breaks.
+
+### Impact
+
+`stacker install <template>` followed by `stacker deploy` - the exact two-command
+path the CLI itself prints as "Deploy with: ..." - fails for any template whose
+stored config carries this field. A new user hits it on their first command pair
+and has no way to know the fix is to delete a line.
+
+### Workaround
+
+Delete the `no_secrets_confirmation` line from the generated file. It is a
+marketplace publishing field and has no role in deploying.
+
+### Fix direction
+
+Exclude non-secret fields from the redaction pass, or redact booleans to a
+boolean. Test: `stacker install <template>` then `stacker config validate` with
+no edits, for every published template.
+
+### Not investigated
+
+Whether this affects every template or only n8n - only n8n was installed. Check
+the stored config of a few others before sizing the fix.
