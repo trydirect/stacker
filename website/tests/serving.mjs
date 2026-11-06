@@ -125,6 +125,97 @@ try {
       console.log(`PASS: GET ${c.path} serves the ${c.label}`);
     }
   }
+
+  // The canonical blog URL is /blog (serve's clean-URL redirects drop the
+  // trailing slash), so relative links on that page resolve against /. Every
+  // internal link must still reach a served page, and the blog's own links
+  // must reach the blog pages.
+  const blogRes = await fetch(BASE + "/blog", { redirect: "follow" });
+  const blogBody = await blogRes.text();
+  const refs = [...blogBody.matchAll(/(?:href|src)="([^"]+)"/g)]
+    .map((m) => m[1])
+    .filter((h) => !/^(?:https?:|#|mailto:)/.test(h));
+  let brokenRefs = 0;
+  for (const ref of refs) {
+    const url = new URL(ref, blogRes.url);
+    const res = await fetch(url, { redirect: "follow" });
+    if (res.status !== 200) {
+      brokenRefs++;
+      console.error(
+        `FAIL: blog link ${ref} resolves to ${url.pathname} -> HTTP ${res.status}`
+      );
+    }
+  }
+  if (brokenRefs === 0) {
+    console.log(`PASS: all ${refs.length} internal links on /blog fetch a served page`);
+  } else {
+    failed++;
+  }
+
+  const articleHref = blogBody.match(
+    /<a href="([^"]+)">How to Deploy an AI-Built Startup/
+  );
+  if (!articleHref) {
+    failed++;
+    console.error("FAIL: blog index has no article title link");
+  } else {
+    const res = await fetch(new URL(articleHref[1], blogRes.url), {
+      redirect: "follow",
+    });
+    const body = await res.text();
+    if (!/<title>How to Deploy an AI-Built Startup/.test(body)) {
+      failed++;
+      console.error(
+        `FAIL: article title link ${articleHref[1]} does not land on the article`
+      );
+    } else {
+      console.log("PASS: article title link lands on the article");
+    }
+  }
+
+  const activeNav = blogBody.match(
+    /<a ([^>]*class="[^"]*nav__link--active[^"]*"[^>]*)>Blog<\/a>/
+  );
+  const navHref = activeNav && activeNav[1].match(/href="([^"]+)"/);
+  if (!navHref) {
+    failed++;
+    console.error("FAIL: blog index has no active Blog nav link");
+  } else {
+    const res = await fetch(new URL(navHref[1], blogRes.url), {
+      redirect: "follow",
+    });
+    const body = await res.text();
+    if (!/<title>Blog - Stacker<\/title>/.test(body)) {
+      failed++;
+      console.error(
+        `FAIL: Blog nav link ${navHref[1]} does not land on the blog index`
+      );
+    } else {
+      console.log("PASS: Blog nav link lands on the blog index");
+    }
+  }
+
+  const cssHref = blogBody.match(/<link rel="stylesheet" href="([^"]+)"/);
+  if (!cssHref) {
+    failed++;
+    console.error("FAIL: blog index references no stylesheet");
+  } else if (!/\?v=[0-9a-f]+/.test(cssHref[1])) {
+    failed++;
+    console.error(
+      `FAIL: stylesheet ${cssHref[1]} is not cache-busted; CDN/browser caches would keep serving it across deploys`
+    );
+  } else {
+    const res = await fetch(new URL(cssHref[1], blogRes.url), {
+      redirect: "follow",
+    });
+    const css = await res.text();
+    if (res.status !== 200 || !css.includes(".blog-card")) {
+      failed++;
+      console.error(`FAIL: stylesheet ${cssHref[1]} lacks the blog styles`);
+    } else {
+      console.log("PASS: stylesheet is cache-busted and defines the blog styles");
+    }
+  }
 } finally {
   server.kill();
 }
