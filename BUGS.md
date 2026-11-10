@@ -820,3 +820,46 @@ no edits, for every published template.
 
 Whether this affects every template or only n8n - only n8n was installed. Check
 the stored config of a few others before sizing the fix.
+
+## 25. 🟡 NOT CONFIRMED - the workflow from `stacker ci export --platform github` installs the CLI from a host that does not resolve (found 2026-11-08)
+
+### Observed (2026-11-08)
+
+The GitHub Actions template in `src/cli/ci_export.rs:35` installs the CLI with
+`curl -fsSL https://get.try.direct/stacker | sh`. `get.try.direct` does not
+resolve: `dig +short get.try.direct` returns nothing and `curl` fails with
+"Could not resolve host: get.try.direct". The README installs from
+`raw.githubusercontent.com` instead.
+
+Second gap in the same template (`src/cli/ci_export.rs:18-41`): it runs
+`stacker deploy --target ...` with no image build or push step, while a cloud or
+server deploy requires a pre-built `app.image`
+(`require_app_image_for_remote_deploy`, `src/cli/stacker_client.rs:3968-3978`).
+A project that relies on a generated Dockerfile cannot deploy from this workflow.
+
+Not confirmed: no generated workflow was actually run on GitHub.
+
+### Fix direction
+
+Point the template at the same installer URL the README uses (or make
+`get.try.direct` resolve), and add a build-and-push step before deploy when the
+config has no `app.image`. Test: render the template and assert the installer
+URL is the documented one.
+
+## 26. 🟡 NOT CONFIRMED - one-click deploy defaults to server type `cpx11`, which is not in Hetzner's current Regular Performance lineup (found 2026-11-09)
+
+### Observed (2026-11-09)
+
+`default_server_type()` in `src/routes/oneclick_deploy/clone.rs:62-63` returns
+`"cpx11"`. Hetzner's Regular Performance page (read 2026-11-09) lists CPX02,
+CPX12, CPX22, CPX32, CPX42, CPX52 and CPX62; `cpx11` is not listed.
+
+Not confirmed: whether the Hetzner API still accepts `cpx11` for new servers.
+Check with `GET /v1/server_types` (look at `deprecation`) before changing
+anything.
+
+### Fix direction
+
+If `cpx11` is deprecated for new servers, change the default to a current type
+and add its row to `server_type_daily_rate`. Test: the default type has a rate
+row.
