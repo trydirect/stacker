@@ -904,11 +904,12 @@ created deployment **#1527** on server **948** (`<server-ip>`), running
 A deployment from 30 July, on a different server, for a different project id.
 Nothing on screen says the reported deployment is not the one just run.
 
-The project directory was a fresh `git clone` of
-`awesome-selfhosted-stacker/stacker-projects/n8n`; its `stacker.yml` carries
-`project: identity: n8n`. **I guess** status resolves by that identity to the
-newest *completed* deployment of a same-named project on the account and
-ignores the local lock, but I did not read the resolution code.
+Mechanism, observed in the same run rather than guessed: the deploy renames
+the project to the `name` in `stacker.yml` (`n8n`), which collides with an
+older project of that name on the account. `stacker status` then resolves to
+the older one and reports its newest completed deployment, on a server that
+has since been decommissioned. `stacker agent status` and `stacker agent
+health` resolve through the lock and showed the truth throughout.
 
 ### Why it matters
 
@@ -969,4 +970,100 @@ ssh_key: null`) - both are about key material the deploy believes it placed.
 Verify the key after installing it, with one real connection, before printing
 the authorized line; fail the deploy if it does not open. Test: the line is
 printed only after a successful authentication.
+
+## 27. 🟠 CONFIRMED — `stacker install --domain` is accepted and silently ignored (found 2026-11-12)
+
+### Observed (2026-11-12, stacker-cli v0.3.4)
+
+`stacker install n8n --name n8n-demo --domain <a-domain> --region fsn1 --size cpx22`.
+
+`--region` and `--size` land in the written file (`deploy.cloud.region: fsn1`,
+`size: cpx22`). `--domain` does not: `install.inputs.commonDomain` stayed at
+the template default `n8n.example.com`. No warning, exit 0.
+
+`--key` behaves differently again - ignored at install time, honoured at
+deploy time as a credential override.
+
+### Why it matters
+
+A flag the CLI accepts and discards is worse than one it rejects: the
+operator believes the domain is set, and finds out when TLS or the webhook
+URL is wrong. It also forced the CLI-16 video script to film a shorter
+command than the one that reads best, because a typed flag the machine
+ignores cannot go on screen.
+
+### Fix direction
+
+Either write `--domain` into `install.inputs.commonDomain`, or refuse the
+flag where it has no effect. Same question for `--key` at install time.
+Test: a value passed to `--domain` appears in the generated file.
+
+## 28. 🟡 CONFIRMED — install and deploy report different project ids for the same project (found 2026-11-12)
+
+### Observed (2026-11-12, stacker-cli v0.3.4)
+
+In one unbroken run, `stacker install` printed `Installed 'n8n' as project
+#818` and the deploy that followed resolved `n8n-video-demo (id=817)`.
+
+Unexplained. Related to 25, where the deploy renames the project to the
+`stacker.yml` `name` and collides with an older project of that name - but
+that mechanism explains a *stale* resolution, not two different ids inside
+one run.
+
+### Why it matters
+
+Any instruction that says "note your project id" is unreliable, and so is
+any support conversation that asks for it. The video scripts mask both ids
+rather than show either.
+
+### Fix direction
+
+Find which of the two is authoritative and make both commands print it.
+Test: install and the deploy that follows report the same id.
+
+## 29. 🟠 CONFIRMED — `stacker agent install` refuses when `deploy.server.host` is empty, right after a cloud deploy created the server (found 2026-11-12)
+
+### Observed (2026-11-12, stacker-cli v0.3.4)
+
+`stacker deploy --target cloud` created the server and reported its address.
+`stacker agent install`, run next in the same directory, failed because
+`deploy.server.host` in `stacker.yml` is empty - which it is by design for a
+cloud deploy, where the host does not exist until the deploy makes it.
+
+### Why it matters
+
+It is the next step the cloud deploy itself suggests, and the agent is how
+every later operation is meant to run. The operator has to copy the address
+out of the deploy output and edit `stacker.yml` by hand to continue, which is
+exactly the file the tool generates.
+
+### Fix direction
+
+Resolve the host from the deployment lock when `deploy.server.host` is empty,
+the way `agent status` already does. Test: agent install succeeds
+immediately after a cloud deploy with no manual edit.
+
+## 30. 🟠 CONFIRMED — the marketplace serves a template version older than the source repository (found 2026-11-12)
+
+### Observed (2026-11-12)
+
+`curl -s https://try.direct/stacker/api/templates/n8n` returns a template
+carrying `${BASE_PATH}/stacker-project-test` and no `SSH_KEY_PATH`. That is
+the pre-fix shape: the replacement landed on `awesome-selfhosted-stacker`
+`main` earlier the same day (PR 68) and the API still serves the old one.
+
+### Why it matters
+
+`stacker install` writes what the API serves, so a fix merged in the template
+repository does not reach anyone until whatever syncs them runs. In this case
+the stale template points the first deploy at an SSH key that exists only in
+that repository's test fixtures, which is the failure PR 68 was written to
+remove.
+
+### Fix direction
+
+Establish when and by what the catalogue is refreshed from the repository,
+and surface the template's source commit in the API response so a stale copy
+is visible rather than inferred. Test: a template change merged to `main`
+appears in the API within the documented interval.
 
