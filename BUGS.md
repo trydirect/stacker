@@ -818,7 +818,53 @@ other projects.
 
 Not a bug. The resubmit was refused (400, `MARKETPLACE_CONFIG_CONTRACT_SECRET_POLICY_REQUIRED`), so no new version was created and the bake used the only stored one. The refusal was hidden by an output filter on the reporter's side.
 
-## 24. 🔴 CONFIRMED — `stacker status` in a project directory reports a different, months-old deployment (found 2026-11-12)
+## 24. 🔴 CONFIRMED — the secret redactor masks any key whose name contains "secret", including a boolean flag (found 2026-11-12)
+
+### Observed (2026-11-12)
+
+The template the marketplace serves for `n8n`, read straight from the public
+API:
+
+```
+$ curl -s https://try.direct/stacker/api/templates/n8n
+...
+no_secrets_confirmation  ->  ***REDACTED***
+POSTGRES_PASSWORD        ->  ***REDACTED***
+N8N_ENCRYPTION_KEY       ->  ***REDACTED***
+ADMIN_PASSWORD           ->  ***REDACTED***
+```
+
+`marketplace.no_secrets_confirmation` is a boolean flag, not a secret. It is
+masked because its name contains the substring "secret", and the replacement
+is a string, so the served `stacker.yml` no longer parses as the schema
+expects.
+
+The passwords above are generated per deployment and have no business being
+in the served template either, but masking them at least fails safe. Masking
+the flag fails loud.
+
+### Why it matters
+
+This is what `stacker install <slug>` writes to disk. A first-time user runs
+install, gets a `stacker.yml`, runs the deploy command the CLI itself
+printed, and it refuses to parse. It is the root cause behind gate 2 of the
+CLI-16 video script, which is why that video cannot be filmed as a real run.
+
+Same request, same response: the served template still carries
+`${BASE_PATH}/stacker-project-test` and no `SSH_KEY_PATH`, i.e. the fix
+merged in awesome-selfhosted-stacker (#68) has not reached what the API
+serves. Separate problem, same blast radius for a first run.
+
+### Fix direction
+
+Redact by value provenance and an explicit key list, not by substring match
+on the name. Test: a key named `no_secrets_confirmation` with a boolean value
+survives serialization unchanged.
+
+Full install-to-deploy captures from the run that found this live in
+`blog/docs/tiktok-scripts/stacker-cli/captures/CLI-16/findings-real-run.md`.
+
+## 25. 🔴 CONFIRMED — `stacker status` in a project directory reports a different, months-old deployment (found 2026-11-12)
 
 ### Observed (2026-11-12, stacker-cli v0.3.6)
 
@@ -863,7 +909,7 @@ only when there is no lock, and name the deployment id and server being
 reported so a mismatch is visible. Test: `stacker status` right after a deploy
 reports that deploy's id.
 
-## 25. 🔴 CONFIRMED — a cloud deploy says the SSH key is authorized, and neither that key nor the saved backup key can log in (found 2026-11-12)
+## 26. 🔴 CONFIRMED — a cloud deploy says the SSH key is authorized, and neither that key nor the saved backup key can log in (found 2026-11-12)
 
 ### Observed (2026-11-12, stacker-cli v0.3.6)
 
