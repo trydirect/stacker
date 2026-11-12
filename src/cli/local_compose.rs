@@ -96,8 +96,13 @@ pub fn project_name_from_running_compose(
     })
 }
 
+/// Where a deploy writes the compose it generates from `stacker.yml`.
+pub fn generated_compose_path(project_dir: &Path) -> PathBuf {
+    project_dir.join(OUTPUT_DIR).join("docker-compose.yml")
+}
+
 pub fn resolve_local_compose_path(project_dir: &Path) -> Result<PathBuf, CliError> {
-    let generated = project_dir.join(OUTPUT_DIR).join("docker-compose.yml");
+    let generated = generated_compose_path(project_dir);
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
     let mut selected_non_local_target = false;
 

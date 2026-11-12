@@ -47,7 +47,7 @@
 
 ```bash
 # 1. Install stacker
-curl -fsSL https://stacker.try.direct/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/trydirect/stacker/main/install.sh | bash
 
 # 2. Initialize in your project directory
 cd my-project

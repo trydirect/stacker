@@ -87,7 +87,11 @@ pub async fn list_approved_by_creator(
             t.status,
             t.is_configurable,
             t.view_count,
-            t.deploy_count,
+            GREATEST(
+                t.deploy_count,
+                (SELECT COUNT(*) FROM project p WHERE p.source_template_id = t.id)::int,
+                (SELECT COUNT(*) FROM stack_template_deployment d WHERE d.template_id = t.id)::int
+            ) AS deploy_count,
             t.required_plan_name,
             t.price,
             t.billing_cycle,
@@ -110,7 +114,7 @@ pub async fn list_approved_by_creator(
 
     match sort.unwrap_or("recent") {
         "popular" => base.push_str(
-            " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, t.deploy_count DESC, t.view_count DESC",
+            " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, deploy_count DESC, t.view_count DESC",
         ),
         "rating" => base.push_str(&format!(
             " ORDER BY (t.verifications @> '{{\"hardened_images\":true}}') DESC, {} DESC NULLS LAST",
@@ -160,7 +164,11 @@ pub async fn list_approved(
             t.status,
             t.is_configurable,
             t.view_count,
-            t.deploy_count,
+            GREATEST(
+                t.deploy_count,
+                (SELECT COUNT(*) FROM project p WHERE p.source_template_id = t.id)::int,
+                (SELECT COUNT(*) FROM stack_template_deployment d WHERE d.template_id = t.id)::int
+            ) AS deploy_count,
             t.required_plan_name,
             t.price,
             t.billing_cycle,
@@ -201,7 +209,7 @@ pub async fn list_approved(
     match sort.unwrap_or("recent") {
         // Hardened images always float to the top of each sort bucket
         "popular" => base.push_str(
-            " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, t.deploy_count DESC, t.view_count DESC",
+            " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, deploy_count DESC, t.view_count DESC",
         ),
         "rating" => base.push_str(&format!(
             " ORDER BY (t.verifications @> '{{\"hardened_images\":true}}') DESC, {} DESC NULLS LAST",
@@ -264,7 +272,11 @@ pub async fn get_by_slug_and_user(
             t.status,
             t.is_configurable,
             t.view_count,
-            t.deploy_count,
+            GREATEST(
+                t.deploy_count,
+                (SELECT COUNT(*) FROM project p WHERE p.source_template_id = t.id)::int,
+                (SELECT COUNT(*) FROM stack_template_deployment d WHERE d.template_id = t.id)::int
+            ) AS deploy_count,
             t.required_plan_name,
             t.price,
             t.billing_cycle,
@@ -319,7 +331,11 @@ pub async fn get_by_slug_with_latest(
             t.status,
             t.is_configurable,
             t.view_count,
-            t.deploy_count,
+            GREATEST(
+                t.deploy_count,
+                (SELECT COUNT(*) FROM project p WHERE p.source_template_id = t.id)::int,
+                (SELECT COUNT(*) FROM stack_template_deployment d WHERE d.template_id = t.id)::int
+            ) AS deploy_count,
             t.required_plan_name,
             t.price,
             t.billing_cycle,
@@ -438,7 +454,11 @@ pub async fn get_by_id(
             t.status,
             t.is_configurable,
             t.view_count,
-            t.deploy_count,
+            GREATEST(
+                t.deploy_count,
+                (SELECT COUNT(*) FROM project p WHERE p.source_template_id = t.id)::int,
+                (SELECT COUNT(*) FROM stack_template_deployment d WHERE d.template_id = t.id)::int
+            ) AS deploy_count,
             t.created_at,
             t.updated_at,
             t.approved_at,
@@ -1419,7 +1439,11 @@ pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate
             t.status,
             t.is_configurable,
             t.view_count,
-            t.deploy_count,
+            GREATEST(
+                t.deploy_count,
+                (SELECT COUNT(*) FROM project p WHERE p.source_template_id = t.id)::int,
+                (SELECT COUNT(*) FROM stack_template_deployment d WHERE d.template_id = t.id)::int
+            ) AS deploy_count,
             t.required_plan_name,
             t.price,
             t.billing_cycle,
@@ -1508,7 +1532,11 @@ pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, S
             t.status,
             t.is_configurable,
             t.view_count,
-            t.deploy_count,
+            GREATEST(
+                t.deploy_count,
+                (SELECT COUNT(*) FROM project p WHERE p.source_template_id = t.id)::int,
+                (SELECT COUNT(*) FROM stack_template_deployment d WHERE d.template_id = t.id)::int
+            ) AS deploy_count,
             t.required_plan_name,
             t.price,
             t.billing_cycle,
@@ -2996,7 +3024,11 @@ pub async fn get_approved_by_slug(
             t.status,
             t.is_configurable,
             t.view_count,
-            t.deploy_count,
+            GREATEST(
+                t.deploy_count,
+                (SELECT COUNT(*) FROM project p WHERE p.source_template_id = t.id)::int,
+                (SELECT COUNT(*) FROM stack_template_deployment d WHERE d.template_id = t.id)::int
+            ) AS deploy_count,
             t.required_plan_name,
             t.price,
             t.billing_cycle,
