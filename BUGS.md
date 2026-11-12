@@ -977,12 +977,21 @@ printed only after a successful authentication.
 
 `stacker install n8n --name n8n-demo --domain <a-domain> --region fsn1 --size cpx22`.
 
-`--region` and `--size` land in the written file (`deploy.cloud.region: fsn1`,
-`size: cpx22`). `--domain` does not: `install.inputs.commonDomain` stayed at
-the template default `n8n.example.com`. No warning, exit 0.
+`--domain` does not reach the written file: `install.inputs.commonDomain`
+stayed at the template default `n8n.example.com`. No warning, exit 0.
 
-`--key` behaves differently again - ignored at install time, honoured at
-deploy time as a credential override.
+**Correction (2026-11-12).** This entry first said `--region` and `--size`
+*did* land in the file. They did not. `fsn1` and `cpx22` appeared there
+because they are the n8n template's own defaults, so the flags looked
+honoured while being dropped like the rest. Found by the author of PR 336,
+who traced it: for a template the server holds and no local `stacker.yml`,
+install builds no deploy form, and cloud overrides are only ever applied to a
+deploy form - so `--key`, `--key-id`, `--region`, `--size` and `--provider`
+are all dropped. `--domain` and `--set` do reach the server and are stored on
+the project, but never the file, so a later `stacker deploy` cannot see them.
+
+`--key` is honoured at deploy time as a credential override, which is what
+made it look like it worked somewhere.
 
 ### Why it matters
 
@@ -994,9 +1003,13 @@ ignores cannot go on screen.
 
 ### Fix direction
 
-Either write `--domain` into `install.inputs.commonDomain`, or refuse the
-flag where it has no effect. Same question for `--key` at install time.
-Test: a value passed to `--domain` appears in the generated file.
+Either write the flags into the file install writes, or refuse the ones that
+have no effect there. Test: a value passed to `--domain` appears in the
+generated file.
+
+PR 336 takes the first route for the no-deploy-form path: `--domain` and
+`--set` into `install.inputs`, the cloud flags into `deploy.cloud`, and a
+message on stderr naming any flag it could not write.
 
 ## 28. 🟡 CONFIRMED — install and deploy report different project ids for the same project (found 2026-11-12)
 
