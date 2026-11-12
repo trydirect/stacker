@@ -53,6 +53,13 @@ class Stacker < Formula
       url "https://github.com/trydirect/stacker/releases/download/v0.3.5/stacker-v0.3.5-x86_64-linux.tar.gz"
       sha256 "141dd5b4be2286fa061b7e1cc84003fa775ab621637be33f984a401ce79d20b3"
     end
+    # Add once the first release built from the aarch64-unknown-linux-gnu
+    # matrix entry has published its asset. Do not guess the sha256; take it
+    # from the published tarball.
+    # on_arm do
+    #   url ".../stacker-vX.Y.Z-aarch64-linux.tar.gz"
+    #   sha256 "..."
+    # end
   end
 
   def install
@@ -129,9 +136,20 @@ A formula that declares 0.3.5 while `stacker --version` says 0.3.4 will
 confuse anyone who checks, and `brew audit` conventions assume the two agree.
 Bump the version in `Cargo.toml` before tagging, or derive it from the tag.
 
-**There is no Linux arm64 build.** The matrix in `release.yml:19-32` covers
-`x86_64-unknown-linux-gnu`, `x86_64-apple-darwin` and `aarch64-apple-darwin`.
-Our audience self-hosts, and arm64 VPS instances are now the cheap default at
-several providers, so `brew install` and the curl installer both fail there.
-Adding `aarch64-unknown-linux-gnu` to the matrix is the single widest
-compatibility win available.
+**Linux arm64 was added to the matrix on 2026-11-12 but has not shipped yet.**
+The formula's `on_linux`/`on_arm` block stays commented out until a release
+publishes `stacker-vX.Y.Z-aarch64-linux.tar.gz`. The installer needs no change
+for it: `install.sh:73` builds the archive name as
+`stacker-v${version}-${arch}-${os}.tar.gz` from `uname -m`, which already maps
+`aarch64` and `arm64` to `aarch64`, so the asset is picked up the moment it
+exists.
+
+**The glibc floor matters more than the architecture.** The published v0.3.5
+Linux binary requires `GLIBC_2.39`, checked against the asset itself. Ubuntu
+22.04 ships glibc 2.35 and Debian 12 ships 2.36, so that binary refuses to
+start on both - the two distributions a self-hosting audience is most likely
+to be running. The cause was `ubuntu-latest` in the build matrix drifting to
+Ubuntu 26.04. The Linux entries are now pinned to `ubuntu-22.04` and
+`ubuntu-22.04-arm`, which sets the floor at glibc 2.35. Never put
+`ubuntu-latest` back: a release binary inherits the build image's glibc, so
+that label silently narrows who can run what we ship.
