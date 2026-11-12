@@ -818,7 +818,7 @@ other projects.
 
 Not a bug. The resubmit was refused (400, `MARKETPLACE_CONFIG_CONTRACT_SECRET_POLICY_REQUIRED`), so no new version was created and the bake used the only stored one. The refusal was hidden by an output filter on the reporter's side.
 
-## 24. 🔴 CONFIRMED — the secret redactor masks any key whose name contains "secret", including a boolean flag (found 2026-11-12)
+## 24. ✅ FIXED — the secret redactor masks any key whose name contains "secret", including a boolean flag (found 2026-11-12, fixed 2026-11-12)
 
 ### Observed (2026-11-12)
 
@@ -855,7 +855,26 @@ Same request, same response: the served template still carries
 merged in awesome-selfhosted-stacker (#68) has not reached what the API
 serves. Separate problem, same blast radius for a first run.
 
-### Fix direction
+### Fixed (2026-11-12)
+
+`src/helpers/redact.rs`: a boolean is never redacted, in all three paths that
+could mask one - the JSON key/value entry form, the JSON direct-key form and
+the YAML mapping. Masking a boolean cannot protect anything and does change
+the value's type, which is the damage here. Numbers are still redacted on
+purpose: a numeric token is conceivable, a boolean secret is not.
+
+Substring matching itself was left alone. Narrowing it is a larger change
+than this bug needs, and the provenance-based approach below is still the
+right direction for a separate pass.
+
+Two regression tests, one per format, written first and confirmed failing
+against the previous code.
+
+**Not verified yet:** that the deployed API stops returning `***REDACTED***`
+for that flag. The fix is on `dev`; re-run
+`curl -s https://try.direct/stacker/api/templates/n8n` after it ships.
+
+### Fix direction (for the wider pass)
 
 Redact by value provenance and an explicit key list, not by substring match
 on the name. Test: a key named `no_secrets_confirmation` with a boolean value
