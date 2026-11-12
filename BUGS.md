@@ -582,6 +582,21 @@ Deploying from the template's own directory (with `.env` created from
 the contract's generated values) into `.env`, or the deploy treats a
 `.env.example` default as the value. See also §28: the template's `scripts/`
 files are not written either.
+
+### Reproduced again (2026-11-12, umami, CLI `0.3.4 (6123cee)`)
+
+Before any `${VAR}` default matters, the written file says `env_file: .env`,
+so `stacker deploy --target local --dry-run` stops at `Missing env file
+referenced by stacker.yml env_file: .../.env. Create it or, for the common
+.env case, add .../.env.example and rerun`. Deploy would copy `.env.example`
+by itself (`src/console/commands/cli/deploy.rs:300-327`), but install has
+none to write: the install response carries the `stack_definition` only, and
+`stacker marketplace submit` does not upload `.env.example`
+(`src/console/commands/cli/submit.rs` never mentions it). Same root as §28:
+the template's file set does not travel with it. Today's manual way out is
+`stacker secrets set KEY=VALUE`, which creates `.env` when it is absent
+(`src/console/commands/cli/secrets.rs:218`).
+
 ## 13. 🟠 NOT CONFIRMED — bake finalize drops the build box's volumes before it checks for secret conflicts (found 2026-10-26)
 
 ### Observed (2026-10-26)
@@ -872,6 +887,39 @@ comment describes exactly this first-deploy failure) - and secrets as literals
 where `main` uses `${VAR}` refs. A `stacker install` writes an older template
 than the repository publishes.
 
+### Where the pass runs, and what else it rewrites (2026-11-12, source + local runs)
+
+- The pass is `redact_sensitive_json_values` / `redact_yaml_string`
+  (`src/helpers/redact.rs:59-96`, `:100-142`), applied to the install
+  response (`src/routes/marketplace/install.rs:1081`) and to the public
+  template detail (`src/routes/marketplace/public.rs:428-432`). The CLI writes
+  the response as is (`src/console/commands/cli/marketplace.rs:569`,
+  `:622-627`). The name test is a substring match (`redact.rs:35-37`,
+  `"secret"` at `:12`); the value test skips only `null` (and in JSON
+  objects/arrays, `:82`), so a boolean is replaced.
+- It also replaces `${VAR}` references, which are not secrets. umami on
+  `awesome-selfhosted-stacker` `main` has `POSTGRES_PASSWORD: ${DB_PASSWORD}`
+  (`stacker-projects/umami/stacker.yml:30`); the installed file has
+  `POSTGRES_PASSWORD: '***REDACTED***'`. A local `--dry-run` of the installed
+  file generates `POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}` for the database
+  and inlines `DB_PASSWORD` into the app's `DATABASE_URL`: two different
+  passwords. The same dry-run of the `main` file gives the database
+  `${DB_PASSWORD}`, the same value the app uses. Publish-time stripping keeps
+  such references on purpose (`redact.rs:160-166`); this pass has no such
+  check. So part of "secrets as literals where `main` uses `${VAR}` refs" is
+  this pass, not staleness. The stored row was not read, so how much of it is
+  which is not established.
+- Against "must not run over the file at all": publish-time stripping covers
+  only the keys `config_contract` declares
+  (`src/routes/marketplace/creator.rs:694-698`). A secret-named field outside
+  the contract, or a version stored before stripping existed, still carries
+  the author's value in the stored row, and this pass is what keeps it from
+  every buyer. Narrowing the pass (leave booleans and bare `${VAR}`
+  references alone) fixes both symptoms without that exposure.
+- With the boolean line deleted, `stacker config validate` on the installed
+  umami file prints seven "`<field>` is empty" notices for the `null` path
+  fields the serialized template carries (exit 0): noise, not a failure.
+
 ## 25. 🟡 NOT CONFIRMED - the workflow from `stacker ci export --platform github` installs the CLI from a host that does not resolve (found 2026-11-08)
 
 ### Observed (2026-11-08)
@@ -991,6 +1039,12 @@ scripts/n8n-entrypoint.sh -> ...`), so the operator has to fetch the template
 repository by hand to supply what `install` did not write. Same family as §12
 (no `.env`): install materializes the YAML and nothing else.
 
+Same on umami (2026-11-12, `--target local`, scratch copy of the installed
+file): with the marker, `pre_build` is refused; with the marker deleted,
+`Hook 'pre_build' rejected before execution: script not found:
+./scripts/generate-secrets.sh`. Either way a plain `stacker deploy` right
+after install stops at the hook; only `--no-hooks` gets past it.
+
 ### Fix direction
 
 `stacker install` writes the template's full file set (scripts, and
@@ -1072,6 +1126,23 @@ lock). `stacker install --help` advertises both ("Base domain for Install
 Service commonDomain", "Name of saved cloud credential to reuse"), and the
 CLI reference example (`docs/STACKER_YML_REFERENCE.md:853`) shows `--domain`
 as the way to set the domain.
+
+### Correction (2026-11-12, read in the `0.3.4 (6123cee)` source)
+
+`--region` and `--size` did not take effect either: `fsn1` and `cpx22` are the
+n8n template's own defaults (`awesome-selfhosted-stacker`
+`stacker-projects/n8n/stacker.yml:74-75`), so the written file matched by
+coincidence. For a template the server holds (n8n, umami) and no local
+`stacker.yml`, install builds no deploy form
+(`src/console/commands/cli/marketplace.rs:379`); the cloud overrides are
+applied only in the two other branches (`:312`, `:375`). So `--key`,
+`--key-id`, `--region`, `--size` and `--provider` are all dropped. `--domain`
+and `--set` do reach the server, which stores them on the project
+(`src/routes/marketplace/install.rs:672-686`), but the file is written from
+the template version unchanged (`install.rs:1079`), so a later
+`stacker deploy` never sees them; `--set admin_email` is what the compose
+generator reads for ACME (`src/cli/generator/compose.rs:570-577`). Not
+re-run with non-default values.
 
 ### Fix direction
 
