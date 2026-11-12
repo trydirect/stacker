@@ -269,6 +269,130 @@ impl MarketplaceInstallCommand {
             }
         }
     }
+
+    /// The flags to write into the stacker.yml of a template the server holds.
+    /// Resolved before the install request so a bad `--key-id` or
+    /// `--provider` fails before a project is created.
+    fn install_file_flags(
+        &self,
+        ctx: &CliRuntime,
+        inputs: Option<Map<String, Value>>,
+    ) -> Result<InstallFileFlags, CliError> {
+        let mut cloud = Vec::new();
+        let key = match self.key_id {
+            Some(id) => Some(
+                ctx.block_on(async { ctx.client.list_clouds().await })?
+                    .into_iter()
+                    .find(|c| c.id == id)
+                    .map(|c| c.name)
+                    .ok_or_else(|| {
+                        CliError::ConfigValidation(format!(
+                            "No cloud connection found with ID '{}'. See `stacker list clouds`.",
+                            id
+                        ))
+                    })?,
+            ),
+            None => self
+                .key_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(String::from),
+        };
+        if let Some(key) = key {
+            cloud.push(("key", serde_yaml::Value::String(key)));
+        }
+        if let Some(code) = self
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            let provider = cloud_provider_from_code(code).ok_or_else(|| {
+                CliError::ConfigValidation(format!("Unsupported cloud provider '{}'.", code))
+            })?;
+            cloud.push(("provider", serde_yaml::to_value(provider)?));
+        }
+        for (field, value) in [("region", &self.region), ("size", &self.size)] {
+            if let Some(value) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                cloud.push((field, serde_yaml::Value::String(value.to_string())));
+            }
+        }
+        Ok(InstallFileFlags {
+            inputs: inputs.unwrap_or_default(),
+            cloud,
+        })
+    }
+}
+
+/// Install flags written into the stacker.yml of a template the server holds.
+/// That install builds no deploy form, so without this the flags reached no
+/// file and a later `stacker deploy` never saw them (BUGS.md §31).
+struct InstallFileFlags {
+    /// Written into `install.inputs` (`--domain`, `--set`).
+    inputs: Map<String, Value>,
+    /// Written into `deploy.cloud` (`--key`/`--key-id`, `--provider`, `--region`, `--size`).
+    cloud: Vec<(&'static str, serde_yaml::Value)>,
+}
+
+/// Write `flags` into `yaml`. The `deploy.cloud` fields go into an existing
+/// block, or into a new one when a provider is among them: a block without a
+/// provider does not parse. Returns the yaml and the cloud fields it could
+/// not write.
+fn write_install_flags(
+    yaml: &str,
+    flags: &InstallFileFlags,
+) -> Result<(String, Vec<&'static str>), CliError> {
+    let mut doc: serde_yaml::Value = serde_yaml::from_str(yaml)?;
+    let Some(root) = doc.as_mapping_mut() else {
+        return Err(CliError::ConfigValidation(
+            "The template's stacker.yml is not a mapping".to_string(),
+        ));
+    };
+
+    if !flags.inputs.is_empty() {
+        let inputs = child_mapping(child_mapping(root, "install"), "inputs");
+        for (key, value) in &flags.inputs {
+            inputs.insert(
+                serde_yaml::Value::String(key.clone()),
+                serde_yaml::to_value(value)?,
+            );
+        }
+    }
+
+    let has_cloud_block = root
+        .get("deploy")
+        .and_then(|deploy| deploy.get("cloud"))
+        .is_some_and(serde_yaml::Value::is_mapping);
+    let has_provider = flags.cloud.iter().any(|(field, _)| *field == "provider");
+    let mut not_written = Vec::new();
+    if has_cloud_block || has_provider {
+        if !flags.cloud.is_empty() {
+            let cloud = child_mapping(child_mapping(root, "deploy"), "cloud");
+            for (field, value) in &flags.cloud {
+                cloud.insert(serde_yaml::Value::String(field.to_string()), value.clone());
+            }
+        }
+    } else {
+        not_written = flags.cloud.iter().map(|(field, _)| *field).collect();
+    }
+
+    Ok((serde_yaml::to_string(&doc)?, not_written))
+}
+
+/// The mapping under `key`, created when absent or not a mapping (e.g. `null`).
+fn child_mapping<'a>(
+    parent: &'a mut serde_yaml::Mapping,
+    key: &str,
+) -> &'a mut serde_yaml::Mapping {
+    let slot = parent
+        .entry(serde_yaml::Value::String(key.to_string()))
+        .or_insert(serde_yaml::Value::Null);
+    if !slot.is_mapping() {
+        *slot = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+    }
+    slot.as_mapping_mut()
+        .expect("child_mapping: slot was just made a mapping")
 }
 
 impl CallableTrait for MarketplaceInstallCommand {
@@ -438,6 +562,14 @@ impl CallableTrait for MarketplaceInstallCommand {
             Some(install_inputs)
         };
 
+        // No deploy form means a template the server holds: the flags go into
+        // the stacker.yml written below, not into a deploy.
+        let file_flags = if deploy_form.is_none() {
+            Some(self.install_file_flags(&ctx, install_inputs.clone())?)
+        } else {
+            None
+        };
+
         if generated_stacker_yml {
             println!(
                 "Wrote {} with defaults. Starting deployment...",
@@ -565,6 +697,21 @@ impl CallableTrait for MarketplaceInstallCommand {
             println!("Skipped writing {}.", self.file.display());
             return Ok(());
         }
+
+        let yaml = match &file_flags {
+            Some(flags) => {
+                let (yaml, not_written) = write_install_flags(&yaml, flags)?;
+                if !not_written.is_empty() {
+                    eprintln!(
+                        "  Not written to {}: --{} (the template has no deploy.cloud block; add --provider to create one).",
+                        self.file.display(),
+                        not_written.join(", --")
+                    );
+                }
+                yaml
+            }
+            None => yaml,
+        };
 
         std::fs::write(&self.file, prepend_marketplace_marker(&yaml))?;
 
@@ -1251,12 +1398,40 @@ fn truncate(s: &str, max_len: usize) -> String {
 mod tests {
     use super::{
         apply_install_inputs_to_deploy_form, display_plan, marketplace_template_matches_slug,
-        resolve_install_inputs, response_stack_definition,
+        resolve_install_inputs, response_stack_definition, write_install_flags, InstallFileFlags,
     };
     use crate::cli::stacker_client::{
         MarketplaceInstallResponse, MarketplaceTemplate, ProjectInfo,
     };
     use serde_json::{json, Map, Value};
+
+    #[test]
+    fn install_flags_with_provider_create_a_deploy_cloud_block_that_parses() {
+        let yaml = "name: umami\napp:\n  type: node\n  image: ghcr.io/umami-software/umami:postgresql-latest\ndeploy:\n  target: server\n";
+        let flags = InstallFileFlags {
+            inputs: Map::new(),
+            cloud: vec![
+                (
+                    "provider",
+                    serde_yaml::to_value(crate::cli::config_parser::CloudProvider::Hetzner)
+                        .unwrap(),
+                ),
+                ("region", serde_yaml::Value::String("nbg1".to_string())),
+            ],
+        };
+
+        let (written, not_written) = write_install_flags(yaml, &flags).unwrap();
+
+        assert!(not_written.is_empty());
+        let config = crate::cli::config_parser::StackerConfig::from_str_raw(&written)
+            .unwrap_or_else(|e| panic!("written stacker.yml must parse: {e}\n{written}"));
+        let cloud = config.deploy.cloud.expect("deploy.cloud");
+        assert_eq!(
+            cloud.provider,
+            crate::cli::config_parser::CloudProvider::Hetzner
+        );
+        assert_eq!(cloud.region.as_deref(), Some("nbg1"));
+    }
 
     #[test]
     fn install_domain_populates_common_domain_and_stack_vars() {
