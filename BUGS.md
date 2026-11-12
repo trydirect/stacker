@@ -295,11 +295,11 @@ Shared test box has `gitlab-app-1` on `0.0.0.0:8082`. Deploy `dashy`
 
 ```console
 $ stacker deploy --target server
-  Deploying project 'dashy' to 46.224.127.228 via Stacker server...
+  Deploying project 'dashy' to <other-server-ip> via Stacker server...
   Deployment context saved to .stacker/deployment-server.lock
 $ echo $?
 0
-$ ssh root@46.224.127.228 'docker inspect project-app-1 --format "{{.State.Status}} {{.State.Error}}"'
+$ ssh root@<other-server-ip> 'docker inspect project-app-1 --format "{{.State.Status}} {{.State.Error}}"'
 created failed to set up container networking: ... Bind for :::8082 failed: port is already allocated
 ```
 
@@ -309,7 +309,7 @@ Same box, same conflict (`gitlab-app-1` still holds 8082), non-TTY stderr
 (piped to a file — the exact case that used to print nothing):
 
 ```console
-$ stacker-cli deploy --target server --server-host 46.224.127.228 \
+$ stacker-cli deploy --target server --server-host <other-server-ip> \
     --server-user root --server-ssh-key .../stacker-project-test
   ✓ Server deployment requested via Stacker server (project='dashy', project_id=305, deployment_id=416); server='dashy-server'
   Deployment context saved to .stacker/deployment-server.lock
@@ -319,7 +319,7 @@ $ stacker-cli deploy --target server --server-host 46.224.127.228 \
 Error: Deployment to server failed: Deployment #416 ended as 'paused' [port_conflict] ...
 $ echo $?
 1
-$ ssh root@46.224.127.228 'docker inspect project-app-1 --format "{{.State.Status}}|{{.State.Error}}"'
+$ ssh root@<other-server-ip> 'docker inspect project-app-1 --format "{{.State.Status}}|{{.State.Error}}"'
 created|failed to set up container networking: ... Bind for 0.0.0.0:8082 failed: port is already allocated
 ```
 
@@ -708,7 +708,7 @@ Keep the source file mode when uploading project files (at least the owner
 execute bit). Test: an executable file in the project arrives executable on the
 server.
 
-## 20. 🟡 NOT CONFIRMED — a redeploy to the same server ends `paused [port_conflict]` on the stack's own port (found 2026-10-27)
+## 20. 🔴 CONFIRMED — a deploy ends `paused [port_conflict]` while the stack is up and healthy on that port (found 2026-10-27, confirmed 2026-11-12)
 
 ### Observed (2026-10-27)
 
@@ -722,6 +722,55 @@ answered normally. The redeploy itself worked; only its status says it did not.
 earlier stack on it): `paused [port_conflict]`, while the stack was up and
 healthy on its port and nothing else held it. The lock also recorded
 `server_ip: null` although the CLI printed the IP.
+
+### Confirmed (2026-11-12, stacker-cli v0.3.6)
+
+Third occurrence, second one on a server this same deploy had just created, so
+nothing could have held the port before it.
+
+```
+stacker deploy --target cloud --key=htz-0 --force-new
+```
+
+on `awesome-selfhosted-stacker/stacker-projects/n8n` (version 2.0.0), from a
+clean `git clone`. The run reported:
+
+```
+✓ Your SSH key authorized (~/.ssh/id_ed25519.pub)
+✗ Deployment #1527 ended as 'paused' [port_conflict]
+  A port this stack needs is already in use on the target host (often by
+  another already-deployed stack, e.g. statuspanel). Free the port or change
+  it in stacker.yml, then redeploy.
+```
+
+The stack was in fact running. Server 948, <server-ip>, checked from outside
+right after the failure:
+
+```
+$ curl -sS -D - -o /dev/null http://<server-ip>:5678/
+HTTP/1.1 200 OK
+Content-Type: text/html; charset=utf-8
+
+$ curl -s http://<server-ip>:5678/ | head -c 300
+... <meta name="n8n:config:rest-endpoint" content="cmVzdA==" ...
+
+$ curl -s -o /dev/null -w "%{http_code}" http://<server-ip>:5678/healthz/readiness
+200
+```
+
+n8n's own readiness endpoint answers 200 and the HTML carries n8n's config
+marker, so the container that holds 5678 is the one this deploy started.
+
+This removes the remaining innocent explanation. #1513 and #1514 were
+redeploys onto an occupied host and #1517 was a fresh server; #1527 is a fresh
+server **and** the port is demonstrably held by this stack's own healthy
+container. The check is reporting the deployed stack as its own conflict.
+
+**Impact beyond a wrong status line.** A deployment left in `paused` is not
+just cosmetic: it needs `stacker resolve` to clear, it misreports in any
+automation that reads deployment state, and it teaches a first-time user that
+the deploy failed when their app is already serving. For a quickstart meant to
+end in "open this URL", that is the whole first impression.
 
 ### Fix direction
 
@@ -768,3 +817,91 @@ other projects.
 ## 23. ❌ WITHDRAWN - "resubmit keeps the old version's contract"
 
 Not a bug. The resubmit was refused (400, `MARKETPLACE_CONFIG_CONTRACT_SECRET_POLICY_REQUIRED`), so no new version was created and the bake used the only stored one. The refusal was hidden by an output filter on the reporter's side.
+
+## 24. 🔴 CONFIRMED — `stacker status` in a project directory reports a different, months-old deployment (found 2026-11-12)
+
+### Observed (2026-11-12, stacker-cli v0.3.6)
+
+Immediately after `stacker deploy --target cloud --key=htz-0 --force-new`
+created deployment **#1527** on server **948** (`<server-ip>`), running
+`stacker status` in that same project directory printed:
+
+```
+✓ Deployment #503 — status: completed
+  Project ID:      84
+  Created:         2026-07-30T08:17:50.085304Z
+
+── Server ─────────────────────────────────
+  Name:            n8n-server (id=290)
+  IP:              <other-server-ip>
+```
+
+A deployment from 30 July, on a different server, for a different project id.
+Nothing on screen says the reported deployment is not the one just run.
+
+The project directory was a fresh `git clone` of
+`awesome-selfhosted-stacker/stacker-projects/n8n`; its `stacker.yml` carries
+`project: identity: n8n`. **I guess** status resolves by that identity to the
+newest *completed* deployment of a same-named project on the account and
+ignores the local lock, but I did not read the resolution code.
+
+### Why it matters
+
+This is the command `SKILL.md` section 11 puts first in the post-deploy
+verification checklist, and the command the deploy itself suggests under
+"Next Steps". Following that advice after a failed deploy returns a green
+`completed` from July. Anyone trusting it concludes the deploy worked.
+
+Combined with #20, the two failure modes point opposite ways: the deployment
+that worked is reported `paused`, and the status command reports `completed`
+for a deployment that is not the one in question.
+
+### Fix direction
+
+Resolve status from the local deployment lock first, fall back to identity
+only when there is no lock, and name the deployment id and server being
+reported so a mismatch is visible. Test: `stacker status` right after a deploy
+reports that deploy's id.
+
+## 25. 🔴 CONFIRMED — a cloud deploy says the SSH key is authorized, and neither that key nor the saved backup key can log in (found 2026-11-12)
+
+### Observed (2026-11-12, stacker-cli v0.3.6)
+
+Deployment #1527, server 948, `<server-ip>`. The run printed both of these:
+
+```
+✓ Local SSH backup key saved: ~/.config/stacker/ssh/server-<id>_ed25519
+✓ Your SSH key authorized (~/.ssh/id_ed25519.pub)
+```
+
+Both are refused:
+
+```
+$ ssh -i ~/.config/stacker/ssh/server-<id>_ed25519 root@<server-ip>
+root@<server-ip>: Permission denied (publickey,password).
+
+$ ssh -i ~/.ssh/id_ed25519 root@<server-ip>
+root@<server-ip>: Permission denied (publickey,password).
+```
+
+The server is alive and serving the stack on 5678 (see #20), so this is not an
+unreachable host - it is a host nobody holds a key to.
+
+### Why it matters
+
+`AGENTS.md` in awesome-selfhosted-stacker treats the `✓ Your SSH key
+authorized` line as the gate for testing SSH, and states that a server you
+cannot SSH into is broken infrastructure rather than something to work around.
+Here the line is printed and the access does not exist, which makes the gate
+useless. It also leaves the operator unable to investigate the very failure
+the deploy reported, and unable to clean up the machine by hand.
+
+This may share a root with #16 (`the cloud deployment lock records
+ssh_key: null`) - both are about key material the deploy believes it placed.
+
+### Fix direction
+
+Verify the key after installing it, with one real connection, before printing
+the authorized line; fail the deploy if it does not open. Test: the line is
+printed only after a successful authentication.
+
