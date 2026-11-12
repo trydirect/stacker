@@ -580,7 +580,8 @@ Deploying from the template's own directory (with `.env` created from
 
 `stacker install` materializes the template's `.env.example` defaults (and
 the contract's generated values) into `.env`, or the deploy treats a
-`.env.example` default as the value.
+`.env.example` default as the value. See also §28: the template's `scripts/`
+files are not written either.
 ## 13. 🟠 NOT CONFIRMED — bake finalize drops the build box's volumes before it checks for secret conflicts (found 2026-10-26)
 
 ### Observed (2026-10-26)
@@ -708,7 +709,7 @@ Keep the source file mode when uploading project files (at least the owner
 execute bit). Test: an executable file in the project arrives executable on the
 server.
 
-## 20. 🟡 NOT CONFIRMED — a redeploy to the same server ends `paused [port_conflict]` on the stack's own port (found 2026-10-27)
+## 20. 🟠 CONFIRMED — a redeploy to the same server ends `paused [port_conflict]` on the stack's own port (found 2026-10-27, confirmed 2026-11-12)
 
 ### Observed (2026-10-27)
 
@@ -722,6 +723,28 @@ answered normally. The redeploy itself worked; only its status says it did not.
 earlier stack on it): `paused [port_conflict]`, while the stack was up and
 healthy on its port and nothing else held it. The lock also recorded
 `server_ip: null` although the CLI printed the IP.
+
+### Confirmed (2026-11-12)
+
+Cloud deploy of an n8n marketplace stack, `stacker-cli v0.3.4`, deployment
+**#1528** (project 817) onto a server the same run had just provisioned
+(`n8n-16b8`, `2.31.160.181`, fresh OS install). The playbook reached
+`ok=167 changed=107` and then failed at the precheck with
+`PRECHECK_PORT_CONFLICT ... Required ports 5678 are already occupied ...
+docker_containers: project-n8n-1 0.0.0.0:5678->5678/tcp`. `project-n8n-1` is
+the stack's own compose container, created moments earlier by this very
+playbook: observed live via `stacker agent health` (`project-n8n-1 ▶ running
+5678:5678/tcp n8nio/n8n:2.45.4`) while `GET /healthz/readiness` answered
+**HTTP 200** the whole time. This also explains the earlier "fresh server"
+case (#1517): the playbook creates the container before the precheck runs, so
+on any deploy the stack's own port is "already occupied".
+
+Status is wrong in both directions on this path: five `paused [port_conflict]`
+occurrences that were all serving traffic (project 441: #1513, #1514, #1517,
+#1518; project 817: #1528), and on the same day the CLI reported a cloud
+deploy as `failed` ("SSH access could not be verified ... reported as failed
+rather than assumed good") only because live-status polling broke on a DNS
+failure mid-poll, while the platform completed the deployment fine.
 
 ### Fix direction
 
@@ -795,8 +818,10 @@ the mask is applied to a non-secret boolean field by name or by blanket policy.
 
 The password fields in the same file are also `'***REDACTED***'`
 (`ADMIN_PASSWORD`, `N8N_ENCRYPTION_KEY`, `POSTGRES_PASSWORD` at lines 126, 132,
-134, 150). Those are strings, so they parse, and they are presumably intended -
-the values are generated at deploy time. Only the boolean breaks.
+134, 150). Those parse, so they do not stop the CLI, but they are not the
+generated values: a local `stacker deploy` would take the literal string
+`***REDACTED***` as the database password, the encryption key and the owner
+password. Both symptoms come from one redaction pass (see root cause below).
 
 ### Impact
 
@@ -816,10 +841,36 @@ Exclude non-secret fields from the redaction pass, or redact booleans to a
 boolean. Test: `stacker install <template>` then `stacker config validate` with
 no edits, for every published template.
 
-### Not investigated
+### Root cause found (2026-11-12)
 
-Whether this affects every template or only n8n - only n8n was installed. Check
-the stored config of a few others before sizing the fix.
+The redaction masks by **key name**: any field whose name contains "secret" is
+replaced with `***REDACTED***`, value type not considered. That is why the
+boolean `no_secrets_confirmation` (the name contains "secret") becomes a
+string and the password fields become placeholders in one pass. The redactor
+exists to mask values in display output; it must not run over the file written
+to disk at all.
+
+**Scope question answered: not n8n-specific.** Reproduced on the umami
+template 2026-11-11 (same `no_secrets_confirmation: '***REDACTED***'` in the
+generated file, same parse failure at `stacker deploy --dry-run`) and again on
+n8n 2026-11-12 (`stacker install n8n --region fsn1 --size cpx22`). Every
+template whose stored config carries a key with "secret" in the name is
+affected - that includes every template with a `no_secrets_confirmation`
+field.
+
+**The placeholder secrets block a clean run even after the parse line is
+fixed.** The working shape (as on `awesome-selfhosted-stacker` `main`) is
+`${VAR}` refs plus a `.env` filled by `scripts/generate-secrets.sh`.
+Converting the generated file to that shape and materializing `.env` +
+`scripts/` (see §28) made `stacker deploy --target cloud` complete end to end
+on 2026-11-12, n8n serving HTTP 200.
+
+**Marketplace serves a stale variant of the template.** The install-written
+file carries `ssh_key: ${BASE_PATH}/stacker-project-test` - a test-fixture
+key path `main` already replaced with `${SSH_KEY_PATH}` (the fix commit's
+comment describes exactly this first-deploy failure) - and secrets as literals
+where `main` uses `${VAR}` refs. A `stacker install` writes an older template
+than the repository publishes.
 
 ## 25. 🟡 NOT CONFIRMED - the workflow from `stacker ci export --platform github` installs the CLI from a host that does not resolve (found 2026-11-08)
 
@@ -863,3 +914,192 @@ anything.
 If `cpx11` is deprecated for new servers, change the default to a current type
 and add its row to `server_type_daily_rate`. Test: the default type has a rate
 row.
+
+## 27. 🟠 OPEN — `stacker agent deploy-app <app> --image <ref>` recreates the container without its published ports (found 2026-11-12)
+
+### Observed (2026-11-12)
+
+After a healthy cloud deploy (n8n marketplace stack, deployment #1528,
+`GET /healthz/readiness` -> HTTP 200 on `:5678`), the one-command image
+update:
+
+```console
+$ stacker agent apps
+APP       NAME     IMAGE                    ENABLED
+n8n       n8n      n8nio/n8n:2.45.4         yes
+postgres  postgres postgres:17.11-alpine   yes
+$ stacker agent deploy-app n8n --image n8nio/n8n:latest --force
+Status: ✓ completed    {"status": "deployed", "container_state": "running"}
+```
+
+Before: `project-n8n-1 ▶ running 5678:5678/tcp`. After: a container named
+`n8n` with `PORTS: -`; the port refuses connections (`curl :5678` ->
+connection refused) while `stacker agent health` reports everything running
+and the command reports `deployed`. The container also drifts out of compose
+naming (`project-<service>-1` -> raw app code), so the next full deploy and
+this container disagree about who owns the app.
+
+### What works
+
+The `deploy_app` request type supports `compose_content` ("Optional:
+docker-compose.yml content (generated from J2 template). If provided, will be
+written to disk before deploying", `src/forms/status_panel.rs`). Sending the
+generated compose through `stacker agent exec deploy_app` with
+`force_recreate: true` restored the compose-managed container with its ports
+(`5678:5678` back, HTTP 200 again). The plain CLI path sends no
+`compose_content`, and the agent's fallback create drops the port bindings.
+
+A first recovery attempt failed with `Runtime env drift detected for
+/home/trydirect/n8n-817/.env: ... rerun with --force to overwrite`, but the
+CLI `--force` maps to `force_recreate`, not `force_config_overwrite`; the
+overwrite flag is not exposed on `stacker agent deploy-app` at all. The error
+message names a flag that does not do what it says.
+
+### Impact
+
+The flagship "roll out a new image in one command" path takes the app down:
+the update reports success and the service becomes unreachable.
+
+### Fix direction
+
+Keep the port bindings (and compose container naming) when `deploy_app`
+recreates a container: deploy through the on-disk compose, or carry the app
+config's port bindings into the created container. Expose
+`force_config_overwrite`, or make the drift message name the real remedy.
+Test: `stacker agent deploy-app <app> --image <new tag> --force` on a running
+stack leaves the published ports intact and the port answers after the
+rollout.
+
+## 28. 🟠 OPEN — `stacker install` writes only `stacker.yml`, not the template's `scripts/` (found 2026-11-12)
+
+### Observed (2026-11-12)
+
+`stacker install n8n --name n8n-demo --region fsn1 --size cpx22` into an
+empty directory wrote exactly one file: `stacker.yml`. The generated file
+references files the template ships and install never materialized:
+
+- `./scripts/n8n-entrypoint.sh:/n8n-entrypoint.sh:ro` (bind mount; the
+  container entrypoint is `tini -- sh /n8n-entrypoint.sh`). A missing bind
+  mount source makes Docker create an empty directory in its place, and the
+  entrypoint cannot start.
+- `hooks.pre_build: ./scripts/generate-secrets.sh` (refused while the
+  `# @stacker-origin: marketplace` marker is present, per the install's own
+  warning - see also §32).
+
+`stacker deploy --dry-run` bundles whatever exists locally (`Config file:
+scripts/n8n-entrypoint.sh -> ...`), so the operator has to fetch the template
+repository by hand to supply what `install` did not write. Same family as §12
+(no `.env`): install materializes the YAML and nothing else.
+
+### Fix direction
+
+`stacker install` writes the template's full file set (scripts, and
+`.env.example` -> `.env` per §12). Test: a fresh `stacker install <template>`
+leaves a directory from which `stacker deploy --no-hooks` runs without
+cloning the repository.
+
+## 29. 🟠 OPEN — `stacker status` shows another project's deployment after a cloud deploy (name collision + project rename) (found 2026-11-12)
+
+### Observed (2026-11-12)
+
+`stacker deploy --target cloud --project n8n-video-demo` synced project
+metadata and renamed the project to the stacker.yml `name`: output shows
+`Found project 'n8n-video-demo' (id=817) ... Updated project 'n8n' (id=817)`.
+An older project of the account is also named `n8n` (id=84). After that,
+`stacker status` in the deploy directory resolved the wrong project and
+printed `Deployment #503 ... Created: 2026-07-30 ... IP: 46.224.127.228` - a
+July deployment of the other project on a server that no longer exists -
+while the real deployment (#1528, `2.31.160.181`) served HTTP 200.
+`stacker agent status` / `stacker agent health` (resolved from the deployment
+lock) showed the truth.
+
+Related id drift in the same run: `stacker install` printed
+`Installed 'n8n' as project #818`, but the deploy resolved
+`n8n-video-demo (id=817)`. Unexplained; a user cannot tell which project
+record they own.
+
+### Fix direction
+
+Resolve `stacker status` from the deployment lock's `project_id` /
+`deployment_id` before any name lookup; stop renaming projects during deploy
+metadata sync (or rename with a collision check); reconcile the project id
+`install` prints with the record it created. Test: two projects sharing a
+`name` value do not cross-resolve, and `stacker status` after a deploy shows
+that deploy.
+
+## 30. 🟡 OPEN — `stacker agent install` fails on a cloud-created server when `deploy.server.host` is empty (found 2026-11-12)
+
+### Observed (2026-11-12)
+
+After `stacker deploy --target cloud` created and provisioned the server
+(lock: `server_name: n8n-16b8`), `stacker agent install` failed:
+
+```console
+✗ Install failed: deploy.server.host () is configured in stacker.yml, but no
+  matching server was found on the Stacker server for project 'n8n' (id=817).
+  Deploy to this server first with: stacker deploy --target server
+```
+
+The marketplace template sets `deploy.server.host: ${DEPLOY_HOST}` and
+`.env.example` ships `DEPLOY_HOST=` empty; for a cloud deploy nobody fills it,
+yet the server exists on the platform with its own row. Setting
+`DEPLOY_HOST=<ip>` in `.env` makes the install succeed, but the CLI never
+printed that IP in this flow - the user has to know it out of band.
+
+### Fix direction
+
+When the deployment lock (or the project's latest deployment) names a server,
+match against it instead of the `deploy.server.host` value. Test: after a
+cloud deploy from a fresh directory, `stacker agent install` installs without
+editing any file.
+
+## 31. 🟡 OPEN — `stacker install` silently ignores `--domain` and `--key` (found 2026-11-12)
+
+### Observed (2026-11-12)
+
+```console
+$ stacker install n8n --name n8n-demo --domain n8n.<domain> --region fsn1 --size cpx22 --key htz-13
+Installed 'n8n' as project #8██.
+Wrote stacker.yml
+```
+
+`--name`, `--region` and `--size` took effect (project name,
+`deploy.cloud.region`, `deploy.cloud.size`). `--domain` and `--key` were
+accepted, printed nothing, and appear in no artifact: the written
+`install.inputs.commonDomain` kept the template default, and no deploy key
+was recorded anywhere (checked `stacker.yml`, `.stacker/`, the deployment
+lock). `stacker install --help` advertises both ("Base domain for Install
+Service commonDomain", "Name of saved cloud credential to reuse"), and the
+CLI reference example (`docs/STACKER_YML_REFERENCE.md:853`) shows `--domain`
+as the way to set the domain.
+
+### Fix direction
+
+Honor the flags (write `install.inputs.commonDomain` and the deploy key) or
+reject them with a message naming the command that does take them. Test: the
+flag values appear in the written file, or the command fails loudly.
+
+## 32. 🟢 OPEN — the hook scanner false-positives on the marketplace template's own `generate-secrets.sh` (found 2026-11-12)
+
+### Observed (2026-11-12)
+
+Deploying an installed marketplace template after removing the
+`# @stacker-origin: marketplace` marker (as the install output instructs:
+"Delete the line above once you have reviewed hooks"):
+
+```
+[WARN] Hook 'pre_build': [WARNING] Obfuscated eval/execution in 'pre_build'
+line 6 — review for hidden commands
+```
+
+Line 6 of `awesome-selfhosted-stacker` `stacker-projects/n8n/scripts/generate-secrets.sh`
+is the portable-sed probe and wrapper (`if sed --version >/dev/null 2>&1;
+then sed_inplace() { sed -i "$@"; } ...`). The template's own reviewed hook
+trips the scanner in the exact flow that asks users to review it, which
+trains them to ignore the warning.
+
+### Fix direction
+
+Teach the scanner the portable-sed idiom (version probe + wrapper), or have
+it cite the matched lines so the review is one look. Test: deploying the n8n
+marketplace template's hook produces no warning.
