@@ -1067,3 +1067,44 @@ and surface the template's source commit in the API response so a stale copy
 is visible rather than inferred. Test: a template change merged to `main`
 appears in the API within the documented interval.
 
+## 31. ✅ FIXED — `agent deploy-app --image` recreated the container without its published ports (found 2026-11-12, fixed 2026-11-12)
+
+### Observed (2026-11-12, stacker-cli v0.3.4)
+
+`stacker agent deploy-app <app> --image <ref> --force` on a running n8n
+stack: the container came back with `PORTS: -` where it had been
+`5678:5678`, and the port refused connections afterwards. The container also
+drifted out of compose naming. The documented recovery was to call
+`deploy_app` through `agent exec` with `compose_content` and
+`force_config_overwrite`, which is not the command the CLI offers.
+
+### Cause
+
+The request carried no compose. `local_config_files_for_agent_deploy`
+(`src/console/commands/cli/agent.rs`) returns early when no environment
+resolves, and a template-based project resolves none - it declares neither
+`deploy.environment` nor an `environments:` block. With no
+`compose_content`, `--image` is all the agent has, so it recreates the
+container from the image alone and every port, volume and network declared
+in the compose is gone.
+
+Two plausible-looking causes were wrong and worth recording, because both
+read as correct from the source: the missing `deploy.compose_file` branch and
+the missing-compose-file branch are unreachable here.
+`resolve_environment_config` always supplies a conventional
+`docker/<env>/compose.yml` (`src/cli/config_parser.rs`), so the function
+never reaches either - it bails on the environment first. Instrumenting the
+early returns settled it in one run.
+
+### Fixed (2026-11-12)
+
+When no environment resolves, send the compose the deploy generated into
+`.stacker/`. One branch. Projects that do resolve an environment are
+untouched, as are the other early returns. Regression test with the n8n
+template's exact shape, written first and confirmed failing against the
+previous code.
+
+**Not verified yet:** a live update on a running stack. That needs the fix
+shipped and a server; the test covers the request the CLI builds, not the
+agent's handling of it.
+
