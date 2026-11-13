@@ -6,6 +6,12 @@
 #   curl -fsSL https://raw.githubusercontent.com/trydirect/stacker/main/install.sh | bash
 #   curl -fsSL https://raw.githubusercontent.com/trydirect/stacker/main/install.sh | bash -s -- --channel beta
 #
+# The raw.githubusercontent.com URL is canonical, decided 2026-11-13. A
+# vanity host was considered and dropped: stacker.try.direct/install.sh
+# returns 403 and get.stacker.dev does not resolve, and moving the URL again
+# would mean editing it across the docs, the blog articles and this file a
+# third time. Do not "fix" it back to a prettier host without serving one.
+#
 # Environment variables:
 #   STACKER_INSTALL_DIR  — where to install (default: /usr/local/bin)
 #   STACKER_CHANNEL      — release channel: stable, beta (default: stable)
