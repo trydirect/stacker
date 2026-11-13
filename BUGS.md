@@ -1226,7 +1226,7 @@ in the exact flow that asks users to review hooks.
 Teach the scanner the portable-sed idiom or cite the matched lines. Test:
 deploying the n8n template's hook produces no warning.
 
-## 35. 🟠 CONFIRMED — `agent deploy-app --image` is ignored once the request carries `compose_content` (found 2026-11-13)
+## 35. ✅ FIXED — `agent deploy-app --image` is ignored once the request carries `compose_content` (found and fixed 2026-11-13)
 
 ### Observed (2026-11-13, stacker-cli `b3243031`, agent `1.0.0`)
 
@@ -1287,3 +1287,24 @@ contract for every client) or CLI-side in
 already in the field). Test: `deploy-app <app> --image <ref> --force` on a
 running stack leaves the container's `org.opencontainers.image.version` at
 `<ref>` and its published ports intact.
+
+### Fixed and verified (2026-11-13)
+
+Landed CLI-side: `local_config_files_for_agent_deploy` now takes the
+`--image` override and rewrites the target service's `image:` inside the
+compose the request carries (only that service; the rest of the compose is
+untouched). Regression test with the n8n template's exact shape, written
+first and confirmed failing against the previous behaviour.
+
+Verified live on the running stack of §31's verification (deployment #1533):
+`agent deploy-app n8n --image n8nio/n8n:2.47.7 --force` rolled the container
+from `2.45.4` to `2.47.7` - `agent containers --json` shows
+`image = n8nio/n8n:2.47.7` and `org.opencontainers.image.version: 2.47.7` -
+with `5678:5678` still published and `/`, `/healthz`, `/healthz/readiness`
+all answering 200 once n8n finished its migrations.
+
+**Follow-up left open:** the agent's `DeployAppCommand.image` is still
+unread (`status/src/commands/stacker.rs:1643` documents "overrides compose
+file", `handle_deploy_app` never consumes it), so a caller that reaches
+`agent exec deploy_app` with `image` but no rewritten `compose_content` is
+still ignored. The CLI no longer depends on it.
