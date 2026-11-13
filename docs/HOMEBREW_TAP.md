@@ -87,69 +87,52 @@ Then the real path, from a clean machine:
     brew tap trydirect/tap
     brew install trydirect/tap/stacker
 
-## 4. Keep it current on every release
+## 4. Keeping it current
 
-`release.yml` fires on `release: published` and uploads the three assets with
-`gh release upload`. Add one job that runs after `build-and-upload`, computes
-the sha256 of each asset and commits the bumped formula to the tap. It needs a
-token with write access to the tap repository - the default `GITHUB_TOKEN` is
-scoped to this repository only, so add a PAT as a secret, for example
-`HOMEBREW_TAP_TOKEN`.
+Automated since 2026-11-13: `release.yml` has a `bump-homebrew-formula` job
+that runs after the binaries are uploaded, recomputes the sha256 of all four
+assets, rewrites `Formula/stacker.rb` and pushes it to the tap.
 
-Sketch, not tested:
+It needs `HOMEBREW_TAP_TOKEN` in this repository's secrets - a fine-grained
+PAT owned by the `trydirect` organisation, scoped to `trydirect/homebrew-tap`
+alone, with `Contents: Read and write`. The default `GITHUB_TOKEN` cannot
+reach another repository.
 
-```yaml
-  bump-tap:
-    needs: build-and-upload
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout the tap
-        uses: actions/checkout@v4
-        with:
-          repository: trydirect/homebrew-tap
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-      - name: Rewrite the formula
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          for a in aarch64-darwin x86_64-darwin x86_64-linux; do
-            url="https://github.com/trydirect/stacker/releases/download/v${VERSION}/stacker-v${VERSION}-${a}.tar.gz"
-            sha=$(curl -sL "$url" | shasum -a 256 | cut -d' ' -f1)
-            echo "$a $sha"
-          done
-          # substitute version, urls and sha256 values into Formula/stacker.rb
-      - name: Commit
-        run: |
-          git config user.name "stacker-release"
-          git config user.email "noreply@try.direct"
-          git commit -am "stacker ${GITHUB_REF_NAME}" && git push
-```
+Three properties worth knowing, because each one is a failure mode that was
+designed out rather than discovered later:
 
-Pin `ubuntu-22.04`, not `ubuntu-latest`: latest moved to Ubuntu 26.04 and has
-already broken three of our workflows this month.
+- **No secret, no failure.** The steps are guarded with
+  `if: ${{ env.HOMEBREW_TAP_TOKEN != '' }}`, the same idiom
+  `status/.github/workflows/ci.yml` uses for `CONFIG_FIXTURES_TOKEN`. Without
+  the secret the job skips and the release still succeeds.
+- **A missing asset aborts before anything is written.** The sha256 of every
+  platform is fetched first; a release that did not publish all four cannot
+  leave the formula half-rewritten. This is not hypothetical - v0.3.5 had no
+  `aarch64-linux` asset, and running the script against it fails loudly with
+  the file untouched.
+- **Re-runnable.** If the formula already names that version the job prints
+  "nothing to commit" and exits 0.
 
-## Two things to fix before this is announced
+Prereleases are skipped: the formula tracks stable.
 
-**The published binary reports the wrong version.** The v0.3.5 darwin-arm64
-asset prints `0.3.4 (a7aac3f)`. The release workflow builds from the tag, so
-`Cargo.toml` still said 0.3.4 when v0.3.5 was tagged - the bump landed after.
-A formula that declares 0.3.5 while `stacker --version` says 0.3.4 will
-confuse anyone who checks, and `brew audit` conventions assume the two agree.
-Bump the version in `Cargo.toml` before tagging, or derive it from the tag.
+The PAT expires - fine-grained tokens cap at 366 days. When it does, the job
+starts skipping silently, because a missing secret is indistinguishable from
+an expired one at the `env != ''` check. If the formula ever lags a release,
+check the token first.
 
-**Linux arm64 was added to the matrix on 2026-11-12 but has not shipped yet.**
-The formula's `on_linux`/`on_arm` block stays commented out until a release
-publishes `stacker-vX.Y.Z-aarch64-linux.tar.gz`. The installer needs no change
-for it: `install.sh:73` builds the archive name as
-`stacker-v${version}-${arch}-${os}.tar.gz` from `uname -m`, which already maps
-`aarch64` and `arm64` to `aarch64`, so the asset is picked up the moment it
-exists.
+## Resolved by v0.3.6 (2026-11-13)
 
-**The glibc floor matters more than the architecture.** The published v0.3.5
-Linux binary requires `GLIBC_2.39`, checked against the asset itself. Ubuntu
-22.04 ships glibc 2.35 and Debian 12 ships 2.36, so that binary refuses to
-start on both - the two distributions a self-hosting audience is most likely
-to be running. The cause was `ubuntu-latest` in the build matrix drifting to
-Ubuntu 26.04. The Linux entries are now pinned to `ubuntu-22.04` and
-`ubuntu-22.04-arm`, which sets the floor at glibc 2.35. Never put
-`ubuntu-latest` back: a release binary inherits the build image's glibc, so
-that label silently narrows who can run what we ship.
+All three blockers this runbook listed are closed, verified against the
+published assets rather than assumed:
+
+- **The binary reports its own version again.** v0.3.5 printed
+  `0.3.4 (a7aac3f)` because `Cargo.toml` was bumped after the tag was cut.
+  v0.3.6 prints `0.3.6 (a2cfd7c)`.
+- **Linux arm64 ships.** `stacker-v0.3.6-aarch64-linux.tar.gz` exists and the
+  formula's `on_linux`/`on_arm` block is live, not commented out.
+- **The glibc floor is 2.34**, read off both Linux binaries. v0.3.5 required
+  `GLIBC_2.39` and would not start on Ubuntu 22.04 (2.35) or Debian 12
+  (2.36); the release runners are pinned to `ubuntu-22.04` and
+  `ubuntu-22.04-arm` now. Never put `ubuntu-latest` back on a job that
+  produces a release binary: it inherits that image's glibc and silently
+  narrows who can run what ships.

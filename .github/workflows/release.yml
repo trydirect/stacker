@@ -222,3 +222,79 @@ jobs:
             "$DISCORD_WEBHOOK_URL"
 
           echo "Discord release notification sent for ${RELEASE_TAG:-unknown tag}."
+
+  bump-homebrew-formula:
+    name: Bump the Homebrew formula
+    needs: build-and-upload
+    # Pinned, never ubuntu-latest: that label moved to Ubuntu 26.04 and broke
+    # three workflows in this organisation in a month.
+    runs-on: ubuntu-22.04
+    env:
+      # Guarded the way status/.github/workflows/ci.yml guards
+      # CONFIG_FIXTURES_TOKEN: without the secret the steps are skipped and
+      # the release still succeeds, rather than failing on every tag.
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - name: Skip prereleases
+        if: ${{ github.event.release.prerelease }}
+        run: |
+          echo "Prerelease ${GITHUB_REF_NAME} - the formula tracks stable only."
+          exit 0
+
+      - name: Checkout the tap
+        if: ${{ env.HOMEBREW_TAP_TOKEN != '' && !github.event.release.prerelease }}
+        uses: actions/checkout@v4
+        with:
+          repository: trydirect/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Rewrite the formula
+        if: ${{ env.HOMEBREW_TAP_TOKEN != '' && !github.event.release.prerelease }}
+        run: |
+          python3 - "${GITHUB_REF_NAME}" <<'PYEOF'
+          import hashlib, re, sys, urllib.request
+
+          VERSION = sys.argv[1].lstrip("v")
+          PLATFORMS = ["aarch64-darwin", "x86_64-darwin", "aarch64-linux", "x86_64-linux"]
+          BASE = "https://github.com/trydirect/stacker/releases/download/v{v}/stacker-v{v}-{p}.tar.gz"
+
+          src = open("Formula/stacker.rb", encoding="utf-8").read()
+          before = src
+
+          for platform in PLATFORMS:
+              url = BASE.format(v=VERSION, p=platform)
+              # A missing asset aborts here, before anything is written, so a
+              # release that did not publish every platform cannot leave the
+              # formula half-rewritten.
+              with urllib.request.urlopen(url) as response:
+                  digest = hashlib.sha256(response.read()).hexdigest()
+              pattern = re.compile(
+                  r'(url ")[^"]*-' + re.escape(platform)
+                  + r'\.tar\.gz("\n\s*sha256 ")[0-9a-f]{64}(")'
+              )
+              src, found = pattern.subn(
+                  lambda m: m.group(1) + url + m.group(2) + digest + m.group(3), src
+              )
+              if found != 1:
+                  sys.exit(f"{platform}: expected one url/sha256 pair, matched {found}")
+              print(f"  {platform}: {digest[:16]}...")
+
+          if src == before:
+              print("Formula already on this version, nothing to commit.")
+              sys.exit(0)
+
+          open("Formula/stacker.rb", "w", encoding="utf-8").write(src)
+          print("Formula rewritten for", VERSION)
+          PYEOF
+
+      - name: Commit and push
+        if: ${{ env.HOMEBREW_TAP_TOKEN != '' && !github.event.release.prerelease }}
+        run: |
+          if git diff --quiet -- Formula/stacker.rb; then
+            echo "No change to push."
+            exit 0
+          fi
+          git config user.name "stacker-release"
+          git config user.email "noreply@try.direct"
+          git commit -m "stacker ${GITHUB_REF_NAME}" -- Formula/stacker.rb
+          git push
