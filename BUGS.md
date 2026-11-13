@@ -766,6 +766,15 @@ redeploys onto an occupied host and #1517 was a fresh server; #1527 is a fresh
 server **and** the port is demonstrably held by this stack's own healthy
 container. The check is reporting the deployed stack as its own conflict.
 
+2026-11-13: fourth occurrence, again on a server this same deploy had just
+created (deployment #1533, `stacker deploy --target cloud --key htz-10`,
+fresh Hetzner cpx22, stacker-cli `b3243031`). This time the precheck fired
+mid-run, after the stack was already up: the pause reason is
+`PRECHECK_PORT_CONFLICT\nRequired ports 5678 are already occupied`, and the
+listeners it lists are `docker-proxy` holding `5678` for `project-n8n-1` -
+this deploy's own container (`stacker deployment events --json`). n8n
+answered 200 on `/` and `/healthz/readiness` minutes later.
+
 **Impact beyond a wrong status line.** A deployment left in `paused` is not
 just cosmetic: it needs `stacker resolve` to clear, it misreports in any
 automation that reads deployment state, and it teaches a first-time user that
@@ -1117,9 +1126,17 @@ untouched, as are the other early returns. Regression test with the n8n
 template's exact shape, written first and confirmed failing against the
 previous code.
 
-**Not verified yet:** a live update on a running stack. That needs the fix
-shipped and a server; the test covers the request the CLI builds, not the
-agent's handling of it.
+**Verified live (2026-11-13).** `stacker agent deploy-app n8n --image
+n8nio/n8n:2.47.7 --force` against the running stack on the fresh VPS of §20's
+fourth occurrence (deployment #1533). The request carried the full generated
+compose (`compose_content` with `ports: ["5678:5678"]`), the container was
+recreated (n8n log "Initializing n8n process" at 12:44:11), and the port
+survived: `/` and `/healthz/readiness` answered 200 both before and after,
+and `agent containers --json` still shows `5678:5678/tcp`. The port loss does
+not reproduce.
+
+The same run exposed a follow-up: the recreate did **not** roll the image.
+See §35.
 
 ## 32. ✅ FIXED — the workflow from `stacker ci export` installed the CLI from a host that does not resolve (found 2026-11-08, confirmed and fixed 2026-11-13)
 
@@ -1208,3 +1225,65 @@ in the exact flow that asks users to review hooks.
 
 Teach the scanner the portable-sed idiom or cite the matched lines. Test:
 deploying the n8n template's hook produces no warning.
+
+## 35. 🟠 CONFIRMED — `agent deploy-app --image` is ignored once the request carries `compose_content` (found 2026-11-13)
+
+### Observed (2026-11-13, stacker-cli `b3243031`, agent `1.0.0`)
+
+The live verification of §31, one step further: on the running n8n stack
+(deployment #1533),
+
+```
+stacker agent deploy-app n8n --image n8nio/n8n:2.47.7 --force --json
+```
+
+reported `parameters.image: n8nio/n8n:2.47.7`, `pull: true`,
+`force_recreate: true`, and `result.status: "deployed"` with
+`container_state: "running"`. The container was recreated (the n8n log
+restarts at 12:44:11) but kept the compose's image:
+
+```
+$ stacker agent containers --json        # app_code=n8n
+image  = n8nio/n8n:2.45.4
+ports  = ['5678:5678/tcp', '5678:5678/tcp']
+labels = { "org.opencontainers.image.version": "2.45.4",
+           "com.docker.compose.image": "sha256:70b8b5d6..." }
+```
+
+Nothing pulled 2.47.7. The `docker compose pull` the command does run pulled
+the compose's own image.
+
+### Cause
+
+`DeployAppCommand.image` is documented "Optional: specific image to use
+(overrides compose file)" (`status/src/commands/stacker.rs:1643-1645`), but
+`handle_deploy_app` (`stacker.rs:6616`) never reads `data.image`. The only
+mention in the whole flow is `normalize()` trimming it (`stacker.rs:2663`).
+The handler writes `compose_content` to disk and runs `docker compose up -d
+<service>` (`stacker.rs:7086-7093`), so the compose's own `image:` is
+authoritative and the override - image and its pull - apply to nothing.
+
+Before §31's fix this was invisible: template-based projects sent no compose
+at all, the container was recreated from the image alone, and `--image` worked
+by accident, losing the ports. Now that the CLI sends the generated compose
+for exactly those projects, the override silently no-ops for every one of
+them.
+
+### Why it matters
+
+This is the "one command to roll out a new image" story (CLI-17). A user
+updating n8n gets `status: deployed` and stays on the old version, and the
+command record echoes `parameters.image` next to `status: deployed`, which
+reads as success. The CLI-17 UPDATE scenes must not be shot until this is
+fixed - the command they show does not update.
+
+### Fix direction
+
+Rewrite the target service's `image:` inside `compose_content` when the
+override is set - agent-side in `handle_deploy_app` (honours the documented
+contract for every client) or CLI-side in
+`local_config_files_for_agent_deploy`
+(`stacker/src/console/commands/cli/agent.rs:891`, which works against agents
+already in the field). Test: `deploy-app <app> --image <ref> --force` on a
+running stack leaves the container's `org.opencontainers.image.version` at
+`<ref>` and its published ports intact.
