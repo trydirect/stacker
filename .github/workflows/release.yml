@@ -100,3 +100,125 @@ jobs:
         run: gh release upload "$GITHUB_REF_NAME" "$ASSET_NAME" --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  announce-discord:
+    name: Announce release on Discord
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Discord release notification
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_MENTION: ${{ vars.DISCORD_RELEASE_MENTION }}
+          DISCORD_REDUCE_HEADINGS: ${{ vars.DISCORD_REDUCE_HEADINGS }}
+          DISCORD_SHOW_TIMESTAMP: ${{ vars.DISCORD_SHOW_TIMESTAMP }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_NAME: ${{ github.event.release.name }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+          RELEASE_AUTHOR: ${{ github.event.release.author.login }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          REPO_NAME: ${{ github.event.repository.full_name }}
+          PUBLISHED_AT: ${{ github.event.release.published_at }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then
+            echo "::error::DISCORD_WEBHOOK_URL secret is not set. Add it under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+          # Title: the release name if present, otherwise the tag.
+          title="${RELEASE_NAME:-${RELEASE_TAG:-}}"
+          if [ -z "$title" ]; then
+            title="New Release"
+          fi
+
+          author="${RELEASE_AUTHOR:-}"
+          if [ -z "$author" ]; then
+            author="Unknown"
+          fi
+
+          # Normalize the release notes for Discord: strip HTML comments and
+          # carriage returns so the changelog renders cleanly.
+          body="$(printf '%s' "${RELEASE_BODY:-}" | python3 -c 'import re,sys; sys.stdout.write(re.sub(r"<!--.*?-->","",sys.stdin.read(),flags=re.S).replace("\r",""))')"
+
+          # Optionally compact headings (each heading becomes one level smaller).
+          if [ "${DISCORD_REDUCE_HEADINGS:-false}" = "true" ]; then
+            body="$(printf '%s' "$body" | sed -E 's/^(#{1,5}) /\1# /')"
+          fi
+
+          # Trim whitespace, cap to Discord's 4096-char embed limit, and use a
+          # placeholder when the release has no notes.
+          body="$(printf '%s' "$body" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          if [ "${#body}" -gt 3900 ]; then
+            body="${body:0:3900}..."
+          fi
+          if [ -z "$body" ]; then
+            body="No release notes provided."
+          fi
+
+          # Green for a stable release, orange for a pre-release.
+          is_prerelease=false
+          if [ "${RELEASE_PRERELEASE:-false}" = "true" ]; then
+            is_prerelease=true
+          fi
+          color=3066993
+          if [ "$is_prerelease" = "true" ]; then
+            color=15105570
+          fi
+
+          # Optional @everyone / role mention in the message content.
+          content="null"
+          if [ -n "${DISCORD_MENTION:-}" ]; then
+            content="$(jq -n --arg c "$DISCORD_MENTION" '$c')"
+          fi
+
+          # Embed timestamp (enabled by default).
+          show_ts=true
+          if [ "${DISCORD_SHOW_TIMESTAMP:-true}" = "false" ]; then
+            show_ts=false
+          fi
+
+          ts="${PUBLISHED_AT:-}"
+          if [ -z "$ts" ]; then
+            ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          fi
+
+          payload="$(jq -n \
+            --arg title "$title" \
+            --arg url "${RELEASE_URL:-}" \
+            --arg desc "$body" \
+            --arg tag "${RELEASE_TAG:-}" \
+            --arg author "$author" \
+            --arg repo "${REPO_NAME:-}" \
+            --arg ts "$ts" \
+            --argjson color "$color" \
+            --argjson prerelease "$is_prerelease" \
+            --argjson content "$content" \
+            --argjson show_ts "$show_ts" \
+            '{
+              username: "Release Bot",
+              embeds: [
+                {
+                  title: $title,
+                  url: $url,
+                  description: $desc,
+                  color: $color,
+                  fields: [
+                    { name: "Tag", value: ("`" + $tag + "`"), inline: true },
+                    { name: "Author", value: $author, inline: true },
+                    { name: "Pre-release", value: (if $prerelease then "Yes" else "No" end), inline: true }
+                  ],
+                  footer: { text: $repo }
+                }
+                + (if $show_ts then { timestamp: $ts } else {} end)
+              ]
+            }
+            + (if $content != null then { content: $content, allowed_mentions: { parse: ["everyone", "roles"] } } else {} end)')"
+
+          curl --fail-with-body --silent --show-error \
+            -H "Content-Type: application/json" \
+            -d "$payload" \
+            "$DISCORD_WEBHOOK_URL"
+
+          echo "Discord release notification sent for ${RELEASE_TAG:-unknown tag}."

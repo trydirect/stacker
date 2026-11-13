@@ -1107,4 +1107,3 @@ previous code.
 **Not verified yet:** a live update on a running stack. That needs the fix
 shipped and a server; the test covers the request the CLI builds, not the
 agent's handling of it.
-
