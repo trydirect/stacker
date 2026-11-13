@@ -1121,7 +1121,7 @@ previous code.
 shipped and a server; the test covers the request the CLI builds, not the
 agent's handling of it.
 
-## 32. 🟡 NOT CONFIRMED — the workflow from `stacker ci export --platform github` installs the CLI from a host that does not resolve (found 2026-11-08)
+## 32. ✅ FIXED — the workflow from `stacker ci export` installed the CLI from a host that does not resolve (found 2026-11-08, confirmed and fixed 2026-11-13)
 
 ### Observed (2026-11-08)
 
@@ -1138,6 +1138,31 @@ pushing an image, while cloud and server deploys require a pre-built
 Dockerfile cannot deploy from this workflow.
 
 Not confirmed: no generated workflow was actually run on GitHub.
+
+### Confirmed and fixed (2026-11-13)
+
+`curl -s -o /dev/null -w "%{http_code}" https://get.try.direct/stacker` returns
+`000` - the host does not resolve at all, so this was never a 404 anyone would
+notice in a log. It appeared in all four exported pipelines, not only GitHub
+Actions: GitLab, Bitbucket and the Jenkinsfile carried the same line.
+
+The URL moves to a single `INSTALLER_URL` constant rendered into every
+template, so the four copies cannot drift again, and the command is `| bash`
+rather than `| sh` to match the installer's own shebang.
+
+Regression test asserts, for all four platforms, that the generated pipeline
+does not mention the dead host and does use the constant.
+
+**Where it is meant to end up:** `get.stacker.my` - stacker.my is the
+official site. It is not used yet because `get.stacker.my/install.sh`
+currently 301s to the marketing homepage rather than mirroring the file;
+until it mirrors, pointing exported pipelines at it would reintroduce exactly
+this bug.
+
+**Found while fixing this:** the site itself published `curl -fsSL
+https://get.stacker.my | sh` in a blog post, and that URL returns 52 KB of
+`text/html`. Anyone following the official instruction piped the marketing
+homepage into a shell. Corrected in the same change.
 
 ### Fix direction
 

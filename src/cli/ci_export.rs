@@ -15,6 +15,15 @@ use crate::cli::error::CliError;
 ///
 /// GitHub's own `${{ }}` expressions are wrapped in `{% raw %}…{% endraw %}`
 /// so Tera does not attempt to evaluate them.
+/// Where the generated pipelines install the CLI from.
+///
+/// It must be a URL that resolves: the previous one, `get.try.direct`, never
+/// did, so every exported pipeline failed on its install step in someone
+/// else's repository (BUGS.md 32). `get.stacker.my` is the intended home and
+/// takes over here once it mirrors this file rather than redirecting to the
+/// marketing site.
+const INSTALLER_URL: &str = "https://raw.githubusercontent.com/trydirect/stacker/main/install.sh";
+
 const GITHUB_ACTIONS_TEMPLATE: &str = r#"name: Deploy {{ name }} with Stacker
 
 on:
@@ -32,7 +41,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Stacker CLI
-        run: curl -fsSL https://get.try.direct/stacker | sh
+        run: curl -fsSL {{ installer_url }} | bash
 
       - name: Deploy stack
         env:
@@ -54,7 +63,7 @@ deploy:
   variables:
     STACKER_TOKEN: $STACKER_TOKEN
   before_script:
-    - curl -fsSL https://get.try.direct/stacker | sh
+    - curl -fsSL {{ installer_url }} | bash
   script:
     - stacker deploy --target {{ deploy_target }}
   only:
@@ -70,7 +79,7 @@ pipelines:
           name: Deploy {{ name }}
           image: atlassian/default-image:3
           script:
-            - curl -fsSL https://get.try.direct/stacker | sh
+            - curl -fsSL {{ installer_url }} | bash
             - export STACKER_TOKEN="$STACKER_TOKEN"
             - stacker deploy --target {{ deploy_target }}
 "#;
@@ -83,7 +92,7 @@ pipeline {
   stages {
     stage('Deploy {{ name }}') {
       steps {
-        sh 'curl -fsSL https://get.try.direct/stacker | sh'
+        sh 'curl -fsSL {{ installer_url }} | bash'
         withEnv(['STACKER_TOKEN=' + env.STACKER_TOKEN]) {
           sh 'stacker deploy --target {{ deploy_target }}'
         }
@@ -140,6 +149,7 @@ impl CiExporter {
 
         let mut ctx = Context::new();
         ctx.insert("name", &safe_name);
+        ctx.insert("installer_url", INSTALLER_URL);
         ctx.insert("app_type", &self.config.app.app_type.to_string());
         ctx.insert("deploy_target", &self.config.deploy.target.to_string());
 
@@ -168,6 +178,33 @@ mod tests {
         let mut config = StackerConfig::default();
         config.name = name.to_string();
         config
+    }
+
+    /// Every generated pipeline installs the CLI, and the host it installed
+    /// from did not exist: `get.try.direct` does not resolve at all (curl
+    /// returns 000, not a refusal). Anyone who ran `stacker ci export` got a
+    /// workflow that fails on its install step, in their own repository,
+    /// where the failure reads as their problem. BUGS.md 32.
+    #[test]
+    fn generated_pipelines_install_from_a_host_that_exists() {
+        let exporter = CiExporter::new(config_with_name("demo"));
+        let generated = [
+            ("github", exporter.generate_github().unwrap()),
+            ("gitlab", exporter.generate_gitlab().unwrap()),
+            ("bitbucket", exporter.generate_bitbucket().unwrap()),
+            ("jenkins", exporter.generate_jenkins().unwrap()),
+        ];
+
+        for (platform, body) in generated {
+            assert!(
+                !body.contains("get.try.direct"),
+                "{platform}: installs from a host that does not resolve"
+            );
+            assert!(
+                body.contains(INSTALLER_URL),
+                "{platform}: must install from the canonical URL"
+            );
+        }
     }
 
     // ── SECURITY: YAML injection via project name ─────────────────
