@@ -1308,3 +1308,45 @@ unread (`status/src/commands/stacker.rs:1643` documents "overrides compose
 file", `handle_deploy_app` never consumes it), so a caller that reaches
 `agent exec deploy_app` with `image` but no rewritten `compose_content` is
 still ignored. The CLI no longer depends on it.
+
+## 36. 🟢 OPEN — the clippy and fmt gates fail on pre-existing code (found 2026-11-13)
+
+### Observed (2026-11-13, rustc/clippy 1.94.1)
+
+CLAUDE.md's own gate `cargo clippy -- -D warnings` cannot pass on a clean
+tree. It fails first in the build script:
+
+```
+error: useless conversion
+  --> build.rs:37:28
+   |
+37 |     let vendored_include = PathBuf::from(protoc_bin_vendored::include_path()?);
+```
+
+and the library carries 24 more clippy warnings in 8 files
+(`src/cli/install_runner.rs` x10, `src/cli/deployment_lock.rs` x4,
+`src/console/commands/cli/config.rs` x3, `src/routes/agent/link.rs` x2,
+`src/cli/config_bundle.rs` x2, then `routes/server/ssh_key.rs`,
+`console/commands/cli/proxy.rs`, `console/commands/cli/agent.rs`).
+
+`cargo fmt -- --check` reports 49 diff hunks across 19 files - worst:
+`src/bin/cleanup_notify.rs` (7), `tests/project_team_seats.rs` (7),
+`src/console/commands/debug/recategorize.rs` (5),
+`tests/marketplace_event_wiring.rs` (5),
+`src/services/marketplace_access.rs` (4).
+
+### Why it matters
+
+Every agent that follows CLAUDE.md runs these gates and hits unrelated
+failure noise: it either churns files outside its fix (violating the
+surgical-fix rule) or skips the gates (losing their value). This is
+toolchain drift - the code predates clippy 1.94's lints - not any one
+change's fault.
+
+### Fix direction
+
+One dedicated cleanup commit (or PR) that runs `cargo fmt`, fixes the
+clippy warnings and `build.rs:37`, with no behaviour change. Test:
+`cargo clippy -- -D warnings` and `cargo fmt -- --check` pass on a clean
+tree. Alternatively pin the toolchain in `rust-toolchain.toml`, but the
+lints are real, so the cleanup is the honest fix.
