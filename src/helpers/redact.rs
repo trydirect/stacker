@@ -42,6 +42,18 @@ fn is_sensitive_key(key: &str) -> bool {
     is_sensitive_env_key(key)
 }
 
+/// Whether a value can carry secret material. `null`, booleans and bare
+/// `${VAR}` references cannot, and masking them breaks the stacker.yml the
+/// install response becomes (BUGS.md §24): a boolean field stops parsing and a
+/// reference loses the link between the keys it feeds.
+fn json_may_hold_secret(val: &serde_json::Value) -> bool {
+    !val.is_null() && !val.is_boolean() && !json_is_env_reference(val)
+}
+
+fn yaml_may_hold_secret(val: &serde_yaml::Value) -> bool {
+    !val.is_null() && !val.is_bool() && !val.as_str().map_or(false, is_env_reference)
+}
+
 // ─── JSON redaction ───────────────────────────────────────────────────────────
 
 /// Recursively walks a JSON value and replaces sensitive data with `"***REDACTED***"`.
@@ -55,7 +67,8 @@ fn is_sensitive_key(key: &str) -> bool {
 ///    `{"key": "DB_PASSWORD", "value": "secret"}` → "value" field is redacted when
 ///    the string stored in "key" matches a sensitive pattern.
 ///
-/// Null values are never replaced. Key names and array order are preserved.
+/// Null values, booleans and bare `${VAR}` references are never replaced. Key
+/// names and array order are preserved.
 pub fn redact_sensitive_json_values(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
@@ -69,9 +82,7 @@ pub fn redact_sensitive_json_values(value: &mut serde_json::Value) {
 
             if named_key_is_sensitive {
                 if let Some(val) = map.get_mut("value") {
-                    // A boolean is never secret material, and replacing it
-                    // with a string changes the value's type.
-                    if !val.is_null() && !val.is_boolean() {
+                    if json_may_hold_secret(val) {
                         *val = serde_json::Value::String("***REDACTED***".to_string());
                     }
                 }
@@ -82,8 +93,7 @@ pub fn redact_sensitive_json_values(value: &mut serde_json::Value) {
             // Pattern 1: standard JSON keys
             for (key, val) in map.iter_mut() {
                 if is_sensitive_key(key)
-                    && !val.is_null()
-                    && !val.is_boolean()
+                    && json_may_hold_secret(val)
                     && !val.is_object()
                     && !val.is_array()
                 {
@@ -109,7 +119,7 @@ fn redact_yaml_value(value: &mut serde_yaml::Value) {
         serde_yaml::Value::Mapping(map) => {
             for (key, val) in map.iter_mut() {
                 if let serde_yaml::Value::String(k) = key {
-                    if is_sensitive_key(k) && !val.is_null() && !val.is_bool() {
+                    if is_sensitive_key(k) && yaml_may_hold_secret(val) {
                         *val = serde_yaml::Value::String("***REDACTED***".to_string());
                     } else {
                         redact_yaml_value(val);
@@ -122,7 +132,7 @@ fn redact_yaml_value(value: &mut serde_yaml::Value) {
                 // Handle "VARNAME=value" entries in environment lists
                 if let serde_yaml::Value::String(s) = item {
                     if let Some(eq) = s.find('=') {
-                        if is_sensitive_key(&s[..eq]) {
+                        if is_sensitive_key(&s[..eq]) && !is_env_reference(&s[eq + 1..]) {
                             let key_part = s[..eq].to_string();
                             *s = format!("{}=***REDACTED***", key_part);
                         }
@@ -324,35 +334,6 @@ mod tests {
         assert_eq!(v["username"], "alice");
     }
 
-    /// A boolean carries no secret material, and replacing it with a string
-    /// changes the value's type. `marketplace.no_secrets_confirmation` is a
-    /// flag whose name contains "secret": it came back as `***REDACTED***`
-    /// from the public template API, and the served `stacker.yml` then failed
-    /// to parse for anyone running `stacker install`.
-    #[test]
-    fn does_not_redact_boolean_values_json() {
-        let mut v = json!({
-            "no_secrets_confirmation": true,
-            "secret_enabled": false,
-            "api_secret": "shh",
-        });
-        redact_sensitive_json_values(&mut v);
-        assert_eq!(v["no_secrets_confirmation"], json!(true));
-        assert_eq!(v["secret_enabled"], json!(false));
-        assert_eq!(v["api_secret"], "***REDACTED***");
-    }
-
-    #[test]
-    fn does_not_redact_boolean_values_yaml() {
-        let out = redact_yaml_string(
-            "marketplace:\n  no_secrets_confirmation: true\n  api_secret: shh\n",
-        );
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).expect("still parses");
-        let mk = &parsed["marketplace"];
-        assert_eq!(mk["no_secrets_confirmation"], serde_yaml::Value::Bool(true));
-        assert_eq!(mk["api_secret"], serde_yaml::Value::String("***REDACTED***".into()));
-    }
-
     #[test]
     fn redacts_nested_sensitive_fields() {
         let mut v = json!({ "db": { "db_password": "secret123", "host": "localhost" } });
@@ -495,6 +476,87 @@ mod tests {
         let result = redact_yaml_string(bad);
         // Either returned as-is (parse failed) or survived round-trip without panicking
         assert!(!result.contains("PANIC"));
+    }
+
+    // The install response is written to disk as the buyer's stacker.yml
+    // (BUGS.md §24). Masking a boolean made that file unparseable
+    // (`marketplace.no_secrets_confirmation`), and masking a `${VAR}` reference
+    // cut the link between the keys it feeds (umami: the database got one
+    // password, the app's DATABASE_URL another). Neither carries a secret.
+
+    #[test]
+    fn installed_stacker_yml_still_parses_after_redaction() {
+        let mut v = json!({
+            "name": "umami",
+            "app": {
+                "type": "node",
+                "image": "ghcr.io/umami-software/umami:postgresql-latest",
+                "environment": {
+                    "DATABASE_URL": "postgresql://umami:${DB_PASSWORD}@postgres:5432/umami",
+                    "APP_SECRET": "${APP_SECRET}"
+                }
+            },
+            "services": [{
+                "name": "postgres",
+                "image": "postgres:16.4-alpine",
+                "environment": { "POSTGRES_PASSWORD": "${DB_PASSWORD}" }
+            }],
+            "marketplace": { "publish": true, "no_secrets_confirmation": true }
+        });
+        redact_sensitive_json_values(&mut v);
+
+        let yaml = serde_yaml::to_string(&v).unwrap();
+        let config = crate::cli::config_parser::StackerConfig::from_str_raw(&yaml)
+            .unwrap_or_else(|e| panic!("redacted stacker.yml must parse: {e}\n{yaml}"));
+        assert_eq!(config.marketplace.no_secrets_confirmation, Some(true));
+        assert_eq!(
+            v["services"][0]["environment"]["POSTGRES_PASSWORD"],
+            "${DB_PASSWORD}"
+        );
+        assert_eq!(v["app"]["environment"]["APP_SECRET"], "${APP_SECRET}");
+    }
+
+    #[test]
+    fn redaction_keeps_booleans_and_references_but_masks_values() {
+        let mut v = json!({
+            "no_secrets_confirmation": false,
+            "POSTGRES_PASSWORD": "${DB_PASSWORD}",
+            "ADMIN_PASSWORD": "$ADMIN_PW",
+            "DB_PASSWORD": "${DB_PASSWORD:-author-secret}",
+            "API_KEY": "sk-live-abc",
+            "vars": [
+                { "key": "SECRET_KEY", "value": "${MINIO_ROOT_PASSWORD}" },
+                { "key": "DB_PASSWORD", "value": "super_secret_pw" }
+            ]
+        });
+        redact_sensitive_json_values(&mut v);
+
+        assert_eq!(v["no_secrets_confirmation"], false);
+        assert_eq!(v["POSTGRES_PASSWORD"], "${DB_PASSWORD}");
+        assert_eq!(v["ADMIN_PASSWORD"], "$ADMIN_PW");
+        // A default can be the secret itself, so it is still masked.
+        assert_eq!(v["DB_PASSWORD"], "***REDACTED***");
+        assert_eq!(v["API_KEY"], "***REDACTED***");
+        assert_eq!(v["vars"][0]["value"], "${MINIO_ROOT_PASSWORD}");
+        assert_eq!(v["vars"][1]["value"], "***REDACTED***");
+    }
+
+    #[test]
+    fn yaml_redaction_keeps_booleans_and_references_but_masks_values() {
+        let yaml = "marketplace:\n  no_secrets_confirmation: true\nservices:\n  db:\n    environment:\n      POSTGRES_PASSWORD: ${DB_PASSWORD}\n      DB_PASSWORD: ${DB_PASSWORD:-author-secret}\n      API_KEY: sk-live-abc\n  app:\n    environment:\n    - SECRET_KEY=${MINIO_ROOT_PASSWORD}\n    - DB_PASSWORD=super_secret_pw\n";
+        let out: serde_yaml::Value = serde_yaml::from_str(&redact_yaml_string(yaml)).unwrap();
+
+        assert_eq!(
+            out["marketplace"]["no_secrets_confirmation"].as_bool(),
+            Some(true)
+        );
+        let env = &out["services"]["db"]["environment"];
+        assert_eq!(env["POSTGRES_PASSWORD"].as_str(), Some("${DB_PASSWORD}"));
+        assert_eq!(env["DB_PASSWORD"].as_str(), Some("***REDACTED***"));
+        assert_eq!(env["API_KEY"].as_str(), Some("***REDACTED***"));
+        let list = &out["services"]["app"]["environment"];
+        assert_eq!(list[0].as_str(), Some("SECRET_KEY=${MINIO_ROOT_PASSWORD}"));
+        assert_eq!(list[1].as_str(), Some("DB_PASSWORD=***REDACTED***"));
     }
 
     // config_contract must survive value-stripping
