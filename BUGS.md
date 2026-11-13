@@ -1121,3 +1121,65 @@ previous code.
 shipped and a server; the test covers the request the CLI builds, not the
 agent's handling of it.
 
+## 32. 🟡 NOT CONFIRMED — the workflow from `stacker ci export --platform github` installs the CLI from a host that does not resolve (found 2026-11-08)
+
+### Observed (2026-11-08)
+
+The GitHub Actions template in `src/cli/ci_export.rs:35` installs the CLI with
+`curl -fsSL https://get.try.direct/stacker | sh`. `get.try.direct` does not
+resolve: `dig +short get.try.direct` returns nothing and `curl` fails with
+"Could not resolve host: get.try.direct". The README installs from
+`raw.githubusercontent.com`.
+
+The template also runs `stacker deploy --target ...` without building or
+pushing an image, while cloud and server deploys require a pre-built
+`app.image` (`require_app_image_for_remote_deploy`,
+`src/cli/stacker_client.rs:3968-3978`). A project relying on a generated
+Dockerfile cannot deploy from this workflow.
+
+Not confirmed: no generated workflow was actually run on GitHub.
+
+### Fix direction
+
+Point the template at the documented installer URL (or make `get.try.direct`
+resolve), and add a build-and-push step when the config has no `app.image`.
+Test: render the template and assert the installer URL is the documented one.
+
+## 33. 🟠 OPEN — `stacker install` writes only `stacker.yml`, not the template's `scripts/` (found 2026-11-12)
+
+### Observed (2026-11-12)
+
+Installing the n8n template into an empty directory wrote only `stacker.yml`,
+which references `./scripts/n8n-entrypoint.sh` and
+`./scripts/generate-secrets.sh`. The missing bind-mount source can become an
+empty directory, and the pre-build hook either is refused while the marketplace
+marker is present or fails with "script not found" after the marker is removed.
+The same hook failure was reproduced with umami.
+
+### Fix direction
+
+Have `stacker install` materialize the template's full file set, including
+scripts (and `.env.example` as `.env`, as noted in §12). Test: a fresh install
+contains the referenced files and can proceed to deploy without cloning the
+template repository.
+
+## 34. 🟢 OPEN — the hook scanner false-positives on the marketplace template's own `generate-secrets.sh` (found 2026-11-12)
+
+### Observed (2026-11-12)
+
+After removing the `# @stacker-origin: marketplace` marker as the install
+output instructs, deploying an installed template warns:
+
+```
+[WARN] Hook 'pre_build': [WARNING] Obfuscated eval/execution in 'pre_build'
+line 6 — review for hidden commands
+```
+
+Line 6 of the n8n template's `scripts/generate-secrets.sh` is a portable-sed
+version probe and wrapper. The template's reviewed hook triggers the warning
+in the exact flow that asks users to review hooks.
+
+### Fix direction
+
+Teach the scanner the portable-sed idiom or cite the matched lines. Test:
+deploying the n8n template's hook produces no warning.
