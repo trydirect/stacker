@@ -852,6 +852,7 @@ impl CallableTrait for AgentDeployAppCommand {
             &project_dir,
             &self.app_code,
             self.environment.as_deref(),
+            self.image.as_deref(),
         )?;
         for notice in &local_config.notices {
             eprintln!("  ⚠ {notice}");
@@ -889,6 +890,20 @@ struct LocalDeployAppConfig {
 }
 
 fn local_config_files_for_agent_deploy(
+    project_dir: &Path,
+    app_code: &str,
+    environment_override: Option<&str>,
+    image_override: Option<&str>,
+) -> Result<LocalDeployAppConfig, CliError> {
+    let mut result =
+        collect_local_config_files_for_agent_deploy(project_dir, app_code, environment_override)?;
+    if let (Some(image), Some(compose)) = (image_override, result.compose_content.as_deref()) {
+        result.compose_content = Some(override_compose_service_image(compose, app_code, image)?);
+    }
+    Ok(result)
+}
+
+fn collect_local_config_files_for_agent_deploy(
     project_dir: &Path,
     app_code: &str,
     environment_override: Option<&str>,
@@ -1049,6 +1064,33 @@ fn local_config_files_for_agent_deploy(
         result.config_files = Some(deploy_config_files);
     }
     Ok(result)
+}
+
+/// `deploy-app --image` is documented as "overrides compose file", but the
+/// agent deploys `compose_content` exactly as written and never reads the
+/// request's `image` field (BUGS.md §35). The override therefore has to land
+/// in the compose the request carries, for the target service only.
+fn override_compose_service_image(
+    compose_content: &str,
+    app_code: &str,
+    image: &str,
+) -> Result<String, CliError> {
+    let mut doc: serde_yaml::Value = serde_yaml::from_str(compose_content)?;
+    let Some(service) = doc
+        .as_mapping_mut()
+        .and_then(|root| root.get_mut(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping_mut)
+        .and_then(|services| services.get_mut(serde_yaml::Value::String(app_code.to_string())))
+        .and_then(serde_yaml::Value::as_mapping_mut)
+    else {
+        return Ok(compose_content.to_string());
+    };
+    service.insert(
+        serde_yaml::Value::String("image".to_string()),
+        serde_yaml::Value::String(image.to_string()),
+    );
+    serde_yaml::to_string(&doc)
+        .map_err(|err| CliError::ConfigValidation(format!("failed to rewrite compose: {err}")))
 }
 
 fn bundle_compose_content(
@@ -3329,7 +3371,7 @@ environments:
         )
         .expect("stacker config");
 
-        let config = local_config_files_for_agent_deploy(root, "device-api", None).unwrap();
+        let config = local_config_files_for_agent_deploy(root, "device-api", None, None).unwrap();
 
         assert!(config.config_files.is_some());
         assert!(config.compose_content.is_some());
@@ -3373,7 +3415,8 @@ environments:
         )
         .expect("stacker config");
 
-        let config = local_config_files_for_agent_deploy(root, "device-api", Some("prod")).unwrap();
+        let config =
+            local_config_files_for_agent_deploy(root, "device-api", Some("prod"), None).unwrap();
 
         let compose = config.compose_content.expect("compose content");
         assert!(compose.contains("syncopia/device-api:prod"));
@@ -3414,7 +3457,7 @@ environments:
         )
         .expect("stacker config");
 
-        let config = local_config_files_for_agent_deploy(root, "upload", None).unwrap();
+        let config = local_config_files_for_agent_deploy(root, "upload", None, None).unwrap();
 
         let config_files = config.config_files.expect("config files");
         assert!(config_files.iter().any(|file| {
@@ -3472,7 +3515,7 @@ deploy:
         )
         .expect("stacker config");
 
-        let config = local_config_files_for_agent_deploy(root, "n8n", None).unwrap();
+        let config = local_config_files_for_agent_deploy(root, "n8n", None, None).unwrap();
 
         let compose = config
             .compose_content
@@ -3480,6 +3523,64 @@ deploy:
         assert!(
             compose.contains("5678:5678"),
             "published ports must survive into the request: {compose}"
+        );
+    }
+
+    /// `deploy-app --image` is documented as "overrides compose file"
+    /// (BUGS.md §35), but the request's compose pinned its own image and the
+    /// agent deploys the compose exactly as written: the override silently
+    /// did nothing while the command record reported the new image next to
+    /// `status: deployed`. The rewrite has to land in the compose the request
+    /// carries, and only in the target service.
+    #[test]
+    fn local_config_rewrites_the_target_service_image_for_the_image_override() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".stacker")).expect("stacker dir");
+        std::fs::write(
+            root.join(".stacker/docker-compose.yml"),
+            "services:\n  n8n:\n    image: n8nio/n8n:2.45.4\n    ports:\n      - \"5678:5678\"\n  postgres:\n    image: postgres:17.11-alpine\n",
+        )
+        .expect("generated compose");
+        std::fs::write(
+            root.join("stacker.yml"),
+            r#"
+name: n8n
+project:
+  identity: n8n
+services:
+  - name: n8n
+    image: n8nio/n8n:2.45.4
+    ports:
+      - "5678:5678"
+deploy:
+  target: server
+  server:
+    host: 203.0.113.10
+"#,
+        )
+        .expect("stacker config");
+
+        let config =
+            local_config_files_for_agent_deploy(root, "n8n", None, Some("n8nio/n8n:2.47.7"))
+                .unwrap();
+
+        let compose = config.compose_content.expect("compose content");
+        assert!(
+            compose.contains("n8nio/n8n:2.47.7"),
+            "the image override must land in the request's compose: {compose}"
+        );
+        assert!(
+            !compose.contains("n8nio/n8n:2.45.4"),
+            "the compose's own image must not survive the override: {compose}"
+        );
+        assert!(
+            compose.contains("5678:5678"),
+            "published ports must survive the rewrite: {compose}"
+        );
+        assert!(
+            compose.contains("postgres:17.11-alpine"),
+            "other services must keep their image: {compose}"
         );
     }
 
@@ -3525,7 +3626,7 @@ services:
         )
         .expect("stacker config");
 
-        let config = local_config_files_for_agent_deploy(root, "smtp", None).unwrap();
+        let config = local_config_files_for_agent_deploy(root, "smtp", None, None).unwrap();
 
         let compose = config.compose_content.expect("compose content");
         assert!(compose.contains("status-panel-web:"));
@@ -3605,7 +3706,7 @@ environments:
         )
         .expect("stacker config");
 
-        let config = local_config_files_for_agent_deploy(root, "device-api", None).unwrap();
+        let config = local_config_files_for_agent_deploy(root, "device-api", None, None).unwrap();
 
         let compose = config.compose_content.expect("compose content");
         assert!(compose.contains("syncopia/device-api:prod"));
@@ -3658,7 +3759,7 @@ environments:
         )
         .expect("stacker config");
 
-        let config = local_config_files_for_agent_deploy(root, "device-api", None).unwrap();
+        let config = local_config_files_for_agent_deploy(root, "device-api", None, None).unwrap();
         let compose = config.compose_content.expect("compose content");
 
         assert!(compose.contains("syncopia/device-api:prod"));
