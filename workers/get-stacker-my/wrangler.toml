@@ -1,0 +1,10 @@
+name = "get-stacker-my"
+main = "worker.js"
+compatibility_date = "2026-11-13"
+
+# get.stacker.my must already exist as a proxied (orange-cloud) DNS record in
+# the stacker.my zone. It does: it resolves to Cloudflare today and currently
+# 301s to the marketing site.
+[[routes]]
+pattern = "get.stacker.my/*"
+zone_name = "stacker.my"
