@@ -1303,11 +1303,15 @@ from `2.45.4` to `2.47.7` - `agent containers --json` shows
 with `5678:5678` still published and `/`, `/healthz`, `/healthz/readiness`
 all answering 200 once n8n finished its migrations.
 
-**Follow-up left open:** the agent's `DeployAppCommand.image` is still
-unread (`status/src/commands/stacker.rs:1643` documents "overrides compose
-file", `handle_deploy_app` never consumes it), so a caller that reaches
-`agent exec deploy_app` with `image` but no rewritten `compose_content` is
-still ignored. The CLI no longer depends on it.
+**Agent-side follow-up implemented (2026-11-13, status repo `dev` commit
+`c1e67e5`).** `handle_deploy_app` now applies `DeployAppCommand.image`
+itself: the override lands in the target service's `image:` inside
+`compose_content`, or in the on-disk compose when the payload carries none,
+before anything is pulled or deployed, and an unappliable override fails the
+deploy with `image_override_failed` instead of silently running the
+compose's image. Regression tests in `deploy_image_override_tests`. The
+CLI-side rewrite above stays harmless - the agent's rewrite is idempotent
+with an already-rewritten compose.
 
 ## 36. 🟢 OPEN — the clippy and fmt gates fail on pre-existing code (found 2026-11-13)
 
