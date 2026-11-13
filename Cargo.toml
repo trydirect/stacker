@@ -6,6 +6,8 @@ default-run= "server"
 
 [workspace]
 members = ["crates/pipe-adapter-sdk", "crates/pipe-adapter-mail", "crates/td-audit", "crates/health-monitor"]
+# A published name reservation, not part of the build. See its Cargo.toml.
+exclude = ["crates/stacker-cli"]
 resolver = "2"
 
 [lib]

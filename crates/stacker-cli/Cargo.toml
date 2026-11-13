@@ -1,0 +1,27 @@
+# Published to crates.io as `stacker-cli` 0.0.0 on 2026-11-13, to hold the
+# name. Deliberately a library with no code and no binary: a stub binary
+# would make `cargo install stacker-cli` appear to work and install nothing,
+# which is worse than the command failing.
+#
+# This directory is excluded from the workspace (see the root Cargo.toml) -
+# it is a published artefact, not part of the build.
+#
+# It is replaced by the real CLI once that is split out of the server
+# package. Two things block that today: four path dependencies, which
+# crates.io does not accept, and the CLI sharing a package with the server,
+# so `cargo install` would compile the whole backend for one binary.
+
+[package]
+name = "stacker-cli"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "Name reserved for the TryDirect Stacker CLI. Not installable from crates.io yet - see the README for how to install it today."
+repository = "https://github.com/trydirect/stacker"
+homepage = "https://try.direct"
+readme = "README.md"
+keywords = ["deploy", "docker", "selfhosted", "devops"]
+categories = ["command-line-utilities"]
+
+[lib]
+path = "src/lib.rs"
