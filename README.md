@@ -45,6 +45,17 @@ Stacker is a platform for turning any project into a deployable Docker stack. Ad
 curl -fsSL https://get.stacker.my/install.sh | bash
 ```
 
+Or with Homebrew, on macOS and Linux:
+
+```bash
+brew install trydirect/tap/stacker
+```
+
+Both fetch the same prebuilt binary from the
+[releases](https://github.com/trydirect/stacker/releases). The Linux builds
+need glibc 2.34 or newer, which covers Ubuntu 22.04, Debian 12, RHEL 9 and
+anything later.
+
 ### Create & deploy a project
 
 ```bash

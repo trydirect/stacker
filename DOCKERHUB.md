@@ -102,6 +102,9 @@ volumes:
 
 ```bash
 curl -fsSL https://get.stacker.my/install.sh | bash
+
+# or with Homebrew
+brew install trydirect/tap/stacker
 ```
 
 ```bash
