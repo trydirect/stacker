@@ -295,11 +295,11 @@ Shared test box has `gitlab-app-1` on `0.0.0.0:8082`. Deploy `dashy`
 
 ```console
 $ stacker deploy --target server
-  Deploying project 'dashy' to 46.224.127.228 via Stacker server...
+  Deploying project 'dashy' to <other-server-ip> via Stacker server...
   Deployment context saved to .stacker/deployment-server.lock
 $ echo $?
 0
-$ ssh root@46.224.127.228 'docker inspect project-app-1 --format "{{.State.Status}} {{.State.Error}}"'
+$ ssh root@<other-server-ip> 'docker inspect project-app-1 --format "{{.State.Status}} {{.State.Error}}"'
 created failed to set up container networking: ... Bind for :::8082 failed: port is already allocated
 ```
 
@@ -309,7 +309,7 @@ Same box, same conflict (`gitlab-app-1` still holds 8082), non-TTY stderr
 (piped to a file — the exact case that used to print nothing):
 
 ```console
-$ stacker-cli deploy --target server --server-host 46.224.127.228 \
+$ stacker-cli deploy --target server --server-host <other-server-ip> \
     --server-user root --server-ssh-key .../stacker-project-test
   ✓ Server deployment requested via Stacker server (project='dashy', project_id=305, deployment_id=416); server='dashy-server'
   Deployment context saved to .stacker/deployment-server.lock
@@ -319,7 +319,7 @@ $ stacker-cli deploy --target server --server-host 46.224.127.228 \
 Error: Deployment to server failed: Deployment #416 ended as 'paused' [port_conflict] ...
 $ echo $?
 1
-$ ssh root@46.224.127.228 'docker inspect project-app-1 --format "{{.State.Status}}|{{.State.Error}}"'
+$ ssh root@<other-server-ip> 'docker inspect project-app-1 --format "{{.State.Status}}|{{.State.Error}}"'
 created|failed to set up container networking: ... Bind for 0.0.0.0:8082 failed: port is already allocated
 ```
 
@@ -708,7 +708,7 @@ Keep the source file mode when uploading project files (at least the owner
 execute bit). Test: an executable file in the project arrives executable on the
 server.
 
-## 20. 🟡 NOT CONFIRMED — a redeploy to the same server ends `paused [port_conflict]` on the stack's own port (found 2026-10-27)
+## 20. 🔴 CONFIRMED — a deploy ends `paused [port_conflict]` while the stack is up and healthy on that port (found 2026-10-27, confirmed 2026-11-12)
 
 ### Observed (2026-10-27)
 
@@ -722,6 +722,55 @@ answered normally. The redeploy itself worked; only its status says it did not.
 earlier stack on it): `paused [port_conflict]`, while the stack was up and
 healthy on its port and nothing else held it. The lock also recorded
 `server_ip: null` although the CLI printed the IP.
+
+### Confirmed (2026-11-12, stacker-cli v0.3.6)
+
+Third occurrence, second one on a server this same deploy had just created, so
+nothing could have held the port before it.
+
+```
+stacker deploy --target cloud --key=htz-0 --force-new
+```
+
+on `awesome-selfhosted-stacker/stacker-projects/n8n` (version 2.0.0), from a
+clean `git clone`. The run reported:
+
+```
+✓ Your SSH key authorized (~/.ssh/id_ed25519.pub)
+✗ Deployment #1527 ended as 'paused' [port_conflict]
+  A port this stack needs is already in use on the target host (often by
+  another already-deployed stack, e.g. statuspanel). Free the port or change
+  it in stacker.yml, then redeploy.
+```
+
+The stack was in fact running. Server 948, <server-ip>, checked from outside
+right after the failure:
+
+```
+$ curl -sS -D - -o /dev/null http://<server-ip>:5678/
+HTTP/1.1 200 OK
+Content-Type: text/html; charset=utf-8
+
+$ curl -s http://<server-ip>:5678/ | head -c 300
+... <meta name="n8n:config:rest-endpoint" content="cmVzdA==" ...
+
+$ curl -s -o /dev/null -w "%{http_code}" http://<server-ip>:5678/healthz/readiness
+200
+```
+
+n8n's own readiness endpoint answers 200 and the HTML carries n8n's config
+marker, so the container that holds 5678 is the one this deploy started.
+
+This removes the remaining innocent explanation. #1513 and #1514 were
+redeploys onto an occupied host and #1517 was a fresh server; #1527 is a fresh
+server **and** the port is demonstrably held by this stack's own healthy
+container. The check is reporting the deployed stack as its own conflict.
+
+**Impact beyond a wrong status line.** A deployment left in `paused` is not
+just cosmetic: it needs `stacker resolve` to clear, it misreports in any
+automation that reads deployment state, and it teaches a first-time user that
+the deploy failed when their app is already serving. For a quickstart meant to
+end in "open this URL", that is the whole first impression.
 
 ### Fix direction
 
@@ -769,54 +818,292 @@ other projects.
 
 Not a bug. The resubmit was refused (400, `MARKETPLACE_CONFIG_CONTRACT_SECRET_POLICY_REQUIRED`), so no new version was created and the bake used the only stored one. The refusal was hidden by an output filter on the reporter's side.
 
-## 24. `stacker install` writes a stacker.yml that `stacker deploy` cannot parse
+## 24. ✅ FIXED — the secret redactor masks any key whose name contains "secret", including a boolean flag (found 2026-11-12, fixed 2026-11-12)
 
-**Confirmed, reproduced 2026-11-06, `stacker-cli v0.3.4`.**
+### Observed (2026-11-12)
 
-### Observed
+The template the marketplace serves for `n8n`, read straight from the public
+API:
 
 ```
-stacker install n8n --name n8n-tiktok-demo      # project #813, "Wrote stacker.yml"
-stacker deploy --dry-run
-  ✗ Failed to parse stacker.yml: invalid value at `marketplace.no_secrets_confirmation`:
-    invalid type: string "***REDACTED***", expected a boolean at line 100 column 28
+$ curl -s https://try.direct/stacker/api/templates/n8n
+...
+no_secrets_confirmation  ->  ***REDACTED***
+POSTGRES_PASSWORD        ->  ***REDACTED***
+N8N_ENCRYPTION_KEY       ->  ***REDACTED***
+ADMIN_PASSWORD           ->  ***REDACTED***
 ```
 
-The file the CLI just wrote cannot be read back by the same CLI. Line 102 of the
-generated file is:
+`marketplace.no_secrets_confirmation` is a boolean flag, not a secret. It is
+masked because its name contains the substring "secret", and the replacement
+is a string, so the served `stacker.yml` no longer parses as the schema
+expects.
 
-```yaml
-  no_secrets_confirmation: '***REDACTED***'
+The passwords above are generated per deployment and have no business being
+in the served template either, but masking them at least fails safe. Masking
+the flag fails loud.
+
+### Why it matters
+
+This is what `stacker install <slug>` writes to disk. A first-time user runs
+install, gets a `stacker.yml`, runs the deploy command the CLI itself
+printed, and it refuses to parse. It is the root cause behind gate 2 of the
+CLI-16 video script, which is why that video cannot be filmed as a real run.
+
+Same request, same response: the served template still carries
+`${BASE_PATH}/stacker-project-test` and no `SSH_KEY_PATH`, i.e. the fix
+merged in awesome-selfhosted-stacker (#68) has not reached what the API
+serves. Separate problem, same blast radius for a first run.
+
+### Fixed (2026-11-12)
+
+`src/helpers/redact.rs`: a boolean is never redacted, in all three paths that
+could mask one - the JSON key/value entry form, the JSON direct-key form and
+the YAML mapping. Masking a boolean cannot protect anything and does change
+the value's type, which is the damage here. Numbers are still redacted on
+purpose: a numeric token is conceivable, a boolean secret is not.
+
+Substring matching itself was left alone. Narrowing it is a larger change
+than this bug needs, and the provenance-based approach below is still the
+right direction for a separate pass.
+
+Two regression tests, one per format, written first and confirmed failing
+against the previous code.
+
+**Not verified yet:** that the deployed API stops returning `***REDACTED***`
+for that flag. The fix is on `dev`; re-run
+`curl -s https://try.direct/stacker/api/templates/n8n` after it ships.
+
+### Fix direction (for the wider pass)
+
+Redact by value provenance and an explicit key list, not by substring match
+on the name. Test: a key named `no_secrets_confirmation` with a boolean value
+survives serialization unchanged.
+
+Full install-to-deploy captures from the run that found this live in
+`blog/docs/tiktok-scripts/stacker-cli/captures/CLI-16/findings-real-run.md`.
+
+## 25. 🔴 CONFIRMED — `stacker status` in a project directory reports a different, months-old deployment (found 2026-11-12)
+
+### Observed (2026-11-12, stacker-cli v0.3.6)
+
+Immediately after `stacker deploy --target cloud --key=htz-0 --force-new`
+created deployment **#1527** on server **948** (`<server-ip>`), running
+`stacker status` in that same project directory printed:
+
+```
+✓ Deployment #503 — status: completed
+  Project ID:      84
+  Created:         2026-07-30T08:17:50.085304Z
+
+── Server ─────────────────────────────────
+  Name:            n8n-server (id=290)
+  IP:              <other-server-ip>
 ```
 
-`marketplace.no_secrets_confirmation` is a boolean. Something in the install
-path runs the template through the same redaction that masks secret values, and
-the mask is applied to a non-secret boolean field by name or by blanket policy.
+A deployment from 30 July, on a different server, for a different project id.
+Nothing on screen says the reported deployment is not the one just run.
 
-The password fields in the same file are also `'***REDACTED***'`
-(`ADMIN_PASSWORD`, `N8N_ENCRYPTION_KEY`, `POSTGRES_PASSWORD` at lines 126, 132,
-134, 150). Those are strings, so they parse, and they are presumably intended -
-the values are generated at deploy time. Only the boolean breaks.
+Mechanism, observed in the same run rather than guessed: the deploy renames
+the project to the `name` in `stacker.yml` (`n8n`), which collides with an
+older project of that name on the account. `stacker status` then resolves to
+the older one and reports its newest completed deployment, on a server that
+has since been decommissioned. `stacker agent status` and `stacker agent
+health` resolve through the lock and showed the truth throughout.
 
-### Impact
+### Why it matters
 
-`stacker install <template>` followed by `stacker deploy` - the exact two-command
-path the CLI itself prints as "Deploy with: ..." - fails for any template whose
-stored config carries this field. A new user hits it on their first command pair
-and has no way to know the fix is to delete a line.
+This is the command `SKILL.md` section 11 puts first in the post-deploy
+verification checklist, and the command the deploy itself suggests under
+"Next Steps". Following that advice after a failed deploy returns a green
+`completed` from July. Anyone trusting it concludes the deploy worked.
 
-### Workaround
-
-Delete the `no_secrets_confirmation` line from the generated file. It is a
-marketplace publishing field and has no role in deploying.
+Combined with #20, the two failure modes point opposite ways: the deployment
+that worked is reported `paused`, and the status command reports `completed`
+for a deployment that is not the one in question.
 
 ### Fix direction
 
-Exclude non-secret fields from the redaction pass, or redact booleans to a
-boolean. Test: `stacker install <template>` then `stacker config validate` with
-no edits, for every published template.
+Resolve status from the local deployment lock first, fall back to identity
+only when there is no lock, and name the deployment id and server being
+reported so a mismatch is visible. Test: `stacker status` right after a deploy
+reports that deploy's id.
 
-### Not investigated
+## 26. 🔴 CONFIRMED — a cloud deploy says the SSH key is authorized, and neither that key nor the saved backup key can log in (found 2026-11-12)
 
-Whether this affects every template or only n8n - only n8n was installed. Check
-the stored config of a few others before sizing the fix.
+### Observed (2026-11-12, stacker-cli v0.3.6)
+
+Deployment #1527, server 948, `<server-ip>`. The run printed both of these:
+
+```
+✓ Local SSH backup key saved: ~/.config/stacker/ssh/server-<id>_ed25519
+✓ Your SSH key authorized (~/.ssh/id_ed25519.pub)
+```
+
+Both are refused:
+
+```
+$ ssh -i ~/.config/stacker/ssh/server-<id>_ed25519 root@<server-ip>
+root@<server-ip>: Permission denied (publickey,password).
+
+$ ssh -i ~/.ssh/id_ed25519 root@<server-ip>
+root@<server-ip>: Permission denied (publickey,password).
+```
+
+The server is alive and serving the stack on 5678 (see #20), so this is not an
+unreachable host - it is a host nobody holds a key to.
+
+### Why it matters
+
+`AGENTS.md` in awesome-selfhosted-stacker treats the `✓ Your SSH key
+authorized` line as the gate for testing SSH, and states that a server you
+cannot SSH into is broken infrastructure rather than something to work around.
+Here the line is printed and the access does not exist, which makes the gate
+useless. It also leaves the operator unable to investigate the very failure
+the deploy reported, and unable to clean up the machine by hand.
+
+This may share a root with #16 (`the cloud deployment lock records
+ssh_key: null`) - both are about key material the deploy believes it placed.
+
+### Fix direction
+
+Verify the key after installing it, with one real connection, before printing
+the authorized line; fail the deploy if it does not open. Test: the line is
+printed only after a successful authentication.
+
+## 27. 🟠 CONFIRMED — `stacker install --domain` is accepted and silently ignored (found 2026-11-12)
+
+### Observed (2026-11-12, stacker-cli v0.3.4)
+
+`stacker install n8n --name n8n-demo --domain <a-domain> --region fsn1 --size cpx22`.
+
+`--region` and `--size` land in the written file (`deploy.cloud.region: fsn1`,
+`size: cpx22`). `--domain` does not: `install.inputs.commonDomain` stayed at
+the template default `n8n.example.com`. No warning, exit 0.
+
+`--key` behaves differently again - ignored at install time, honoured at
+deploy time as a credential override.
+
+### Why it matters
+
+A flag the CLI accepts and discards is worse than one it rejects: the
+operator believes the domain is set, and finds out when TLS or the webhook
+URL is wrong. It also forced the CLI-16 video script to film a shorter
+command than the one that reads best, because a typed flag the machine
+ignores cannot go on screen.
+
+### Fix direction
+
+Either write `--domain` into `install.inputs.commonDomain`, or refuse the
+flag where it has no effect. Same question for `--key` at install time.
+Test: a value passed to `--domain` appears in the generated file.
+
+## 28. 🟡 CONFIRMED — install and deploy report different project ids for the same project (found 2026-11-12)
+
+### Observed (2026-11-12, stacker-cli v0.3.4)
+
+In one unbroken run, `stacker install` printed `Installed 'n8n' as project
+#818` and the deploy that followed resolved `n8n-video-demo (id=817)`.
+
+Unexplained. Related to 25, where the deploy renames the project to the
+`stacker.yml` `name` and collides with an older project of that name - but
+that mechanism explains a *stale* resolution, not two different ids inside
+one run.
+
+### Why it matters
+
+Any instruction that says "note your project id" is unreliable, and so is
+any support conversation that asks for it. The video scripts mask both ids
+rather than show either.
+
+### Fix direction
+
+Find which of the two is authoritative and make both commands print it.
+Test: install and the deploy that follows report the same id.
+
+## 29. 🟠 CONFIRMED — `stacker agent install` refuses when `deploy.server.host` is empty, right after a cloud deploy created the server (found 2026-11-12)
+
+### Observed (2026-11-12, stacker-cli v0.3.4)
+
+`stacker deploy --target cloud` created the server and reported its address.
+`stacker agent install`, run next in the same directory, failed because
+`deploy.server.host` in `stacker.yml` is empty - which it is by design for a
+cloud deploy, where the host does not exist until the deploy makes it.
+
+### Why it matters
+
+It is the next step the cloud deploy itself suggests, and the agent is how
+every later operation is meant to run. The operator has to copy the address
+out of the deploy output and edit `stacker.yml` by hand to continue, which is
+exactly the file the tool generates.
+
+### Fix direction
+
+Resolve the host from the deployment lock when `deploy.server.host` is empty,
+the way `agent status` already does. Test: agent install succeeds
+immediately after a cloud deploy with no manual edit.
+
+## 30. 🟠 CONFIRMED — the marketplace serves a template version older than the source repository (found 2026-11-12)
+
+### Observed (2026-11-12)
+
+`curl -s https://try.direct/stacker/api/templates/n8n` returns a template
+carrying `${BASE_PATH}/stacker-project-test` and no `SSH_KEY_PATH`. That is
+the pre-fix shape: the replacement landed on `awesome-selfhosted-stacker`
+`main` earlier the same day (PR 68) and the API still serves the old one.
+
+### Why it matters
+
+`stacker install` writes what the API serves, so a fix merged in the template
+repository does not reach anyone until whatever syncs them runs. In this case
+the stale template points the first deploy at an SSH key that exists only in
+that repository's test fixtures, which is the failure PR 68 was written to
+remove.
+
+### Fix direction
+
+Establish when and by what the catalogue is refreshed from the repository,
+and surface the template's source commit in the API response so a stale copy
+is visible rather than inferred. Test: a template change merged to `main`
+appears in the API within the documented interval.
+
+## 31. ✅ FIXED — `agent deploy-app --image` recreated the container without its published ports (found 2026-11-12, fixed 2026-11-12)
+
+### Observed (2026-11-12, stacker-cli v0.3.4)
+
+`stacker agent deploy-app <app> --image <ref> --force` on a running n8n
+stack: the container came back with `PORTS: -` where it had been
+`5678:5678`, and the port refused connections afterwards. The container also
+drifted out of compose naming. The documented recovery was to call
+`deploy_app` through `agent exec` with `compose_content` and
+`force_config_overwrite`, which is not the command the CLI offers.
+
+### Cause
+
+The request carried no compose. `local_config_files_for_agent_deploy`
+(`src/console/commands/cli/agent.rs`) returns early when no environment
+resolves, and a template-based project resolves none - it declares neither
+`deploy.environment` nor an `environments:` block. With no
+`compose_content`, `--image` is all the agent has, so it recreates the
+container from the image alone and every port, volume and network declared
+in the compose is gone.
+
+Two plausible-looking causes were wrong and worth recording, because both
+read as correct from the source: the missing `deploy.compose_file` branch and
+the missing-compose-file branch are unreachable here.
+`resolve_environment_config` always supplies a conventional
+`docker/<env>/compose.yml` (`src/cli/config_parser.rs`), so the function
+never reaches either - it bails on the environment first. Instrumenting the
+early returns settled it in one run.
+
+### Fixed (2026-11-12)
+
+When no environment resolves, send the compose the deploy generated into
+`.stacker/`. One branch. Projects that do resolve an environment are
+untouched, as are the other early returns. Regression test with the n8n
+template's exact shape, written first and confirmed failing against the
+previous code.
+
+**Not verified yet:** a live update on a running stack. That needs the fix
+shipped and a server; the test covers the request the CLI builds, not the
+agent's handling of it.

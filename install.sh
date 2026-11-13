@@ -3,8 +3,8 @@
 # Stacker CLI installer
 #
 # Usage:
-#   curl -fsSL https://get.stacker.dev/install.sh | bash
-#   curl -fsSL https://get.stacker.dev/install.sh | bash -s -- --channel beta
+#   curl -fsSL https://raw.githubusercontent.com/trydirect/stacker/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/trydirect/stacker/main/install.sh | bash -s -- --channel beta
 #
 # Environment variables:
 #   STACKER_INSTALL_DIR  — where to install (default: /usr/local/bin)
