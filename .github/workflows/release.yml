@@ -17,11 +17,22 @@ jobs:
       SQLX_OFFLINE: true
     strategy:
       matrix:
+        # The Linux runners are pinned, never ubuntu-latest. A release binary
+        # inherits the build image's glibc, and ubuntu-latest moved to Ubuntu
+        # 26.04: the v0.3.5 asset published from it requires GLIBC_2.39, so it
+        # refuses to start on Ubuntu 22.04 (glibc 2.35) and Debian 12 (2.36) -
+        # the two distributions our self-hosting audience actually runs.
+        # Building on 22.04 sets the floor at glibc 2.35 and keeps everything
+        # newer working.
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             asset_os: linux
             asset_arch: x86_64
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset_os: linux
+            asset_arch: aarch64
           - os: macos-latest
             target: x86_64-apple-darwin
             asset_os: darwin

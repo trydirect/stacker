@@ -69,7 +69,9 @@ pub fn redact_sensitive_json_values(value: &mut serde_json::Value) {
 
             if named_key_is_sensitive {
                 if let Some(val) = map.get_mut("value") {
-                    if !val.is_null() {
+                    // A boolean is never secret material, and replacing it
+                    // with a string changes the value's type.
+                    if !val.is_null() && !val.is_boolean() {
                         *val = serde_json::Value::String("***REDACTED***".to_string());
                     }
                 }
@@ -79,7 +81,12 @@ pub fn redact_sensitive_json_values(value: &mut serde_json::Value) {
 
             // Pattern 1: standard JSON keys
             for (key, val) in map.iter_mut() {
-                if is_sensitive_key(key) && !val.is_null() && !val.is_object() && !val.is_array() {
+                if is_sensitive_key(key)
+                    && !val.is_null()
+                    && !val.is_boolean()
+                    && !val.is_object()
+                    && !val.is_array()
+                {
                     *val = serde_json::Value::String("***REDACTED***".to_string());
                 } else {
                     redact_sensitive_json_values(val);
@@ -102,7 +109,7 @@ fn redact_yaml_value(value: &mut serde_yaml::Value) {
         serde_yaml::Value::Mapping(map) => {
             for (key, val) in map.iter_mut() {
                 if let serde_yaml::Value::String(k) = key {
-                    if is_sensitive_key(k) && !val.is_null() {
+                    if is_sensitive_key(k) && !val.is_null() && !val.is_bool() {
                         *val = serde_yaml::Value::String("***REDACTED***".to_string());
                     } else {
                         redact_yaml_value(val);
@@ -315,6 +322,35 @@ mod tests {
         redact_sensitive_json_values(&mut v);
         assert_eq!(v["password"], "***REDACTED***");
         assert_eq!(v["username"], "alice");
+    }
+
+    /// A boolean carries no secret material, and replacing it with a string
+    /// changes the value's type. `marketplace.no_secrets_confirmation` is a
+    /// flag whose name contains "secret": it came back as `***REDACTED***`
+    /// from the public template API, and the served `stacker.yml` then failed
+    /// to parse for anyone running `stacker install`.
+    #[test]
+    fn does_not_redact_boolean_values_json() {
+        let mut v = json!({
+            "no_secrets_confirmation": true,
+            "secret_enabled": false,
+            "api_secret": "shh",
+        });
+        redact_sensitive_json_values(&mut v);
+        assert_eq!(v["no_secrets_confirmation"], json!(true));
+        assert_eq!(v["secret_enabled"], json!(false));
+        assert_eq!(v["api_secret"], "***REDACTED***");
+    }
+
+    #[test]
+    fn does_not_redact_boolean_values_yaml() {
+        let out = redact_yaml_string(
+            "marketplace:\n  no_secrets_confirmation: true\n  api_secret: shh\n",
+        );
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).expect("still parses");
+        let mk = &parsed["marketplace"];
+        assert_eq!(mk["no_secrets_confirmation"], serde_yaml::Value::Bool(true));
+        assert_eq!(mk["api_secret"], serde_yaml::Value::String("***REDACTED***".into()));
     }
 
     #[test]

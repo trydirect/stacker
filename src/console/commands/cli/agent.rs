@@ -908,6 +908,15 @@ fn local_config_files_for_agent_deploy(
     let Some((environment, environment_config)) =
         config.resolve_environment_config(requested_environment)?
     else {
+        // A template-based project declares no environments, so none
+        // resolves and this used to return with no compose at all. The
+        // deploy that created the stack generated one into `.stacker/`;
+        // sending it is what keeps the container's published ports when
+        // `deploy_app` recreates it from a new image.
+        let generated = crate::cli::local_compose::generated_compose_path(project_dir);
+        if generated.exists() {
+            result.compose_content = std::fs::read_to_string(&generated).ok();
+        }
         return Ok(result);
     };
 
@@ -3425,6 +3434,53 @@ environments:
                     .map(|content| content.contains("UPLOAD_IMAGE=syncopia/upload:prod"))
                     .unwrap_or(false)
         }));
+    }
+
+    /// A template-based project resolves no environment at all - no
+    /// `deploy.environment`, no `environments:` block - so this returned
+    /// before it ever looked at a compose file and the request carried none.
+    /// `deploy_app --image ... --force` then recreated the container from the
+    /// image alone and it came back without its published ports
+    /// (`5678:5678` became `PORTS: -`). The compose describing the running
+    /// stack was in `.stacker/` the whole time, written by the deploy.
+    #[test]
+    fn local_config_falls_back_to_the_generated_compose_when_no_environment_resolves() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".stacker")).expect("stacker dir");
+        std::fs::write(
+            root.join(".stacker/docker-compose.yml"),
+            "services:\n  n8n:\n    image: n8nio/n8n:2.45.4\n    ports:\n      - \"5678:5678\"\n",
+        )
+        .expect("generated compose");
+        std::fs::write(
+            root.join("stacker.yml"),
+            r#"
+name: n8n
+project:
+  identity: n8n
+services:
+  - name: n8n
+    image: n8nio/n8n:2.45.4
+    ports:
+      - "5678:5678"
+deploy:
+  target: server
+  server:
+    host: 203.0.113.10
+"#,
+        )
+        .expect("stacker config");
+
+        let config = local_config_files_for_agent_deploy(root, "n8n", None).unwrap();
+
+        let compose = config
+            .compose_content
+            .expect("the generated compose must be sent, or the ports are lost");
+        assert!(
+            compose.contains("5678:5678"),
+            "published ports must survive into the request: {compose}"
+        );
     }
 
     #[test]
