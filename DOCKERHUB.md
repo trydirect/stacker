@@ -101,7 +101,7 @@ volumes:
 ### Install the CLI
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/trydirect/stacker/main/install.sh | bash
+curl -fsSL https://get.stacker.my/install.sh | bash
 ```
 
 ```bash

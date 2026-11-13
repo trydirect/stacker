@@ -18,7 +18,7 @@ brew install trydirect/tap/stacker
 or
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/trydirect/stacker/main/install.sh | bash
+curl -fsSL https://get.stacker.my/install.sh | bash
 ```
 
 Prebuilt binaries for Linux and macOS, x86_64 and arm64, are attached to each

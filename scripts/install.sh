@@ -3,14 +3,19 @@
 # Stacker CLI installer
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/trydirect/stacker/main/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/trydirect/stacker/main/install.sh | bash -s -- --channel beta
+#   curl -fsSL https://get.stacker.my/install.sh | bash
+#   curl -fsSL https://get.stacker.my/install.sh | bash -s -- --channel beta
 #
-# The raw.githubusercontent.com URL is canonical, decided 2026-11-13. A
-# vanity host was considered and dropped: stacker.try.direct/install.sh
-# returns 403 and get.stacker.dev does not resolve, and moving the URL again
-# would mean editing it across the docs, the blog articles and this file a
-# third time. Do not "fix" it back to a prettier host without serving one.
+# get.stacker.my/install.sh is canonical, live since 2026-11-13. It is a
+# Cloudflare Worker that mirrors THIS FILE from the main branch - it holds no
+# copy, so there is nothing here that can drift out of sync. Source and
+# deployment: workers/get-stacker-my/.
+#
+# Two earlier vanity hosts are dead and must not come back:
+# stacker.try.direct/install.sh returns 403, get.stacker.dev does not
+# resolve, and get.try.direct does not resolve either. Before changing this
+# URL again, check the new one actually serves the file - that is how all
+# three of those shipped.
 #
 # Environment variables:
 #   STACKER_INSTALL_DIR  — where to install (default: /usr/local/bin)

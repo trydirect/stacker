@@ -26,17 +26,21 @@ npx wrangler deploy
 
 `wrangler.toml` binds the route `get.stacker.my/*` in the `stacker.my` zone.
 
-## The step that is easy to miss
+## Deployed 2026-11-13
 
-**An existing redirect will win over the Worker.** `get.stacker.my`
-currently answers `301 -> http://stacker.my`, and in Cloudflare's order of
-operations Single Redirects and Page Rule forwarding run *before* Workers.
-If that rule is left in place the Worker never sees the request and nothing
-appears to change.
+Live. Version `3c104d68-e063-4849-b476-129db14ea99a`, account
+`info@optimum-web.com`, route `get.stacker.my/*` in zone `stacker.my`.
 
-Remove or scope that redirect before, or immediately after, deploying. The
-symptom if it is still there is simple: the check below keeps returning
-`301`.
+There was **no redirect rule to remove** - checked in the dashboard, the
+`301 -> http://stacker.my` that this host used to return did not come from
+Rules. The Worker took over without touching anything else.
+
+One thing did look broken for about a minute after deploying: the first
+request returned a cached `301 Moved Permanently` page as the *body*, with
+the Worker's own `content-type: text/x-shellscript` on it. That was
+Cloudflare serving the pre-deploy response out of cache. A request with a
+cache-buster returned the real script immediately, and the cached copy aged
+out on its own. If this happens again after a change, it is cache, not code.
 
 ## Checks
 

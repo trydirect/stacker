@@ -19,10 +19,10 @@ use crate::cli::error::CliError;
 ///
 /// It must be a URL that resolves: the previous one, `get.try.direct`, never
 /// did, so every exported pipeline failed on its install step in someone
-/// else's repository (BUGS.md 32). `get.stacker.my` is the intended home and
-/// takes over here once it mirrors this file rather than redirecting to the
-/// marketing site.
-const INSTALLER_URL: &str = "https://raw.githubusercontent.com/trydirect/stacker/main/install.sh";
+/// else's repository (BUGS.md 32). `get.stacker.my` mirrors `install.sh` from
+/// the main branch through a Cloudflare Worker (`workers/get-stacker-my/`),
+/// so there is no second copy to drift.
+const INSTALLER_URL: &str = "https://get.stacker.my/install.sh";
 
 const GITHUB_ACTIONS_TEMPLATE: &str = r#"name: Deploy {{ name }} with Stacker
 
