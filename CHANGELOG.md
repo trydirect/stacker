@@ -22,6 +22,11 @@ All notable changes to this project will be documented in this file.
 
 - `stacker.my/blog` and its article URLs serve the blog pages again: the website image no longer runs `serve` in SPA mode, which rewrote every blog path to the landing page.
 
+### Fixed — Website blog links and asset caching
+
+- The blog index's article and Blog links work from `stacker.my/blog`: they are root-absolute, so they no longer resolve against `/` when the page is served without a trailing slash.
+- Built HTML references `styles.css` and `main.js` with a content-hashed `?v=`; CDN and browser caches can no longer keep serving the previous stylesheet across deploys.
+
 ## [0.3.5] — 2026-10-19
 
 ### Added — Managed server billing
