@@ -1387,6 +1387,11 @@ of the file byte-identical, the way a config edit should behave.
 there is no flag to ask for plain `nginx` instead. `stacker proxy add --help`
 offers only `--upstream` and `--ssl`.
 
+**Where to start:** `src/console/commands/cli/proxy.rs:264` prints the
+"Updated proxy config in" line, so the write happens just above it. The fix
+is an in-place edit of the `proxy:` block instead of serialising the parsed
+document back out.
+
 ## 38. 🟠 OPEN — `proxy add` cannot configure the remote proxy: `vault_unavailable` (found 2026-11-14)
 
 **Severity:** blocks the "configure a reverse proxy on your own server from
@@ -1437,6 +1442,14 @@ Error: Configuration validation error: 1 variable(s) referenced in stacker.yml a
 Exit code is 1, so this also fails any pipeline that gates on
 `secrets validate`. Strip comments before scanning for `${VAR}`.
 
+**Where to start:** the message comes from
+`src/console/commands/cli/secrets.rs:1445`. Strip comment lines (or reuse
+`mask_variable_references`, `src/cli/config_parser.rs:2731`) before
+collecting `${VAR}` names.
+
+**Expected:** a variable that appears only inside a `#` comment is not a
+reference and must not fail validation.
+
 ## 40. 🟢 OPEN — `agent logs` and `logs` disagree on their own interface (found 2026-11-14)
 
 `stacker logs` takes no positional app and uses `--service` plus `--tail`;
@@ -1455,6 +1468,13 @@ Both work in their own form (`stacker logs --service n8n --tail 20`,
 but it makes the two commands impossible to teach together, and the
 documented form `stacker agent logs my-app --lines 200` does not exist.
 
+**Where to start:** `src/console/commands/cli/logs.rs:16` defines
+`LogsCommand` with `--service`/`--tail`; the agent variant is in
+`src/console/commands/cli/agent.rs`.
+
+**Expected:** one spelling for both. Whichever wins, `--tail` and `--lines`
+should not be a coin flip, and the form in the docs must exist.
+
 ## 41. 🟢 OPEN — `stacker find` glues the price to the raw billing enum (found 2026-11-14)
 
 ```
@@ -1467,6 +1487,14 @@ The paid row prints `$7.00deployment_daily`: no separator between amount and
 period, and the period is the internal enum rather than a word. It also
 overflows the PLAN column and pushes DESCRIPTION out of alignment. This is
 the first thing a new user sees when they search the catalogue.
+
+**Where to start:** the table is printed in
+`src/console/commands/cli/marketplace.rs:64` (and again at `:142` for
+`templates`).
+
+**Expected:** `$7.00 / day` or `$7.00 daily`, a separator between amount and
+period, the enum translated to a word, and the column width respected so
+DESCRIPTION stays aligned.
 
 ## 42. 🟠 OPEN — `proxy.type: nginx` silently deploys nginx-proxy-manager (found 2026-11-14)
 
@@ -1488,6 +1516,15 @@ a `type: none`, with no flag to ask for plain nginx.
 Either `nginx` should deploy nginx, or the config reference and the deploy
 output should say that `nginx` means NPM here. Right now `config validate`
 accepts a value the deploy does not honour.
+
+**Where to start:** `src/cli/proxy_manager.rs:154` maps the string `nginx` to
+`ProxyType::Nginx`, and `src/cli/compose_service_sync.rs:36` then branches on
+`proxy.proxy_type != ProxyType::NginxProxyManager`. Find where a stack whose
+type is `Nginx` still ends up on the NPM path and either honour the declared
+type or reject it with a message.
+
+**Expected:** `type: nginx` deploys nginx, or `config validate` refuses the
+value and names what is supported.
 
 ## 43. 🟠 OPEN — an `upstream` with a scheme produces a broken proxy config and HTTP 500 (found 2026-11-14)
 
@@ -1592,3 +1629,12 @@ exactly the manual step the tool exists to avoid.
 
 Adding a *new* domain does work: the new entry is created on the next deploy.
 Only updates to an existing one are ignored.
+
+**Where to start:** the agent command is `configure_proxy`
+(`src/forms/status_panel.rs:540`). It creates an entry; nothing compares an
+existing entry against the declared `proxy.domains`.
+
+**Expected:** a deploy reconciles the declared domains - create what is
+missing, update what differs, and say which it did. Failing that, ship
+`stacker proxy update` and `stacker proxy remove` so a wrong entry can be
+repaired without the NPM UI.
