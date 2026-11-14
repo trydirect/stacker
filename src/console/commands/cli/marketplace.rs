@@ -70,7 +70,7 @@ impl CallableTrait for MarketplaceTemplatesCommand {
                 truncate(&template.slug, 22),
                 truncate(&template.name, 26),
                 truncate(template.creator_name.as_deref().unwrap_or("-"), 18),
-                display_plan(template),
+                plan_cell(template),
                 truncate(template.description.as_deref().unwrap_or(""), 26),
             );
         }
@@ -148,7 +148,7 @@ impl CallableTrait for MarketplaceFindCommand {
                 truncate(&template.slug, 22),
                 truncate(&template.name, 26),
                 truncate(template.creator_name.as_deref().unwrap_or("-"), 18),
-                display_plan(template),
+                plan_cell(template),
                 truncate(template.description.as_deref().unwrap_or(""), 26),
             );
         }
@@ -1364,11 +1364,16 @@ fn display_plan(template: &MarketplaceTemplate) -> String {
         if price > 0.0 {
             let cycle = template.billing_cycle.as_deref().unwrap_or("/mo");
             let cycle = match cycle {
-                "one_time" | "one-time" | "once" | "free" => "",
-                "monthly" | "month" | "/mo" => "/mo",
-                "yearly" | "year" | "/yr" => "/yr",
-                "per_install" | "per-install" => "/install",
-                other => other,
+                "one_time" | "one-time" | "once" | "free" => String::new(),
+                "monthly" | "month" | "/mo" => "/mo".to_string(),
+                "yearly" | "year" | "/yr" => "/yr".to_string(),
+                "per_install" | "per-install" => "/install".to_string(),
+                "deployment_daily" | "deployment-daily" | "daily" | "day" => "/day".to_string(),
+                // An unrecognised period still gets a separator: the raw enum
+                // glued to the amount (`$7.00deployment_daily`) was unreadable
+                // (BUGS.md #41).
+                other if other.starts_with('/') => other.to_string(),
+                other => format!("/{}", other),
             };
             return format!("${:.2}{}", price, cycle);
         }
@@ -1382,6 +1387,12 @@ fn display_plan(template: &MarketplaceTemplate) -> String {
         return plan.to_string();
     }
     "free".to_string()
+}
+
+/// The PLAN table cell: [`display_plan`] clamped to the column width so a long
+/// plan name cannot push DESCRIPTION out of alignment (BUGS.md #41).
+fn plan_cell(template: &MarketplaceTemplate) -> String {
+    truncate(&display_plan(template), 14)
 }
 
 /// Truncate a string to `max_len` characters, adding "..." if truncated.
@@ -1398,7 +1409,8 @@ fn truncate(s: &str, max_len: usize) -> String {
 mod tests {
     use super::{
         apply_install_inputs_to_deploy_form, display_plan, marketplace_template_matches_slug,
-        resolve_install_inputs, response_stack_definition, write_install_flags, InstallFileFlags,
+        plan_cell, resolve_install_inputs, response_stack_definition, write_install_flags,
+        InstallFileFlags,
     };
     use crate::cli::stacker_client::{
         MarketplaceInstallResponse, MarketplaceTemplate, ProjectInfo,
@@ -1674,5 +1686,36 @@ mod tests {
 
         t.billing_cycle = None;
         assert_eq!(display_plan(&t), "$5.00/mo");
+    }
+
+    // BUGS.md #41: the paid catalogue row printed `$7.00deployment_daily` —
+    // no separator between amount and period, and the period was the raw
+    // internal enum instead of a word.
+    #[test]
+    fn display_plan_separates_price_from_deployment_daily_period() {
+        let mut t = marketplace_template("n8n-official-release");
+        t.price = Some(7.0);
+        t.billing_cycle = Some("deployment_daily".to_string());
+        assert_eq!(display_plan(&t), "$7.00/day");
+    }
+
+    #[test]
+    fn display_plan_separates_price_from_unknown_period() {
+        let mut t = marketplace_template("x");
+        t.price = Some(7.0);
+        t.billing_cycle = Some("weekly".to_string());
+        assert_eq!(display_plan(&t), "$7.00/weekly");
+    }
+
+    #[test]
+    fn plan_cell_never_overflows_the_plan_column() {
+        let mut t = marketplace_template("x");
+        t.billing_cycle = Some("deployment_daily".to_string());
+        t.price = Some(7.0);
+        assert_eq!(plan_cell(&t), "$7.00/day");
+
+        t.price = None;
+        t.required_plan_name = Some("an-extremely-long-enterprise-plan".to_string());
+        assert!(plan_cell(&t).chars().count() <= 14);
     }
 }
