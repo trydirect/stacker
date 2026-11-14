@@ -1417,8 +1417,29 @@ so this is not a stale agent.
 command says up front that proxy configuration needs something the agent does
 not have, instead of half-applying and deferring to a later deploy.
 
-**Not verified:** whether the next `stacker deploy` does in fact configure the
-proxy, as the message promises. I restored the file instead of deploying.
+**The deploy path does work.** Declaring the same domain in
+`proxy.domains` and running `stacker deploy` configured NPM on the server:
+the host file was generated and the hostname served the app. So the proxy
+feature is not dead - only the `proxy add` command's remote half is.
+
+**Re-tested with NPM already running (2026-11-14).** The first run happened
+on a server with no proxy at all (`proxy detect` said `None`), so the obvious
+theory was that `proxy add` needs an existing NPM. It does not help: with
+`nginx-proxy-manager` up and `proxy detect` reporting it, a third domain
+produced exactly the same failure, verbatim `Vault is unavailable while
+resolving NPM credentials (vault_unavailable)`.
+
+**Likely a regression, not a never-worked path.** The owner reports having
+verified `proxy add` by hand before, and the agent advertises
+`npm_credential_source=vault`, so the credential read is a normal part of
+the flow that used to resolve. **Я предполагаю**, that a service token with
+the default 32-day TTL has expired again - the same failure shape as the
+stacker dev token that died around 2026-10-05 - which would break
+`proxy add` on every server at once while leaving the deploy path (which
+does not take this route) working. Not verified: checking that means reading
+Vault's health on production, which needs the owner's per-action consent.
+The session this was found in was logged into `https://try.direct/stacker`,
+i.e. production.
 
 ## 39. 🟢 OPEN — `secrets validate` reads `${VAR}` references out of comments (found 2026-11-14)
 
