@@ -367,15 +367,9 @@ fn print_proxy_config_persistence(result: Option<&ProxyConfigPersistence>) {
     }
 }
 
-/// BUGS.md #42: on remote targets `proxy.type: nginx` is served by the managed
-/// Nginx Proxy Manager — the deploy substitutes it, so say so up front.
-pub const PROXY_NGINX_SUBSTITUTION_NOTICE: &str =
-    "proxy.type 'nginx' is served by the managed Nginx Proxy Manager on cloud/server \
-     targets (domain routing and SSL are configured there)";
-
 /// Render the snippet for a proxy type the remote agent cannot configure and
 /// explain how to apply it (BUGS.md #37: `proxy add` forced
-/// nginx-proxy-manager with no way to ask for plain nginx).
+/// nginx-proxy-manager with no way to ask for anything else).
 fn print_manual_proxy_config(
     proxy_type: ProxyType,
     domain_config: &DomainConfig,
@@ -398,13 +392,7 @@ fn print_manual_proxy_config(
                 domain
             );
         }
-        ProxyType::Nginx => {
-            eprintln!(
-                "✓ Domain {} saved to stacker.yml; {} — configured on the next `stacker deploy`.",
-                domain, PROXY_NGINX_SUBSTITUTION_NOTICE
-            );
-        }
-        ProxyType::NginxProxyManager | ProxyType::None => {
+        _ => {
             eprintln!(
                 "✓ Domain {} saved to stacker.yml; Nginx Proxy Manager is deployed and \
                  configured on the next `stacker deploy`.",
@@ -541,6 +529,15 @@ impl CallableTrait for ProxyAddCommand {
             build_domain_config(&self.domain, self.upstream.as_deref(), self.ssl.as_deref());
         let use_agent = self.deployment.is_some() || is_cloud_or_remote(&project_dir)?;
         if use_agent {
+            // BUGS.md #42: `proxy.type: nginx` is a local-deploy type — refuse
+            // on remote deployments before touching the config, instead of
+            // silently substituting the managed Nginx Proxy Manager.
+            if requested_type == Some(ProxyType::Nginx) {
+                return Err(Box::new(CliError::ConfigValidation(
+                    crate::cli::config_parser::PROXY_NGINX_REMOTE_UNSUPPORTED.to_string(),
+                )));
+            }
+
             // Persist to stacker.yml first — the local config update does not
             // depend on the remote agent or Vault. If the agent call later
             // fails, the user's config is still saved.
@@ -554,19 +551,12 @@ impl CallableTrait for ProxyAddCommand {
                 print_proxy_config_persistence(persistence.as_ref());
             }
 
-            if !matches!(proxy_type, ProxyType::Nginx | ProxyType::NginxProxyManager) {
+            if proxy_type != ProxyType::NginxProxyManager {
                 // The remote agent configures the managed Nginx Proxy Manager
                 // only; caddy/traefik are recorded and rendered for manual
                 // application instead of being silently flipped to NPM.
                 print_manual_proxy_config(proxy_type, &domain_config, &self.domain)?;
                 return Ok(());
-            }
-
-            // BUGS.md #42: on remote targets `proxy.type: nginx` is served by
-            // the managed Nginx Proxy Manager — announced, not substituted
-            // silently.
-            if proxy_type == ProxyType::Nginx {
-                eprintln!("ℹ {}", PROXY_NGINX_SUBSTITUTION_NOTICE);
             }
 
             let upstream = self.upstream.as_deref().unwrap_or("app:8080");

@@ -74,7 +74,10 @@ pub fn full_config_reference_example() -> &'static str {
 #     depends_on: []
 #
 # proxy:
-#   # type: none | nginx | traefik
+#   # type: none | nginx | nginx-proxy-manager | traefik | caddy
+#   # 'nginx' generates local proxy config only — cloud/server deploys need
+#   # 'nginx-proxy-manager' (the managed Nginx Proxy Manager), 'traefik' or
+#   # 'none' ('config validate' refuses 'nginx' there, code E009).
 #   type: "nginx"
 #   auto_detect: true
 #   domains:

@@ -97,6 +97,15 @@ impl fmt::Display for ProxyType {
     }
 }
 
+/// `proxy.type: nginx` is a local-deploy type: remote deploys run the managed
+/// Nginx Proxy Manager, and substituting it silently for `nginx` contradicted
+/// the reference (docs/STACKER_YML_REFERENCE.md:558-566; BUGS.md #42). This is
+/// the refusal message used by `config validate`, `stacker deploy` and
+/// `stacker proxy add`.
+pub const PROXY_NGINX_REMOTE_UNSUPPORTED: &str = "proxy.type 'nginx' is not supported on remote \
+    deploys; use 'nginx-proxy-manager' (the managed Nginx Proxy Manager), 'traefik' or 'none'. \
+    'nginx' generates local proxy configuration only";
+
 impl Default for ProxyType {
     fn default() -> Self {
         Self::None
@@ -2373,6 +2382,42 @@ impl StackerConfig {
                         });
                     }
                 }
+            }
+        }
+
+        // E009 — `proxy.type: nginx` is a local-deploy type. On cloud/server
+        // deploys the platform-managed reverse proxy is Nginx Proxy Manager,
+        // and substituting it silently for `nginx` contradicted the reference
+        // (docs/STACKER_YML_REFERENCE.md:558-566; BUGS.md #42). Refuse the
+        // value for remote targets and name what is supported instead.
+        if self.proxy.proxy_type == ProxyType::Nginx {
+            let mut remote: Vec<String> = Vec::new();
+            if self.deploy.uses_named_targets() {
+                for (name, profile) in &self.deploy.targets {
+                    if matches!(
+                        profile.inferred_target(name),
+                        Ok(DeployTarget::Cloud | DeployTarget::Server)
+                    ) {
+                        remote.push(format!("deploy.targets.{name}"));
+                    }
+                }
+            } else if matches!(
+                self.deploy.target,
+                DeployTarget::Cloud | DeployTarget::Server
+            ) {
+                remote.push("deploy".to_string());
+            }
+            if !remote.is_empty() {
+                issues.push(ValidationIssue {
+                    severity: Severity::Error,
+                    code: "E009".to_string(),
+                    message: format!(
+                        "{} — declared for: {}",
+                        PROXY_NGINX_REMOTE_UNSUPPORTED,
+                        remote.join(", ")
+                    ),
+                    field: Some("proxy.type".to_string()),
+                });
             }
         }
 
@@ -4657,6 +4702,73 @@ app:
                 .iter()
                 .any(|e| e.field.as_deref() == Some("deploy.cloud.provider")),
             "Expected field reference to deploy.cloud.provider"
+        );
+    }
+
+    // --- E009: proxy.type nginx is a local-deploy type -----------------
+    //
+    // BUGS.md #42: a stack declaring `proxy.type: nginx` (the reference's
+    // "Standard Nginx reverse proxy", docs/STACKER_YML_REFERENCE.md:558-566)
+    // had Nginx Proxy Manager deployed in its place, silently. The remote
+    // deploy runs the managed NPM, so `nginx` must be refused there with the
+    // supported values named — not substituted.
+    #[test]
+    fn test_validate_semantics_rejects_nginx_proxy_for_remote_targets() {
+        for target in [DeployTarget::Cloud, DeployTarget::Server] {
+            let config = ConfigBuilder::new()
+                .name("test")
+                .deploy_target(target)
+                .proxy(ProxyConfig {
+                    proxy_type: ProxyType::Nginx,
+                    auto_detect: false,
+                    domains: Vec::new(),
+                    config: None,
+                })
+                .build()
+                .unwrap();
+
+            let issues = config.validate_semantics();
+            assert!(
+                issues.iter().any(|i| i.code == "E009"
+                    && i.severity == Severity::Error
+                    && i.message.contains("nginx-proxy-manager")),
+                "expected E009 naming supported proxy types for {target:?}: {issues:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_semantics_allows_nginx_proxy_locally_and_nginx_proxy_manager_remotely() {
+        let local = ConfigBuilder::new()
+            .name("test")
+            .deploy_target(DeployTarget::Local)
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::Nginx,
+                auto_detect: false,
+                domains: Vec::new(),
+                config: None,
+            })
+            .build()
+            .unwrap();
+        assert!(
+            !local.validate_semantics().iter().any(|i| i.code == "E009"),
+            "nginx must stay valid for local deploys"
+        );
+
+        let remote = ConfigBuilder::new()
+            .name("test")
+            .deploy_target(DeployTarget::Cloud)
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::NginxProxyManager,
+                auto_detect: false,
+                domains: Vec::new(),
+                config: None,
+            })
+            .build()
+            .unwrap();
+        assert!(
+            !remote.validate_semantics().iter().any(|i| i.code == "E009"),
+            "nginx-proxy-manager must stay valid for remote deploys"
         );
     }
 

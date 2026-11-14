@@ -11,8 +11,8 @@ use crate::cli::cloud_env;
 use crate::cli::compose_targets::extract_compose_secret_target_services;
 use crate::cli::config_bundle::build_config_bundle;
 use crate::cli::config_parser::{
-    AiProviderType, CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, RegistryConfig,
-    ServerConfig, StackerConfig,
+    AiProviderType, CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, ProxyType,
+    RegistryConfig, ServerConfig, StackerConfig,
 };
 use crate::cli::credentials::{CredentialStore, CredentialsManager, StoredCredentials};
 use crate::cli::deployment_lock::DeploymentLock;
@@ -295,6 +295,25 @@ fn resolve_project_relative_path(project_dir: &Path, path: &Path) -> PathBuf {
     } else {
         project_dir.join(path)
     }
+}
+
+/// Refuse `proxy.type: nginx` on remote targets (BUGS.md #42): the reference
+/// defines it as "Standard Nginx reverse proxy" — local config generation —
+/// while cloud/server deploys run the managed Nginx Proxy Manager. The deploy
+/// used to substitute it silently; now it stops with the supported values
+/// named (same text as `config validate` E009).
+fn ensure_proxy_type_supported_for_target(
+    proxy_type: &ProxyType,
+    deploy_target: DeployTarget,
+) -> Result<(), CliError> {
+    if *proxy_type == ProxyType::Nginx
+        && matches!(deploy_target, DeployTarget::Cloud | DeployTarget::Server)
+    {
+        return Err(CliError::ConfigValidation(
+            crate::cli::config_parser::PROXY_NGINX_REMOTE_UNSUPPORTED.to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn ensure_env_file_from_example(env_path: &Path, source: &str) -> Result<(), CliError> {
@@ -3999,6 +4018,10 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         );
     }
 
+    // BUGS.md #42: `proxy.type: nginx` is a local-deploy type; remote deploys
+    // run the managed Nginx Proxy Manager. Refuse instead of substituting.
+    ensure_proxy_type_supported_for_target(&config.proxy.proxy_type, deploy_target)?;
+
     let config_bundle = if matches!(deploy_target, DeployTarget::Cloud | DeployTarget::Server) {
         // Bind-mount config files and the env file are not environment-specific,
         // so bundle them on every cloud/server deploy. When no environment profile
@@ -5528,6 +5551,31 @@ mod tests {
     use crate::cli::install_runner::CommandOutput;
     use std::sync::Mutex;
     use tempfile::TempDir;
+
+    // BUGS.md #42: `proxy.type: nginx` had Nginx Proxy Manager deployed in its
+    // place, silently, on remote targets — now the deploy refuses and names
+    // what is supported.
+    #[test]
+    fn ensure_proxy_type_supported_for_target_refuses_nginx_remotely() {
+        for target in [DeployTarget::Cloud, DeployTarget::Server] {
+            let err = ensure_proxy_type_supported_for_target(&ProxyType::Nginx, target)
+                .expect_err("nginx must be refused on remote targets");
+            assert!(
+                err.to_string().contains("nginx-proxy-manager"),
+                "refusal must name supported values: {err}"
+            );
+        }
+        for target in [DeployTarget::Cloud, DeployTarget::Server] {
+            ensure_proxy_type_supported_for_target(&ProxyType::NginxProxyManager, target)
+                .expect("nginx-proxy-manager is the managed remote proxy");
+            ensure_proxy_type_supported_for_target(&ProxyType::Traefik, target)
+                .expect("traefik deploys via labels");
+            ensure_proxy_type_supported_for_target(&ProxyType::None, target)
+                .expect("none is bring-your-own");
+        }
+        ensure_proxy_type_supported_for_target(&ProxyType::Nginx, DeployTarget::Local)
+            .expect("nginx stays valid for local deploys");
+    }
 
     // ── compose_env_keys ───────────────────────────────────────────────────
 
