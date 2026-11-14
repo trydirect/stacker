@@ -1350,3 +1350,120 @@ clippy warnings and `build.rs:37`, with no behaviour change. Test:
 `cargo clippy -- -D warnings` and `cargo fmt -- --check` pass on a clean
 tree. Alternatively pin the toolchain in `rust-toolchain.toml`, but the
 lints are real, so the cleanup is the honest fix.
+
+## 37. 🟠 OPEN — `stacker proxy add` rewrites the whole `stacker.yml` and drops every comment (found 2026-11-14)
+
+**Severity:** high for anyone whose `stacker.yml` is hand-authored, which is
+every template in the catalogue.
+
+**What happens.** One `proxy add` call round-trips the entire file through a
+YAML serializer. The proxy entry it adds is correct, but everything else in
+the file is rewritten: all 14 comment lines are gone, quoting is normalised
+(`"5678:5678"` becomes `5678:5678`, `version: "2.0.0"` becomes
+`version: 2.0.0`), inline lists are expanded one item per line, blank lines
+between sections are removed, and escaped regexes lose their quotes
+(`pattern: "^[^@\\s\"]+@..."` becomes `pattern: ^[^@\s"]+@...`).
+
+**Reproduce** (against the n8n template from `awesome-selfhosted-stacker`):
+
+```
+stacker proxy add n8n.example.com --upstream http://n8n:5678 --ssl off
+```
+
+```
+✓ Updated proxy config in .../stacker.yml
+  Backup written to .../stacker.yml.bak
+```
+
+The backup is real and complete, so nothing is lost permanently, but the
+working file no longer explains itself. For a published template whose
+comments are its documentation, the command is destructive in practice.
+
+**Expected.** Insert or update the `proxy:` block in place and leave the rest
+of the file byte-identical, the way a config edit should behave.
+
+**Also in the same output:** the command chose
+`proxy.type: nginx-proxy-manager` on a stack that had `type: none`, and
+there is no flag to ask for plain `nginx` instead. `stacker proxy add --help`
+offers only `--upstream` and `--ssl`.
+
+## 38. 🟠 OPEN — `proxy add` cannot configure the remote proxy: `vault_unavailable` (found 2026-11-14)
+
+**Severity:** blocks the "configure a reverse proxy on your own server from
+your laptop" flow end to end.
+
+**What happens.** After writing the local config, the command asks the agent
+to configure the proxy on the server and the agent refuses:
+
+```
+  ⚠ Checking active connections — skipped
+  ⚠ Connection check skipped (agent could not verify active connections)
+  ✗ Configuring proxy for n8n — Vault is unavailable while resolving NPM credentials (vault_unavailable)
+  ⚠ Proxy config saved locally, but remote NPM configuration failed: Agent command '...' failed: Vault is unavailable while resolving NPM credentials (vault_unavailable)
+    The proxy will be configured on the remote server on the next deploy.
+```
+
+Seen on a server provisioned the same day by `stacker deploy --target cloud`,
+with the agent online (`stacker deployment state` reports
+`agent.status: online`, capabilities include `npm_credential_source=vault`),
+so this is not a stale agent.
+
+**Expected.** Either the agent resolves the credentials it advertises, or the
+command says up front that proxy configuration needs something the agent does
+not have, instead of half-applying and deferring to a later deploy.
+
+**Not verified:** whether the next `stacker deploy` does in fact configure the
+proxy, as the message promises. I restored the file instead of deploying.
+
+## 39. 🟢 OPEN — `secrets validate` reads `${VAR}` references out of comments (found 2026-11-14)
+
+The validator fails the whole stack because of a variable that appears only
+inside a YAML comment:
+
+```
+$ stacker secrets validate
+  ✓ ADMIN_EMAIL
+  ...
+  ✗ BASE_PATH  (not set)
+Error: Configuration validation error: 1 variable(s) referenced in stacker.yml are not set: BASE_PATH
+```
+
+`BASE_PATH` occurs exactly once in the file, on a comment line:
+
+```yaml
+    # ${BASE_PATH}/stacker-project-test, a key from this repository's test
+```
+
+Exit code is 1, so this also fails any pipeline that gates on
+`secrets validate`. Strip comments before scanning for `${VAR}`.
+
+## 40. 🟢 OPEN — `agent logs` and `logs` disagree on their own interface (found 2026-11-14)
+
+`stacker logs` takes no positional app and uses `--service` plus `--tail`;
+`stacker agent logs` takes a positional `<APP>` and accepts neither `--lines`
+nor `--tail`:
+
+```
+$ stacker logs n8n --lines 25
+error: unexpected argument 'n8n' found
+$ stacker agent logs n8n --lines 25
+error: unexpected argument '--lines' found
+```
+
+Both work in their own form (`stacker logs --service n8n --tail 20`,
+`stacker agent logs n8n`), so this is interface drift rather than a defect,
+but it makes the two commands impossible to teach together, and the
+documented form `stacker agent logs my-app --lines 200` does not exist.
+
+## 41. 🟢 OPEN — `stacker find` glues the price to the raw billing enum (found 2026-11-14)
+
+```
+ITEM                     NAME                         VENDOR               PLAN           DESCRIPTION
+n8n                      n8n                          Optimum              free           The Open-Source, Low-Code…
+n8n-official-release     N8n official release         Kirill Palnitsky     $7.00deployment_daily This is a clean n8n insta…
+```
+
+The paid row prints `$7.00deployment_daily`: no separator between amount and
+period, and the period is the internal enum rather than a word. It also
+overflows the PLAN column and pushes DESCRIPTION out of alignment. This is
+the first thing a new user sees when they search the catalogue.
