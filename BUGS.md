@@ -1536,6 +1536,40 @@ The bare form serves the real application: the response carries n8n's own
 JSON, while the bare IP still shows the proxy's "Default Site" page. So the
 only thing wrong is the scheme the help tells you to pass.
 
+**Root cause: the correct code exists, is tested, and is not the code that
+runs.** `src/cli/proxy_manager.rs:353` normalises exactly this:
+
+```rust
+fn proxy_pass_target(upstream: &str) -> String {
+    if upstream.starts_with("http://") || upstream.starts_with("https://") {
+        upstream.to_string()
+    } else {
+        format!("http://{}", upstream)
+    }
+}
+```
+
+and `src/cli/proxy_manager.rs:606` is a test named
+`test_generate_nginx_server_block_keeps_upstream_scheme` whose second
+assertion is literally
+
+```rust
+assert!(!block.contains("proxy_pass http://http://app:8080;"));
+```
+
+That function is only reached from `generate_nginx_configs`
+(`proxy_manager.rs:370`), the writer for **plain nginx files**. The deploy
+takes the nginx-proxy-manager branch instead (bug 42), which ships
+`forward_host` and `forward_port` to the agent
+(`src/forms/status_panel.rs:180-182`) - two fields where the host must be
+bare and the port is separate. Nothing normalises the upstream on that path,
+so the scheme lands inside `forward_host`.
+
+So 30 passing tests in `proxy_manager.rs` say nothing about the path users
+actually hit, and the fix is to normalise in the NPM payload the way
+`proxy_pass_target` already does - or to stop routing `type: nginx` to NPM,
+which removes this bug and bug 42 together.
+
 ## 44. 🟠 OPEN — a changed `proxy.domains` upstream is never applied on redeploy (found 2026-11-14)
 
 The proxy entry is created on the first deploy and then left alone. Changing
