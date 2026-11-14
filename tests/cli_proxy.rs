@@ -58,3 +58,23 @@ fn test_proxy_add_help_shows_options() {
         .stdout(predicate::str::contains("--upstream"))
         .stdout(predicate::str::contains("--ssl"));
 }
+
+// BUGS.md #37: `proxy add` hardcoded nginx-proxy-manager on the remote flow
+// with no way to ask for plain nginx — `--type` must exist and parse.
+#[test]
+fn test_proxy_add_accepts_type_flag() {
+    stacker_cmd()
+        .args(["proxy", "add", "example.com", "--type", "nginx", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--type"));
+}
+
+#[test]
+fn test_proxy_add_rejects_unknown_type() {
+    stacker_cmd()
+        .args(["proxy", "add", "example.com", "--type", "haproxy"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("possible values"));
+}

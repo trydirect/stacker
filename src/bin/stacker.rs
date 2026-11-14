@@ -1820,6 +1820,14 @@ enum ProxyCommands {
         /// SSL mode: auto, manual, off
         #[arg(long)]
         ssl: Option<String>,
+        /// Proxy type to record in stacker.yml (default: nginx locally,
+        /// nginx-proxy-manager on remote deployments)
+        #[arg(
+            long = "type",
+            value_name = "TYPE",
+            value_parser = ["nginx", "nginx-proxy-manager", "npm", "traefik", "caddy"]
+        )]
+        proxy_type: Option<String>,
     },
     /// Detect existing reverse-proxy containers
     Detect {
@@ -2355,10 +2363,12 @@ fn get_command(
                 domain,
                 upstream,
                 ssl,
+                proxy_type,
             } => Box::new(
                 stacker::console::commands::cli::proxy::ProxyAddCommand::new(
                     domain, upstream, ssl, false, false, None,
-                ),
+                )
+                .with_proxy_type(proxy_type),
             ),
             ProxyCommands::Detect { json, deployment } => Box::new(
                 stacker::console::commands::cli::proxy::ProxyDetectCommand::new(json, deployment),
