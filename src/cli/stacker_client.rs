@@ -4452,7 +4452,7 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
                 };
                 serde_json::json!({
                     "domain": d.domain,
-                    "upstream": d.upstream,
+                    "upstream": strip_url_scheme(&d.upstream),
                     "ssl": ssl,
                 })
             })
@@ -4668,6 +4668,25 @@ pub fn build_server_deploy_form_with_options(
     }
 
     form
+}
+
+/// Drop a leading `scheme://` from a proxy upstream (BUGS.md #43). The CLI
+/// help encourages `http://app:8080`, but the proxy config generators split
+/// the value into host and port — a scheme left in the host produced
+/// `proxy_pass http://http://n8n:5678` and HTTP 500 on every request.
+fn strip_url_scheme(upstream: &str) -> String {
+    let trimmed = upstream.trim();
+    match trimmed.split_once("://") {
+        Some((scheme, rest))
+            if !scheme.is_empty()
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) =>
+        {
+            rest.to_string()
+        }
+        _ => trimmed.to_string(),
+    }
 }
 
 fn remove_extended_feature(form: &mut serde_json::Value, code: &str) {
@@ -5150,6 +5169,43 @@ mod tests {
         assert_eq!(domains[0]["ssl"], "auto");
         assert_eq!(domains[1]["domain"], "api.example.com");
         assert_eq!(domains[1]["ssl"], "off");
+    }
+
+    #[test]
+    fn test_build_deploy_form_strips_scheme_from_proxy_upstream() {
+        // BUGS.md #43: the CLI's own help encouraged `http://app:8080`, but the
+        // proxy config generators split upstream into host and port — a scheme
+        // left in the host produced `proxy_pass http://http://n8n:5678` and
+        // HTTP 500 on every request.
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::NginxProxyManager,
+                auto_detect: false,
+                domains: vec![crate::cli::config_parser::DomainConfig {
+                    domain: "n8n.example.com".to_string(),
+                    ssl: crate::cli::config_parser::SslMode::Off,
+                    upstream: "http://n8n:5678".to_string(),
+                }],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let form = build_deploy_form(&config);
+        let domains = form["proxy_domains"].as_array().unwrap();
+        assert_eq!(domains[0]["upstream"], "n8n:5678");
+    }
+
+    #[test]
+    fn test_strip_url_scheme() {
+        assert_eq!(strip_url_scheme("http://n8n:5678"), "n8n:5678");
+        assert_eq!(strip_url_scheme("https://app:8443"), "app:8443");
+        assert_eq!(strip_url_scheme("app:8080"), "app:8080");
+        assert_eq!(strip_url_scheme("app"), "app");
+        // A colon in the value without a scheme is not a scheme separator.
+        assert_eq!(strip_url_scheme("weird:value:80"), "weird:value:80");
     }
 
     #[test]

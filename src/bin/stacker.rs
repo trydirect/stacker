@@ -1814,7 +1814,8 @@ enum ProxyCommands {
     Add {
         /// Domain name (e.g. example.com)
         domain: String,
-        /// Upstream service address (e.g. http://app:8080)
+        /// Upstream service address as host:port (e.g. app:8080); an http(s)://
+        /// prefix is accepted and ignored
         #[arg(long)]
         upstream: Option<String>,
         /// SSL mode: auto, manual, off
