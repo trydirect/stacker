@@ -6,7 +6,9 @@ use crate::cli::proxy_manager::{
 };
 use crate::cli::runtime::CliRuntime;
 use crate::cli::stacker_client::AgentEnqueueRequest;
-use crate::console::commands::cli::agent::{run_agent_command, AgentConfigureProxyCommand};
+use crate::console::commands::cli::agent::{
+    preflight_npm_credentials, run_agent_command, AgentConfigureProxyCommand,
+};
 use crate::console::commands::CallableTrait;
 use std::path::{Path, PathBuf};
 
@@ -537,6 +539,12 @@ impl CallableTrait for ProxyAddCommand {
                     crate::cli::config_parser::PROXY_NGINX_REMOTE_UNSUPPORTED.to_string(),
                 )));
             }
+
+            // BUGS.md #38: the remote half resolves `npm_credentials` through
+            // the agent's Vault read — check before anything is written so the
+            // command does not half-apply and defer to a later deploy.
+            let ctx = CliRuntime::new("proxy add")?;
+            preflight_npm_credentials(&ctx)?;
 
             // Persist to stacker.yml first — the local config update does not
             // depend on the remote agent or Vault. If the agent call later

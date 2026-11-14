@@ -20,6 +20,7 @@ use crate::cli::install_runner::resolve_docker_registry_credentials;
 use crate::cli::progress;
 use crate::cli::runtime::CliRuntime;
 use crate::cli::stacker_client::{AgentCommandInfo, AgentEnqueueRequest};
+use crate::console::commands::cli::secrets::resolve_server_id_from_lock;
 use crate::console::commands::CallableTrait;
 use std::path::{Path, PathBuf};
 
@@ -1599,6 +1600,47 @@ impl CallableTrait for AgentConfigureFirewallCommand {
 
 // ── Configure Proxy ──────────────────────────────────
 
+/// The server secret every remote proxy command resolves through the agent's
+/// Vault read (`npm_credentials` — see `routes/server/secret.rs`).
+const NPM_CREDENTIALS_SECRET_NAME: &str = "npm_credentials";
+
+/// BUGS.md #38: without `npm_credentials` on the server the agent cannot
+/// configure Nginx Proxy Manager, and the command used to half-apply and fail
+/// late with `vault_unavailable`/`npm_credentials_missing`. This is the
+/// guidance shown when the secret is positively missing.
+const MISSING_NPM_CREDENTIALS_MESSAGE: &str = "This server has no `npm_credentials`, so the \
+    agent cannot configure Nginx Proxy Manager. Set them first: `stacker secrets set \
+    npm_credentials --scope server --body-file ./npm_credentials.json`. Nothing was changed.";
+
+/// Decision half of [`preflight_npm_credentials`], kept pure for tests:
+/// abort only when the secret is positively missing; a lookup that could not
+/// run (no deployment lock, API hiccup) warns and lets the command proceed.
+fn check_npm_credentials_present(lookup: Result<bool, CliError>) -> Result<(), CliError> {
+    match lookup {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(CliError::ConfigValidation(
+            MISSING_NPM_CREDENTIALS_MESSAGE.to_string(),
+        )),
+        Err(err) => {
+            eprintln!("  ⚠ Could not verify NPM credentials up front: {}", err);
+            Ok(())
+        }
+    }
+}
+
+/// Up-front check for the `npm_credentials` a remote proxy command needs.
+/// Run before anything is written or enqueued so the failure names what is
+/// missing instead of half-applying (BUGS.md #38).
+pub fn preflight_npm_credentials(ctx: &CliRuntime) -> Result<(), CliError> {
+    let lookup = resolve_server_id_from_lock(ctx).and_then(|server_id| {
+        ctx.block_on(
+            ctx.client
+                .get_server_secret_metadata(server_id, NPM_CREDENTIALS_SECRET_NAME),
+        )
+    });
+    check_npm_credentials_present(lookup.map(|metadata| metadata.is_some()))
+}
+
 /// `stacker agent configure-proxy <app> --domain <d> --port <p> [--no-ssl] [--force] [--json] [--deployment <hash>]`
 pub struct AgentConfigureProxyCommand {
     pub app_code: String,
@@ -1641,6 +1683,10 @@ impl CallableTrait for AgentConfigureProxyCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = CliRuntime::new("agent configure-proxy")?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+
+        // BUGS.md #38: refuse up front when the credential read every remote
+        // proxy command depends on cannot succeed.
+        preflight_npm_credentials(&ctx)?;
 
         check_active_connections(&ctx, &hash, self.force)?;
 
@@ -3146,6 +3192,35 @@ impl CallableTrait for AgentInstallCommand {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    // BUGS.md #38: every remote proxy command resolves `npm_credentials`
+    // through the agent's Vault read. A missing secret must abort up front
+    // with guidance instead of half-applying and deferring to a later deploy.
+    #[test]
+    fn test_npm_credentials_preflight_blocks_only_on_missing_secret() {
+        let missing = check_npm_credentials_present(Ok(false))
+            .expect_err("a missing npm_credentials secret must abort");
+        let message = missing.to_string();
+        assert!(message.contains("npm_credentials"), "unexpected: {message}");
+        assert!(
+            message.contains("secrets set"),
+            "must name the fix: {message}"
+        );
+        assert!(
+            message.contains("Nothing was changed"),
+            "must say no half-apply: {message}"
+        );
+
+        check_npm_credentials_present(Ok(true)).expect("a present secret proceeds");
+    }
+
+    #[test]
+    fn test_npm_credentials_preflight_warns_but_proceeds_when_lookup_fails() {
+        check_npm_credentials_present(Err(CliError::ConfigValidation(
+            "no deployment lock".to_string(),
+        )))
+        .expect("an unverifiable preflight must not block the command");
+    }
 
     // Regression test for GH issue #211: `merge_compose_service` attaches a
     // network name to the newly-merged app service (copied from the

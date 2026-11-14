@@ -340,7 +340,7 @@ fn remap_remote_secret_error(operation: &str, error: CliError) -> CliError {
 ///
 /// Reads `.stacker/deployment-cloud.lock` (or the generic lock), looks up the
 /// server by name via the API, and returns its platform ID.
-fn resolve_server_id_from_lock(ctx: &CliRuntime) -> Result<i32, CliError> {
+pub(crate) fn resolve_server_id_from_lock(ctx: &CliRuntime) -> Result<i32, CliError> {
     let project_dir = std::env::current_dir().map_err(|e| {
         CliError::ConfigValidation(format!("Cannot determine project directory: {}", e))
     })?;
