@@ -648,7 +648,7 @@ impl CallableTrait for AgentHealthCommand {
 
 // ── Logs ─────────────────────────────────────────────
 
-/// `stacker agent logs [app] [--limit N] [--json] [--deployment <hash>]`
+/// `stacker agent logs [app] [--limit|--lines|--tail N] [--json] [--deployment <hash>]`
 pub struct AgentLogsCommand {
     pub app_code: Option<String>,
     pub limit: Option<i32>,

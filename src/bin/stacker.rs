@@ -315,6 +315,9 @@ enum StackerCommands {
     },
     /// Show container logs
     Logs {
+        /// App/service to show logs for (same as --service)
+        #[arg(value_name = "APP", conflicts_with = "service")]
+        app: Option<String>,
         /// Show logs for a specific service only
         #[arg(long)]
         service: Option<String>,
@@ -322,7 +325,7 @@ enum StackerCommands {
         #[arg(long, short)]
         follow: bool,
         /// Number of lines to show from the end
-        #[arg(long)]
+        #[arg(long, visible_alias = "lines")]
         tail: Option<u32>,
         /// Show logs since timestamp (e.g. "2h", "2024-01-01")
         #[arg(long)]
@@ -1518,7 +1521,12 @@ enum AgentCommands {
         /// App code to fetch logs for (default: statuspanel + statuspanel_agent)
         app: Option<String>,
         /// Maximum number of log lines
-        #[arg(long, default_value_t = 400)]
+        #[arg(
+            long,
+            visible_alias = "lines",
+            visible_alias = "tail",
+            default_value_t = 400
+        )]
         limit: i32,
         /// Output in JSON format
         #[arg(long)]
@@ -2199,12 +2207,16 @@ fn get_command(
             Box::new(stacker::console::commands::cli::connect::ConnectCommand::new(handoff))
         }
         StackerCommands::Logs {
+            app,
             service,
             follow,
             tail,
             since,
         } => Box::new(stacker::console::commands::cli::logs::LogsCommand::new(
-            service, follow, tail, since,
+            service.or(app),
+            follow,
+            tail,
+            since,
         )),
         StackerCommands::Status {
             json,
