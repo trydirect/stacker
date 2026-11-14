@@ -1467,3 +1467,94 @@ The paid row prints `$7.00deployment_daily`: no separator between amount and
 period, and the period is the internal enum rather than a word. It also
 overflows the PLAN column and pushes DESCRIPTION out of alignment. This is
 the first thing a new user sees when they search the catalogue.
+
+## 42. 🟠 OPEN — `proxy.type: nginx` silently deploys nginx-proxy-manager (found 2026-11-14)
+
+`stacker.yml` declared
+
+```yaml
+proxy:
+  type: nginx
+  auto_detect: false
+```
+
+and the deploy brought up `nginx-proxy-manager` (image
+`trydirect/nginx-proxy-manager`), which `stacker proxy detect` then reports as
+`Detected proxy: NginxProxyManager`. Nothing in the deploy output says the
+requested type was substituted. `stacker proxy add` makes the same choice
+from the other direction (bug 37): it writes `type: nginx-proxy-manager` over
+a `type: none`, with no flag to ask for plain nginx.
+
+Either `nginx` should deploy nginx, or the config reference and the deploy
+output should say that `nginx` means NPM here. Right now `config validate`
+accepts a value the deploy does not honour.
+
+## 43. 🟠 OPEN — an `upstream` with a scheme produces a broken proxy config and HTTP 500 (found 2026-11-14)
+
+**Severity:** high - the broken form is the one the CLI's own help suggests.
+
+`stacker proxy add --help` documents the upstream as
+`--upstream <UPSTREAM>  Upstream service address (e.g. http://app:8080)`,
+so `http://n8n:5678` looks correct. With that value the deploy writes
+
+```
+# /data/nginx/proxy_host/1.conf
+  set $forward_scheme http;
+  set $server         "http://n8n";
+  set $port           5678;
+```
+
+while the proxy include composes the target itself:
+
+```
+# /etc/nginx/conf.d/include/proxy.conf:7
+proxy_pass       $forward_scheme://$server:$port$request_uri;
+```
+
+The result is `http://http://n8n:5678`, and every request to that host
+returns `500 Internal Server Error` from openresty while the app itself is
+healthy on its own port. Both containers were on the same docker network, so
+this is purely the generated config.
+
+The schema reference in the stacker.yml example uses a bare `app:3000`, which
+contradicts the CLI help. Strip the scheme when filling `$server`, or reject
+an upstream that carries one with a message that says why.
+
+**Confirmed by a second entry on the same server.** `proxy.domains` was given
+a second domain with the bare form, and the two generated files sit side by
+side:
+
+```
+# 1.conf  (upstream: http://n8n:5678)
+  set $server         "http://n8n";   -> proxy_pass http://http://n8n:5678  -> 500
+# 2.conf  (upstream: n8n:5678)
+  set $server         "n8n";          -> proxy_pass http://n8n:5678         -> 200
+```
+
+The bare form serves the real application: the response carries n8n's own
+`<meta name="n8n:config:rest-endpoint">` and `/rest/settings` returns n8n
+JSON, while the bare IP still shows the proxy's "Default Site" page. So the
+only thing wrong is the scheme the help tells you to pass.
+
+## 44. 🟠 OPEN — a changed `proxy.domains` upstream is never applied on redeploy (found 2026-11-14)
+
+The proxy entry is created on the first deploy and then left alone. Changing
+`upstream` in `stacker.yml` from `http://n8n:5678` to `n8n:5678` and running
+`stacker deploy` again (deployment #1535, `✓ Copy files is done`, agent
+online) left the generated file untouched:
+
+```
+# /data/nginx/proxy_host/1.conf after the redeploy
+  set $forward_scheme http;
+  set $server         "http://n8n";
+  set $port           5678;
+```
+
+So a misconfigured proxy cannot be fixed by editing the config and
+redeploying, which is the only workflow the CLI offers - `proxy add` fails
+with `vault_unavailable` (bug 38) and there is no `proxy update` or
+`proxy remove`. The remaining way out is the NPM UI on the server, i.e.
+exactly the manual step the tool exists to avoid.
+
+Adding a *new* domain does work: the new entry is created on the next deploy.
+Only updates to an existing one are ignored.
