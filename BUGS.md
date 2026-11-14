@@ -1358,7 +1358,11 @@ every template in the catalogue.
 
 **What happens.** One `proxy add` call round-trips the entire file through a
 YAML serializer. The proxy entry it adds is correct, but everything else in
-the file is rewritten: all 14 comment lines are gone, quoting is normalised
+the file is rewritten: **every YAML comment is gone** - re-checked twice by
+counting before and after, 20 `#` lines down to 6, and all six survivors are
+`#` characters inside the `marketplace.long_description` block scalar
+(markdown headings and a shell comment), i.e. text content rather than
+comments. Quoting is normalised
 (`"5678:5678"` becomes `5678:5678`, `version: "2.0.0"` becomes
 `version: 2.0.0`), inline lists are expanded one item per line, blank lines
 between sections are removed, and escaped regexes lose their quotes
@@ -1392,10 +1396,27 @@ offers only `--upstream` and `--ssl`.
 is an in-place edit of the `proxy:` block instead of serialising the parsed
 document back out.
 
-## 38. 🟠 OPEN — `proxy add` cannot configure the remote proxy: `vault_unavailable` (found 2026-11-14)
+## 38. 🟠 OPEN — the agent cannot resolve NPM credentials, so every remote proxy command fails: `vault_unavailable` (found 2026-11-14)
 
 **Severity:** blocks the "configure a reverse proxy on your own server from
-your laptop" flow end to end.
+your laptop" flow end to end, for **both** commands that offer it.
+
+**Re-checked against `docs/STACKER_YML_REFERENCE.md:1650`**, which documents
+`stacker agent configure-proxy` as the way to configure NPM through the
+agent. That command has everything the config file lacks - a separate
+`--port` (so an upstream scheme is impossible), `--action create|update|delete`
+and `--deployment <hash>` - and it fails identically:
+
+```
+$ stacker agent configure-proxy n8n --domain <domain> --port 5678 --no-ssl \
+    --action update --deployment deployment_<hash>
+  ⚠ Checking active connections — skipped
+  ✗ Configuring proxy for n8n — Vault is unavailable while resolving NPM credentials (vault_unavailable)
+```
+
+So this is not a `proxy add` defect: it is the one credential read both
+commands depend on. Fixing it unblocks `proxy add`, `agent configure-proxy`,
+and the update/delete actions that bug 44 needs.
 
 **What happens.** After writing the local config, the command asks the agent
 to configure the proxy on the server and the agent refuses:
@@ -1471,7 +1492,7 @@ collecting `${VAR}` names.
 **Expected:** a variable that appears only inside a `#` comment is not a
 reference and must not fail validation.
 
-## 40. 🟢 OPEN — `agent logs` and `logs` disagree on their own interface (found 2026-11-14)
+## 40. 🟢 OPEN — `agent logs` and `logs` disagree on their own interface (found 2026-11-14, corrected the same day)
 
 `stacker logs` takes no positional app and uses `--service` plus `--tail`;
 `stacker agent logs` takes a positional `<APP>` and accepts neither `--lines`
@@ -1485,9 +1506,16 @@ error: unexpected argument '--lines' found
 ```
 
 Both work in their own form (`stacker logs --service n8n --tail 20`,
-`stacker agent logs n8n`), so this is interface drift rather than a defect,
-but it makes the two commands impossible to teach together, and the
-documented form `stacker agent logs my-app --lines 200` does not exist.
+`stacker agent logs n8n`), so this is interface drift rather than a defect.
+
+**Correction.** The first version of this entry said the documented form
+`stacker agent logs my-app --lines 200` does not exist. That form is not in
+this repository's documentation at all -
+`docs/STACKER_YML_REFERENCE.md:1646` says `stacker agent logs <app>` and
+`:1797-1801` shows `stacker logs --tail 100`, both exactly as the binary
+behaves. The `--lines` spelling came from notes outside this repo. The
+reference is right; only the asymmetry between the two commands is real, and
+it still makes them impossible to teach in one breath.
 
 **Where to start:** `src/console/commands/cli/logs.rs:16` defines
 `LogsCommand` with `--service`/`--tail`; the agent variant is in
@@ -1534,9 +1562,17 @@ requested type was substituted. `stacker proxy add` makes the same choice
 from the other direction (bug 37): it writes `type: nginx-proxy-manager` over
 a `type: none`, with no flag to ask for plain nginx.
 
-Either `nginx` should deploy nginx, or the config reference and the deploy
-output should say that `nginx` means NPM here. Right now `config validate`
-accepts a value the deploy does not honour.
+`docs/STACKER_YML_REFERENCE.md:558-566` lists the two as separate values -
+`nginx` is "Standard Nginx reverse proxy" and `nginx-proxy-manager` is
+"Nginx Proxy Manager (NPM) with web UI" - so the substitution contradicts the
+reference, not just expectations. `auto_detect: false` was set, so this is
+not the documented detection path (`:578`) either; that path only applies
+when a proxy is already running, and `proxy detect` reported `None` before
+the deploy.
+
+Either `nginx` should deploy nginx, or the reference and the deploy output
+have to say that `nginx` means NPM here. Right now `config validate` accepts
+a value the deploy does not honour.
 
 **Where to start:** `src/cli/proxy_manager.rs:154` maps the string `nginx` to
 `ProxyType::Nginx`, and `src/cli/compose_service_sync.rs:36` then branches on
@@ -1574,9 +1610,18 @@ returns `500 Internal Server Error` from openresty while the app itself is
 healthy on its own port. Both containers were on the same docker network, so
 this is purely the generated config.
 
-The schema reference in the stacker.yml example uses a bare `app:3000`, which
-contradicts the CLI help. Strip the scheme when filling `$server`, or reject
-an upstream that carries one with a message that says why.
+**The scheme form is documented, not a user mistake.**
+`docs/STACKER_YML_REFERENCE.md:598` defines the field as
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `upstream` | `string` | **yes** | - | Backend address (e.g. `app:3000`, `http://web:8080`) |
+
+so both forms are blessed by the reference, and `stacker proxy add --help`
+suggests the scheme form as its example. Only one of the two works. Strip the
+scheme when filling `$server` / `forward_host`, and keep both documented
+forms working - do not "fix" this by narrowing the docs to the bare form,
+since the help and the reference have been promising `http://web:8080`.
 
 **Confirmed by a second entry on the same server.** `proxy.domains` was given
 a second domain with the bare form, and the two generated files sit side by
@@ -1616,7 +1661,8 @@ assert!(!block.contains("proxy_pass http://http://app:8080;"));
 ```
 
 That function is only reached from `generate_nginx_configs`
-(`proxy_manager.rs:370`), the writer for **plain nginx files**. The deploy
+(`proxy_manager.rs:370`), the writer for **plain nginx files** - the path a
+stack gets when `proxy.type` is honoured. The deploy
 takes the nginx-proxy-manager branch instead (bug 42), which ships
 `forward_host` and `forward_port` to the agent
 (`src/forms/status_panel.rs:180-182`) - two fields where the host must be
@@ -1642,11 +1688,18 @@ online) left the generated file untouched:
   set $port           5678;
 ```
 
-So a misconfigured proxy cannot be fixed by editing the config and
-redeploying, which is the only workflow the CLI offers - `proxy add` fails
-with `vault_unavailable` (bug 38) and there is no `proxy update` or
-`proxy remove`. The remaining way out is the NPM UI on the server, i.e.
-exactly the manual step the tool exists to avoid.
+**Correction.** The first version of this entry said there is no
+`proxy update` or `proxy remove`. There is:
+`stacker agent configure-proxy --action create|update|delete`, documented at
+`docs/STACKER_YML_REFERENCE.md:1650`. So the gap is narrower than recorded -
+the declarative path ignores changes, but an imperative fix exists.
+
+It just cannot run: `--action update` against the broken entry fails with
+`vault_unavailable` (bug 38), the same read that stops `proxy add`. With 38
+fixed, a wrong entry is repairable from the laptop, and this bug drops to
+"the declared `proxy.domains` are not reconciled on deploy" - still worth
+fixing, because the config file is the only place a template author can
+express intent.
 
 Adding a *new* domain does work: the new entry is created on the next deploy.
 Only updates to an existing one are ignored.
