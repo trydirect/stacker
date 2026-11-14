@@ -1351,7 +1351,7 @@ clippy warnings and `build.rs:37`, with no behaviour change. Test:
 tree. Alternatively pin the toolchain in `rust-toolchain.toml`, but the
 lints are real, so the cleanup is the honest fix.
 
-## 37. 🟠 OPEN — `stacker proxy add` rewrites the whole `stacker.yml` and drops every comment (found 2026-11-14)
+## 37. ✅ FIXED — `stacker proxy add` rewrites the whole `stacker.yml` and drops every comment (found 2026-11-14, fixed 2026-11-14)
 
 **Severity:** high for anyone whose `stacker.yml` is hand-authored, which is
 every template in the catalogue.
@@ -1396,7 +1396,18 @@ offers only `--upstream` and `--ssl`.
 is an in-place edit of the `proxy:` block instead of serialising the parsed
 document back out.
 
-## 38. 🟠 OPEN — the agent cannot resolve NPM credentials, so every remote proxy command fails: `vault_unavailable` (found 2026-11-14)
+### ✅ Fixed (2026-11-14) — stacker `81090363` (branch `fix/bugs-37-41`)
+
+`proxy add` now splices only the top-level `proxy:` block into the file (a
+text edit, not a YAML round-trip): comments, quoting, inline lists and blank
+lines outside the block stay byte-identical, and a missing block is
+appended. A `--type nginx|nginx-proxy-manager|traefik|caddy` flag records
+what was asked for — caddy/traefik get their snippet/labels instead of a
+silent flip to NPM, and `--type nginx` on a remote deployment is refused
+with the supported values named (bug 42). Regression tests cover the
+byte-identical surroundings, the append path and the flag.
+
+## 38. 🟠 FIXED IN CODE — the agent cannot resolve NPM credentials, so every remote proxy command fails: `vault_unavailable` (found 2026-11-14, fix set shipped 2026-11-14, live re-test pending)
 
 **Severity:** blocks the "configure a reverse proxy on your own server from
 your laptop" flow end to end, for **both** commands that offer it.
@@ -1462,7 +1473,42 @@ Vault's health on production, which needs the owner's per-action consent.
 The session this was found in was logged into `https://try.direct/stacker`,
 i.e. production.
 
-## 39. 🟢 OPEN — `secrets validate` reads `${VAR}` references out of comments (found 2026-11-14)
+### Fix shipped (2026-11-14) — not yet re-verified live
+
+Root-cause analysis across the agent (status repo), the install service and
+the tfa roles found three stacked defects behind the context-free
+`vault_unavailable`, plus one that would break the flow even with Vault
+reachable:
+
+1. **Wrong endpoint on two install paths.** The agent's Vault is the mTLS
+   listener `https://vault.try.direct:8443`, but `app/own/add_app_watcher.py`
+   passed a port-less URL (that hits the web server on 443) and one path
+   defaulted to the internal `http://vault:8200`, unreachable from a
+   provisioned box — install `1ed9d3a`.
+2. **Silent mTLS degradation.** When the install service could not sign the
+   deployment client certificate, tfa `setup_mtls.yml` skipped the writes
+   silently (`when: ... is defined`) and the agent started with no Vault
+   identity; the TLS handshake then failed and was flattened into
+   `vault_unavailable`. tfa `f56878a4` now fails the deploy naming the cause,
+   and status `ee23ca5` stops degrading silently when a configured cert is
+   unreadable/unparsable.
+3. **No context on the error.** status `ee23ca5`: `vault_unavailable` now
+   carries the sanitized endpoint (scheme + authority, never the secret
+   path) and the underlying cause in the operator message.
+4. **No `npm_credentials` to read at all** when `proxy.type: none` (nothing
+   seeds them outside managed-NPM deploys) — stacker `4a3f6534` checks the
+   server secret before writing/enqueueing anything and aborts with the fix
+   named (`stacker secrets set npm_credentials --scope server ...`) instead
+   of half-applying.
+
+Note on the token-TTL hypothesis: an expired token would surface as
+`vault_auth_revoked` (401/403 → renew-self → AuthRevoked), not
+`vault_unavailable` — the observed code matches the transport/mTLS defects
+above. Already-provisioned broken servers keep their wrong `VAULT_ADDRESS`
+and missing certs; they need the fixed install path (re-run agent install /
+re-provision) before the live re-test.
+
+## 39. ✅ FIXED — `secrets validate` reads `${VAR}` references out of comments (found 2026-11-14, fixed 2026-11-14)
 
 The validator fails the whole stack because of a variable that appears only
 inside a YAML comment:
@@ -1492,7 +1538,15 @@ collecting `${VAR}` names.
 **Expected:** a variable that appears only inside a `#` comment is not a
 reference and must not fail validation.
 
-## 40. 🟢 OPEN — `agent logs` and `logs` disagree on their own interface (found 2026-11-14, corrected the same day)
+### ✅ Fixed (2026-11-14) — stacker `204c746a`
+
+References are collected from parsed YAML scalars (keys and values), so
+comments drop out naturally while block-scalar content — where `#` is
+literal text — still counts. Unparseable YAML falls back to the old raw
+scan. Regression tests cover the comment case, the block-scalar case and the
+fallback.
+
+## 40. ✅ FIXED — `agent logs` and `logs` disagree on their own interface (found 2026-11-14, corrected the same day, fixed 2026-11-14)
 
 `stacker logs` takes no positional app and uses `--service` plus `--tail`;
 `stacker agent logs` takes a positional `<APP>` and accepts neither `--lines`
@@ -1524,7 +1578,15 @@ it still makes them impossible to teach in one breath.
 **Expected:** one spelling for both. Whichever wins, `--tail` and `--lines`
 should not be a coin flip, and the form in the docs must exist.
 
-## 41. 🟢 OPEN — `stacker find` glues the price to the raw billing enum (found 2026-11-14)
+### ✅ Fixed (2026-11-14) — stacker `38d0c148`
+
+The asymmetry is gone: both commands accept both spellings. `stacker logs`
+takes a positional app (sugar for `--service`, conflicting with it) and
+`--lines` as an alias of `--tail`; `stacker agent logs` accepts `--lines`
+and `--tail` as aliases of `--limit`. CLI regression tests cover every
+accepted form and the positional/`--service` conflict.
+
+## 41. ✅ FIXED — `stacker find` glues the price to the raw billing enum (found 2026-11-14, fixed 2026-11-14)
 
 ```
 ITEM                     NAME                         VENDOR               PLAN           DESCRIPTION
@@ -1545,7 +1607,13 @@ the first thing a new user sees when they search the catalogue.
 period, the enum translated to a word, and the column width respected so
 DESCRIPTION stays aligned.
 
-## 42. 🟠 OPEN — `proxy.type: nginx` silently deploys nginx-proxy-manager (found 2026-11-14)
+### ✅ Fixed (2026-11-14) — stacker `232beb05`
+
+Periods are words with a separator (`$7.00/day` for `deployment_daily`),
+unknown periods get the separator too instead of a glued enum, and the PLAN
+cell is clamped to the column width so DESCRIPTION stays aligned.
+
+## 42. ✅ FIXED — `proxy.type: nginx` silently deploys nginx-proxy-manager (found 2026-11-14, fixed 2026-11-14)
 
 `stacker.yml` declared
 
@@ -1583,7 +1651,18 @@ type or reject it with a message.
 **Expected:** `type: nginx` deploys nginx, or `config validate` refuses the
 value and names what is supported.
 
-## 43. 🟠 OPEN — an `upstream` with a scheme produces a broken proxy config and HTTP 500 (found 2026-11-14)
+### ✅ Fixed (2026-11-14) — stacker `e02f0330`
+
+Per the expected outcome: the value is refused for remote targets with the
+supported ones named, instead of substituted. Validation **E009** in
+`stacker config validate` (covers `deploy.targets` profiles too),
+`stacker deploy` stops before provisioning, and `stacker proxy add
+--type nginx` on a remote deployment refuses before touching stacker.yml.
+The config example and `docs/STACKER_YML_REFERENCE.md` now say that `nginx`
+is local-only (reference row updated, E009 added to the validation table).
+Honouring `nginx` as real nginx on remote targets stays the deeper option.
+
+## 43. ✅ FIXED — an `upstream` with a scheme produces a broken proxy config and HTTP 500 (found 2026-11-14, fixed 2026-11-14)
 
 **Severity:** high - the broken form is the one the CLI's own help suggests.
 
@@ -1674,7 +1753,16 @@ actually hit, and the fix is to normalise in the NPM payload the way
 `proxy_pass_target` already does - or to stop routing `type: nginx` to NPM,
 which removes this bug and bug 42 together.
 
-## 44. 🟠 OPEN — a changed `proxy.domains` upstream is never applied on redeploy (found 2026-11-14)
+### ✅ Fixed (2026-11-14) — stacker `fe59c3ad` + tfa `dd72bbbd`
+
+Both documented spellings keep working (`docs/STACKER_YML_REFERENCE.md:599`):
+the deploy form normalises `upstream` to `host:port` before it reaches any
+proxy config generator (NPM role, caddy role), and the NPM role strips the
+scheme defensively before its own host/port split. The `--upstream` help
+shows the canonical `host:port` form and says a scheme is ignored. Tests:
+payload normalisation (stacker) and rendered set_fact expressions (tfa).
+
+## 44. ✅ FIXED — a changed `proxy.domains` upstream is never applied on redeploy (found 2026-11-14, fixed 2026-11-14)
 
 The proxy entry is created on the first deploy and then left alone. Changing
 `upstream` in `stacker.yml` from `http://n8n:5678` to `n8n:5678` and running
@@ -1712,3 +1800,13 @@ existing entry against the declared `proxy.domains`.
 missing, update what differs, and say which it did. Failing that, ship
 `stacker proxy update` and `stacker proxy remove` so a wrong entry can be
 repaired without the NPM UI.
+
+### ✅ Fixed (2026-11-14) — tfa `dd72bbbd`
+
+The deploy now reconciles: a proxy host whose forward target differs from
+the declared `proxy.domains` entry is updated in place (PUT with the fetched
+record, so SSL and access-list settings survive), new domains are still
+created, unchanged ones untouched. The imperative
+`agent configure-proxy --action update|delete` path is unblocked by the
+bug 38 fixes above.
+
