@@ -1207,6 +1207,12 @@ template repository.
 
 ## 34. 🟢 OPEN — the hook scanner false-positives on the marketplace template's own `generate-secrets.sh` (found 2026-11-12)
 
+**Still happening 2026-11-15.** Every deploy of the n8n template prints
+`[WARN] Hook 'pre_build': [WARNING] Obfuscated eval/execution in 'pre_build'
+line 6 — review for hidden commands`. Line 6 is the portability guard that
+decides between GNU and BSD `sed`. So the warning fires on our own published
+template, on every run.
+
 ### Observed (2026-11-12)
 
 After removing the `# @stacker-origin: marketplace` marker as the install
@@ -1310,6 +1316,10 @@ file", `handle_deploy_app` never consumes it), so a caller that reaches
 still ignored. The CLI no longer depends on it.
 
 ## 36. 🟢 OPEN — the clippy and fmt gates fail on pre-existing code (found 2026-11-13)
+
+**Measured again 2026-11-15:** `cargo clippy --lib` reports 111 warnings on
+`dev`, none of them in the file that was being changed. So the gate still
+cannot be used to judge a new change - which is the actual cost here.
 
 ### Observed (2026-11-13, rustc/clippy 1.94.1)
 
@@ -1590,6 +1600,14 @@ requested type was substituted. `stacker proxy add` makes the same choice
 from the other direction (bug 37): it writes `type: nginx-proxy-manager` over
 a `type: none`, with no flag to ask for plain nginx.
 
+**Narrowed 2026-11-15.** The CLI's own generator does honour the declared
+type: with `proxy.type: nginx` the locally generated
+`.stacker/docker-compose.yml` carries a plain `nginx:alpine` service
+(`src/cli/generator/compose.rs`, the `ProxyType::Nginx` branch). The container
+that actually came up on the server was `nginx-proxy-manager`. So the
+substitution happens on the deploy path, not in the generator - look there,
+not in the CLI.
+
 `docs/STACKER_YML_REFERENCE.md:558-566` lists the two as separate values -
 `nginx` is "Standard Nginx reverse proxy" and `nginx-proxy-manager` is
 "Nginx Proxy Manager (NPM) with web UI" - so the substitution contradicts the
@@ -1772,7 +1790,7 @@ missing, update what differs, and say which it did. Failing that, ship
 `stacker proxy update` and `stacker proxy remove` so a wrong entry can be
 repaired without the NPM UI.
 
-## 45. 🟠 OPEN — a `proxy:` block makes the whole compose project invalid unless the app service is literally named `app` (found 2026-11-15)
+## 45. 🟡 FIX READY — a `proxy:` block makes the whole compose project invalid unless the app service is literally named `app` (found 2026-11-15, fix on a branch the same day)
 
 **Severity:** high. Every deploy and every agent install on the stack fails
 from then on, and the failure is in `docker compose up`, i.e. after the files
@@ -1819,9 +1837,11 @@ of `proxy.domains[].upstream` names it - or emit no `depends_on` at all.
 nginx does not need the dependency to start, and an invalid reference costs
 the whole project.
 
-**Where to start:** `src/cli/generator/compose.rs:415-430`. The upstream is
-already parsed elsewhere for the proxy config, so the service name is
-available; the simplest correct change is to drop the `depends_on` line.
+**Fixed on branch `fix/proxy-depends-on-existing-service` (`42fa4d97`),
+awaiting merge.** `proxy_dependencies` now returns the `app` service when it
+exists and otherwise the services named by `proxy.domains[].upstream`, keeping
+only those actually declared. Four tests; three fail against `origin/dev`,
+verified in a throwaway worktree.
 
 ## 46. 🟢 OPEN — every agent command logs a failed `check_connections` the agent does not allow (found 2026-11-15)
 
