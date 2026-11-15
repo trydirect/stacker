@@ -1771,3 +1771,79 @@ existing entry against the declared `proxy.domains`.
 missing, update what differs, and say which it did. Failing that, ship
 `stacker proxy update` and `stacker proxy remove` so a wrong entry can be
 repaired without the NPM UI.
+
+## 45. 🟠 OPEN — a `proxy:` block makes the whole compose project invalid unless the app service is literally named `app` (found 2026-11-15)
+
+**Severity:** high. Every deploy and every agent install on the stack fails
+from then on, and the failure is in `docker compose up`, i.e. after the files
+are already on the server.
+
+`src/cli/generator/compose.rs:424` hardcodes the proxy's dependency:
+
+```rust
+depends_on: vec!["app".to_string()],
+```
+
+A stack whose services are named anything else - `n8n` and `postgres` in the
+case at hand - therefore gets an `nginx` service that depends on a service
+that does not exist, and docker refuses the **entire** project rather than
+just that one service:
+
+```
+docker compose -f /home/trydirect/project/docker-compose.yml up -d --remove-orphans
+rc=15
+service "nginx" depends on undefined service "app": invalid compose project
+```
+
+Deployment #1539 ended `paused` on exactly this, and so would every
+subsequent run against that host. The stack itself keeps serving, because the
+containers already running are untouched - which is what makes this easy to
+miss: the app answers 200 while every deploy fails.
+
+**Reproduce:** take any template whose app service is not called `app` (291 of
+296 in the catalogue qualify), add
+
+```yaml
+proxy:
+  type: nginx
+  domains:
+    - domain: example.com
+      ssl: "off"
+      upstream: n8n:5678
+```
+
+and deploy.
+
+**Expected:** depend on the service the proxy actually fronts - the host part
+of `proxy.domains[].upstream` names it - or emit no `depends_on` at all.
+nginx does not need the dependency to start, and an invalid reference costs
+the whole project.
+
+**Where to start:** `src/cli/generator/compose.rs:415-430`. The upstream is
+already parsed elsewhere for the proxy config, so the service name is
+available; the simplest correct change is to drop the `depends_on` line.
+
+## 46. 🟢 OPEN — every agent command logs a failed `check_connections` the agent does not allow (found 2026-11-15)
+
+Each `stacker agent ...` invocation prints
+
+```
+  ⚠ Checking active connections — skipped
+  ⚠ Connection check skipped (agent could not verify active connections)
+```
+
+and the deployment event log records a failure for it:
+
+```
+[command_failed / failed] Command validation failed: program 'check_connections' is not allowed
+```
+
+So the CLI asks the agent to run a pre-flight the agent's allowlist rejects,
+on every single command. The commands themselves succeed, so this is noise -
+but it is noise that puts a red `failed` event into the deployment history
+before every successful operation, which makes the history unreadable when
+something does go wrong.
+
+**Expected:** either allow `check_connections` on the agent side, or stop
+sending it and drop the warning. A pre-flight that cannot ever run should not
+be attempted once per command.
