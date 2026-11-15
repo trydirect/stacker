@@ -1396,7 +1396,7 @@ offers only `--upstream` and `--ssl`.
 is an in-place edit of the `proxy:` block instead of serialising the parsed
 document back out.
 
-## 38. 🟠 OPEN — the agent cannot resolve NPM credentials, so every remote proxy command fails: `vault_unavailable` (found 2026-11-14)
+## 38. ✅ FIXED — the agent could not resolve NPM credentials, so every remote proxy command failed: `vault_unavailable` (found 2026-11-14, fixed and verified live 2026-11-15)
 
 **Severity:** blocks the "configure a reverse proxy on your own server from
 your laptop" flow end to end, for **both** commands that offer it.
@@ -1450,17 +1450,45 @@ theory was that `proxy add` needs an existing NPM. It does not help: with
 produced exactly the same failure, verbatim `Vault is unavailable while
 resolving NPM credentials (vault_unavailable)`.
 
-**Likely a regression, not a never-worked path.** The owner reports having
-verified `proxy add` by hand before, and the agent advertises
-`npm_credential_source=vault`, so the credential read is a normal part of
-the flow that used to resolve. **Я предполагаю**, that a service token with
-the default 32-day TTL has expired again - the same failure shape as the
-stacker dev token that died around 2026-10-05 - which would break
-`proxy add` on every server at once while leaving the deploy path (which
-does not take this route) working. Not verified: checking that means reading
-Vault's health on production, which needs the owner's per-action consent.
-The session this was found in was logged into `https://try.direct/stacker`,
-i.e. production.
+**RESOLVED 2026-11-15. Two independent links, both now fixed.** It was never
+a regression: mTLS to the secret store was introduced at the end of June
+2026, and the credential read has failed on every server provisioned since.
+Servers created before that date keep working, which is why the command
+always passed when tested by hand.
+
+1. *The agent was never given a client certificate.* The provisioning service
+   reads the signing material from the secret store under one field name
+   while the setup script writes it under another, so signing returned
+   nothing - and the caller passed the CA to the playbook unconditionally
+   while passing the client certificate and key only when signing had
+   succeeded. The result was half an mTLS setup with a deploy that reported
+   success. Fixed in the provisioning service: the reader now accepts both
+   field names, raw PEM or base64, and both KV layouts, and says which fields
+   it looked for when it finds none.
+2. *The agent did not trust the certificate authority that signs the secret
+   store.* With the client identity loaded and no root added, the handshake
+   itself failed, which is why the message was a transport error rather than a
+   permission error. Fixed in the agent (`trydirect/status`, `f05dcbe`): the
+   CA comes from `VAULT_CACERT` / `VAULT_CACERT_PATH`, or from the path the
+   provisioning role already writes next to the client pair, so a server
+   deployed earlier is fixed without touching its environment. Both client
+   construction sites share one TLS setup now.
+
+**Verified end to end on a live server**, not only by tests: after the newer
+agent image and an agent install, `stacker agent configure-proxy` created,
+deleted and re-created host entries, the proxy served the real application on
+two hostnames, and `vault_unavailable` has not appeared since.
+
+**Existing servers do not heal themselves.** Each one needs the newer agent
+image plus an agent install, which is what signs and delivers its client
+certificate.
+
+**What the first version of this entry got wrong:** it guessed an expired
+service token. The failure text (`error=sending Vault GET request`) was a
+transport failure all along, and reading the agent's own log instead of
+theorising is what found it. The hint that the command had worked by hand
+before was real, but it pointed at the wrong explanation: those servers
+predate mTLS rather than holding a fresher token.
 
 ## 39. 🟢 OPEN — `secrets validate` reads `${VAR}` references out of comments (found 2026-11-14)
 
@@ -1639,6 +1667,15 @@ The bare form serves the real application: the response carries n8n's own
 JSON, while the bare IP still shows the proxy's "Default Site" page. So the
 only thing wrong is the scheme the help tells you to pass.
 
+**Still open 2026-11-15, but no longer a dead end.** Once bug 38 was fixed,
+the broken entry could be repaired from the laptop:
+`stacker agent configure-proxy <app> --domain <host> --port <port> --no-ssl
+--action delete` then the same line with `--action create`. The host that had
+answered 500 for five hours answered 200 immediately afterwards, and both
+generated files now set the bare host. So the defect is narrower than it
+looked - it costs one delete and one create - but it is still worth fixing,
+because `--help` goes on suggesting the form that breaks.
+
 **Root cause: the correct code exists, is tested, and is not the code that
 runs.** `src/cli/proxy_manager.rs:353` normalises exactly this:
 
@@ -1674,7 +1711,7 @@ actually hit, and the fix is to normalise in the NPM payload the way
 `proxy_pass_target` already does - or to stop routing `type: nginx` to NPM,
 which removes this bug and bug 42 together.
 
-## 44. 🟠 OPEN — a changed `proxy.domains` upstream is never applied on redeploy (found 2026-11-14)
+## 44. 🟠 OPEN — the declared `proxy.domains` are not reconciled, and `--action update` refuses a differing entry (found 2026-11-14, narrowed 2026-11-15)
 
 The proxy entry is created on the first deploy and then left alone. Changing
 `upstream` in `stacker.yml` from `http://n8n:5678` to `n8n:5678` and running
@@ -1688,7 +1725,29 @@ online) left the generated file untouched:
   set $port           5678;
 ```
 
-**Correction.** The first version of this entry said there is no
+**Narrowed 2026-11-15, with bug 38 out of the way.** What actually happens
+splits in two:
+
+* The *declarative* path still ignores changes. Editing `upstream` in
+  `stacker.yml` and redeploying leaves the existing entry exactly as it was,
+  which is the half of this bug that remains open. For a template author the
+  config file is the only place to express intent, so this is the half that
+  matters.
+* The *imperative* path works, with one catch. `--action update` against an
+  entry whose configuration differs is refused outright:
+
+  ```
+  ✗ Configuring proxy for n8n — Existing proxy host for <host> does not match
+    the requested configuration (npm_existing_conflict)
+  ```
+
+  Against a matching entry it succeeds and reports `"unchanged": true`, which
+  is the right answer. And `--action delete` followed by `--action create`
+  replaces a wrong entry in seconds - verified on a live server, the host went
+  from 500 to 200. So an operator is not stuck; they just cannot say "make it
+  look like this" in one command, which is what `update` reads as.
+
+**Correction (2026-11-14).** The first version of this entry said there is no
 `proxy update` or `proxy remove`. There is:
 `stacker agent configure-proxy --action create|update|delete`, documented at
 `docs/STACKER_YML_REFERENCE.md:1650`. So the gap is narrower than recorded -
