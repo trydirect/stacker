@@ -57,7 +57,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut project_failed = 0u32;
 
     if !project_rows.is_empty() {
-        tracing::info!("Found {} projects needing deletion warnings.", project_rows.len());
+        tracing::info!(
+            "Found {} projects needing deletion warnings.",
+            project_rows.len()
+        );
 
         for row in &project_rows {
             let project_id: i32 = row.get("id");
@@ -87,13 +90,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 project_sent += 1;
                 tracing::info!(
                     "Notified user {} about project {} ({})",
-                    user_id, project_name, project_id
+                    user_id,
+                    project_name,
+                    project_id
                 );
             } else {
                 project_failed += 1;
                 tracing::warn!(
                     "Failed to notify user {} about project {} ({}): {:?}",
-                    user_id, project_name, project_id, result.error
+                    user_id,
+                    project_name,
+                    project_id,
+                    result.error
                 );
             }
         }
@@ -116,11 +124,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server_failed = 0u32;
 
     if !server_rows.is_empty() {
-        tracing::info!("Found {} servers needing deletion warnings.", server_rows.len());
+        tracing::info!(
+            "Found {} servers needing deletion warnings.",
+            server_rows.len()
+        );
 
         for row in &server_rows {
             let server_id: i32 = row.get("id");
-            let server_name: String = row.get::<Option<String>, _>("name").unwrap_or_else(|| "unnamed".to_string());
+            let server_name: String = row
+                .get::<Option<String>, _>("name")
+                .unwrap_or_else(|| "unnamed".to_string());
             let user_id: String = row.get("user_id");
             let server_ip: Option<String> = row.get("srv_ip");
             let deletion_scheduled_at: chrono::DateTime<Utc> = row.get("deletion_scheduled_at");
@@ -148,13 +161,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 server_sent += 1;
                 tracing::info!(
                     "Notified user {} about server {} ({})",
-                    user_id, server_name, server_id
+                    user_id,
+                    server_name,
+                    server_id
                 );
             } else {
                 server_failed += 1;
                 tracing::warn!(
                     "Failed to notify user {} about server {} ({}): {:?}",
-                    user_id, server_name, server_id, result.error
+                    user_id,
+                    server_name,
+                    server_id,
+                    result.error
                 );
             }
         }

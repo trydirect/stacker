@@ -758,9 +758,8 @@ pub(crate) fn detect_port_conflicts_in_output(stderr: &str, stdout: &str) -> Vec
         LazyLock::new(|| regex::Regex::new(r"Bind for [\d.]+:(\d+) failed").unwrap());
     static ALLOCATED_RE: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"port (\d+) is already allocated").unwrap());
-    static PRECHECK_PORTS_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"(?i)ingress ports ([\d,\s]+or\s+\d+|\d+)").unwrap()
-    });
+    static PRECHECK_PORTS_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?i)ingress ports ([\d,\s]+or\s+\d+|\d+)").unwrap());
 
     let combined = format!("{}\n{}", stderr, stdout);
     let lower = combined.to_lowercase();
@@ -4713,7 +4712,10 @@ services:
         // legacy payloads without error_kind were left unclassified and the
         // CLI printed "An unclassified internal error occurred".
         let hints = detect_port_conflicts_in_output("", PRECHECK_PORT_CONFLICT_ANSIBLE_ERROR);
-        assert!(!hints.is_empty(), "should detect port conflict from precheck marker");
+        assert!(
+            !hints.is_empty(),
+            "should detect port conflict from precheck marker"
+        );
     }
 
     #[test]

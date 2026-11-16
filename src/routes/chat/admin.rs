@@ -57,11 +57,12 @@ pub async fn recent(
         .map(|chat| {
             let messages = match chat.plain_messages {
                 Some(plain) => plain,
-                None => helpers::chat::decrypt_messages(&chat.messages_encrypted)
-                    .unwrap_or_else(|err| {
+                None => helpers::chat::decrypt_messages(&chat.messages_encrypted).unwrap_or_else(
+                    |err| {
                         tracing::warn!("admin chat decrypt failed for {}: {}", chat.id, err);
                         Value::Array(vec![])
-                    }),
+                    },
+                ),
             };
             let (message_count, last) = last_messages(&messages);
             json!({

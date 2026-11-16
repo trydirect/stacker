@@ -361,7 +361,11 @@ async fn creator_patch_vendor_public_profile_rejects_non_http_website_url() {
 
     // website_url is rendered into an <a href> on the public page, so only
     // http(s) URLs may be stored.
-    for malicious in ["javascript:alert(1)", "data:text/html,<script>", "vbscript:msgbox(1)"] {
+    for malicious in [
+        "javascript:alert(1)",
+        "data:text/html,<script>",
+        "vbscript:msgbox(1)",
+    ] {
         let response = reqwest::Client::new()
             .patch(format!("{}/api/templates/mine/vendor-profile", app.address))
             .bearer_auth(USER_TOKEN)
@@ -372,7 +376,11 @@ async fn creator_patch_vendor_public_profile_rejects_non_http_website_url() {
             .await
             .expect("Failed to PATCH vendor public profile");
 
-        assert_eq!(StatusCode::BAD_REQUEST, response.status(), "url: {malicious}");
+        assert_eq!(
+            StatusCode::BAD_REQUEST,
+            response.status(),
+            "url: {malicious}"
+        );
     }
 
     let response = reqwest::Client::new()
