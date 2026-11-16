@@ -778,6 +778,46 @@ Exclude the containers of the stack being deployed (same compose project) when
 checking whether its ports are taken. Test: redeploying a running stack with
 unchanged ports does not report a port conflict.
 
+### Fix attempted 2026-11-16 - correct but insufficient, and why
+
+`5a3e6d61` (PR #149 `fix-port-precheck-own-stack`, merged to `production`)
+implements exactly the fix direction: the check takes
+`preflight_compose_file`, runs `docker compose -f <file> ps` and treats
+every listed container as the stack's own, with 5 tests where the first one
+reproduces this production symptom. Rolled out to the install service the
+same day. Two live redeploys onto the same host then showed it is not
+enough (`stacker deploy --target cloud --server <saved>`, deployments
+#1541 and #1542): both still ended `paused [port_conflict]` on
+`project-n8n-1`, while the stack served HTTP 200 throughout.
+
+Verified over SSH on the target host:
+
+```
+$ docker inspect project-n8n-1 --format '<project> | <config_files>'
+project | /home/trydirect/project/docker-compose.yml
+$ cd /home/trydirect/n8n && docker compose ps --format '{{.Names}}'
+(empty)
+```
+
+The n8n role passes `preflight_compose_file: {{
+stack_docker_directory }}/docker-compose.yml` and sets
+`stack_docker_directory: {{ destination }}n8n` (`roles/n8n/vars/main.yml`),
+so the exclusion queries `/home/trydirect/n8n/docker-compose.yml` - a
+different compose project (`n8n`) that owns no running containers. The
+container about to be replaced belongs to compose project `project`
+(`/home/trydirect/project/docker-compose.yml`, the deploy's shipped copy).
+`own_pattern` comes back empty and the check stays strict. The two compose
+files sit side by side on the host; which one owns the running stack is a
+property of the deploy path, not of the role.
+
+Remaining fix direction: resolve own containers from the compose file (or
+the `com.docker.compose.project.config_files` label) of the deployment that
+is about to replace them, not from the role's `stack_docker_directory`
+copy. Also `roles/nginx_proxy_manager` still keeps an unpatched copy of
+`preflight_port_conflicts.yml`, as the fix commit itself notes. Evidence
+and the exact commands: `blog/docs/tiktok-scripts/stacker-cli/captures/CLI-12/REVERIFY-2026-11-16.md`
+(private repo).
+
 ## 21. 🟠 NOT CONFIRMED — a bake of a `--target server` deployment records no server type, so Quick Deploy offers the default size (found 2026-10-27)
 
 ### Observed (2026-10-27)
