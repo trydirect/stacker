@@ -1301,13 +1301,16 @@ Remove the retired type instead of wiring the dead path:
    and the example, add `caddy` (supported and generated - `caddy:2-alpine`
    plus a generated `Caddyfile` - but absent from the table), and consider
    caddy in the `auto_detect` image list.
-3. Open question to settle first: the CHANGELOG says proxies are "deployed
-   by their own role", but tfa carries roles only for `nginx` (the classic
-   registry model) and `nginx_proxy_manager`, and the platform-owned
-   directories (`PLATFORM` in `src/helpers/bake_job.rs`, the
-   `docs/APP_DEPLOYMENT.md` convention) list only `statuspanel` and
-   `nginx_proxy_manager`. How caddy and traefik reach a remote host needs
-   verifying before they can be called supported for remote deploys.
+3. The supported proxies are fully wired and need nothing here: tfa carries
+   `roles/nginx_proxy_manager`, `roles/caddy` and `roles/traefik`, and the
+   roles receive `proxy.domains` end to end (the Caddyfile template renders
+   from `stacker_proxy_domains_b64`; NPM gets auto-created proxy hosts).
+   The retired `nginx` type is what routes to the classic registry-model
+   `roles/nginx` - the wrong role - and that is the whole of this bug. One
+   tidy-up worth doing alongside: the platform-owned directory list
+   (`PLATFORM` in `src/helpers/bake_job.rs`, the `docs/APP_DEPLOYMENT.md`
+   examples) names only `statuspanel` and `nginx_proxy_manager`, though
+   caddy and traefik deploy into their own directories too.
 
 Test: `proxy.type: nginx` is rejected (or normalized) by `stacker config
 validate`; a marketplace stack with `proxy.type: npm` deploys to
