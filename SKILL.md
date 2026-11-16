@@ -75,7 +75,7 @@ volumes:                    # top-level named volumes (optional)
   volume-name: {}
 
 proxy:
-  type: nginx|nginx-proxy-manager|traefik|none
+  type: nginx-proxy-manager|caddy|traefik|none
   auto_detect: <bool>       # default true — scan for existing proxy
   domains:
     - domain: app.example.com
@@ -322,11 +322,11 @@ proxy:
   auto_detect: true
 ```
 
-### Nginx with domain routing
+### NPM with domain routing
 
 ```yaml
 proxy:
-  type: nginx
+  type: nginx-proxy-manager
   auto_detect: false
   domains:
     - domain: app.example.com
@@ -667,7 +667,7 @@ Do you need a web UI to manage proxy + SSL?
   → yes: type: nginx-proxy-manager
   → no:  Do you already have a proxy running?
            → yes: auto_detect: true (Stacker connects to it)
-           → no:  type: nginx (for simple config) or type: traefik
+           → no:  type: caddy (for simple config) or type: traefik
          No proxy at all:
            → type: none, auto_detect: false
 ```
@@ -947,7 +947,7 @@ app:
   path: ./dist
 
 proxy:
-  type: nginx
+  type: nginx-proxy-manager
   auto_detect: false
   domains:
     - domain: mysite.example.com

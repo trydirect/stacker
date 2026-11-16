@@ -434,7 +434,7 @@ stacker.yml schema:
   - healthcheck: { test, interval, timeout, retries }
 - services: Array of INFRASTRUCTURE containers ONLY (never the main app)
   - name, image (REQUIRED), ports[], environment{}, volumes[], depends_on[], healthcheck
-- proxy: { type: nginx|nginx-proxy-manager|traefik|none, auto_detect: bool, domains: [...] }
+- proxy: { type: nginx-proxy-manager|caddy|traefik|none, auto_detect: bool, domains: [...] }
 - deploy: { target: local|cloud|server, compose_file, cloud: {...}, server: {...} }
 - monitoring: { status_panel: bool, healthcheck: { endpoint, interval }, metrics: { enabled, telegraf } }
 - hooks: { pre_build, post_deploy, on_failure }
