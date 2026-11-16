@@ -1283,18 +1283,32 @@ installed separately by their own role") and the install service runs
 Family: §42 (`proxy.type: nginx` routing), §43 (upstream form), §44
 (`proxy.domains` not reconciled), §45 (proxy block vs service named `app`).
 
+And the type itself is retired: the CHANGELOG's own "all supported proxies"
+(v0.3.2, "Reverse-proxy routing (traefik, caddy, nginx-proxy-manager)") is
+traefik, caddy and nginx-proxy-manager. `nginx` survives only in the enum,
+the generator branch and the reference table.
+
 ### Fix direction
 
-Pick one ownership model for the generated proxy service and make all three
-layers agree:
+Remove the retired type instead of wiring the dead path:
 
-1. **project-scoped** (fits the generated service as written): keep the
-   `nginx` service in the remote compose, let the agent run it with its
-   bind-mounted conf, and stop routing it to `roles/nginx`; or
-2. **platform-managed** (fits the strip): teach the install-service role
-   mapping to build `list_with_services` (or `nginx_dict_vars`) from the
-   stacker `proxy:` block, and have the role render the conf into its own
-   directory.
+1. `ProxyType::Nginx` (`src/cli/config_parser.rs`) and the `Nginx` branch
+   of `build_proxy_service` (`src/cli/generator/compose.rs`): reject
+   `type: nginx` at validation, or normalize it to `nginx-proxy-manager`
+   (what the deploy effectively did before the branch started emitting a
+   real `nginx:alpine` service nothing can deploy).
+2. `docs/STACKER_YML_REFERENCE.md` §proxy.type: drop `nginx` from the table
+   and the example, add `caddy` (supported and generated - `caddy:2-alpine`
+   plus a generated `Caddyfile` - but absent from the table), and consider
+   caddy in the `auto_detect` image list.
+3. Open question to settle first: the CHANGELOG says proxies are "deployed
+   by their own role", but tfa carries roles only for `nginx` (the classic
+   registry model) and `nginx_proxy_manager`, and the platform-owned
+   directories (`PLATFORM` in `src/helpers/bake_job.rs`, the
+   `docs/APP_DEPLOYMENT.md` convention) list only `statuspanel` and
+   `nginx_proxy_manager`. How caddy and traefik reach a remote host needs
+   verifying before they can be called supported for remote deploys.
 
-Test: deploying a marketplace stack with a `proxy:` block ends `completed`
-and the declared domain serves the app.
+Test: `proxy.type: nginx` is rejected (or normalized) by `stacker config
+validate`; a marketplace stack with `proxy.type: npm` deploys to
+`completed` and its declared domain serves the app.
