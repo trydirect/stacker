@@ -414,6 +414,43 @@ fn default_port_for_app_type(app_type: AppType) -> u16 {
     }
 }
 
+/// Services the generated proxy may depend on.
+///
+/// `depends_on: ["app"]` was hardcoded here, but the `app` service only exists
+/// when `config_has_buildable_app` says so - a hand-written `services:`-only
+/// config does not have one. Docker rejects the **whole** project over a
+/// dangling dependency ("service \"nginx\" depends on undefined service
+/// \"app\": invalid compose project"), so every deploy and every agent
+/// install on such a stack failed at `docker compose up`, after the files were
+/// already on the server, while the containers already running kept serving.
+///
+/// When there is no `app`, depend on the services the proxy actually fronts:
+/// the host part of each `proxy.domains[].upstream`, kept only if a service by
+/// that name is declared. An upstream naming nothing we deploy contributes
+/// nothing rather than breaking the project.
+fn proxy_dependencies(config: &StackerConfig) -> Vec<String> {
+    if config_has_buildable_app(config) {
+        return vec!["app".to_string()];
+    }
+
+    let declared: std::collections::BTreeSet<&str> =
+        config.services.iter().map(|s| s.name.as_str()).collect();
+
+    let mut names: Vec<String> = Vec::new();
+    for domain in &config.proxy.domains {
+        let upstream = domain
+            .upstream
+            .trim_start_matches("http://")
+            .trim_start_matches("https://");
+        let host = upstream.split('/').next().unwrap_or(upstream);
+        let host = host.split(':').next().unwrap_or(host);
+        if declared.contains(host) && !names.iter().any(|n| n == host) {
+            names.push(host.to_string());
+        }
+    }
+    names
+}
+
 fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
     match config.proxy.proxy_type {
         ProxyType::Nginx => {
@@ -421,7 +458,7 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
                 name: "nginx".to_string(),
                 image: Some("nginx:alpine".to_string()),
                 ports: vec!["80:80".to_string(), "443:443".to_string()],
-                depends_on: vec!["app".to_string()],
+                depends_on: proxy_dependencies(config),
                 ..Default::default()
             };
             svc.volumes
@@ -445,7 +482,7 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
                     "443:443".to_string(),
                     "81:81".to_string(),
                 ],
-                depends_on: vec!["app".to_string()],
+                depends_on: proxy_dependencies(config),
                 ..Default::default()
             };
             crate::helpers::stacker_labels::insert_runtime_labels(
@@ -463,7 +500,7 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
                 name: "traefik".to_string(),
                 image: Some("traefik:v2.10".to_string()),
                 ports: vec!["80:80".to_string(), "443:443".to_string()],
-                depends_on: vec!["app".to_string()],
+                depends_on: proxy_dependencies(config),
                 ..Default::default()
             };
             svc.volumes
@@ -514,7 +551,7 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
                 name: "caddy".to_string(),
                 image: Some("caddy:2-alpine".to_string()),
                 ports: vec!["80:80".to_string(), "443:443".to_string()],
-                depends_on: vec!["app".to_string()],
+                depends_on: proxy_dependencies(config),
                 ..Default::default()
             };
             svc.volumes
@@ -1566,6 +1603,117 @@ mod tests {
         let app = &compose.services[0];
         assert!(app.build_context.is_some());
         assert!(app.image.is_none());
+    }
+
+    fn proxy_depends_on(yaml: &str) -> Vec<String> {
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let definition = ComposeDefinition::try_from(&config).unwrap();
+        let proxy = definition
+            .services
+            .iter()
+            .find(|s| s.name == "nginx")
+            .expect("the config declares a proxy, so a proxy service must exist");
+        let declared: Vec<&str> = definition
+            .services
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        for dependency in &proxy.depends_on {
+            assert!(
+                declared.contains(&dependency.as_str()),
+                "proxy depends on '{}', which is not in the project ({:?}) - docker \
+                 refuses the whole compose project over a dangling dependency",
+                dependency,
+                declared
+            );
+        }
+        proxy.depends_on.clone()
+    }
+
+    // `depends_on: ["app"]` used to be hardcoded, but a services-only config
+    // has no `app` service, and docker rejects the *entire* project over the
+    // dangling reference: "service \"nginx\" depends on undefined service
+    // \"app\": invalid compose project". Every deploy and agent install on
+    // such a stack then failed at `docker compose up`, after the files were
+    // already on the server, while the running containers kept serving.
+    #[test]
+    fn a_proxy_on_a_services_only_config_depends_on_the_service_it_fronts() {
+        let deps = proxy_depends_on(
+            "name: n8n
+services:
+  - name: n8n
+    image: n8nio/n8n:2.45.4
+    ports:
+      - \"5678:5678\"
+  - name: postgres
+    image: postgres:17-alpine
+proxy:
+  type: nginx
+  domains:
+    - domain: app.example.com
+      ssl: \"off\"
+      upstream: n8n:5678
+",
+        );
+        assert_eq!(deps, vec!["n8n".to_string()]);
+    }
+
+    #[test]
+    fn a_proxy_upstream_with_a_scheme_still_resolves_the_service() {
+        let deps = proxy_depends_on(
+            "name: n8n
+services:
+  - name: n8n
+    image: n8nio/n8n:2.45.4
+proxy:
+  type: nginx
+  domains:
+    - domain: app.example.com
+      ssl: \"off\"
+      upstream: http://n8n:5678
+",
+        );
+        assert_eq!(deps, vec!["n8n".to_string()]);
+    }
+
+    #[test]
+    fn a_proxy_upstream_naming_nothing_we_deploy_adds_no_dependency() {
+        let deps = proxy_depends_on(
+            "name: n8n
+services:
+  - name: n8n
+    image: n8nio/n8n:2.45.4
+proxy:
+  type: nginx
+  domains:
+    - domain: app.example.com
+      ssl: \"off\"
+      upstream: somewhere-else:8080
+",
+        );
+        assert!(
+            deps.is_empty(),
+            "an upstream outside the project must contribute nothing, got {:?}",
+            deps
+        );
+    }
+
+    #[test]
+    fn a_proxy_on_a_config_with_an_app_section_still_depends_on_app() {
+        let deps = proxy_depends_on(
+            "name: web
+app:
+  type: node
+  image: node:20-alpine
+proxy:
+  type: nginx
+  domains:
+    - domain: app.example.com
+      ssl: \"off\"
+      upstream: app:3000
+",
+        );
+        assert_eq!(deps, vec!["app".to_string()]);
     }
 
     fn service_names(config: &StackerConfig) -> Vec<String> {

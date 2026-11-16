@@ -70,7 +70,9 @@ impl CallableTrait for MarketplaceTemplatesCommand {
                 truncate(&template.slug, 22),
                 truncate(&template.name, 26),
                 truncate(template.creator_name.as_deref().unwrap_or("-"), 18),
-                display_plan(template),
+                // Truncated like every other cell: an unexpected cycle used to
+                // widen this column and push DESCRIPTION out of alignment.
+                truncate(&display_plan(template), 13),
                 truncate(template.description.as_deref().unwrap_or(""), 26),
             );
         }
@@ -148,7 +150,9 @@ impl CallableTrait for MarketplaceFindCommand {
                 truncate(&template.slug, 22),
                 truncate(&template.name, 26),
                 truncate(template.creator_name.as_deref().unwrap_or("-"), 18),
-                display_plan(template),
+                // Truncated like every other cell: an unexpected cycle used to
+                // widen this column and push DESCRIPTION out of alignment.
+                truncate(&display_plan(template), 13),
                 truncate(template.description.as_deref().unwrap_or(""), 26),
             );
         }
@@ -1359,18 +1363,41 @@ impl CallableTrait for MarketplaceLogsCommand {
 /// install-time access check. A template is "free" only when `price` is
 /// zero/absent AND `required_plan_name` is absent/empty/"free"; anything else
 /// requires payment or a plan tier and must be displayed as such.
+/// Render a billing cycle as a short suffix that can never glue onto the
+/// price.
+///
+/// The old `other => other` arm pasted the server's raw value straight after
+/// the amount, so a real catalogue row printed `$7.00deployment_daily` - one
+/// token, unreadable, and wide enough to push the DESCRIPTION column out of
+/// alignment. An unknown cycle now still gets a separator and loses the
+/// `deployment_` prefix the API carries, so the worst case is
+/// `$7.00/something` rather than a mash of two values.
+fn billing_cycle_suffix(raw: Option<&str>) -> String {
+    let raw = raw.unwrap_or("monthly").trim();
+    let key = raw
+        .trim_start_matches('/')
+        .trim_start_matches("deployment_")
+        .to_ascii_lowercase();
+    match key.as_str() {
+        "" | "one_time" | "one-time" | "once" | "free" | "lifetime" => String::new(),
+        "monthly" | "month" | "mo" => "/mo".to_string(),
+        "yearly" | "year" | "yr" | "annual" | "annually" => "/yr".to_string(),
+        "weekly" | "week" | "wk" => "/wk".to_string(),
+        "daily" | "day" => "/day".to_string(),
+        "hourly" | "hour" | "hr" => "/hr".to_string(),
+        "per_install" | "per-install" | "install" => "/install".to_string(),
+        other => format!("/{}", other.replace('_', "-")),
+    }
+}
+
 fn display_plan(template: &MarketplaceTemplate) -> String {
     if let Some(price) = template.price {
         if price > 0.0 {
-            let cycle = template.billing_cycle.as_deref().unwrap_or("/mo");
-            let cycle = match cycle {
-                "one_time" | "one-time" | "once" | "free" => "",
-                "monthly" | "month" | "/mo" => "/mo",
-                "yearly" | "year" | "/yr" => "/yr",
-                "per_install" | "per-install" => "/install",
-                other => other,
-            };
-            return format!("${:.2}{}", price, cycle);
+            return format!(
+                "${:.2}{}",
+                price,
+                billing_cycle_suffix(template.billing_cycle.as_deref())
+            );
         }
     }
     if let Some(plan) = template
@@ -1397,8 +1424,9 @@ fn truncate(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_install_inputs_to_deploy_form, display_plan, marketplace_template_matches_slug,
-        resolve_install_inputs, response_stack_definition, write_install_flags, InstallFileFlags,
+        apply_install_inputs_to_deploy_form, billing_cycle_suffix, display_plan,
+        marketplace_template_matches_slug, resolve_install_inputs, response_stack_definition,
+        truncate, write_install_flags, InstallFileFlags,
     };
     use crate::cli::stacker_client::{
         MarketplaceInstallResponse, MarketplaceTemplate, ProjectInfo,
@@ -1618,6 +1646,64 @@ mod tests {
     // and `required_plan_name` indicate a free template. Otherwise the CLI
     // listing lies to users and `stacker install` rejects with "must
     // purchase this template before installing it".
+    // A real catalogue row printed `$7.00deployment_daily`: the amount and the
+    // server's raw enum fused into one token, wide enough to push the
+    // DESCRIPTION column out of alignment. This is the first thing someone
+    // sees when they search the catalogue.
+    #[test]
+    fn display_plan_separates_the_price_from_a_deployment_prefixed_cycle() {
+        let mut t = marketplace_template("n8n-official-release");
+        t.price = Some(7.0);
+        t.billing_cycle = Some("deployment_daily".to_string());
+
+        assert_eq!(display_plan(&t), "$7.00/day");
+    }
+
+    #[test]
+    fn display_plan_never_glues_an_unknown_cycle_onto_the_amount() {
+        let mut t = marketplace_template("x");
+        t.price = Some(7.0);
+        t.billing_cycle = Some("deployment_fortnightly".to_string());
+
+        let rendered = display_plan(&t);
+        assert!(
+            rendered.starts_with("$7.00/"),
+            "an unknown cycle must still be separated, got {rendered}"
+        );
+        assert!(!rendered.contains("deployment_"), "{rendered}");
+    }
+
+    #[test]
+    fn billing_cycle_suffix_covers_the_shapes_the_api_sends() {
+        for (raw, want) in [
+            ("deployment_daily", "/day"),
+            ("daily", "/day"),
+            ("deployment_monthly", "/mo"),
+            ("month", "/mo"),
+            ("/mo", "/mo"),
+            ("yearly", "/yr"),
+            ("deployment_weekly", "/wk"),
+            ("hourly", "/hr"),
+            ("per_install", "/install"),
+            ("one_time", ""),
+            ("lifetime", ""),
+        ] {
+            assert_eq!(billing_cycle_suffix(Some(raw)), want, "cycle {raw}");
+        }
+        // No cycle at all keeps the previous default.
+        assert_eq!(billing_cycle_suffix(None), "/mo");
+    }
+
+    #[test]
+    fn the_plan_cell_cannot_widen_the_table() {
+        // Whatever the API sends, the cell stays inside its column.
+        let mut t = marketplace_template("x");
+        t.price = Some(1234.0);
+        t.billing_cycle = Some("deployment_every_other_tuesday".to_string());
+
+        assert!(truncate(&display_plan(&t), 13).chars().count() <= 13);
+    }
+
     #[test]
     fn display_plan_shows_price_when_plan_is_free_but_price_is_positive() {
         // Real production row for `umami`: price=10.0, plan="free" (any
