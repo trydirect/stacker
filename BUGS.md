@@ -708,7 +708,7 @@ Keep the source file mode when uploading project files (at least the owner
 execute bit). Test: an executable file in the project arrives executable on the
 server.
 
-## 20. 🔴 CONFIRMED — a deploy ends `paused [port_conflict]` while the stack is up and healthy on that port (found 2026-10-27, confirmed 2026-11-12)
+## 20. ✅ FIXED — a deploy ends `paused [port_conflict]` while the stack is up and healthy on that port (found 2026-10-27, confirmed 2026-11-12, fixed 2026-11-16)
 
 ### Observed (2026-10-27)
 
@@ -817,6 +817,19 @@ copy. Also `roles/nginx_proxy_manager` still keeps an unpatched copy of
 `preflight_port_conflicts.yml`, as the fix commit itself notes. Evidence
 and the exact commands: `blog/docs/tiktok-scripts/stacker-cli/captures/CLI-12/REVERIFY-2026-11-16.md`
 (private repo).
+
+### Fixed 2026-11-16 - the label hatch (tfa PR #151)
+
+The shipped compose marks every container it creates with
+`my.stacker.service=<service>`, and that value is the app name roles already
+pass as `preflight_container_name`. The escape hatch now matches on that
+label as well as on the container name, so the check finds the shipped stack
+(`project-n8n-1`) without guessing directory conventions, and the n8n
+role's legacy `docker compose up` is skipped when the shipped stack already
+runs the app. Live proof: deployment **#1543** (same command, same host as
+#1541/#1542) passed the precheck and reported **no** port conflict; the play
+went on to fail later, on the unrelated §47. The stack served HTTP 200
+throughout.
 
 ## 21. 🟠 NOT CONFIRMED — a bake of a `--target server` deployment records no server type, so Quick Deploy offers the default size (found 2026-10-27)
 
@@ -1223,3 +1236,65 @@ in the exact flow that asks users to review hooks.
 
 Teach the scanner the portable-sed idiom or cite the matched lines. Test:
 deploying the n8n template's hook produces no warning.
+
+## 47. 🟠 OPEN — a `proxy:` block fails the deploy at the nginx role: `The list_with_services has not been initialized in previous roles` (found 2026-11-16)
+
+### Observed (2026-11-16)
+
+Once the port precheck stopped blocking the play (§20 fixed, deployment
+#1543), the deploy of a marketplace stack with a `proxy:` block failed one
+step later:
+
+```console
+✗ Deployment #1543 ended as 'paused' [internal_error]
+fatal: [2.31.160.181]: FAILED! => {"changed": false, "msg":
+"The list_with_services has not been initialized in previous roles."}
+```
+
+The message is `roles/nginx/tasks/main.yml`'s own guard: the role requires
+`list_with_services` to be initialized by "previous roles", which in the
+classic flow happens when an app role calls
+`roles/nginx/tasks/include_nginx.yml` (it sets `list_with_services: []` and
+appends the service). No marketplace/agent-managed app role ever calls it
+(roles/n8n does not), so the guard always fires. Its only escape is
+`container == 'komodo'` ("Proxy only").
+
+### Why the pieces do not fit
+
+The stack's `proxy: type: nginx` block makes the generator emit an `nginx`
+service into the project compose (`image: nginx:alpine`, ports 80/443,
+bind mount `./nginx/conf.d`, labels `my.stacker.scope: platform`). The
+deploy then strips it from the remote compose
+(`src/cli/config_bundle.rs`: "Excluding platform-managed service(s) ... -
+installed separately by their own role") and the install service runs
+`roles/nginx` for it. But:
+
+- the generated service bind-mounts **project** files (`./nginx/conf.d`),
+  while the scope convention (`docs/APP_DEPLOYMENT.md`) deploys
+  platform-managed services outside the project dir
+  (`/home/trydirect/<service>/`) - the same "duplicate runtime ownership"
+  the convention exists to prevent, just inverted;
+- `roles/nginx` is built for the classic registry model (app roles call
+  `include_nginx`, the role renders one conf per registered service); it has
+  no path that reads the stacker `proxy.domains` / `upstream` block;
+- the convention's own list of platform-managed examples names
+  `statuspanel` and `nginx_proxy_manager`, not plain `nginx`.
+
+Family: §42 (`proxy.type: nginx` routing), §43 (upstream form), §44
+(`proxy.domains` not reconciled), §45 (proxy block vs service named `app`).
+
+### Fix direction
+
+Pick one ownership model for the generated proxy service and make all three
+layers agree:
+
+1. **project-scoped** (fits the generated service as written): keep the
+   `nginx` service in the remote compose, let the agent run it with its
+   bind-mounted conf, and stop routing it to `roles/nginx`; or
+2. **platform-managed** (fits the strip): teach the install-service role
+   mapping to build `list_with_services` (or `nginx_dict_vars`) from the
+   stacker `proxy:` block, and have the role render the conf into its own
+   directory.
+
+Test: deploying a marketplace stack with a `proxy:` block ends `completed`
+and the declared domain serves the app.
