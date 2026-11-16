@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 
 <!-- next release notes go here -->
 
+## [0.3.9] — 2026-11-16
+
+### Fixed — `stacker init --with-proxy` no longer generates the retired `nginx` type
+
+- `stacker init --with-proxy` writes `proxy.type: nginx-proxy-manager`
+  (the supported set is `nginx-proxy-manager`, `caddy`, `traefik`), and the
+  generated config template documents that set.
+
 ## [0.3.8] — 2026-11-16
 
 ### Fixed — `stacker find` price column and proxy service dependency
