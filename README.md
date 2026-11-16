@@ -160,7 +160,7 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
 
 proxy:
-  type: nginx
+  type: nginx-proxy-manager
   auto_detect: true
   domains:
     - domain: app.example.com
