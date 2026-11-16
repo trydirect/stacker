@@ -1313,5 +1313,36 @@ Remove the retired type instead of wiring the dead path:
    caddy and traefik deploy into their own directories too.
 
 Test: `proxy.type: nginx` is rejected (or normalized) by `stacker config
-validate`; a marketplace stack with `proxy.type: npm` deploys to
-`completed` and its declared domain serves the app.
+validate`; a marketplace stack with `proxy.type: nginx-proxy-manager`
+deploys to `completed` and its declared domain serves the app. (Proven
+2026-11-16 with deployment #1544: `completed`, and the declared
+`sslip.io` domain served the app through NPM.)
+
+## 48. 🟡 OPEN — ten tests fail on `dev` out of the box: `agent_sweep` and `marketplace_template_rating` (found 2026-11-16)
+
+### Observed (2026-11-16)
+
+Full suite against the shared test stand (`stacker-test-pg`, PG* env,
+`--no-fail-fast`): **129 test binaries green, 2 red, 0 silently skipped**.
+
+- `tests/agent_sweep.rs` - 7 failed / 2 passed: every `sweep_dead_*`,
+  `sweep_malformed_*` and `audit_log_preserved_after_agent_deletion`
+  assertion (`assert_eq!(removed, 1)` style). From the `sweep_dead` /
+  `sweep_malformed` feature commit `c85091d2`.
+- `tests/marketplace_template_rating.rs` - 3 failed / 2 passed:
+  `public_rating_summary_does_not_create_product_for_unrated_template`,
+  `user_can_rate_template_by_template_id_without_product_id_knowledge`,
+  `user_can_fetch_and_delete_own_template_rating`.
+
+Not caused by local changes under review at the time (the diffs touched
+init/docs only; neither test binary reads those files). Whether CI runs
+these binaries green (fresh DB per test) while a local shared stand
+accumulates databases is worth checking first - the stand keeps every
+per-test database it creates.
+
+### Fix direction
+
+Reproduce on a fresh `stacker-test-pg` to separate environment from
+regression, then fix the failing assertions (or the sweep and rating
+behaviour they pin). Test: the full suite is green against a freshly
+created stand.
