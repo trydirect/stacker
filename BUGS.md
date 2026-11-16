@@ -1207,6 +1207,12 @@ template repository.
 
 ## 34. 🟢 OPEN — the hook scanner false-positives on the marketplace template's own `generate-secrets.sh` (found 2026-11-12)
 
+**Still happening 2026-11-15.** Every deploy of the n8n template prints
+`[WARN] Hook 'pre_build': [WARNING] Obfuscated eval/execution in 'pre_build'
+line 6 — review for hidden commands`. Line 6 is the portability guard that
+decides between GNU and BSD `sed`. So the warning fires on our own published
+template, on every run.
+
 ### Observed (2026-11-12)
 
 After removing the `# @stacker-origin: marketplace` marker as the install
@@ -1311,6 +1317,10 @@ still ignored. The CLI no longer depends on it.
 
 ## 36. 🟢 OPEN — the clippy and fmt gates fail on pre-existing code (found 2026-11-13)
 
+**Measured again 2026-11-15:** `cargo clippy --lib` reports 111 warnings on
+`dev`, none of them in the file that was being changed. So the gate still
+cannot be used to judge a new change - which is the actual cost here.
+
 ### Observed (2026-11-13, rustc/clippy 1.94.1)
 
 CLAUDE.md's own gate `cargo clippy -- -D warnings` cannot pass on a clean
@@ -1350,3 +1360,510 @@ clippy warnings and `build.rs:37`, with no behaviour change. Test:
 `cargo clippy -- -D warnings` and `cargo fmt -- --check` pass on a clean
 tree. Alternatively pin the toolchain in `rust-toolchain.toml`, but the
 lints are real, so the cleanup is the honest fix.
+
+## 37. 🟠 OPEN — `stacker proxy add` rewrites the whole `stacker.yml` and drops every comment (found 2026-11-14)
+
+**Severity:** high for anyone whose `stacker.yml` is hand-authored, which is
+every template in the catalogue.
+
+**What happens.** One `proxy add` call round-trips the entire file through a
+YAML serializer. The proxy entry it adds is correct, but everything else in
+the file is rewritten: **every YAML comment is gone** - re-checked twice by
+counting before and after, 20 `#` lines down to 6, and all six survivors are
+`#` characters inside the `marketplace.long_description` block scalar
+(markdown headings and a shell comment), i.e. text content rather than
+comments. Quoting is normalised
+(`"5678:5678"` becomes `5678:5678`, `version: "2.0.0"` becomes
+`version: 2.0.0`), inline lists are expanded one item per line, blank lines
+between sections are removed, and escaped regexes lose their quotes
+(`pattern: "^[^@\\s\"]+@..."` becomes `pattern: ^[^@\s"]+@...`).
+
+**Reproduce** (against the n8n template from `awesome-selfhosted-stacker`):
+
+```
+stacker proxy add n8n.example.com --upstream http://n8n:5678 --ssl off
+```
+
+```
+✓ Updated proxy config in .../stacker.yml
+  Backup written to .../stacker.yml.bak
+```
+
+The backup is real and complete, so nothing is lost permanently, but the
+working file no longer explains itself. For a published template whose
+comments are its documentation, the command is destructive in practice.
+
+**Expected.** Insert or update the `proxy:` block in place and leave the rest
+of the file byte-identical, the way a config edit should behave.
+
+**Also in the same output:** the command chose
+`proxy.type: nginx-proxy-manager` on a stack that had `type: none`, and
+there is no flag to ask for plain `nginx` instead. `stacker proxy add --help`
+offers only `--upstream` and `--ssl`.
+
+**Where to start:** `src/console/commands/cli/proxy.rs:264` prints the
+"Updated proxy config in" line, so the write happens just above it. The fix
+is an in-place edit of the `proxy:` block instead of serialising the parsed
+document back out.
+
+## 38. ✅ FIXED — the agent could not resolve NPM credentials, so every remote proxy command failed: `vault_unavailable` (found 2026-11-14, fixed and verified live 2026-11-15)
+
+**Severity:** blocks the "configure a reverse proxy on your own server from
+your laptop" flow end to end, for **both** commands that offer it.
+
+**Re-checked against `docs/STACKER_YML_REFERENCE.md:1650`**, which documents
+`stacker agent configure-proxy` as the way to configure NPM through the
+agent. That command has everything the config file lacks - a separate
+`--port` (so an upstream scheme is impossible), `--action create|update|delete`
+and `--deployment <hash>` - and it fails identically:
+
+```
+$ stacker agent configure-proxy n8n --domain <domain> --port 5678 --no-ssl \
+    --action update --deployment deployment_<hash>
+  ⚠ Checking active connections — skipped
+  ✗ Configuring proxy for n8n — Vault is unavailable while resolving NPM credentials (vault_unavailable)
+```
+
+So this is not a `proxy add` defect: it is the one credential read both
+commands depend on. Fixing it unblocks `proxy add`, `agent configure-proxy`,
+and the update/delete actions that bug 44 needs.
+
+**What happens.** After writing the local config, the command asks the agent
+to configure the proxy on the server and the agent refuses:
+
+```
+  ⚠ Checking active connections — skipped
+  ⚠ Connection check skipped (agent could not verify active connections)
+  ✗ Configuring proxy for n8n — Vault is unavailable while resolving NPM credentials (vault_unavailable)
+  ⚠ Proxy config saved locally, but remote NPM configuration failed: Agent command '...' failed: Vault is unavailable while resolving NPM credentials (vault_unavailable)
+    The proxy will be configured on the remote server on the next deploy.
+```
+
+Seen on a server provisioned the same day by `stacker deploy --target cloud`,
+with the agent online (`stacker deployment state` reports
+`agent.status: online`, capabilities include `npm_credential_source=vault`),
+so this is not a stale agent.
+
+**Expected.** Either the agent resolves the credentials it advertises, or the
+command says up front that proxy configuration needs something the agent does
+not have, instead of half-applying and deferring to a later deploy.
+
+**The deploy path does work.** Declaring the same domain in
+`proxy.domains` and running `stacker deploy` configured NPM on the server:
+the host file was generated and the hostname served the app. So the proxy
+feature is not dead - only the `proxy add` command's remote half is.
+
+**Re-tested with NPM already running (2026-11-14).** The first run happened
+on a server with no proxy at all (`proxy detect` said `None`), so the obvious
+theory was that `proxy add` needs an existing NPM. It does not help: with
+`nginx-proxy-manager` up and `proxy detect` reporting it, a third domain
+produced exactly the same failure, verbatim `Vault is unavailable while
+resolving NPM credentials (vault_unavailable)`.
+
+**RESOLVED 2026-11-15. Two independent links, both now fixed.** It was never
+a regression: mTLS to the secret store was introduced at the end of June
+2026, and the credential read has failed on every server provisioned since.
+Servers created before that date keep working, which is why the command
+always passed when tested by hand.
+
+1. *The agent was never given a client certificate.* The provisioning service
+   reads the signing material from the secret store under one field name
+   while the setup script writes it under another, so signing returned
+   nothing - and the caller passed the CA to the playbook unconditionally
+   while passing the client certificate and key only when signing had
+   succeeded. The result was half an mTLS setup with a deploy that reported
+   success. Fixed in the provisioning service: the reader now accepts both
+   field names, raw PEM or base64, and both KV layouts, and says which fields
+   it looked for when it finds none.
+2. *The agent did not trust the certificate authority that signs the secret
+   store.* With the client identity loaded and no root added, the handshake
+   itself failed, which is why the message was a transport error rather than a
+   permission error. Fixed in the agent (`trydirect/status`, `f05dcbe`): the
+   CA comes from `VAULT_CACERT` / `VAULT_CACERT_PATH`, or from the path the
+   provisioning role already writes next to the client pair, so a server
+   deployed earlier is fixed without touching its environment. Both client
+   construction sites share one TLS setup now.
+
+**Verified end to end on a live server**, not only by tests: after the newer
+agent image and an agent install, `stacker agent configure-proxy` created,
+deleted and re-created host entries, the proxy served the real application on
+two hostnames, and `vault_unavailable` has not appeared since.
+
+**Existing servers do not heal themselves.** Each one needs the newer agent
+image plus an agent install, which is what signs and delivers its client
+certificate.
+
+**What the first version of this entry got wrong:** it guessed an expired
+service token. The failure text (`error=sending Vault GET request`) was a
+transport failure all along, and reading the agent's own log instead of
+theorising is what found it. The hint that the command had worked by hand
+before was real, but it pointed at the wrong explanation: those servers
+predate mTLS rather than holding a fresher token.
+
+## 39. 🟢 OPEN — `secrets validate` reads `${VAR}` references out of comments (found 2026-11-14)
+
+The validator fails the whole stack because of a variable that appears only
+inside a YAML comment:
+
+```
+$ stacker secrets validate
+  ✓ ADMIN_EMAIL
+  ...
+  ✗ BASE_PATH  (not set)
+Error: Configuration validation error: 1 variable(s) referenced in stacker.yml are not set: BASE_PATH
+```
+
+`BASE_PATH` occurs exactly once in the file, on a comment line:
+
+```yaml
+    # ${BASE_PATH}/stacker-project-test, a key from this repository's test
+```
+
+Exit code is 1, so this also fails any pipeline that gates on
+`secrets validate`. Strip comments before scanning for `${VAR}`.
+
+**Where to start:** the message comes from
+`src/console/commands/cli/secrets.rs:1445`. Strip comment lines (or reuse
+`mask_variable_references`, `src/cli/config_parser.rs:2731`) before
+collecting `${VAR}` names.
+
+**Expected:** a variable that appears only inside a `#` comment is not a
+reference and must not fail validation.
+
+## 40. 🟢 OPEN — `agent logs` and `logs` disagree on their own interface (found 2026-11-14, corrected the same day)
+
+`stacker logs` takes no positional app and uses `--service` plus `--tail`;
+`stacker agent logs` takes a positional `<APP>` and accepts neither `--lines`
+nor `--tail`:
+
+```
+$ stacker logs n8n --lines 25
+error: unexpected argument 'n8n' found
+$ stacker agent logs n8n --lines 25
+error: unexpected argument '--lines' found
+```
+
+Both work in their own form (`stacker logs --service n8n --tail 20`,
+`stacker agent logs n8n`), so this is interface drift rather than a defect.
+
+**Correction.** The first version of this entry said the documented form
+`stacker agent logs my-app --lines 200` does not exist. That form is not in
+this repository's documentation at all -
+`docs/STACKER_YML_REFERENCE.md:1646` says `stacker agent logs <app>` and
+`:1797-1801` shows `stacker logs --tail 100`, both exactly as the binary
+behaves. The `--lines` spelling came from notes outside this repo. The
+reference is right; only the asymmetry between the two commands is real, and
+it still makes them impossible to teach in one breath.
+
+**Where to start:** `src/console/commands/cli/logs.rs:16` defines
+`LogsCommand` with `--service`/`--tail`; the agent variant is in
+`src/console/commands/cli/agent.rs`.
+
+**Expected:** one spelling for both. Whichever wins, `--tail` and `--lines`
+should not be a coin flip, and the form in the docs must exist.
+
+## 41. 🟢 OPEN — `stacker find` glues the price to the raw billing enum (found 2026-11-14)
+
+```
+ITEM                     NAME                         VENDOR               PLAN           DESCRIPTION
+n8n                      n8n                          Optimum              free           The Open-Source, Low-Code…
+n8n-official-release     N8n official release         Kirill Palnitsky     $7.00deployment_daily This is a clean n8n insta…
+```
+
+The paid row prints `$7.00deployment_daily`: no separator between amount and
+period, and the period is the internal enum rather than a word. It also
+overflows the PLAN column and pushes DESCRIPTION out of alignment. This is
+the first thing a new user sees when they search the catalogue.
+
+**Where to start:** the table is printed in
+`src/console/commands/cli/marketplace.rs:64` (and again at `:142` for
+`templates`).
+
+**Expected:** `$7.00 / day` or `$7.00 daily`, a separator between amount and
+period, the enum translated to a word, and the column width respected so
+DESCRIPTION stays aligned.
+
+## 42. 🟠 OPEN — `proxy.type: nginx` silently deploys nginx-proxy-manager (found 2026-11-14)
+
+`stacker.yml` declared
+
+```yaml
+proxy:
+  type: nginx
+  auto_detect: false
+```
+
+and the deploy brought up `nginx-proxy-manager` (image
+`trydirect/nginx-proxy-manager`), which `stacker proxy detect` then reports as
+`Detected proxy: NginxProxyManager`. Nothing in the deploy output says the
+requested type was substituted. `stacker proxy add` makes the same choice
+from the other direction (bug 37): it writes `type: nginx-proxy-manager` over
+a `type: none`, with no flag to ask for plain nginx.
+
+**Narrowed 2026-11-15.** The CLI's own generator does honour the declared
+type: with `proxy.type: nginx` the locally generated
+`.stacker/docker-compose.yml` carries a plain `nginx:alpine` service
+(`src/cli/generator/compose.rs`, the `ProxyType::Nginx` branch). The container
+that actually came up on the server was `nginx-proxy-manager`. So the
+substitution happens on the deploy path, not in the generator - look there,
+not in the CLI.
+
+`docs/STACKER_YML_REFERENCE.md:558-566` lists the two as separate values -
+`nginx` is "Standard Nginx reverse proxy" and `nginx-proxy-manager` is
+"Nginx Proxy Manager (NPM) with web UI" - so the substitution contradicts the
+reference, not just expectations. `auto_detect: false` was set, so this is
+not the documented detection path (`:578`) either; that path only applies
+when a proxy is already running, and `proxy detect` reported `None` before
+the deploy.
+
+Either `nginx` should deploy nginx, or the reference and the deploy output
+have to say that `nginx` means NPM here. Right now `config validate` accepts
+a value the deploy does not honour.
+
+**Where to start:** `src/cli/proxy_manager.rs:154` maps the string `nginx` to
+`ProxyType::Nginx`, and `src/cli/compose_service_sync.rs:36` then branches on
+`proxy.proxy_type != ProxyType::NginxProxyManager`. Find where a stack whose
+type is `Nginx` still ends up on the NPM path and either honour the declared
+type or reject it with a message.
+
+**Expected:** `type: nginx` deploys nginx, or `config validate` refuses the
+value and names what is supported.
+
+## 43. 🟠 OPEN — an `upstream` with a scheme produces a broken proxy config and HTTP 500 (found 2026-11-14)
+
+**Severity:** high - the broken form is the one the CLI's own help suggests.
+
+`stacker proxy add --help` documents the upstream as
+`--upstream <UPSTREAM>  Upstream service address (e.g. http://app:8080)`,
+so `http://n8n:5678` looks correct. With that value the deploy writes
+
+```
+# /data/nginx/proxy_host/1.conf
+  set $forward_scheme http;
+  set $server         "http://n8n";
+  set $port           5678;
+```
+
+while the proxy include composes the target itself:
+
+```
+# /etc/nginx/conf.d/include/proxy.conf:7
+proxy_pass       $forward_scheme://$server:$port$request_uri;
+```
+
+The result is `http://http://n8n:5678`, and every request to that host
+returns `500 Internal Server Error` from openresty while the app itself is
+healthy on its own port. Both containers were on the same docker network, so
+this is purely the generated config.
+
+**The scheme form is documented, not a user mistake.**
+`docs/STACKER_YML_REFERENCE.md:598` defines the field as
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `upstream` | `string` | **yes** | - | Backend address (e.g. `app:3000`, `http://web:8080`) |
+
+so both forms are blessed by the reference, and `stacker proxy add --help`
+suggests the scheme form as its example. Only one of the two works. Strip the
+scheme when filling `$server` / `forward_host`, and keep both documented
+forms working - do not "fix" this by narrowing the docs to the bare form,
+since the help and the reference have been promising `http://web:8080`.
+
+**Confirmed by a second entry on the same server.** `proxy.domains` was given
+a second domain with the bare form, and the two generated files sit side by
+side:
+
+```
+# 1.conf  (upstream: http://n8n:5678)
+  set $server         "http://n8n";   -> proxy_pass http://http://n8n:5678  -> 500
+# 2.conf  (upstream: n8n:5678)
+  set $server         "n8n";          -> proxy_pass http://n8n:5678         -> 200
+```
+
+The bare form serves the real application: the response carries n8n's own
+`<meta name="n8n:config:rest-endpoint">` and `/rest/settings` returns n8n
+JSON, while the bare IP still shows the proxy's "Default Site" page. So the
+only thing wrong is the scheme the help tells you to pass.
+
+**Still open 2026-11-15, but no longer a dead end.** Once bug 38 was fixed,
+the broken entry could be repaired from the laptop:
+`stacker agent configure-proxy <app> --domain <host> --port <port> --no-ssl
+--action delete` then the same line with `--action create`. The host that had
+answered 500 for five hours answered 200 immediately afterwards, and both
+generated files now set the bare host. So the defect is narrower than it
+looked - it costs one delete and one create - but it is still worth fixing,
+because `--help` goes on suggesting the form that breaks.
+
+**Root cause: the correct code exists, is tested, and is not the code that
+runs.** `src/cli/proxy_manager.rs:353` normalises exactly this:
+
+```rust
+fn proxy_pass_target(upstream: &str) -> String {
+    if upstream.starts_with("http://") || upstream.starts_with("https://") {
+        upstream.to_string()
+    } else {
+        format!("http://{}", upstream)
+    }
+}
+```
+
+and `src/cli/proxy_manager.rs:606` is a test named
+`test_generate_nginx_server_block_keeps_upstream_scheme` whose second
+assertion is literally
+
+```rust
+assert!(!block.contains("proxy_pass http://http://app:8080;"));
+```
+
+That function is only reached from `generate_nginx_configs`
+(`proxy_manager.rs:370`), the writer for **plain nginx files** - the path a
+stack gets when `proxy.type` is honoured. The deploy
+takes the nginx-proxy-manager branch instead (bug 42), which ships
+`forward_host` and `forward_port` to the agent
+(`src/forms/status_panel.rs:180-182`) - two fields where the host must be
+bare and the port is separate. Nothing normalises the upstream on that path,
+so the scheme lands inside `forward_host`.
+
+So 30 passing tests in `proxy_manager.rs` say nothing about the path users
+actually hit, and the fix is to normalise in the NPM payload the way
+`proxy_pass_target` already does - or to stop routing `type: nginx` to NPM,
+which removes this bug and bug 42 together.
+
+## 44. 🟠 OPEN — the declared `proxy.domains` are not reconciled, and `--action update` refuses a differing entry (found 2026-11-14, narrowed 2026-11-15)
+
+The proxy entry is created on the first deploy and then left alone. Changing
+`upstream` in `stacker.yml` from `http://n8n:5678` to `n8n:5678` and running
+`stacker deploy` again (deployment #1535, `✓ Copy files is done`, agent
+online) left the generated file untouched:
+
+```
+# /data/nginx/proxy_host/1.conf after the redeploy
+  set $forward_scheme http;
+  set $server         "http://n8n";
+  set $port           5678;
+```
+
+**Narrowed 2026-11-15, with bug 38 out of the way.** What actually happens
+splits in two:
+
+* The *declarative* path still ignores changes. Editing `upstream` in
+  `stacker.yml` and redeploying leaves the existing entry exactly as it was,
+  which is the half of this bug that remains open. For a template author the
+  config file is the only place to express intent, so this is the half that
+  matters.
+* The *imperative* path works, with one catch. `--action update` against an
+  entry whose configuration differs is refused outright:
+
+  ```
+  ✗ Configuring proxy for n8n — Existing proxy host for <host> does not match
+    the requested configuration (npm_existing_conflict)
+  ```
+
+  Against a matching entry it succeeds and reports `"unchanged": true`, which
+  is the right answer. And `--action delete` followed by `--action create`
+  replaces a wrong entry in seconds - verified on a live server, the host went
+  from 500 to 200. So an operator is not stuck; they just cannot say "make it
+  look like this" in one command, which is what `update` reads as.
+
+**Correction (2026-11-14).** The first version of this entry said there is no
+`proxy update` or `proxy remove`. There is:
+`stacker agent configure-proxy --action create|update|delete`, documented at
+`docs/STACKER_YML_REFERENCE.md:1650`. So the gap is narrower than recorded -
+the declarative path ignores changes, but an imperative fix exists.
+
+It just cannot run: `--action update` against the broken entry fails with
+`vault_unavailable` (bug 38), the same read that stops `proxy add`. With 38
+fixed, a wrong entry is repairable from the laptop, and this bug drops to
+"the declared `proxy.domains` are not reconciled on deploy" - still worth
+fixing, because the config file is the only place a template author can
+express intent.
+
+Adding a *new* domain does work: the new entry is created on the next deploy.
+Only updates to an existing one are ignored.
+
+**Where to start:** the agent command is `configure_proxy`
+(`src/forms/status_panel.rs:540`). It creates an entry; nothing compares an
+existing entry against the declared `proxy.domains`.
+
+**Expected:** a deploy reconciles the declared domains - create what is
+missing, update what differs, and say which it did. Failing that, ship
+`stacker proxy update` and `stacker proxy remove` so a wrong entry can be
+repaired without the NPM UI.
+
+## 45. 🟡 FIX READY — a `proxy:` block makes the whole compose project invalid unless the app service is literally named `app` (found 2026-11-15, fix on a branch the same day)
+
+**Severity:** high. Every deploy and every agent install on the stack fails
+from then on, and the failure is in `docker compose up`, i.e. after the files
+are already on the server.
+
+`src/cli/generator/compose.rs:424` hardcodes the proxy's dependency:
+
+```rust
+depends_on: vec!["app".to_string()],
+```
+
+A stack whose services are named anything else - `n8n` and `postgres` in the
+case at hand - therefore gets an `nginx` service that depends on a service
+that does not exist, and docker refuses the **entire** project rather than
+just that one service:
+
+```
+docker compose -f /home/trydirect/project/docker-compose.yml up -d --remove-orphans
+rc=15
+service "nginx" depends on undefined service "app": invalid compose project
+```
+
+Deployment #1539 ended `paused` on exactly this, and so would every
+subsequent run against that host. The stack itself keeps serving, because the
+containers already running are untouched - which is what makes this easy to
+miss: the app answers 200 while every deploy fails.
+
+**Reproduce:** take any template whose app service is not called `app` (291 of
+296 in the catalogue qualify), add
+
+```yaml
+proxy:
+  type: nginx
+  domains:
+    - domain: example.com
+      ssl: "off"
+      upstream: n8n:5678
+```
+
+and deploy.
+
+**Expected:** depend on the service the proxy actually fronts - the host part
+of `proxy.domains[].upstream` names it - or emit no `depends_on` at all.
+nginx does not need the dependency to start, and an invalid reference costs
+the whole project.
+
+**Fixed on branch `fix/proxy-depends-on-existing-service` (`42fa4d97`),
+awaiting merge.** `proxy_dependencies` now returns the `app` service when it
+exists and otherwise the services named by `proxy.domains[].upstream`, keeping
+only those actually declared. Four tests; three fail against `origin/dev`,
+verified in a throwaway worktree.
+
+## 46. 🟢 OPEN — every agent command logs a failed `check_connections` the agent does not allow (found 2026-11-15)
+
+Each `stacker agent ...` invocation prints
+
+```
+  ⚠ Checking active connections — skipped
+  ⚠ Connection check skipped (agent could not verify active connections)
+```
+
+and the deployment event log records a failure for it:
+
+```
+[command_failed / failed] Command validation failed: program 'check_connections' is not allowed
+```
+
+So the CLI asks the agent to run a pre-flight the agent's allowlist rejects,
+on every single command. The commands themselves succeed, so this is noise -
+but it is noise that puts a red `failed` event into the deployment history
+before every successful operation, which makes the history unreadable when
+something does go wrong.
+
+**Expected:** either allow `check_connections` on the agent side, or stop
+sending it and drop the warning. A pre-flight that cannot ever run should not
+be attempted once per command.
