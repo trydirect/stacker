@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+<!-- next release notes go here -->
+
+## [0.3.8] — 2026-11-16
+
+### Fixed — `stacker find` price column and proxy service dependency
+
+- `stacker find` separates the price from the billing cycle again: the plan
+  cell no longer glues `$7.00` to `deployment_daily`.
+- A `proxy:` block's synthesized service now depends on a service that
+  exists instead of the hardcoded `app`, so proxies work with any app
+  service name.
+
 ### Fixed — Docs: `proxy.type` documents the supported set
 
 - `STACKER_YML_REFERENCE.md`, `README.md` and `SKILL.md` no longer present the
