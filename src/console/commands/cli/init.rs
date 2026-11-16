@@ -74,15 +74,15 @@ pub fn full_config_reference_example() -> &'static str {
 #     depends_on: []
 #
 # proxy:
-#   # type: none | nginx | traefik
-#   type: "nginx"
+#   # type: none | nginx-proxy-manager | caddy | traefik
+#   type: "nginx-proxy-manager"
 #   auto_detect: true
 #   domains:
 #     - domain: "app.example.com"
 #       # ssl: none | auto | manual
 #       ssl: "auto"
 #       upstream: "app:3000"
-#   # config: "./nginx.conf"
+#   # config: "./Caddyfile"
 #
 # deploy:
 #   # target: local | cloud | server
@@ -765,7 +765,7 @@ fn generate_config_template_path(
 
     if with_proxy {
         builder = builder.proxy(ProxyConfig {
-            proxy_type: ProxyType::Nginx,
+            proxy_type: ProxyType::NginxProxyManager,
             domains: vec![DomainConfig {
                 domain: format!("{}.localhost", project_name),
                 ssl: SslMode::Auto,
@@ -2409,7 +2409,7 @@ mod tests {
         assert!(result.is_ok());
 
         let config = StackerConfig::from_file(&result.unwrap()).unwrap();
-        assert_eq!(config.proxy.proxy_type, ProxyType::Nginx);
+        assert_eq!(config.proxy.proxy_type, ProxyType::NginxProxyManager);
         assert!(!config.proxy.domains.is_empty());
         assert!(config.proxy.domains[0].domain.contains("localhost"));
     }

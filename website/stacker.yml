@@ -34,7 +34,7 @@ services:
   - minio_data:/data
   depends_on: []
 proxy:
-  type: nginx
+  type: nginx-proxy-manager
   auto_detect: true
   domains:
   - domain: stacker.my
