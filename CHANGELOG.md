@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+<!-- next release notes go here -->
+
+## [0.3.9] — 2026-11-16
+
+### Fixed — `stacker init --with-proxy` no longer generates the retired `nginx` type
+
+- `stacker init --with-proxy` writes `proxy.type: nginx-proxy-manager`
+  (the supported set is `nginx-proxy-manager`, `caddy`, `traefik`), and the
+  generated config template documents that set.
+
+## [0.3.8] — 2026-11-16
+
+### Fixed — `stacker find` price column and proxy service dependency
+
+- `stacker find` separates the price from the billing cycle again: the plan
+  cell no longer glues `$7.00` to `deployment_daily`.
+- A `proxy:` block's synthesized service now depends on a service that
+  exists instead of the hardcoded `app`, so proxies work with any app
+  service name.
+
+### Fixed — Docs: `proxy.type` documents the supported set
+
+- `STACKER_YML_REFERENCE.md`, `README.md` and `SKILL.md` no longer present the
+  retired `nginx` proxy type: examples use `nginx-proxy-manager`, `caddy` is
+  documented in the `proxy.type` table, and the auto-detection list matches
+  the code (NPM, traefik, caddy, then plain nginx only as an existing proxy
+  to connect to). The AI config prompt lists the supported set as well. The
+  `nginx` value still parses for existing config files.
+
 ### Fixed — Marketplace vendor profile safety
 
 - The public vendor profile derives `avatar_url` from the account email via Gravatar (identicon) and ignores the client-supplied value; a migration clears stored non-Gravatar URLs.

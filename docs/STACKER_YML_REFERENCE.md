@@ -147,7 +147,7 @@ services:
       REDIS_URL: redis://redis:6379
 
 proxy:
-  type: nginx
+  type: nginx-proxy-manager
   auto_detect: true
   domains:
     - domain: app.example.com
@@ -561,14 +561,17 @@ Reverse proxy configuration. Stacker can auto-detect a running proxy or generate
 
 | Value | Description |
 |-------|-------------|
-| `nginx` | Standard Nginx reverse proxy |
 | `nginx-proxy-manager` | Nginx Proxy Manager (NPM) with web UI |
+| `caddy` | Caddy with automatic HTTPS from a generated Caddyfile |
 | `traefik` | Traefik reverse proxy with auto-discovery |
 | `none` | No proxy configured |
 
+*The plain `nginx` type is retired*: it generated a proxy service nothing
+deploys. Use `nginx-proxy-manager`, `caddy` or `traefik`.
+
 ```yaml
 proxy:
-  type: nginx
+  type: nginx-proxy-manager
 ```
 
 ### `proxy.auto_detect`
@@ -580,7 +583,10 @@ When enabled, Stacker scans running Docker containers for an existing reverse pr
 Detection checks for these container images (in priority order):
 1. `jc21/nginx-proxy-manager` / `nginx-proxy-manager` → `nginx-proxy-manager`
 2. `traefik` → `traefik`
-3. `nginx` → `nginx`
+3. `caddy` → `caddy`
+4. `nginx` → `nginx` (a plain nginx already on the box - recognized to
+   connect to it, not to deploy one; the order matters because NPM's image
+   name also contains "nginx")
 
 ```yaml
 proxy:
@@ -609,7 +615,7 @@ Domain routing rules. Each entry generates a proxy virtual host configuration.
 
 ```yaml
 proxy:
-  type: nginx
+  type: nginx-proxy-manager
   domains:
     - domain: app.example.com
       ssl: auto
@@ -632,7 +638,7 @@ Path to a custom proxy configuration file. When set, Stacker uses your config in
 
 ```yaml
 proxy:
-  type: nginx
+  type: nginx-proxy-manager
   config: ./nginx/custom.conf
 ```
 
@@ -1663,7 +1669,7 @@ Configuration issues:
 |------|-------------|
 | `--app-type <TYPE>` | Application type: `static`, `node`, `python`, `rust`, `go`, `php`, `custom` |
 | `--from-github <URL>` | Generate `stacker.yml` from a remote GitHub repository. Accepts `owner/repo` or full URL. Clones shallow into a temp dir, auto-detects the project type and compose services, then writes config to the current directory. Also generates `.env.example` and `scripts/generate-secrets.sh` when env vars are detected. Short flag: `-g`. |
-| `--with-proxy` | Include reverse-proxy (nginx) configuration |
+| `--with-proxy` | Include reverse-proxy configuration |
 | `--with-ai` | Use AI to scan the project and generate a tailored `stacker.yml` |
 | `--ai-provider <PROVIDER>` | AI provider: `openai`, `anthropic`, `ollama`, `custom` (default: `ollama`) |
 | `--ai-model <MODEL>` | AI model name (e.g. `gpt-4o`, `claude-sonnet-4-20250514`, `qwen2.5-coder`, `deepseek-r1`) |
@@ -2149,7 +2155,7 @@ services:
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
 proxy:
-  type: nginx
+  type: nginx-proxy-manager
   domains:
     - domain: myapp.example.com
       ssl: auto
@@ -2197,7 +2203,7 @@ services:
     volumes:
       - db-data:/var/lib/mysql
 proxy:
-  type: nginx
+  type: nginx-proxy-manager
   domains:
     - domain: blog.example.com
       ssl: auto
