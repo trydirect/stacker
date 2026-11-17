@@ -2018,115 +2018,98 @@ program output rather than a suggestion.
 containers never became ready is a failed deploy, and the next line should be
 how to see why - `stacker logs`, not an upsell.
 
-## 51. 🔴 OPEN — a redeploy orphans the status-panel agent, and remote management dies silently (found 2026-11-17)
+## 51. ❎ NOT A BUG — a redeploy creates a new deployment, and the agent commands need its hash (corrected 2026-11-17)
 
-**Severity:** highest found so far. One `stacker deploy` against a server that
-already has an agent leaves every `stacker agent *` command permanently
-broken, while the server itself keeps serving traffic and the agent on the box
-looks perfectly healthy.
+Recorded here as a correction, because the first version of this entry called
+it the most serious bug of the session. It is not a bug; it is how the
+product works, and the mistake was mine.
 
-Sequence, all on one server with a healthy stack and an online agent:
+After `stacker deploy --target server` against a server that already had a
+stack, this looked like a dead agent:
 
 ```
-stacker agent status          # ● online, 2 apps, containers listed
-stacker deploy --target server --server-host <ip> --server-ssh-key <key>
-  ✓ Deployment #<n> completed            (269 s)
-stacker agent status          # ○ offline, containers "? unknown"
+stacker agent status
+  ○ offline   Heartbeat: 13:39:26        # the second the deploy ran
 stacker agent deploy-app <app> --image <image> --force
-  ✗ Deploying <app> — timed out
-  Error: ... (last status: queued)       (317 s wasted)
+  ✗ timed out (last status: queued)      # after 317 s
 ```
 
-The cause, from the two sides:
+The deploy had created a **new** deployment with its own agent registration.
+Without `--deployment`, the CLI resolved the previous deployment and
+truthfully reported that its agent - the one that no longer runs - stopped
+reporting. The same commands against the new hash are immediate and healthy:
 
 ```
-stacker agent status --json     → agent.id = 9bd8947e-…  last_heartbeat 13:39:26
-on the server, /…/statuspanel/.env → AGENT_ID = b9aad37a-…   (rewritten 13:39:16)
+stacker agent status --deployment=<new hash>
+  ● online · 2 app(s)                    Heartbeat: 13:50:37
+stacker agent deploy-app <app> --image <image> --force --deployment=<new hash>
+  ✓ Deploying <app>  →  completed in 13 s, container running
+  the app answered again 6 s later
 ```
 
-The deploy re-registered the agent, wrote a new `AGENT_ID` into the agent's
-env, and left the deployment record pointing at the previous agent. The
-platform waits for a heartbeat from an agent that no longer exists; the new
-agent sends heartbeats nobody reads. `13:39:26` - the last heartbeat the
-platform ever saw - is the second the redeploy restarted the container.
+**The rule, for anyone reading this file:** after a deploy, pass
+`--deployment <hash>` to the agent commands. The hash comes from
+`stacker deployments` (newest first).
 
-The agent's own log is reassuring and useless:
+What remains worth improving, as UX rather than a defect: with several
+deployments for one project, `agent status` picks one silently and names an
+"offline" agent without saying that a newer deployment exists. A line like
+"resolved deployment <hash> (2 newer exist)" would have saved this detour.
 
-```
-heartbeat metrics refreshed cpu=0.66 mem_used_bytes=…      (every 3 s, forever)
-```
+## 52. ⚪ UNCONFIRMED — `compose_agent_enabled: false` after a redeploy (observed 2026-11-17)
 
-Nothing in it says the report is going nowhere.
-
-**Expected:** a deploy to a server that already has a registered agent either
-reuses that registration, or rebinds the deployment to the new agent id. An
-agent whose heartbeat is not being consumed should say so, and
-`agent status` should distinguish "no agent reporting" from "an agent is
-reporting under a different id".
-
-## 52. 🟠 OPEN — the same redeploy downgrades the agent to legacy mode (found 2026-11-17)
-
-Found while tracing #51, and separate from it. After the deploy, the agent's
-`config.json` on the server was rewritten with:
-
-```
-compose_agent_enabled = False
-```
-
-and the agent announced it on startup:
+Kept as an observation, not a claim. While tracing #51, the agent's
+`config.json` on the server carried `compose_agent_enabled = false` and the
+agent logged:
 
 ```
 WARN compose_agent=false - running in legacy mode (Status Panel handles all operations)
 ```
 
-It had been running with the compose-agent sidecar before. Flipping the flag
-back to `true` and restarting the container restores the mode:
+I flipped the flag to `true` and restarted the container, which switched it to
+`compose-agent sidecar handling Docker operations`. Then #51 turned out to be
+my own resolution mistake, so I cannot say whether the flag mattered at all,
+nor whether `false` was the intended value for a fresh registration.
+
+What is left to check, by whoever owns the agent: whether a new registration
+is meant to start in legacy mode, and if not, which side writes the `false`.
+The test stand currently runs with the flag flipped to `true`, with the
+original saved next to it as `config.json.bak-<epoch>`.
+
+## 53. 🟠 OPEN — the reported remote compose path is not the one docker uses (found 2026-11-17)
+
+Verified against the correct deployment hash, so this one is not #51 in
+disguise:
 
 ```
-INFO compose_agent=true - compose-agent sidecar handling Docker operations
-```
+stacker deployment state --deployment=<hash>
+  Project:  <name>        Agent: online
+  Compose:  /home/trydirect/<project>-<id>/docker-compose.yml   # no such file
+  Env:      /home/trydirect/<project>-<id>/.env                 # correct
 
-so the flag is the only thing that changed. The deploy rewrote `config.json`,
-`.env` and the panel's `docker-compose.yml` without being asked to touch the
-monitoring stack at all.
-
-**Expected:** a stack deploy does not rewrite the monitoring agent's own
-configuration; if it must re-render it, it preserves the modes the agent was
-installed with.
-
-## 53. 🟠 OPEN — `explain topology` and `deployment state` both report remote paths that do not exist (found 2026-11-17)
-
-For one bound project with a healthy stack, three answers to "where is the
-compose on the server":
-
-```
-stacker explain topology
-  Explain topology for unbound
-  runtime compose: /home/trydirect/<project>/docker-compose.yml       # no such file
-stacker deployment state
-  Compose:         /home/trydirect/<project>-<id>/docker-compose.yml  # dir exists, file does not
 docker inspect <container> --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}'
-  /home/trydirect/project/docker-compose.yml                          # the real one
+  /home/trydirect/project/docker-compose.yml                    # the real one
 ```
 
-The `.env` does live in the `<project>-<id>` directory, so `deployment state`
-is right about the env and wrong about the compose - they are in different
-directories, and neither command says so.
+The directory in the reported path exists and holds the `.env` and its
+backups, but no compose file - the compose lives in a different directory, and
+nothing in the output says the two are apart. The agent's own log agrees with
+docker: `compose_dir=/home/trydirect/project`.
 
-`explain topology` also prints **`for unbound`** for a project that
-`deployment state` resolves to a named project with an online agent, and it
-is the command whose entire job is to explain which files are in play.
+`stacker explain topology` prints a third path, `/home/trydirect/<project>/`,
+which exists nowhere, and heads its output `Explain topology for unbound`.
+It accepts no `--deployment` flag at all, so it cannot be pointed at the
+deployment whose topology you want explained.
 
-**Expected:** both commands report the path docker itself reports, and
-`explain topology` names the project it just resolved.
+**Expected:** report the path docker reports, and show the env and compose
+directories separately when they differ. `explain topology` should take
+`--deployment` like its neighbours.
 
-## 54. 🟡 OPEN — `sync` reports success when there is nothing to sync, and cannot repair a stored compose (found 2026-11-17)
+## 54. 🟡 OPEN — `sync` reports success when there is nothing to sync (found 2026-11-17)
 
 `stacker sync` is described as "Synchronize project configuration without
 deploying it", which reads like the way to push a corrected compose to the
-platform. It is not, and it does not say so.
-
-With the generated compose deleted outright:
+platform. With the generated compose deleted outright:
 
 ```
 rm .stacker/docker-compose.yml
@@ -2135,17 +2118,16 @@ stacker sync --verify
   ✓ Stacker database acknowledged the synchronized configuration
 ```
 
-No compose file existed at all. Syncing "succeeded" and the database
-"acknowledged" it. The stored compose - the one the agent writes onto the
-server before every app deploy - was left untouched, so a compose that is
-broken platform-side stays broken until a full deploy replaces it.
+No compose file existed at all. The stored compose - the one the agent writes
+onto the server before every app deploy - was left untouched, so a compose
+that is wrong platform-side stays wrong until a full deploy replaces it. That
+full deploy is the only repair path, and nothing points at it.
 
-Related, same session: `stacker monitor --once` with no alerts configured
-says `Add an alerts: block with a notify: target`, but the key the code and
-the reference both use is `target:`. With `target: {terminal: true}` the
-command works and prints `· 5 container(s), all healthy`.
+Related, same session: `stacker monitor --once` with no alerts configured says
+`Add an alerts: block with a notify: target`, but the key the code and the
+reference both use is `target:`. With `target: {terminal: true}` the command
+works and prints `· 5 container(s), all healthy`.
 
-**Expected:** `sync` either includes the compose in what it synchronizes, or
-states which parts of the configuration it covers; and a sync with no compose
-present is a warning, not a success. The monitor error should name the key it
-actually wants.
+**Expected:** `sync` either includes the compose in what it synchronizes or
+states what it covers; a sync with no compose present is a warning, not a
+success. The monitor error should name the key it actually wants.
