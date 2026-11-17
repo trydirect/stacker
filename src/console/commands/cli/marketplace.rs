@@ -663,6 +663,7 @@ impl CallableTrait for MarketplaceInstallCommand {
                     ssh_key: None,
                     server_name: None,
                     deployment_id: Some(deployment_id as i64),
+                    deployment_hash: None,
                     project_id: Some(response.project.id as i64),
                     cloud_id: None,
                     project_name: Some(response.project.name.clone()),

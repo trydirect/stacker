@@ -4910,6 +4910,17 @@ impl DeployCommand {
             lock = lock.with_project_name(self.project_name.clone());
         }
 
+        // BUGS.md #55: record the deployment hash in the lock — resolution
+        // then needs no API lookup, and a human reading the file can pass it
+        // straight to `--deployment`.
+        if lock.deployment_hash.is_none() {
+            if let Some(dep_id) = lock.deployment_id {
+                if let Some(hash) = lookup_deployment_hash(dep_id) {
+                    lock = lock.with_deployment_hash(Some(hash));
+                }
+            }
+        }
+
         if matches!(result.target, DeployTarget::Cloud | DeployTarget::Server) {
             if let Ok(Some(creds)) = CredentialsManager::with_default_store().load() {
                 lock = lock.with_stacker_email(creds.email.clone());
@@ -4968,6 +4979,27 @@ impl DeployCommand {
 }
 
 // ── Fetch server details from Stacker API by project ID ──
+
+/// Look up a deployment's hash (`deployment_<id>`) by its numeric id.
+///
+/// Best-effort: `None` when the API cannot be reached — resolution falls
+/// back to the same lookup at command time. Used to record the hash in the
+/// deployment lock (BUGS.md #55), so humans reading the file can pass it
+/// straight to `--deployment`.
+fn lookup_deployment_hash(deployment_id: i64) -> Option<String> {
+    let (base_url, creds) = resolve_saved_stacker_base_url("deployment hash lookup").ok()?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    rt.block_on(async {
+        let client = StackerClient::new(&base_url, &creds.access_token);
+        match client.get_deployment_status(deployment_id as i32).await {
+            Ok(Some(info)) => Some(info.deployment_hash),
+            _ => None,
+        }
+    })
+}
 
 /// After a cloud deploy completes, look up the provisioned server's details
 /// (IP, SSH user, port, name) from the Stacker server API.

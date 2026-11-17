@@ -22,7 +22,7 @@
 use std::path::Path;
 
 use crate::cli::config_parser::{DeployTarget, StackerConfig};
-use crate::cli::deployment_lock::DeploymentLock;
+use crate::cli::deployment_lock::{DeploymentLock, LockChoice};
 use crate::cli::error::CliError;
 use crate::cli::runtime::CliRuntime;
 
@@ -334,13 +334,61 @@ pub fn resolve_local_deployment_context(
     }
 }
 
+/// A resolved deployment hash together with where it came from.
+///
+/// BUGS.md #55: a silent wrong guess must become something the user can
+/// see — every agent command says what it resolved and from where.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ResolvedDeployment {
+    pub hash: String,
+    /// Human-readable origin, e.g. `.stacker/deployment-server.lock, target: server`.
+    pub source: String,
+}
+
+/// The lock stage of resolution, offline (BUGS.md #55): the first ranked
+/// lock that can identify a remote deployment — the preferred/active target's
+/// lock first, then newest-first — skipping local locks that carry neither a
+/// hash nor a deployment id.
+fn choose_lock(
+    project_dir: &Path,
+    preferred_target: Option<&str>,
+) -> Result<Option<LockChoice>, CliError> {
+    let ranked = DeploymentLock::rank_locks(project_dir, preferred_target)?;
+    Ok(ranked.into_iter().find(|choice| {
+        choice
+            .lock
+            .deployment_hash
+            .as_deref()
+            .map(|hash| !hash.trim().is_empty())
+            .unwrap_or(false)
+            || choice.lock.deployment_id.is_some()
+    }))
+}
+
+/// Warning for BUGS.md #55 item 2: `Some(message)` when a newer lock exists
+/// than the one chosen. Pure so the wording is testable.
+fn newer_lock_warning(ranked: &[LockChoice], chosen: &LockChoice) -> Option<String> {
+    let newer = ranked
+        .iter()
+        .filter(|other| other.is_newer_than(chosen))
+        .max_by(|a, b| a.cmp_deployed_at(b))?;
+    Some(format!(
+        "A newer deployment lock exists for target '{}' (deployed {}) than the resolved '{}' \
+lock (deployed {}) — pass --deployment <HASH> or run `stacker deployment use <HASH>` to pin the \
+deployment you mean.",
+        newer.lock.target, newer.lock.deployed_at, chosen.lock.target, chosen.lock.deployed_at
+    ))
+}
+
 /// Resolve the deployment hash for a remote deployment.
 ///
 /// Chain:
-/// 1. `stacker.yml` `deploy.deployment_hash` (pinned by agent install/deploy).
-/// 2. Deployment lock → `deployment_id` → Stacker API lookup. When
-///    `preferred_target` is set, that target's lock is used; otherwise any
-///    lock (agent commands are target-agnostic).
+/// 1. `stacker.yml` `deploy.deployment_hash` (pinned by `stacker deployment
+///    use` / `stacker agent install`).
+/// 2. Deployment lock → recorded `deployment_hash`, or `deployment_id` →
+///    Stacker API lookup. When `preferred_target` is set, that target's lock
+///    is used; otherwise the active target's lock, then the newest — never a
+///    fixed target order (BUGS.md #55).
 /// 3. `stacker.yml` project identity/name → active agent (most recent heartbeat).
 /// 4. `stacker.yml` project identity/name → most recent deployment.
 pub(crate) fn resolve_remote_hash(
@@ -348,6 +396,32 @@ pub(crate) fn resolve_remote_hash(
     preferred_target: Option<&str>,
     ctx: &CliRuntime,
 ) -> Result<String, CliError> {
+    resolve_remote_hash_detailed(project_dir, preferred_target, ctx).map(|resolved| resolved.hash)
+}
+
+/// [`resolve_remote_hash`], keeping the origin so callers can report it.
+///
+/// Prints one line saying what was resolved and from where (BUGS.md #55) —
+/// except for explicit `--deployment` values, which callers handle before
+/// ever getting here.
+pub(crate) fn resolve_remote_hash_detailed(
+    project_dir: &Path,
+    preferred_target: Option<&str>,
+    ctx: &CliRuntime,
+) -> Result<ResolvedDeployment, CliError> {
+    let resolved = resolve_remote_hash_inner(project_dir, preferred_target, ctx)?;
+    eprintln!(
+        "  \u{2139} resolved deployment {} (from {})",
+        resolved.hash, resolved.source
+    );
+    Ok(resolved)
+}
+
+fn resolve_remote_hash_inner(
+    project_dir: &Path,
+    preferred_target: Option<&str>,
+    ctx: &CliRuntime,
+) -> Result<ResolvedDeployment, CliError> {
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
     let config = if config_path.exists() {
         StackerConfig::from_file(&config_path)
@@ -357,24 +431,48 @@ pub(crate) fn resolve_remote_hash(
         None
     };
 
-    // 1. Explicit deployment hash recorded in stacker.yml.
+    // 1. Explicit deployment hash pinned in stacker.yml (`stacker deployment use`).
     if let Some(hash) = config
         .as_ref()
         .and_then(|c| c.deploy.deployment_hash.as_ref())
     {
         if !hash.trim().is_empty() {
-            return Ok(hash.clone());
+            return Ok(ResolvedDeployment {
+                hash: hash.clone(),
+                source: "stacker.yml deploy.deployment_hash".to_string(),
+            });
         }
     }
 
-    // 2. Lock → integer deployment ID → API hash lookup.
-    let lock = match preferred_target {
-        Some(target) => DeploymentLock::load_for_target(project_dir, target)?,
-        None => DeploymentLock::load(project_dir)?,
-    };
-    if let Some(dep_id) = lock.as_ref().and_then(|l| l.deployment_id) {
-        if let Some(info) = ctx.block_on(ctx.client.get_deployment_status(dep_id as i32))? {
-            return Ok(info.deployment_hash);
+    // 2. Locks: preferred/active target first, then newest-first.
+    let ranked = DeploymentLock::rank_locks(project_dir, preferred_target)?;
+    if let Some(chosen) = choose_lock(project_dir, preferred_target)? {
+        if let Some(warning) = newer_lock_warning(&ranked, &chosen) {
+            eprintln!("  \u{26a0} {}", warning);
+        }
+        let source = format!(
+            ".stacker/{}, target: {}",
+            chosen.source_file, chosen.lock.target
+        );
+        if let Some(hash) = chosen
+            .lock
+            .deployment_hash
+            .as_deref()
+            .map(str::trim)
+            .filter(|hash| !hash.is_empty())
+        {
+            return Ok(ResolvedDeployment {
+                hash: hash.to_string(),
+                source,
+            });
+        }
+        if let Some(dep_id) = chosen.lock.deployment_id {
+            if let Some(info) = ctx.block_on(ctx.client.get_deployment_status(dep_id as i32))? {
+                return Ok(ResolvedDeployment {
+                    hash: info.deployment_hash,
+                    source,
+                });
+            }
         }
     }
 
@@ -394,11 +492,10 @@ pub(crate) fn resolve_remote_hash(
             // 3. Active agent for the project (most reliable).
             match ctx.block_on(ctx.client.agent_snapshot_by_project(proj.id)) {
                 Ok((_, hash)) => {
-                    eprintln!(
-                        "\x1b[2mℹ No --deployment specified — using active agent for project '{}': {}\x1b[0m",
-                        project_name, hash
-                    );
-                    return Ok(hash);
+                    return Ok(ResolvedDeployment {
+                        hash,
+                        source: format!("active agent for project '{}'", project_name),
+                    });
                 }
                 Err(_) => {}
             }
@@ -408,7 +505,10 @@ pub(crate) fn resolve_remote_hash(
                 ctx.block_on(ctx.client.list_deployments(Some(proj.id), Some(1)))
             {
                 if let Some(dep) = deployments.into_iter().next() {
-                    return Ok(dep.deployment_hash);
+                    return Ok(ResolvedDeployment {
+                        hash: dep.deployment_hash,
+                        source: format!("newest deployment of project '{}'", project_name),
+                    });
                 }
             }
         }
@@ -416,15 +516,15 @@ pub(crate) fn resolve_remote_hash(
 
     // Build the error from the evidence actually found.
     let mut evidence: Vec<String> = Vec::new();
-    match lock.as_ref() {
-        Some(lock) => match lock.deployment_id {
+    match ranked.first() {
+        Some(choice) => match choice.lock.deployment_id {
             Some(dep_id) => evidence.push(format!(
                 "The deployment lock for target '{}' (deployment id {}) cannot be resolved on the active Stacker API.",
-                lock.target, dep_id
+                choice.lock.target, dep_id
             )),
             None => evidence.push(format!(
                 "The deployment lock for target '{}' carries no deployment id.",
-                lock.target
+                choice.lock.target
             )),
         },
         None => evidence.push("No deployment lock was found in .stacker/.".to_string()),
@@ -463,6 +563,83 @@ mod tests {
 
     fn write_config(dir: &Path, body: &str) {
         std::fs::write(dir.join(DEFAULT_CONFIG_FILE), body).unwrap();
+    }
+
+    fn write_lock(dir: &Path, target: &str, deployed_at: &str, deployment_id: Option<i64>) {
+        let mut lock = DeploymentLock::for_local();
+        lock.target = target.to_string();
+        lock.deployed_at = deployed_at.to_string();
+        lock.deployment_id = deployment_id;
+        lock.save(dir).unwrap();
+    }
+
+    // BUGS.md #55: the agent commands resolved the first of a fixed
+    // cloud→server→local order — the inactive target's, days-older
+    // deployment — while the active target named the live one.
+    #[test]
+    fn choose_lock_follows_the_active_target_and_says_where_it_came_from() {
+        let dir = TempDir::new().unwrap();
+        write_lock(dir.path(), "cloud", "2026-11-16T13:43:00+00:00", Some(1544));
+        write_lock(
+            dir.path(),
+            "server",
+            "2026-11-17T13:41:00+00:00",
+            Some(1545),
+        );
+        DeploymentLock::write_active_target(dir.path(), "server").unwrap();
+
+        let chosen = choose_lock(dir.path(), None).unwrap().expect("a lock");
+        assert_eq!(chosen.lock.deployment_id, Some(1545));
+        assert_eq!(chosen.source_file, "deployment-server.lock");
+        assert_eq!(chosen.lock.target, "server");
+    }
+
+    #[test]
+    fn choose_lock_skips_local_locks_that_cannot_name_a_deployment() {
+        let dir = TempDir::new().unwrap();
+        write_lock(dir.path(), "cloud", "2026-11-16T13:43:00+00:00", Some(1544));
+        // A newer local lock carries neither a hash nor a deployment id — it
+        // cannot answer "which deployment?" and must not shadow the cloud one.
+        write_lock(dir.path(), "local", "2026-11-17T13:41:00+00:00", None);
+
+        let chosen = choose_lock(dir.path(), None).unwrap().expect("a lock");
+        assert_eq!(chosen.lock.deployment_id, Some(1544));
+    }
+
+    #[test]
+    fn newer_lock_warning_names_the_newer_lock_and_the_pinning_commands() {
+        let dir = TempDir::new().unwrap();
+        write_lock(dir.path(), "cloud", "2026-11-16T13:43:00+00:00", Some(1544));
+        write_lock(
+            dir.path(),
+            "server",
+            "2026-11-17T13:41:00+00:00",
+            Some(1545),
+        );
+        DeploymentLock::write_active_target(dir.path(), "cloud").unwrap();
+
+        let ranked = DeploymentLock::rank_locks(dir.path(), None).unwrap();
+        let chosen = choose_lock(dir.path(), None).unwrap().expect("a lock");
+        let warning = newer_lock_warning(&ranked, &chosen).expect("a newer lock must warn");
+        assert!(warning.contains("target 'server'"), "{warning}");
+        assert!(warning.contains("deployment use"), "{warning}");
+    }
+
+    #[test]
+    fn newer_lock_warning_is_silent_for_the_newest_lock() {
+        let dir = TempDir::new().unwrap();
+        write_lock(dir.path(), "cloud", "2026-11-16T13:43:00+00:00", Some(1544));
+        write_lock(
+            dir.path(),
+            "server",
+            "2026-11-17T13:41:00+00:00",
+            Some(1545),
+        );
+        DeploymentLock::write_active_target(dir.path(), "server").unwrap();
+
+        let ranked = DeploymentLock::rank_locks(dir.path(), None).unwrap();
+        let chosen = choose_lock(dir.path(), None).unwrap().expect("a lock");
+        assert!(newer_lock_warning(&ranked, &chosen).is_none());
     }
 
     fn write_local_lock(dir: &Path) {
