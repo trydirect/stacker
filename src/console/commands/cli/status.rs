@@ -1053,6 +1053,7 @@ deploy:
             ssh_key: None,
             server_name: Some("demo".to_string()),
             deployment_id: Some(42),
+            deployment_hash: None,
             project_id: Some(7),
             cloud_id: Some(9),
             project_name: Some("demo".to_string()),

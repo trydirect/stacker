@@ -275,6 +275,7 @@ fn hydrate_project_dir(
             ssh_key: None,
             server_name: None,
             deployment_id: Some(dep.id as i64),
+            deployment_hash: None,
             project_id: Some(project.id as i64),
             cloud_id: None,
             project_name: Some(project.name.clone()),

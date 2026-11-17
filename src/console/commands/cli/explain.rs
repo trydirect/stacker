@@ -25,11 +25,12 @@ impl ExplainEnvCommand {
 
 pub struct ExplainTopologyCommand {
     pub json: bool,
+    pub deployment: Option<String>,
 }
 
 impl ExplainTopologyCommand {
-    pub fn new(json: bool) -> Self {
-        Self { json }
+    pub fn new(json: bool, deployment: Option<String>) -> Self {
+        Self { json, deployment }
     }
 }
 
@@ -176,10 +177,19 @@ impl CallableTrait for ExplainTopologyCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let project_dir = std::env::current_dir()?;
         let config = load_config(&project_dir)?;
-        let deployment_hash = config
-            .deploy
-            .deployment_hash
+        let deployment_hash = self
+            .deployment
             .clone()
+            .or_else(|| config.deploy.deployment_hash.clone())
+            .or_else(|| {
+                // BUGS.md #55: this printed `for unbound` for projects that
+                // are deployed — ask the shared resolution instead of reading
+                // stacker.yml alone. Best-effort: without API access the
+                // topology is still worth printing.
+                let ctx = crate::cli::runtime::CliRuntime::new("explain topology").ok()?;
+                crate::cli::deployment_context::resolve_remote_hash(&project_dir, None, &ctx).ok()
+            })
+            .filter(|hash| !hash.trim().is_empty())
             .unwrap_or_else(|| "unbound".to_string());
         let local_env_path = resolve_local_env_path(&project_dir, &config)?;
         let local_compose_path = resolve_local_compose_path(&project_dir, &config)?;
