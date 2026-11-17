@@ -2132,7 +2132,7 @@ works and prints `· 5 container(s), all healthy`.
 states what it covers; a sync with no compose present is a warning, not a
 success. The monitor error should name the key it actually wants.
 
-## 55. 🟠 OPEN — the agent commands read the lock of the inactive target (found 2026-11-17)
+## 55. ✅ FIXED — the agent commands read the lock of the inactive target (found 2026-11-17, fixed 2026-11-17)
 
 This is the real defect behind the detour recorded in #51, and it is worth
 fixing because the mechanism that should prevent it already exists.
@@ -2196,3 +2196,32 @@ but not the hash, so a human reading the file cannot pass it to
 `--deployment` without a lookup in `stacker deployments`; and
 `stacker explain topology`, whose whole job is explaining which files are in
 play, takes no `--deployment` and printed `for unbound` for this project.
+
+### ✅ Fixed (2026-11-17) — stacker `fix/lock-resolution-55`
+
+In the order the entry asks for:
+
+1. **Say what was resolved.** Every implicit resolution now prints one line —
+   `resolved deployment <hash> (from .stacker/deployment-server.lock, target:
+   server)` — for locks, the `stacker.yml` pin, the active agent and the
+   newest deployment alike. An explicit `--deployment` stays silent (the user
+   just typed it).
+2. **Resolve in a defensible order.** Explicit `--deployment`, then the pinned
+   `deploy.deployment_hash`, then the preferred/active target's lock, then the
+   newest — `DeploymentLock::rank_locks` replaces the fixed
+   cloud→server→local order (local locks can no longer shadow a remote one),
+   and a warning names any lock newer than the one chosen.
+3. **Pin it deliberately.** `stacker deployment use <hash>` /
+   `--clear` writes (or removes) `deploy.deployment_hash` with the
+   formatting-preserving editor; commands prefer the pin.
+4. **Record the hash in the lock.** `DeploymentLock` now carries
+   `deployment_hash`, filled at deploy time (best-effort API lookup) and in
+   the handoff payload, so the file answers `--deployment` without a lookup.
+
+Plus the smaller item: `stacker explain topology` takes `--deployment` and
+falls back to the shared resolution instead of printing `for unbound`.
+
+Note: `stacker explain env` reads only the pinned hash and still prints
+`for unbound` — same shape as topology had; left alone to keep this diff
+focused. Already-saved locks from before this fix carry no hash until the
+next deploy; resolution keeps falling back to the id→API lookup for them.
