@@ -1867,3 +1867,53 @@ something does go wrong.
 **Expected:** either allow `check_connections` on the agent side, or stop
 sending it and drop the warning. A pre-flight that cannot ever run should not
 be attempted once per command.
+
+## 47. 🟠 OPEN — `service add` writes a config that `config validate` then rejects (found 2026-11-17)
+
+**Severity:** high for a first-time user. It is the second command someone
+runs after `stacker init`, and it leaves the project in a state the next
+command calls invalid.
+
+Reproduce on an empty project, no server involved:
+
+```
+stacker init --app-type node
+stacker config validate          # ✓ Configuration is valid
+stacker service add postgres     # adds the service, "Backup saved to stacker.yml.bak"
+stacker config validate
+Error: Environment variable not found: $POSTGRES_PASSWORD
+```
+
+`service add` inserts a service whose environment references
+`${POSTGRES_PASSWORD}`, `${POSTGRES_USER}` and `${POSTGRES_DB}`, but it does
+not add an `env_file:` entry, and `stacker init` does not write one either.
+The validator therefore has nowhere to resolve those names from.
+
+Setting the secrets does not help, which is the part that makes this a dead
+end rather than a hint:
+
+```
+stacker secrets set POSTGRES_PASSWORD=...   # ✓ Set POSTGRES_PASSWORD in .env
+stacker secrets list                        # POSTGRES_PASSWORD=***
+stacker config validate
+Error: Environment variable not found: $POSTGRES_PASSWORD
+```
+
+`secrets set` defaults to `.env` ("from stacker.yml env_file, or .env") while
+the validator only reads what the config points at - so the two commands
+disagree about where secrets live.
+
+**Workaround:** one line, which nothing tells the user about.
+
+```
+echo 'env_file: .env' >> stacker.yml
+stacker config validate    # ✓ Configuration is valid
+stacker secrets validate   # ✓ All 1 variable(s) are set
+```
+
+**Expected:** `service add` adds `env_file: .env` when it introduces a
+`${VAR}` reference and the config has no `env_file` yet - or the validator
+falls back to `.env`, the same default `secrets set` already uses. Either
+fixes it; doing neither is what makes the two commands contradict each other.
+
+Found while rehearsing a full walkthrough, at the second command.
