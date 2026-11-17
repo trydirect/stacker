@@ -2131,3 +2131,39 @@ works and prints `· 5 container(s), all healthy`.
 **Expected:** `sync` either includes the compose in what it synchronizes or
 states what it covers; a sync with no compose present is a warning, not a
 success. The monitor error should name the key it actually wants.
+
+## 55. 🟠 OPEN — the agent commands read the lock of the inactive target (found 2026-11-17)
+
+This is the real defect behind the detour recorded in #51, and it is worth
+fixing because the mechanism that should prevent it already exists.
+
+A deploy saves its context: `Deployment context saved to
+.stacker/deployment-server.lock`. One project can therefore hold several
+locks, one per target:
+
+```
+.stacker/deployment-cloud.lock    deployment_id: 1544   deployed_at 2026-11-16T13:43
+.stacker/deployment-server.lock   deployment_id: 1545   deployed_at 2026-11-17T13:41
+stacker target                    server
+```
+
+The active target is `server`, whose lock names the live deployment 1545.
+`stacker agent status` resolved **1544** - the other target's, a day older -
+and reported its agent as offline, which was true of that dead registration
+and useless to the person asking. `agent deploy-app` then queued a command
+against the same stale deployment and timed out after 317 seconds.
+
+Passing `--deployment <hash>` fixes every one of those commands, and
+`deployment state` resolves correctly on its own, so the resolution rule
+differs between commands in the same CLI.
+
+**Expected:** resolve the active target's lock first (`stacker target` already
+knows which that is), fall back to the newest lock, and name the resolved
+deployment in the output - one line, `resolved deployment <hash> (target:
+server)`, makes a wrong resolution visible instead of silent.
+
+Two smaller things seen at the same time: the locks record `deployment_id`
+but not the hash, so a human reading the file cannot pass it to
+`--deployment` without a lookup in `stacker deployments`; and
+`stacker explain topology`, whose whole job is explaining which files are in
+play, takes no `--deployment` and printed `for unbound` for this project.
