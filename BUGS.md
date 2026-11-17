@@ -2157,10 +2157,39 @@ Passing `--deployment <hash>` fixes every one of those commands, and
 `deployment state` resolves correctly on its own, so the resolution rule
 differs between commands in the same CLI.
 
-**Expected:** resolve the active target's lock first (`stacker target` already
-knows which that is), fall back to the newest lock, and name the resolved
-deployment in the output - one line, `resolved deployment <hash> (target:
-server)`, makes a wrong resolution visible instead of silent.
+**Setting the target does not help, and that was checked.** `stacker target`
+already answered `server` throughout - before the deploy, during the detour
+and after it - while `agent status` kept resolving the cloud lock:
+
+```
+stacker target                                  server
+.stacker/deployment-server.lock                 deployment_id: 1545
+stacker agent status --json          → agent.id 9bd8947e-…  heartbeat 13:39:26
+stacker agent status --deployment=<1545's hash>
+                                     → agent.id b9aad37a-…  heartbeat 13:57:09
+```
+
+So the active target is not part of the resolution at all, and there is no
+command that pins "the deployment this directory is working with" - the locks
+are written as a side effect of deploying, and nothing reads them back out
+loud. A user cannot discover any of this from the CLI; the only visible
+symptom is an agent reported offline while the server is fine.
+
+**Expected, in the order that would have saved the detour:**
+
+1. **Say what was resolved.** One line on every agent command -
+   `resolved deployment <hash> (from .stacker/deployment-server.lock, target:
+   server)` - turns a silent wrong guess into something the user can see.
+2. **Resolve in a defensible order:** explicit `--deployment`, then the active
+   target's lock, then the newest deployment - and warn when a newer lock
+   exists than the one chosen.
+3. **Let it be pinned deliberately.** `stacker deployment use <hash>` (or
+   `stacker target server --deployment <hash>`) makes "what we are holding"
+   an act rather than a side effect, and gives documentation something to
+   point at.
+4. **Record the hash in the lock.** The locks carry `deployment_id: 1545` but
+   not the hash the commands want, so even a user who opens the file cannot
+   use it without a lookup in `stacker deployments`.
 
 Two smaller things seen at the same time: the locks record `deployment_id`
 but not the hash, so a human reading the file cannot pass it to
