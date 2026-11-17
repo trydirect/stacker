@@ -1,6 +1,7 @@
 use crate::cli::config_parser::StackerConfig;
 use crate::cli::credentials::CredentialsManager;
 use crate::cli::deployment_context::resolve_deploy_placement;
+use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::stacker_client::StackerClient;
 use crate::console::commands::cli::status::{
@@ -55,6 +56,68 @@ impl DeploymentRollbackCommand {
             confirm,
             deployment,
         }
+    }
+}
+
+/// `stacker deployment use <hash>` / `stacker deployment use --clear`
+///
+/// Pins — or with `--clear`, unpins — `deploy.deployment_hash` in stacker.yml:
+/// the deliberate act that says which deployment this directory works with
+/// (BUGS.md #55). Every command prefers the pin, so "what we are holding" is
+/// an act rather than a side effect of whichever deploy ran last.
+pub struct DeploymentUseCommand {
+    pub hash: Option<String>,
+    pub clear: bool,
+    pub file: Option<String>,
+}
+
+impl DeploymentUseCommand {
+    pub fn new(hash: Option<String>, clear: bool, file: Option<String>) -> Self {
+        Self { hash, clear, file }
+    }
+}
+
+impl CallableTrait for DeploymentUseCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let project_dir = std::env::current_dir()?;
+        let config_path = project_dir.join(self.file.as_deref().unwrap_or(DEFAULT_CONFIG_FILE));
+        if !config_path.exists() {
+            return Err(Box::new(CliError::ConfigValidation(
+                "No stacker.yml found. Run `stacker init` first.".to_string(),
+            )));
+        }
+
+        if self.clear {
+            DeploymentLock::set_deploy_deployment_hash(&config_path, None)?;
+            eprintln!(
+                "✓ Cleared deploy.deployment_hash in {}",
+                config_path.display()
+            );
+            eprintln!("  Commands resolve the deployment from the locks again.");
+            return Ok(());
+        }
+
+        let hash = self
+            .hash
+            .as_deref()
+            .map(str::trim)
+            .filter(|hash| !hash.is_empty())
+            .ok_or_else(|| {
+                CliError::ConfigValidation(
+                    "Pass a deployment hash to pin, or --clear to unpin.".to_string(),
+                )
+            })?;
+
+        DeploymentLock::set_deploy_deployment_hash(&config_path, Some(hash))?;
+        eprintln!(
+            "✓ Pinned deployment {} in {} (deploy.deployment_hash)",
+            hash,
+            config_path.display()
+        );
+        eprintln!(
+            "  Commands resolve this deployment now; unpin with `stacker deployment use --clear`."
+        );
+        Ok(())
     }
 }
 
