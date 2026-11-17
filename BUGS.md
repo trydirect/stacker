@@ -2017,3 +2017,135 @@ program output rather than a suggestion.
 **Expected:** the readiness result decides the headline. A deploy whose
 containers never became ready is a failed deploy, and the next line should be
 how to see why - `stacker logs`, not an upsell.
+
+## 51. 🔴 OPEN — a redeploy orphans the status-panel agent, and remote management dies silently (found 2026-11-17)
+
+**Severity:** highest found so far. One `stacker deploy` against a server that
+already has an agent leaves every `stacker agent *` command permanently
+broken, while the server itself keeps serving traffic and the agent on the box
+looks perfectly healthy.
+
+Sequence, all on one server with a healthy stack and an online agent:
+
+```
+stacker agent status          # ● online, 2 apps, containers listed
+stacker deploy --target server --server-host <ip> --server-ssh-key <key>
+  ✓ Deployment #<n> completed            (269 s)
+stacker agent status          # ○ offline, containers "? unknown"
+stacker agent deploy-app <app> --image <image> --force
+  ✗ Deploying <app> — timed out
+  Error: ... (last status: queued)       (317 s wasted)
+```
+
+The cause, from the two sides:
+
+```
+stacker agent status --json     → agent.id = 9bd8947e-…  last_heartbeat 13:39:26
+on the server, /…/statuspanel/.env → AGENT_ID = b9aad37a-…   (rewritten 13:39:16)
+```
+
+The deploy re-registered the agent, wrote a new `AGENT_ID` into the agent's
+env, and left the deployment record pointing at the previous agent. The
+platform waits for a heartbeat from an agent that no longer exists; the new
+agent sends heartbeats nobody reads. `13:39:26` - the last heartbeat the
+platform ever saw - is the second the redeploy restarted the container.
+
+The agent's own log is reassuring and useless:
+
+```
+heartbeat metrics refreshed cpu=0.66 mem_used_bytes=…      (every 3 s, forever)
+```
+
+Nothing in it says the report is going nowhere.
+
+**Expected:** a deploy to a server that already has a registered agent either
+reuses that registration, or rebinds the deployment to the new agent id. An
+agent whose heartbeat is not being consumed should say so, and
+`agent status` should distinguish "no agent reporting" from "an agent is
+reporting under a different id".
+
+## 52. 🟠 OPEN — the same redeploy downgrades the agent to legacy mode (found 2026-11-17)
+
+Found while tracing #51, and separate from it. After the deploy, the agent's
+`config.json` on the server was rewritten with:
+
+```
+compose_agent_enabled = False
+```
+
+and the agent announced it on startup:
+
+```
+WARN compose_agent=false - running in legacy mode (Status Panel handles all operations)
+```
+
+It had been running with the compose-agent sidecar before. Flipping the flag
+back to `true` and restarting the container restores the mode:
+
+```
+INFO compose_agent=true - compose-agent sidecar handling Docker operations
+```
+
+so the flag is the only thing that changed. The deploy rewrote `config.json`,
+`.env` and the panel's `docker-compose.yml` without being asked to touch the
+monitoring stack at all.
+
+**Expected:** a stack deploy does not rewrite the monitoring agent's own
+configuration; if it must re-render it, it preserves the modes the agent was
+installed with.
+
+## 53. 🟠 OPEN — `explain topology` and `deployment state` both report remote paths that do not exist (found 2026-11-17)
+
+For one bound project with a healthy stack, three answers to "where is the
+compose on the server":
+
+```
+stacker explain topology
+  Explain topology for unbound
+  runtime compose: /home/trydirect/<project>/docker-compose.yml       # no such file
+stacker deployment state
+  Compose:         /home/trydirect/<project>-<id>/docker-compose.yml  # dir exists, file does not
+docker inspect <container> --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}'
+  /home/trydirect/project/docker-compose.yml                          # the real one
+```
+
+The `.env` does live in the `<project>-<id>` directory, so `deployment state`
+is right about the env and wrong about the compose - they are in different
+directories, and neither command says so.
+
+`explain topology` also prints **`for unbound`** for a project that
+`deployment state` resolves to a named project with an online agent, and it
+is the command whose entire job is to explain which files are in play.
+
+**Expected:** both commands report the path docker itself reports, and
+`explain topology` names the project it just resolved.
+
+## 54. 🟡 OPEN — `sync` reports success when there is nothing to sync, and cannot repair a stored compose (found 2026-11-17)
+
+`stacker sync` is described as "Synchronize project configuration without
+deploying it", which reads like the way to push a corrected compose to the
+platform. It is not, and it does not say so.
+
+With the generated compose deleted outright:
+
+```
+rm .stacker/docker-compose.yml
+stacker sync --verify
+  ✓ Project '<name>' synchronized (id=<n>)
+  ✓ Stacker database acknowledged the synchronized configuration
+```
+
+No compose file existed at all. Syncing "succeeded" and the database
+"acknowledged" it. The stored compose - the one the agent writes onto the
+server before every app deploy - was left untouched, so a compose that is
+broken platform-side stays broken until a full deploy replaces it.
+
+Related, same session: `stacker monitor --once` with no alerts configured
+says `Add an alerts: block with a notify: target`, but the key the code and
+the reference both use is `target:`. With `target: {terminal: true}` the
+command works and prints `· 5 container(s), all healthy`.
+
+**Expected:** `sync` either includes the compose in what it synchronizes, or
+states which parts of the configuration it covers; and a sync with no compose
+present is a warning, not a success. The monitor error should name the key it
+actually wants.
