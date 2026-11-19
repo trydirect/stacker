@@ -46,9 +46,9 @@ stacker service remove postgres
 > echo 'env_file: .env' >> stacker.yml
 > ```
 
-> **Trap (#49):** for `--app-type node` the generated Dockerfile ends
-> `CMD ["node", "server.js"]` whatever `package.json` says. Name your entry
-> point `server.js` or edit `.stacker/Dockerfile`.
+> **CMD follows `package.json` (#49 fixed):** for `--app-type node` the
+> generated Dockerfile runs `npm start` when `scripts.start` exists, else
+> `node <package.json main>`, else `server.js`. No renaming needed.
 
 ## Secrets
 

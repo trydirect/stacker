@@ -1978,7 +1978,7 @@ not one that fails identically.
 
 Found while rehearsing a full walkthrough, at the first remote deploy.
 
-## 49. 🔴 OPEN — the generated node Dockerfile hardcodes `server.js`, so most node projects crash-loop (found 2026-11-17)
+## 49. ✅ FIXED — the generated node Dockerfile hardcodes `server.js`, so most node projects crash-loop (found 2026-11-17, fixed 2026-11-19)
 
 `stacker init --app-type node` writes:
 
@@ -2006,6 +2006,21 @@ docker ps:  hello-app-1   Restarting (1) 23 seconds ago
 `node <package.json main>`, else `server.js` as the last resort. The
 information is in the file the generator already reads to detect that this is
 a node project.
+
+### ✅ Fixed (2026-11-19) — stacker `fix/node-entry-cmd-49`
+
+Per the expected outcome: the generated CMD now comes from the project's own
+`package.json` — `["npm", "start"]` when `scripts.start` exists, else
+`node <package.json main>`, else `server.js` as the last resort (and only
+when the manifest is unreadable at all). Next.js keeps its
+build-then-`npm run start` flow. Both writers go through the same generator
+(`stacker init` and the deploy-time generation), so the fix covers the
+crash-looping quickstart path.
+
+Tests: `scripts.start` → `npm start`; `main` alone → `node index.js`; no
+clues → `node server.js`; the old test that pinned the bug is rewritten.
+The `node` example in `docs/STACKER_YML_REFERENCE.md` and the CHEATSHEET
+"Trap (#49)" note now describe the rule instead of the workaround.
 
 ## 50. 🟠 OPEN — a local deploy reports success and a timeout in the same breath (found 2026-11-17)
 
