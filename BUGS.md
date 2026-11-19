@@ -2240,3 +2240,63 @@ Note: `stacker explain env` reads only the pinned hash and still prints
 `for unbound` — same shape as topology had; left alone to keep this diff
 focused. Already-saved locks from before this fix carry no hash until the
 next deploy; resolution keeps falling back to the id→API lookup for them.
+
+## 56. 🟢 OPEN — two commands that know the answer and do not say it (found 2026-11-19)
+
+Small, cheap, and both cost a real person a detour today. 0.3.10 taught the
+agent commands to print `ℹ resolved deployment <hash> (from …, target: …)`;
+these two never got the same treatment.
+
+### `status` does not say whose status it is
+
+In a project deployed locally, after a cloud **dry-run**:
+
+```
+$ stacker deploy --target cloud --key <cred> --dry-run --force-new
+  ✓ Remote cloud deploy dry-run validated payload and credentials
+$ stacker status
+NAME               IMAGE                ...  PORTS
+hello-app-1        hello-app            ...  0.0.0.0:3100->3000/tcp
+hello-postgres-1   postgres:16-alpine   ...  127.0.0.1:5432->5432/tcp
+```
+
+That output is correct - a dry run deploys nothing, the only lock in
+`.stacker/` is `deployment-local.lock`, and `dispatch_status`
+(`src/console/commands/cli/status.rs:751`) routes by
+`resolve_deploy_placement`, so the local branch runs `docker compose ps`. It
+still reads as "it showed me the wrong thing", because the output is raw
+`docker compose ps` with nothing above it: no placement, no project, no
+mention that there is no remote deployment to show.
+
+**Expected:** one line before the table, in the style the agent commands now
+use -
+
+```
+ℹ local deployment 'hello' (no remote deployment for this project)
+```
+
+and for the remote branch the same line naming the deployment it queried.
+
+### `target cloud` refuses without saying what to do
+
+```
+$ stacker target cloud
+Error: ConfigValidation("No cloud deployment lock found. Deploy to cloud first before switching.")
+```
+
+The rule is reasonable - `target` switches between targets this directory has
+actually deployed to, and registered cloud credentials are not a deployment -
+but `stacker target cloud` is the first thing a person tries when they want to
+go to the cloud, and the message stops at the diagnosis.
+
+**Expected:** name the next command, the way the deploy errors already do:
+
+```
+No cloud deployment lock found for this project.
+Deploy to cloud once, and the target follows:
+    stacker deploy --target cloud --key <saved-credential>
+    stacker config setup cloud     # to write deploy.cloud into stacker.yml first
+```
+
+Both are one message each, in code that already has the information. Same
+area as #55, so whoever fixed that has the context.
