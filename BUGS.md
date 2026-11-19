@@ -2022,6 +2022,13 @@ clues → `node server.js`; the old test that pinned the bug is rewritten.
 The `node` example in `docs/STACKER_YML_REFERENCE.md` and the CHEATSHEET
 "Trap (#49)" note now describe the rule instead of the workaround.
 
+**How to verify (local):** in a project whose `package.json` has
+`scripts.start` — `stacker init --app-type node` must generate
+`CMD ["npm", "start"]` in `.stacker/Dockerfile`; with only `main: index.js`
+→ `CMD ["node", "index.js"]`; with neither → `CMD ["node", "server.js"]`.
+The same generator runs at deploy time, so a later `stacker deploy` does not
+overwrite the CMD with the old hardcoded form.
+
 ## 50. 🟠 OPEN — a local deploy reports success and a timeout in the same breath (found 2026-11-17)
 
 With the crash loop of #49 in progress:
