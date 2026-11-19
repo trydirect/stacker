@@ -708,7 +708,7 @@ Keep the source file mode when uploading project files (at least the owner
 execute bit). Test: an executable file in the project arrives executable on the
 server.
 
-## 20. 🔴 CONFIRMED — a deploy ends `paused [port_conflict]` while the stack is up and healthy on that port (found 2026-10-27, confirmed 2026-11-12)
+## 20. 🟠 FIXED IN CODE — a deploy ends `paused [port_conflict]` while the stack is up and healthy on that port (found 2026-10-27, confirmed 2026-11-12, fixes shipped 2026-11-16/19, live re-test pending)
 
 ### Observed (2026-10-27)
 
@@ -786,6 +786,27 @@ end in "open this URL", that is the whole first impression.
 Exclude the containers of the stack being deployed (same compose project) when
 checking whether its ports are taken. Test: redeploying a running stack with
 unchanged ports does not report a port conflict.
+
+### Fixes shipped (tfa 2026-11-16, stacker 2026-11-19) — live re-test pending
+
+Three checks reported the stack's own containers as port conflicts:
+
+1. The tfa role pre-flights — fixed by PR #149 (a port held by the stack's own
+   container is replaceable) and PR #150 (recognise the shipped stack by its
+   `my.stacker.service` label, and stop the n8n role's legacy `docker compose
+   up` from starting a second copy of the app).
+2. The CLI's remote pre-flight (`check_remote_host_port_conflicts`) — it SSHed
+   `ss`+`docker ps` and flagged the stack's own published ports as occupied
+   before `docker compose up` would have replaced those very containers. It
+   now matches tfa's identification: containers labelled with this compose
+   file's own service names are skipped, and `docker-proxy` listeners defer to
+   the container section, which can tell who published them (stacker
+   `fix/own-stack-port-conflict-20`).
+3. The local pre-flight already excluded own containers.
+
+Not closed yet: per tfa #150 the close-out is a live
+`stacker deploy --target cloud --server <saved>` of a running stack ending
+`completed`.
 
 ## 21. 🟠 NOT CONFIRMED — a bake of a `--target server` deployment records no server type, so Quick Deploy offers the default size (found 2026-10-27)
 
