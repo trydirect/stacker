@@ -2001,6 +2001,13 @@ Tests: strategy validation rejects a build-only app for both remote targets
 (the red run passed them) and accepts an image app; the message test expects
 the working advice.
 
+**How to verify (local):** in a `stacker init --app-type node` project —
+`stacker deploy --target server --server-host <ip> --server-ssh-key <key>
+--dry-run` must FAIL with `app.image is required for cloud/server deploys`
+(where it printed `✓ previewed successfully` before), and the cloud
+`--dry-run` error must end with `stacker deploy --target local`, not the
+identically failing `--target server`.
+
 ## 49. 🔴 OPEN — the generated node Dockerfile hardcodes `server.js`, so most node projects crash-loop (found 2026-11-17)
 
 `stacker init --app-type node` writes:
