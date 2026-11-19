@@ -1265,6 +1265,11 @@ impl DeployStrategy for CloudDeploy {
             return Err(CliError::CloudProviderMissing);
         }
 
+        // BUGS.md #48: `--dry-run` must run every check the deploy runs. This
+        // used to fire only in the real run, so the preview certified a
+        // build-only app that could never deploy to a remote target.
+        stacker_client::require_app_image_for_remote_deploy(config)?;
+
         Ok(())
     }
 
@@ -2770,6 +2775,11 @@ impl DeployStrategy for ServerDeploy {
         if config.deploy.server.is_none() {
             return Err(CliError::ServerHostMissing);
         }
+
+        // BUGS.md #48: `--dry-run` must run every check the deploy runs. This
+        // used to fire only in the real run, so the preview certified a
+        // build-only app that could never deploy to a remote target.
+        stacker_client::require_app_image_for_remote_deploy(config)?;
 
         Ok(())
     }
