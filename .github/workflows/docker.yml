@@ -1,5 +1,12 @@
 name: Docker CICD
 
+# The GitHub Actions cache backend writes through GITHUB_TOKEN, so the job
+# needs `actions: write`; without it the cache export fails and takes the
+# build down with it, which is what happened on every pull_request run.
+permissions:
+  contents: read
+  actions: write
+
 on:
   push:
     branches:
@@ -333,4 +340,4 @@ jobs:
           push: true
           tags: ${{ steps.stackerdb_tags.outputs.tags }}
           cache-from: type=gha,scope=stackerdb
-          cache-to: type=gha,mode=max,scope=stackerdb
+          cache-to: type=gha,mode=max,scope=stackerdb,ignore-error=true
