@@ -2201,3 +2201,104 @@ async fn resubmit_with_too_short_long_description_is_rejected() {
         "Rejection message should say the description is too short: {message}"
     );
 }
+
+// BUGS.md #30: a catalogue copy that lags its source repository must be
+// visible, not inferred — the version carries the git commit it was published
+// from, and the public detail response surfaces it.
+#[tokio::test]
+async fn template_detail_surfaces_the_source_commit() {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use chrono::{Duration, Utc};
+
+    let _env_lock = env_lock().lock().expect("env lock should be available");
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    // The approval publishes the template through the User Service webhook.
+    let mock_user_service = MockServer::start().await;
+    let _url_server_user = EnvGuard::set("URL_SERVER_USER", &mock_user_service.uri());
+    let _user_service_url = EnvGuard::set("USER_SERVICE_URL", &mock_user_service.uri());
+    let _user_service_base_url = EnvGuard::set("USER_SERVICE_BASE_URL", &mock_user_service.uri());
+    Mock::given(method("POST"))
+        .and(path("/marketplace/sync"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "message": "ok",
+            "product_id": null
+        })))
+        .mount(&mock_user_service)
+        .await;
+
+    let create_response = create_template_with_body(
+        &client,
+        &app.address,
+        "test-bearer-token",
+        json!({
+            "name": "Provenance Template",
+            "slug": "provenance-template",
+            "short_description": VALID_SHORT_DESCRIPTION,
+            "long_description": VALID_LONG_DESCRIPTION,
+            "source_commit": "9e107d9d372bb6826bd81d3542a419d6",
+            "stack_definition": { "services": {} }
+        }),
+    )
+    .await;
+    assert_eq!(StatusCode::CREATED, create_response.status());
+    let create_body: Value = create_response
+        .json()
+        .await
+        .expect("Create response should be valid JSON");
+    let template_id = create_body["item"]["id"]
+        .as_str()
+        .expect("Created template should include an id");
+
+    // Admin JWT (same shape as tests/marketplace_admin_review.rs).
+    let header = json!({"alg": "HS256", "typ": "JWT"});
+    let payload = json!({
+        "role": "admin_service",
+        "email": "ops@test.com",
+        "exp": (Utc::now() + Duration::minutes(30)).timestamp(),
+    });
+    let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string());
+    let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string());
+    let admin_jwt = format!(
+        "{}.{}.{}",
+        header_b64,
+        payload_b64,
+        common::sign_test_jwt(&header_b64, &payload_b64)
+    );
+
+    let approve_response = client
+        .post(format!(
+            "{}/api/admin/templates/{}/approve",
+            app.address, template_id
+        ))
+        .header("Authorization", format!("Bearer {}", admin_jwt))
+        .json(&json!({
+            "decision": "approved",
+            "reason": "Looks good."
+        }))
+        .send()
+        .await
+        .expect("Failed to send admin approval request");
+    assert_eq!(StatusCode::OK, approve_response.status());
+
+    let detail: Value = client
+        .get(format!("{}/api/templates/provenance-template", app.address))
+        .send()
+        .await
+        .expect("Failed to fetch template detail")
+        .json()
+        .await
+        .expect("Detail response should be valid JSON");
+
+    assert_eq!(
+        "9e107d9d372bb6826bd81d3542a419d6",
+        detail["item"]["latest_version"]["source_commit"]
+            .as_str()
+            .expect("source_commit must be surfaced in the API response"),
+    );
+}

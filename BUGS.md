@@ -1080,7 +1080,7 @@ Resolve the host from the deployment lock when `deploy.server.host` is empty,
 the way `agent status` already does. Test: agent install succeeds
 immediately after a cloud deploy with no manual edit.
 
-## 30. 🟠 CONFIRMED — the marketplace serves a template version older than the source repository (found 2026-11-12)
+## 30. ✅ FIXED — the marketplace serves a template version older than the source repository (found 2026-11-12, fixed 2026-11-19)
 
 ### Observed (2026-11-12)
 
@@ -1103,6 +1103,26 @@ Establish when and by what the catalogue is refreshed from the repository,
 and surface the template's source commit in the API response so a stale copy
 is visible rather than inferred. Test: a template change merged to `main`
 appears in the API within the documented interval.
+
+### ✅ Fixed (2026-11-19) — stacker `fix/marketplace-source-commit-30`
+
+Established first, as the direction asks: **nothing refreshes the catalogue
+from the source repository** — no sync job, cron, DAG, CI step or webhook
+exists. The catalogue is a snapshot of the last manual `stacker publish`
+(and its review), so PR 68 could not arrive until someone re-published. The
+contract is now documented in `docs/MARKETPLACE_PUBLISH.md` ("Where catalogue
+content comes from"): the publish *is* the refresh, and it is manual.
+
+And staleness is now visible rather than inferred: every publish records the
+git commit of the checkout it was made from (`source_commit`, best-effort
+`git rev-parse HEAD`; absent for non-git checkouts and pre-existing versions),
+stored on `stack_template_version` and returned in the public detail API —
+`GET /api/templates/<slug>` → `item.latest_version.source_commit`. Set on
+create, update and resubmit, the three places a version is written.
+
+Tests: the publish body carries the commit (and omits it when unknown), the
+git output parser accepts only an object id, and a full round-trip
+(create → approve → public detail) asserts the API surfaces the commit.
 
 ## 31. ✅ FIXED — `agent deploy-app --image` recreated the container without its published ports (found 2026-11-12, fixed 2026-11-12)
 

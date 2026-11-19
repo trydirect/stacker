@@ -1362,6 +1362,7 @@ mod tests {
             changelog: None,
             is_latest: Some(true),
             config_contract: None,
+            source_commit: None,
             created_at: None,
         }
     }
@@ -1783,6 +1784,7 @@ mod tests {
             changelog: None,
             is_latest: Some(true),
             config_contract: None,
+            source_commit: None,
             created_at: None,
         };
 
@@ -1856,6 +1858,7 @@ mod tests {
             changelog: None,
             is_latest: Some(true),
             config_contract: None,
+            source_commit: None,
             created_at: None,
         };
 

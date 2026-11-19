@@ -100,6 +100,9 @@ pub struct CreateTemplateRequest {
     /// serialized as JSON) — which env vars are fixed/editable/generated.
     /// See `docs/MARKETPLACE_FIELD_POLICY.md`.
     pub config_contract: Option<serde_json::Value>,
+    /// Git commit of the source checkout this version is being published from
+    /// (BUGS.md #30 — a stale catalogue copy must be visible, not inferred).
+    pub source_commit: Option<String>,
 }
 
 fn validate_config_contract(
@@ -371,6 +374,19 @@ pub async fn create_handler(
             })?;
         }
 
+        if let Some(source_commit) = req
+            .source_commit
+            .as_deref()
+            .map(str::trim)
+            .filter(|commit| !commit.is_empty())
+        {
+            db::marketplace::set_source_commit(pg_pool.get_ref(), &template.id, source_commit)
+                .await
+                .map_err(|err| {
+                    JsonResponse::<models::StackTemplate>::build().internal_server_error(err)
+                })?;
+        }
+
         if let Some(config_contract) = req.config_contract.clone() {
             db::marketplace::set_config_contract(pg_pool.get_ref(), &template.id, config_contract)
                 .await
@@ -415,6 +431,9 @@ pub struct UpdateTemplateRequest {
     /// serialized as JSON) — which env vars are fixed/editable/generated.
     /// See `docs/MARKETPLACE_FIELD_POLICY.md`.
     pub config_contract: Option<serde_json::Value>,
+    /// Git commit of the source checkout this version is being published from
+    /// (BUGS.md #30 — a stale catalogue copy must be visible, not inferred).
+    pub source_commit: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1033,6 +1052,17 @@ pub(crate) async fn apply_template_update(
             .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
     }
 
+    if let Some(source_commit) = req
+        .source_commit
+        .as_deref()
+        .map(str::trim)
+        .filter(|commit| !commit.is_empty())
+    {
+        db::marketplace::set_source_commit(pg_pool, &id, source_commit)
+            .await
+            .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+    }
+
     if let Some(config_contract) = req.config_contract.clone() {
         db::marketplace::set_config_contract(pg_pool, &id, config_contract)
             .await
@@ -1348,6 +1378,9 @@ pub struct ResubmitRequest {
     /// serialized as JSON) — which env vars are fixed/editable/generated.
     /// See `docs/MARKETPLACE_FIELD_POLICY.md`.
     pub config_contract: Option<serde_json::Value>,
+    /// Git commit of the source checkout this version is being published from
+    /// (BUGS.md #30 — a stale catalogue copy must be visible, not inferred).
+    pub source_commit: Option<String>,
 }
 
 #[tracing::instrument(name = "Resubmit template with new version", skip_all)]
@@ -1489,6 +1522,17 @@ pub async fn resubmit_handler(
 
     if let Some(source_project_id) = source_project_id {
         db::marketplace::set_source_project_id(pg_pool.get_ref(), &id, source_project_id)
+            .await
+            .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+    }
+
+    if let Some(source_commit) = req
+        .source_commit
+        .as_deref()
+        .map(str::trim)
+        .filter(|commit| !commit.is_empty())
+    {
+        db::marketplace::set_source_commit(pg_pool.get_ref(), &id, source_commit)
             .await
             .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
     }
