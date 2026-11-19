@@ -1094,6 +1094,12 @@ Tests: the selector accepts a blank configured host (it refused before),
 and `effective_server_config` prefers the configured host, then the lock,
 then nothing.
 
+**How to verify (live, on a test server):** `stacker deploy --target cloud
+...` into a fresh project, then `stacker agent install` in the same
+directory **without editing stacker.yml** — it must install using the host
+from `.stacker/deployment-*.lock` instead of refusing on the empty
+`deploy.server.host`.
+
 ## 30. 🟠 CONFIRMED — the marketplace serves a template version older than the source repository (found 2026-11-12)
 
 ### Observed (2026-11-12)
