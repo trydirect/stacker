@@ -808,6 +808,14 @@ Not closed yet: per tfa #150 the close-out is a live
 `stacker deploy --target cloud --server <saved>` of a running stack ending
 `completed`.
 
+**How to verify (live, on a test server):** redeploy a running stack with
+unchanged ports — `stacker deploy --target server ...` twice in a row on the
+same host must end `completed`, not `paused [port_conflict]`. The 2026-11-13
+shape is the one to reproduce: the stack already up (`project-<app>-1`
+holding the app port, answering HTTP 200), same ports, second deploy. The
+CLI pre-flight half is visible without the pipeline: no "Host port conflict
+detected before deploy" may appear on the second run.
+
 ## 21. 🟠 NOT CONFIRMED — a bake of a `--target server` deployment records no server type, so Quick Deploy offers the default size (found 2026-10-27)
 
 ### Observed (2026-10-27)
