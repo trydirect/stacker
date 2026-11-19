@@ -892,7 +892,7 @@ survives serialization unchanged.
 Full install-to-deploy captures from the run that found this live in
 `blog/docs/tiktok-scripts/stacker-cli/captures/CLI-16/findings-real-run.md`.
 
-## 25. 🔴 CONFIRMED — `stacker status` in a project directory reports a different, months-old deployment (found 2026-11-12)
+## 25. ✅ FIXED — `stacker status` in a project directory reports a different, months-old deployment (found 2026-11-12, fixed 2026-11-19)
 
 ### Observed (2026-11-12, stacker-cli v0.3.6)
 
@@ -937,6 +937,21 @@ Resolve status from the local deployment lock first, fall back to identity
 only when there is no lock, and name the deployment id and server being
 reported so a mismatch is visible. Test: `stacker status` right after a deploy
 reports that deploy's id.
+
+### ✅ Fixed (2026-11-19) — stacker `fix/status-lock-resolution-25`
+
+Per the entry's fix direction: `stacker status` resolves from local evidence
+first — the pinned `deploy.deployment_hash`, then this directory's
+deployment lock (recorded hash, or the deployment id for locks older than
+#55) — and only then falls back to the project-name lookup. The resolution
+says what it resolved (`resolved deployment <hash> (from
+.stacker/deployment-server.lock, target: server)`), and when the name lookup
+still reports a different deployment than the lock points at, a warning
+names both ids and the pinning commands — the mismatch is visible instead of
+silently wrong.
+
+Test: `status_deployment_ref` (pin wins, then lock hash, then lock id, name
+lookup only with no local evidence) and `lock_mismatch_warning`.
 
 ## 26. 🔴 CONFIRMED — a cloud deploy says the SSH key is authorized, and neither that key nor the saved backup key can log in (found 2026-11-12)
 
