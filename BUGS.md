@@ -1124,6 +1124,14 @@ Tests: the publish body carries the commit (and omits it when unknown), the
 git output parser accepts only an object id, and a full round-trip
 (create → approve → public detail) asserts the API surfaces the commit.
 
+**How to verify:** `stacker publish` from a git checkout of the template
+repository, then
+`curl -s https://<host>/stacker/api/templates/<slug> | jq '.item.latest_version.source_commit'`
+— must print the checkout's HEAD sha (absent only for non-git checkouts and
+pre-existing versions). The staleness half is inherent and now documented:
+a merge to the source repo appears in the API only after the next publish
+(`docs/MARKETPLACE_PUBLISH.md`, "Where catalogue content comes from").
+
 ## 31. ✅ FIXED — `agent deploy-app --image` recreated the container without its published ports (found 2026-11-12, fixed 2026-11-12)
 
 ### Observed (2026-11-12, stacker-cli v0.3.4)
