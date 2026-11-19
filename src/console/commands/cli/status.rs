@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::cli::config_parser::{DeployTarget, ProxyType, StackerConfig};
 use crate::cli::credentials::{CredentialsManager, StoredCredentials};
+use crate::cli::deployment_lock::LockChoice;
 use crate::cli::error::CliError;
 use crate::cli::install_runner::{CommandExecutor, CommandOutput, ShellExecutor};
 use crate::cli::local_compose::{resolve_local_compose_path, resolve_local_compose_project_name};
@@ -454,6 +455,78 @@ fn containers_signature(containers: &[serde_json::Value]) -> String {
     serde_json::to_string(containers).unwrap_or_default()
 }
 
+/// What the local evidence says the deployment is, before the project-name
+/// lookup (BUGS.md #25).
+enum StatusDeploymentRef {
+    /// A hash already at hand (pinned in stacker.yml, or recorded in a lock).
+    Hash(String),
+    /// A lock from before hashes were recorded — resolved via the API by id.
+    DeploymentId(i64),
+}
+
+/// The deployment to report from local evidence alone: the pinned
+/// `deploy.deployment_hash`, else the lock's recorded hash, else the lock's
+/// deployment id. `None` means the project-name lookup is the only evidence.
+///
+/// BUGS.md #25: the deploy renames the project to the stacker.yml `name`, so
+/// the name lookup can hit a namesake project on the account and report ITS
+/// months-old deployment as if it were the one just run. The lock is the fact
+/// on the ground for this directory.
+fn status_deployment_ref(
+    config_hash: Option<&str>,
+    ranked: &[LockChoice],
+) -> Option<(StatusDeploymentRef, String)> {
+    if let Some(hash) = config_hash.map(str::trim).filter(|hash| !hash.is_empty()) {
+        return Some((
+            StatusDeploymentRef::Hash(hash.to_string()),
+            "stacker.yml deploy.deployment_hash".to_string(),
+        ));
+    }
+
+    let choice = ranked.iter().find(|choice| {
+        choice
+            .lock
+            .deployment_hash
+            .as_deref()
+            .map(|hash| !hash.trim().is_empty())
+            .unwrap_or(false)
+            || choice.lock.deployment_id.is_some()
+    })?;
+    let source = format!(
+        ".stacker/{}, target: {}",
+        choice.source_file, choice.lock.target
+    );
+    if let Some(hash) = choice
+        .lock
+        .deployment_hash
+        .as_deref()
+        .map(str::trim)
+        .filter(|hash| !hash.is_empty())
+    {
+        Some((StatusDeploymentRef::Hash(hash.to_string()), source))
+    } else {
+        Some((
+            StatusDeploymentRef::DeploymentId(choice.lock.deployment_id?),
+            source,
+        ))
+    }
+}
+
+/// Warning for BUGS.md #25: `Some(message)` when the project-name lookup
+/// reported a different deployment than this directory's lock points at, so a
+/// mismatch is visible instead of silently wrong.
+fn lock_mismatch_warning(choice: &LockChoice, reported_id: i64) -> Option<String> {
+    let locked_id = choice.lock.deployment_id?;
+    if locked_id == reported_id {
+        return None;
+    }
+    Some(format!(
+        "This directory's lock points at deployment #{} (target '{}'), but the lookup reported \
+#{} — pass --deployment <HASH> or run `stacker deployment use <HASH>` to say which one you mean.",
+        locked_id, choice.lock.target, reported_id
+    ))
+}
+
 /// Query remote deployment status from the Stacker server, optionally watching.
 fn run_remote_status(
     project_dir: &Path,
@@ -498,8 +571,27 @@ fn run_remote_status(
     rt.block_on(async {
         let client = StackerClient::new(&base_url, &creds.access_token);
 
-        if let Some(deployment_hash) = config.deploy.deployment_hash.as_ref() {
-            if !deployment_hash.trim().is_empty() {
+        // BUGS.md #25: local evidence first — the pinned hash, then this
+        // directory's deployment lock. The project-name lookup below is the
+        // last resort: the deploy renames the project to the stacker.yml
+        // `name`, so a namesake project on the account can answer with ITS
+        // months-old deployment instead of the one just run.
+        let ranked = crate::cli::deployment_lock::DeploymentLock::rank_locks(&project_dir, None)?;
+        if let Some((reference, source)) =
+            status_deployment_ref(config.deploy.deployment_hash.as_deref(), &ranked)
+        {
+            let resolved_hash = match reference {
+                StatusDeploymentRef::Hash(hash) => Some(hash),
+                StatusDeploymentRef::DeploymentId(id) => client
+                    .get_deployment_status(id as i32)
+                    .await?
+                    .map(|info| info.deployment_hash),
+            };
+            if let Some(deployment_hash) = resolved_hash.as_deref() {
+                eprintln!(
+                    "  \u{2139} resolved deployment {} (from {})",
+                    deployment_hash, source
+                );
                 let ctx = StatusContext {
                     server: None,
                     config: Some(&config),
@@ -625,6 +717,13 @@ to inspect it with `stacker status` and `stacker logs`.",
             let status = client.get_deployment_status_by_project(project.id).await?;
             match status {
                 Some(info) => {
+                    // BUGS.md #25: make a mismatch visible — the lock may
+                    // point at another deployment than the name lookup found.
+                    if let Some(choice) = ranked.iter().find(|c| c.lock.deployment_id.is_some()) {
+                        if let Some(warning) = lock_mismatch_warning(choice, i64::from(info.id)) {
+                            eprintln!("  \u{26a0} {}", warning);
+                        }
+                    }
                     let live_containers = client
                         .agent_snapshot_by_project(project.id)
                         .await
@@ -783,6 +882,67 @@ mod tests {
     // Serialise tests that mutate XDG_CONFIG_HOME to prevent races when
     // cargo runs lib tests in parallel threads.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    // BUGS.md #25: `stacker status` reported a namesake project's months-old
+    // deployment. Local evidence (the pin, then the lock) must win over the
+    // project-name lookup.
+    #[test]
+    fn status_deployment_ref_prefers_pin_then_lock() {
+        let mut lock = DeploymentLock::for_local();
+        lock.target = "server".to_string();
+        lock.deployment_hash = Some("deployment_1545".to_string());
+        let ranked = vec![LockChoice {
+            lock,
+            source_file: "deployment-server.lock".to_string(),
+        }];
+
+        let (reference, source) =
+            status_deployment_ref(Some("deployment_pinned"), &ranked).expect("the pin resolves");
+        assert!(matches!(reference, StatusDeploymentRef::Hash(h) if h == "deployment_pinned"));
+        assert!(source.contains("stacker.yml"), "{source}");
+
+        let (reference, source) = status_deployment_ref(None, &ranked).expect("the lock resolves");
+        assert!(matches!(reference, StatusDeploymentRef::Hash(h) if h == "deployment_1545"));
+        assert!(source.contains("deployment-server.lock"), "{source}");
+        assert!(source.contains("target: server"), "{source}");
+    }
+
+    #[test]
+    fn status_deployment_ref_falls_back_to_the_locks_deployment_id() {
+        // Locks from before hashes were recorded carry only the id (the bug
+        // 25 repro) — they must still beat the name lookup.
+        let mut lock = DeploymentLock::for_local();
+        lock.deployment_id = Some(1527);
+        let ranked = vec![LockChoice {
+            lock,
+            source_file: "deployment-cloud.lock".to_string(),
+        }];
+
+        let (reference, _) = status_deployment_ref(None, &ranked).expect("the lock resolves");
+        assert!(matches!(reference, StatusDeploymentRef::DeploymentId(1527)));
+    }
+
+    #[test]
+    fn status_deployment_ref_is_none_without_any_local_evidence() {
+        assert!(status_deployment_ref(None, &[]).is_none());
+        assert!(status_deployment_ref(Some("  "), &[]).is_none());
+    }
+
+    #[test]
+    fn lock_mismatch_warning_only_when_the_lock_disagrees() {
+        let mut lock = DeploymentLock::for_local();
+        lock.deployment_id = Some(1527);
+        let choice = LockChoice {
+            lock,
+            source_file: "deployment-cloud.lock".to_string(),
+        };
+
+        assert!(lock_mismatch_warning(&choice, 1527).is_none());
+        let warning = lock_mismatch_warning(&choice, 503).expect("a mismatch must be visible");
+        assert!(warning.contains("#1527"), "{warning}");
+        assert!(warning.contains("#503"), "{warning}");
+        assert!(warning.contains("deployment use"), "{warning}");
+    }
 
     // Regression tests for GH issue #219: `stacker status --watch` omits the
     // main `app` container from the printed "Services" list — only
