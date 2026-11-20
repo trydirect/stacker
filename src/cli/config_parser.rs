@@ -2655,10 +2655,12 @@ fn load_env_file_vars_from_yaml(path: &Path, raw_content: &str) -> HashMap<Strin
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
 
-    let env_file = match env_file_value {
-        Some(v) => v,
-        None => return HashMap::new(),
-    };
+    // BUGS.md #47: with no `env_file` named, fall back to `.env` — the same
+    // default `stacker secrets set` writes to. The two commands used to
+    // disagree about where secrets live: `service add` introduces `${VAR}`
+    // references, `secrets set` stores them in `.env`, and the validator then
+    // rejected the config the two had just produced.
+    let env_file = env_file_value.unwrap_or(".env");
 
     let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
     let env_file_path = Path::new(env_file);
@@ -4633,6 +4635,48 @@ app:
             msg.contains("quoted path string"),
             "unexpected message: {msg}"
         );
+    }
+
+    // BUGS.md #47: `service add` introduces `${VAR}` references and writes no
+    // env_file; `stacker secrets set` stores the values in `.env`; the
+    // validator then rejected the config the two commands had just produced —
+    // the two disagreed about where secrets live. With no env_file named,
+    // `.env` is the source, the same default `secrets set` uses.
+    #[test]
+    fn env_placeholders_resolve_from_dot_env_without_env_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "POSTGRES_PASSWORD=s3cret\n").unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            "name: demo\napp:\n  type: node\nservices:\n  - name: postgres\n    image: postgres:16\n    environment:\n      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}\n",
+        )
+        .unwrap();
+
+        let config = StackerConfig::from_file(&config_path)
+            .expect(".env must fill placeholders when no env_file is named");
+        assert_eq!(
+            config.services[0]
+                .environment
+                .get("POSTGRES_PASSWORD")
+                .map(String::as_str),
+            Some("s3cret"),
+        );
+    }
+
+    #[test]
+    fn env_placeholders_still_fail_when_no_source_has_the_variable() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            "name: demo\napp:\n  type: node\nservices:\n  - name: postgres\n    image: postgres:16\n    environment:\n      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}\n",
+        )
+        .unwrap();
+
+        let err = StackerConfig::from_file(&config_path)
+            .expect_err("an unsourced placeholder must still fail");
+        assert!(err.to_string().contains("POSTGRES_PASSWORD"), "{err}");
     }
 
     #[test]

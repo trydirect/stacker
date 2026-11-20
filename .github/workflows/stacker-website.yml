@@ -3,6 +3,11 @@ name: Stacker Website Docker
 # Builds and pushes trydirect/stacker-website independently of the Rust CLI
 # image. Only runs when files under website/ change on the target branches.
 
+# The GitHub Actions cache backend writes through GITHUB_TOKEN.
+permissions:
+  contents: read
+  actions: write
+
 on:
   push:
     branches:
@@ -65,4 +70,4 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=max,ignore-error=true

@@ -380,6 +380,7 @@ pub async fn get_by_slug_with_latest(
             changelog,
             is_latest,
             config_contract,
+            source_commit,
             created_at
         FROM stack_template_version WHERE template_id = $1 AND is_latest = true LIMIT 1"#,
     )
@@ -419,6 +420,7 @@ pub async fn get_latest_version(
             changelog,
             is_latest,
             config_contract,
+            source_commit,
             created_at
         FROM stack_template_version WHERE template_id = $1 AND is_latest = true LIMIT 1"#,
     )
@@ -791,6 +793,64 @@ pub async fn get_config_contract(
     .map(|row| row.flatten().unwrap_or(serde_json::Value::Null))
     .map_err(|e| {
         tracing::error!("get_config_contract error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
+/// Persist the git commit of the source checkout a version was published
+/// from (BUGS.md #30). Kept as a dedicated accessor like
+/// [`set_config_contract`] — the shared version fetches don't list every
+/// column. Recorded on the latest version so a stale catalogue copy is
+/// visible in the API instead of inferred.
+pub async fn set_source_commit(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    source_commit: &str,
+) -> Result<(), String> {
+    let query_span =
+        tracing::info_span!("marketplace_set_source_commit", template_id = %template_id);
+
+    sqlx::query(
+        r#"UPDATE stack_template_version
+           SET source_commit = $2
+           WHERE template_id = $1 AND is_latest = true"#,
+    )
+    .bind(template_id)
+    .bind(source_commit)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("set_source_commit error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(())
+}
+
+/// Read back the source commit set via [`set_source_commit`]. `None` for
+/// versions published before it existed, or from a checkout that is not a
+/// git repository.
+pub async fn get_source_commit(
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+) -> Result<Option<String>, String> {
+    let query_span =
+        tracing::info_span!("marketplace_get_source_commit", template_id = %template_id);
+
+    sqlx::query_scalar::<_, Option<String>>(
+        r#"SELECT source_commit
+           FROM stack_template_version
+           WHERE template_id = $1 AND is_latest = true
+           LIMIT 1"#,
+    )
+    .bind(template_id)
+    .fetch_optional(pool)
+    .instrument(query_span)
+    .await
+    .map(|row| row.flatten())
+    .map_err(|e| {
+        tracing::error!("get_source_commit error: {:?}", e);
         "Internal Server Error".to_string()
     })
 }

@@ -1527,7 +1527,9 @@ COPY package*.json ./
 RUN npm ci --production
 COPY . .
 EXPOSE 3000
-CMD ["node", "server.js"]
+# CMD comes from package.json: `npm start` when scripts.start exists, else
+# `node <main>`, else `node server.js` as the last resort.
+CMD ["npm", "start"]
 ```
 
 ### `python`

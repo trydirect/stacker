@@ -1111,8 +1111,11 @@ fn reject_build_sections_for_cloud(
     }
 
     message.push_str(
-        "Or keep building from source and deploy to your own server instead:\n\
-         \x20      stacker deploy --target server",
+        "Or build and run it on this machine instead:\n\
+         \x20      stacker deploy --target local\n\
+         \n\
+         Remote targets — cloud and server alike — pull a pre-built image and\n\
+         never build from source.",
     );
 
     Err(CliError::ConfigValidation(message))
@@ -4910,6 +4913,17 @@ impl DeployCommand {
             lock = lock.with_project_name(self.project_name.clone());
         }
 
+        // BUGS.md #55: record the deployment hash in the lock — resolution
+        // then needs no API lookup, and a human reading the file can pass it
+        // straight to `--deployment`.
+        if lock.deployment_hash.is_none() {
+            if let Some(dep_id) = lock.deployment_id {
+                if let Some(hash) = lookup_deployment_hash(dep_id) {
+                    lock = lock.with_deployment_hash(Some(hash));
+                }
+            }
+        }
+
         if matches!(result.target, DeployTarget::Cloud | DeployTarget::Server) {
             if let Ok(Some(creds)) = CredentialsManager::with_default_store().load() {
                 lock = lock.with_stacker_email(creds.email.clone());
@@ -4968,6 +4982,27 @@ impl DeployCommand {
 }
 
 // ── Fetch server details from Stacker API by project ID ──
+
+/// Look up a deployment's hash (`deployment_<id>`) by its numeric id.
+///
+/// Best-effort: `None` when the API cannot be reached — resolution falls
+/// back to the same lookup at command time. Used to record the hash in the
+/// deployment lock (BUGS.md #55), so humans reading the file can pass it
+/// straight to `--deployment`.
+fn lookup_deployment_hash(deployment_id: i64) -> Option<String> {
+    let (base_url, creds) = resolve_saved_stacker_base_url("deployment hash lookup").ok()?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    rt.block_on(async {
+        let client = StackerClient::new(&base_url, &creds.access_token);
+        match client.get_deployment_status(deployment_id as i32).await {
+            Ok(Some(info)) => Some(info.deployment_hash),
+            _ => None,
+        }
+    })
+}
 
 /// After a cloud deploy completes, look up the provisioned server's details
 /// (IP, SSH user, port, name) from the Stacker server API.
@@ -6640,6 +6675,64 @@ deploy:\n  target: server\n  server:\n    host: 203.0.113.5\n    user: deploy\n 
         assert!(server.validate(&minimal_config).is_err());
     }
 
+    // BUGS.md #48: `--dry-run` certified a config the real deploy rejects —
+    // the app.image requirement fired only in the real run, so a build-only
+    // app previewed fine and then refused to deploy to every remote target.
+    #[test]
+    fn test_validate_requires_app_image_for_remote_targets() {
+        let server_config = StackerConfig::from_str(
+            "name: test\n\
+             app:\n\
+             \x20 type: node\n\
+             \x20 dockerfile: Dockerfile\n\
+             deploy:\n\
+             \x20 target: server\n\
+             \x20 server:\n\
+             \x20   host: 203.0.113.9\n\
+             \x20   user: root\n\
+             \x20   port: 22\n",
+        )
+        .unwrap();
+        let err = strategy_for(&DeployTarget::Server)
+            .validate(&server_config)
+            .expect_err("a build-only app cannot deploy to a server");
+        assert!(err.to_string().contains("app.image"), "{err}");
+
+        let cloud_config = StackerConfig::from_str(
+            "name: test\n\
+             app:\n\
+             \x20 type: node\n\
+             \x20 dockerfile: Dockerfile\n\
+             deploy:\n\
+             \x20 target: cloud\n\
+             \x20 cloud:\n\
+             \x20   provider: hetzner\n",
+        )
+        .unwrap();
+        let err = strategy_for(&DeployTarget::Cloud)
+            .validate(&cloud_config)
+            .expect_err("a build-only app cannot deploy to the cloud");
+        assert!(err.to_string().contains("app.image"), "{err}");
+    }
+
+    #[test]
+    fn test_validate_accepts_an_image_app_for_remote_targets() {
+        let config = StackerConfig::from_str(
+            "name: test\n\
+             app:\n\
+             \x20 type: custom\n\
+             \x20 image: ghcr.io/example/test:latest\n\
+             deploy:\n\
+             \x20 target: server\n\
+             \x20 server:\n\
+             \x20   host: 203.0.113.9\n",
+        )
+        .unwrap();
+        strategy_for(&DeployTarget::Server)
+            .validate(&config)
+            .expect("an app with an image deploys");
+    }
+
     #[test]
     fn test_deploy_hooks_dry_run_does_not_execute() {
         let config =
@@ -7315,8 +7408,8 @@ services:
             "placeholder uses the project name: {msg}"
         );
         assert!(
-            msg.contains("--target server"),
-            "offers the build-capable target: {msg}"
+            msg.contains("--target local"),
+            "offers the target that actually builds from source: {msg}"
         );
     }
 

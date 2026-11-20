@@ -708,7 +708,7 @@ Keep the source file mode when uploading project files (at least the owner
 execute bit). Test: an executable file in the project arrives executable on the
 server.
 
-## 20. 🔴 CONFIRMED — a deploy ends `paused [port_conflict]` while the stack is up and healthy on that port (found 2026-10-27, confirmed 2026-11-12)
+## 20. 🟠 FIXED IN CODE — a deploy ends `paused [port_conflict]` while the stack is up and healthy on that port (found 2026-10-27, confirmed 2026-11-12, fixes shipped 2026-11-16/19, live re-test pending)
 
 ### Observed (2026-10-27)
 
@@ -786,6 +786,35 @@ end in "open this URL", that is the whole first impression.
 Exclude the containers of the stack being deployed (same compose project) when
 checking whether its ports are taken. Test: redeploying a running stack with
 unchanged ports does not report a port conflict.
+
+### Fixes shipped (tfa 2026-11-16, stacker 2026-11-19) — live re-test pending
+
+Three checks reported the stack's own containers as port conflicts:
+
+1. The tfa role pre-flights — fixed by PR #149 (a port held by the stack's own
+   container is replaceable) and PR #150 (recognise the shipped stack by its
+   `my.stacker.service` label, and stop the n8n role's legacy `docker compose
+   up` from starting a second copy of the app).
+2. The CLI's remote pre-flight (`check_remote_host_port_conflicts`) — it SSHed
+   `ss`+`docker ps` and flagged the stack's own published ports as occupied
+   before `docker compose up` would have replaced those very containers. It
+   now matches tfa's identification: containers labelled with this compose
+   file's own service names are skipped, and `docker-proxy` listeners defer to
+   the container section, which can tell who published them (stacker
+   `fix/own-stack-port-conflict-20`).
+3. The local pre-flight already excluded own containers.
+
+Not closed yet: per tfa #150 the close-out is a live
+`stacker deploy --target cloud --server <saved>` of a running stack ending
+`completed`.
+
+**How to verify (live, on a test server):** redeploy a running stack with
+unchanged ports — `stacker deploy --target server ...` twice in a row on the
+same host must end `completed`, not `paused [port_conflict]`. The 2026-11-13
+shape is the one to reproduce: the stack already up (`project-<app>-1`
+holding the app port, answering HTTP 200), same ports, second deploy. The
+CLI pre-flight half is visible without the pipeline: no "Host port conflict
+detected before deploy" may appear on the second run.
 
 ## 21. 🟠 NOT CONFIRMED — a bake of a `--target server` deployment records no server type, so Quick Deploy offers the default size (found 2026-10-27)
 
@@ -892,7 +921,7 @@ survives serialization unchanged.
 Full install-to-deploy captures from the run that found this live in
 `blog/docs/tiktok-scripts/stacker-cli/captures/CLI-16/findings-real-run.md`.
 
-## 25. 🔴 CONFIRMED — `stacker status` in a project directory reports a different, months-old deployment (found 2026-11-12)
+## 25. ✅ FIXED — `stacker status` in a project directory reports a different, months-old deployment (found 2026-11-12, fixed 2026-11-19)
 
 ### Observed (2026-11-12, stacker-cli v0.3.6)
 
@@ -937,6 +966,21 @@ Resolve status from the local deployment lock first, fall back to identity
 only when there is no lock, and name the deployment id and server being
 reported so a mismatch is visible. Test: `stacker status` right after a deploy
 reports that deploy's id.
+
+### ✅ Fixed (2026-11-19) — stacker `fix/status-lock-resolution-25`
+
+Per the entry's fix direction: `stacker status` resolves from local evidence
+first — the pinned `deploy.deployment_hash`, then this directory's
+deployment lock (recorded hash, or the deployment id for locks older than
+#55) — and only then falls back to the project-name lookup. The resolution
+says what it resolved (`resolved deployment <hash> (from
+.stacker/deployment-server.lock, target: server)`), and when the name lookup
+still reports a different deployment than the lock points at, a warning
+names both ids and the pinning commands — the mismatch is visible instead of
+silently wrong.
+
+Test: `status_deployment_ref` (pin wins, then lock hash, then lock id, name
+lookup only with no local evidence) and `lock_mismatch_warning`.
 
 ## 26. 🔴 CONFIRMED — a cloud deploy says the SSH key is authorized, and neither that key nor the saved backup key can log in (found 2026-11-12)
 
@@ -1043,7 +1087,7 @@ rather than show either.
 Find which of the two is authoritative and make both commands print it.
 Test: install and the deploy that follows report the same id.
 
-## 29. 🟠 CONFIRMED — `stacker agent install` refuses when `deploy.server.host` is empty, right after a cloud deploy created the server (found 2026-11-12)
+## 29. ✅ FIXED — `stacker agent install` refuses when `deploy.server.host` is empty, right after a cloud deploy created the server (found 2026-11-12, fixed 2026-11-19)
 
 ### Observed (2026-11-12, stacker-cli v0.3.4)
 
@@ -1065,7 +1109,27 @@ Resolve the host from the deployment lock when `deploy.server.host` is empty,
 the way `agent status` already does. Test: agent install succeeds
 immediately after a cloud deploy with no manual edit.
 
-## 30. 🟠 CONFIRMED — the marketplace serves a template version older than the source repository (found 2026-11-12)
+### ✅ Fixed (2026-11-19) — stacker `fix/agent-install-blank-host-29`
+
+Per the entry's fix direction: the host is resolved from the deployment
+lock, the way `agent status` resolves the deployment itself. A blank
+`deploy.server.host` now behaves like "not configured" everywhere in the
+install flow — the server selector falls back to the project's server
+instead of strict-matching an empty string, the deploy form falls back to
+the platform's server record, and the local-SSH path fills host/user/port/
+key from the lock (ignoring the loopback a local deploy leaves behind).
+
+Tests: the selector accepts a blank configured host (it refused before),
+and `effective_server_config` prefers the configured host, then the lock,
+then nothing.
+
+**How to verify (live, on a test server):** `stacker deploy --target cloud
+...` into a fresh project, then `stacker agent install` in the same
+directory **without editing stacker.yml** — it must install using the host
+from `.stacker/deployment-*.lock` instead of refusing on the empty
+`deploy.server.host`.
+
+## 30. ✅ FIXED — the marketplace serves a template version older than the source repository (found 2026-11-12, fixed 2026-11-19)
 
 ### Observed (2026-11-12)
 
@@ -1088,6 +1152,34 @@ Establish when and by what the catalogue is refreshed from the repository,
 and surface the template's source commit in the API response so a stale copy
 is visible rather than inferred. Test: a template change merged to `main`
 appears in the API within the documented interval.
+
+### ✅ Fixed (2026-11-19) — stacker `fix/marketplace-source-commit-30`
+
+Established first, as the direction asks: **nothing refreshes the catalogue
+from the source repository** — no sync job, cron, DAG, CI step or webhook
+exists. The catalogue is a snapshot of the last manual `stacker publish`
+(and its review), so PR 68 could not arrive until someone re-published. The
+contract is now documented in `docs/MARKETPLACE_PUBLISH.md` ("Where catalogue
+content comes from"): the publish *is* the refresh, and it is manual.
+
+And staleness is now visible rather than inferred: every publish records the
+git commit of the checkout it was made from (`source_commit`, best-effort
+`git rev-parse HEAD`; absent for non-git checkouts and pre-existing versions),
+stored on `stack_template_version` and returned in the public detail API —
+`GET /api/templates/<slug>` → `item.latest_version.source_commit`. Set on
+create, update and resubmit, the three places a version is written.
+
+Tests: the publish body carries the commit (and omits it when unknown), the
+git output parser accepts only an object id, and a full round-trip
+(create → approve → public detail) asserts the API surfaces the commit.
+
+**How to verify:** `stacker publish` from a git checkout of the template
+repository, then
+`curl -s https://<host>/stacker/api/templates/<slug> | jq '.item.latest_version.source_commit'`
+— must print the checkout's HEAD sha (absent only for non-git checkouts and
+pre-existing versions). The staleness half is inherent and now documented:
+a merge to the source repo appears in the API only after the next publish
+(`docs/MARKETPLACE_PUBLISH.md`, "Where catalogue content comes from").
 
 ## 31. ✅ FIXED — `agent deploy-app --image` recreated the container without its published ports (found 2026-11-12, fixed 2026-11-12)
 
@@ -1562,7 +1654,7 @@ it still makes them impossible to teach in one breath.
 **Expected:** one spelling for both. Whichever wins, `--tail` and `--lines`
 should not be a coin flip, and the form in the docs must exist.
 
-## 41. 🟢 OPEN — `stacker find` glues the price to the raw billing enum (found 2026-11-14)
+## 41. ✅ FIXED — `stacker find` glues the price to the raw billing enum (found 2026-11-14, fixed 2026-11-16)
 
 ```
 ITEM                     NAME                         VENDOR               PLAN           DESCRIPTION
@@ -1582,6 +1674,17 @@ the first thing a new user sees when they search the catalogue.
 **Expected:** `$7.00 / day` or `$7.00 daily`, a separator between amount and
 period, the enum translated to a word, and the column width respected so
 DESCRIPTION stays aligned.
+
+
+### ✅ Fixed — dev `9d9bb69d`, verified 2026-11-20
+
+The plan cell separates the amount from the billing period (`$7.00/day` for
+`deployment_daily`, `/mo`, `/yr`, `/install`, and the separator for unknown
+periods too) and is clamped to the column width, so DESCRIPTION stays
+aligned. The entry was written after the fix landed and never flipped.
+
+**How to verify:** `stacker find n8n` — the paid row must read `$7.00/day`
+(no glued enum), and the DESCRIPTION column must stay aligned.
 
 ## 42. 🟠 OPEN — `proxy.type: nginx` silently deploys nginx-proxy-manager (found 2026-11-14)
 
@@ -1790,7 +1893,7 @@ missing, update what differs, and say which it did. Failing that, ship
 `stacker proxy update` and `stacker proxy remove` so a wrong entry can be
 repaired without the NPM UI.
 
-## 45. 🟡 FIX READY — a `proxy:` block makes the whole compose project invalid unless the app service is literally named `app` (found 2026-11-15, fix on a branch the same day)
+## 45. ✅ FIXED — a `proxy:` block makes the whole compose project invalid unless the app service is literally named `app` (found 2026-11-15, fixed by PR #342 on 2026-11-15, verified 2026-11-20)
 
 **Severity:** high. Every deploy and every agent install on the stack fails
 from then on, and the failure is in `docker compose up`, i.e. after the files
@@ -1843,6 +1946,22 @@ exists and otherwise the services named by `proxy.domains[].upstream`, keeping
 only those actually declared. Four tests; three fail against `origin/dev`,
 verified in a throwaway worktree.
 
+
+### ✅ Fixed — PR #342 (`fix/proxy-depends-on-existing-service`), verified 2026-11-20
+
+`proxy_dependencies` (src/cli/generator/compose.rs) replaces the hardcoded
+`depends_on: ["app"]`: with a buildable `app` it stays `app`; without one it
+depends on the services the proxy actually fronts — the host part of each
+`proxy.domains[].upstream`, kept only when a service by that name is
+declared. A dangling dependency can no longer invalidate the whole compose
+project.
+
+**How to verify:** take a template whose app service is not called `app`
+(e.g. `n8n` + `postgres`), add a `proxy:` block, deploy — `docker compose up`
+must not fail with `service "nginx" depends on undefined service "app"`
+(the generated compose's `nginx` service must `depends_on` the real service
+names).
+
 ## 46. 🟢 OPEN — every agent command logs a failed `check_connections` the agent does not allow (found 2026-11-15)
 
 Each `stacker agent ...` invocation prints
@@ -1868,7 +1987,7 @@ something does go wrong.
 sending it and drop the warning. A pre-flight that cannot ever run should not
 be attempted once per command.
 
-## 47. 🟠 OPEN — `service add` writes a config that `config validate` then rejects (found 2026-11-17)
+## 47. ✅ FIXED — `service add` writes a config that `config validate` then rejects (found 2026-11-17, fixed 2026-11-19)
 
 **Severity:** high for a first-time user. It is the second command someone
 runs after `stacker init`, and it leaves the project in a state the next
@@ -1918,7 +2037,24 @@ fixes it; doing neither is what makes the two commands contradict each other.
 
 Found while rehearsing a full walkthrough, at the second command.
 
-## 48. 🔴 OPEN — a project generated by `init` cannot be deployed to any server, and `--dry-run` says it can (found 2026-11-17)
+
+### ✅ Fixed (2026-11-19) — stacker `fix/service-add-env-source-47`
+
+Per the entry's expected outcome (the second of the two options): with no
+`env_file` named, the `${VAR}` resolver falls back to `.env` — the same
+default `stacker secrets set` writes to. The two commands no longer disagree
+about where secrets live: `service add` → `secrets set` → `config validate`
+passes (it kept failing before, which was the dead end). A placeholder with
+no source anywhere still fails, unchanged.
+
+**How to verify (local):** in a fresh `stacker init --app-type node` project —
+`stacker service add postgres`, then `stacker secrets set
+POSTGRES_PASSWORD=...`, then `stacker config validate` must print
+`✓ Configuration is valid` (before this fix it failed with
+`Environment variable not found: $POSTGRES_PASSWORD` no matter what was
+set). With no secret set at all the failure is correct and unchanged.
+
+## 48. ✅ FIXED — a project generated by `init` cannot be deployed to any server, and `--dry-run` says it can (found 2026-11-17, fixed 2026-11-19)
 
 **Severity:** blocks the whole first-run story. `stacker init` generates a
 compose that builds the app; every remote target then refuses it, including
@@ -1963,7 +2099,37 @@ not one that fails identically.
 
 Found while rehearsing a full walkthrough, at the first remote deploy.
 
-## 49. 🔴 OPEN — the generated node Dockerfile hardcodes `server.js`, so most node projects crash-loop (found 2026-11-17)
+### ✅ Fixed (2026-11-19) — stacker `fix/dry-run-validation-48`
+
+Both defects from the entry:
+
+1. **`--dry-run` now runs the deploy's checks.** The `app.image` requirement
+   moved into `CloudDeploy`/`ServerDeploy::validate`, which the preview runs
+   before anything else — a config that cannot deploy fails its preview with
+   the same message the real run gives.
+2. **The cloud error names a path that works.** The closing advice is now
+   `stacker deploy --target local`, with a plain statement that remote
+   targets (cloud and server alike) pull a pre-built image and never build
+   from source. The old text recommended `--target server`, which fails
+   identically.
+
+Note the underlying gap remains as designed: no remote target builds from
+source. A generated project deploys remotely once it publishes an image
+(`app.image`) — `stacker init` + `--target local` is the build-from-source
+path.
+
+Tests: strategy validation rejects a build-only app for both remote targets
+(the red run passed them) and accepts an image app; the message test expects
+the working advice.
+
+**How to verify (local):** in a `stacker init --app-type node` project —
+`stacker deploy --target server --server-host <ip> --server-ssh-key <key>
+--dry-run` must FAIL with `app.image is required for cloud/server deploys`
+(where it printed `✓ previewed successfully` before), and the cloud
+`--dry-run` error must end with `stacker deploy --target local`, not the
+identically failing `--target server`.
+
+## 49. ✅ FIXED — the generated node Dockerfile hardcodes `server.js`, so most node projects crash-loop (found 2026-11-17, fixed 2026-11-19)
 
 `stacker init --app-type node` writes:
 
@@ -1991,6 +2157,28 @@ docker ps:  hello-app-1   Restarting (1) 23 seconds ago
 `node <package.json main>`, else `server.js` as the last resort. The
 information is in the file the generator already reads to detect that this is
 a node project.
+
+### ✅ Fixed (2026-11-19) — stacker `fix/node-entry-cmd-49`
+
+Per the expected outcome: the generated CMD now comes from the project's own
+`package.json` — `["npm", "start"]` when `scripts.start` exists, else
+`node <package.json main>`, else `server.js` as the last resort (and only
+when the manifest is unreadable at all). Next.js keeps its
+build-then-`npm run start` flow. Both writers go through the same generator
+(`stacker init` and the deploy-time generation), so the fix covers the
+crash-looping quickstart path.
+
+Tests: `scripts.start` → `npm start`; `main` alone → `node index.js`; no
+clues → `node server.js`; the old test that pinned the bug is rewritten.
+The `node` example in `docs/STACKER_YML_REFERENCE.md` and the CHEATSHEET
+"Trap (#49)" note now describe the rule instead of the workaround.
+
+**How to verify (local):** in a project whose `package.json` has
+`scripts.start` — `stacker init --app-type node` must generate
+`CMD ["npm", "start"]` in `.stacker/Dockerfile`; with only `main: index.js`
+→ `CMD ["node", "index.js"]`; with neither → `CMD ["node", "server.js"]`.
+The same generator runs at deploy time, so a later `stacker deploy` does not
+overwrite the CMD with the old hardcoded form.
 
 ## 50. 🟠 OPEN — a local deploy reports success and a timeout in the same breath (found 2026-11-17)
 
@@ -2132,7 +2320,7 @@ works and prints `· 5 container(s), all healthy`.
 states what it covers; a sync with no compose present is a warning, not a
 success. The monitor error should name the key it actually wants.
 
-## 55. 🟠 OPEN — the agent commands read the lock of the inactive target (found 2026-11-17)
+## 55. ✅ FIXED — the agent commands read the lock of the inactive target (found 2026-11-17, fixed 2026-11-17)
 
 This is the real defect behind the detour recorded in #51, and it is worth
 fixing because the mechanism that should prevent it already exists.
@@ -2196,3 +2384,92 @@ but not the hash, so a human reading the file cannot pass it to
 `--deployment` without a lookup in `stacker deployments`; and
 `stacker explain topology`, whose whole job is explaining which files are in
 play, takes no `--deployment` and printed `for unbound` for this project.
+
+### ✅ Fixed (2026-11-17) — stacker `fix/lock-resolution-55`
+
+In the order the entry asks for:
+
+1. **Say what was resolved.** Every implicit resolution now prints one line —
+   `resolved deployment <hash> (from .stacker/deployment-server.lock, target:
+   server)` — for locks, the `stacker.yml` pin, the active agent and the
+   newest deployment alike. An explicit `--deployment` stays silent (the user
+   just typed it).
+2. **Resolve in a defensible order.** Explicit `--deployment`, then the pinned
+   `deploy.deployment_hash`, then the preferred/active target's lock, then the
+   newest — `DeploymentLock::rank_locks` replaces the fixed
+   cloud→server→local order (local locks can no longer shadow a remote one),
+   and a warning names any lock newer than the one chosen.
+3. **Pin it deliberately.** `stacker deployment use <hash>` /
+   `--clear` writes (or removes) `deploy.deployment_hash` with the
+   formatting-preserving editor; commands prefer the pin.
+4. **Record the hash in the lock.** `DeploymentLock` now carries
+   `deployment_hash`, filled at deploy time (best-effort API lookup) and in
+   the handoff payload, so the file answers `--deployment` without a lookup.
+
+Plus the smaller item: `stacker explain topology` takes `--deployment` and
+falls back to the shared resolution instead of printing `for unbound`.
+
+Note: `stacker explain env` reads only the pinned hash and still prints
+`for unbound` — same shape as topology had; left alone to keep this diff
+focused. Already-saved locks from before this fix carry no hash until the
+next deploy; resolution keeps falling back to the id→API lookup for them.
+
+## 56. 🟢 OPEN — two commands that know the answer and do not say it (found 2026-11-19)
+
+Small, cheap, and both cost a real person a detour today. 0.3.10 taught the
+agent commands to print `ℹ resolved deployment <hash> (from …, target: …)`;
+these two never got the same treatment.
+
+### `status` does not say whose status it is
+
+In a project deployed locally, after a cloud **dry-run**:
+
+```
+$ stacker deploy --target cloud --key <cred> --dry-run --force-new
+  ✓ Remote cloud deploy dry-run validated payload and credentials
+$ stacker status
+NAME               IMAGE                ...  PORTS
+hello-app-1        hello-app            ...  0.0.0.0:3100->3000/tcp
+hello-postgres-1   postgres:16-alpine   ...  127.0.0.1:5432->5432/tcp
+```
+
+That output is correct - a dry run deploys nothing, the only lock in
+`.stacker/` is `deployment-local.lock`, and `dispatch_status`
+(`src/console/commands/cli/status.rs:751`) routes by
+`resolve_deploy_placement`, so the local branch runs `docker compose ps`. It
+still reads as "it showed me the wrong thing", because the output is raw
+`docker compose ps` with nothing above it: no placement, no project, no
+mention that there is no remote deployment to show.
+
+**Expected:** one line before the table, in the style the agent commands now
+use -
+
+```
+ℹ local deployment 'hello' (no remote deployment for this project)
+```
+
+and for the remote branch the same line naming the deployment it queried.
+
+### `target cloud` refuses without saying what to do
+
+```
+$ stacker target cloud
+Error: ConfigValidation("No cloud deployment lock found. Deploy to cloud first before switching.")
+```
+
+The rule is reasonable - `target` switches between targets this directory has
+actually deployed to, and registered cloud credentials are not a deployment -
+but `stacker target cloud` is the first thing a person tries when they want to
+go to the cloud, and the message stops at the diagnosis.
+
+**Expected:** name the next command, the way the deploy errors already do:
+
+```
+No cloud deployment lock found for this project.
+Deploy to cloud once, and the target follows:
+    stacker deploy --target cloud --key <saved-credential>
+    stacker config setup cloud     # to write deploy.cloud into stacker.yml first
+```
+
+Both are one message each, in code that already has the information. Same
+area as #55, so whoever fixed that has the context.

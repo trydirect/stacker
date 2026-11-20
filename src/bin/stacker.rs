@@ -900,6 +900,18 @@ enum DeploymentCommands {
         #[arg(long, short = 'y')]
         confirm: bool,
     },
+    /// Pin the deployment this directory works with (writes deploy.deployment_hash)
+    Use {
+        /// Deployment hash to pin (e.g. deployment_1545)
+        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        hash: Option<String>,
+        /// Remove the pin instead
+        #[arg(long)]
+        clear: bool,
+        /// Path to stacker.yml (default: ./stacker.yml)
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -914,6 +926,9 @@ enum ExplainCommands {
     },
     /// Explain compose/env topology for the current target
     Topology {
+        /// Deployment hash to explain instead of the resolved one
+        #[arg(long)]
+        deployment: Option<String>,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -2252,13 +2267,20 @@ fn get_command(
                     to, plan, apply_plan, confirm, deployment,
                 ),
             ),
+            DeploymentCommands::Use { hash, clear, file } => Box::new(
+                stacker::console::commands::cli::deployment::DeploymentUseCommand::new(
+                    hash, clear, file,
+                ),
+            ),
         },
         StackerCommands::Explain { command } => match command {
             ExplainCommands::Env { app, json } => Box::new(
                 stacker::console::commands::cli::explain::ExplainEnvCommand::new(app, json),
             ),
-            ExplainCommands::Topology { json } => Box::new(
-                stacker::console::commands::cli::explain::ExplainTopologyCommand::new(json),
+            ExplainCommands::Topology { deployment, json } => Box::new(
+                stacker::console::commands::cli::explain::ExplainTopologyCommand::new(
+                    json, deployment,
+                ),
             ),
         },
         StackerCommands::Destroy { volumes, confirm } => Box::new(
