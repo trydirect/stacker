@@ -1592,7 +1592,7 @@ theorising is what found it. The hint that the command had worked by hand
 before was real, but it pointed at the wrong explanation: those servers
 predate mTLS rather than holding a fresher token.
 
-## 39. 🟢 OPEN — `secrets validate` reads `${VAR}` references out of comments (found 2026-11-14)
+## 39. ✅ FIXED — `secrets validate` reads `${VAR}` references out of comments (found 2026-11-14, fixed 2026-11-20)
 
 The validator fails the whole stack because of a variable that appears only
 inside a YAML comment:
@@ -1621,6 +1621,21 @@ collecting `${VAR}` names.
 
 **Expected:** a variable that appears only inside a `#` comment is not a
 reference and must not fail validation.
+
+
+### ✅ Fixed (2026-11-20) — stacker `fix/secrets-validate-comments-39`
+
+References are collected from parsed YAML scalars (keys and values), so
+comments drop out naturally while block-scalar content — where `#` is literal
+text — still counts. Unparseable YAML falls back to the old raw scan.
+Regression tests cover the comment case (the entry's exact repro), the
+block-scalar case and the fallback.
+
+**How to verify:** put `# ${BASE_PATH}/some/note` as the only occurrence of
+`BASE_PATH` in stacker.yml — `stacker secrets validate` must not list
+`BASE_PATH` and must exit 0 (before: `Error: ... 1 variable(s) referenced in
+stacker.yml are not set: BASE_PATH`, exit 1). A variable in a real value must
+still be checked.
 
 ## 40. 🟢 OPEN — `agent logs` and `logs` disagree on their own interface (found 2026-11-14, corrected the same day)
 
