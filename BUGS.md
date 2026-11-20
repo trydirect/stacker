@@ -2410,7 +2410,7 @@ is meant to start in legacy mode, and if not, which side writes the `false`.
 The test stand currently runs with the flag flipped to `true`, with the
 original saved next to it as `config.json.bak-<epoch>`.
 
-## 53. 🟠 OPEN — the reported remote compose path is not the one docker uses (found 2026-11-17)
+## 53. ✅ FIXED — the reported remote compose path is not the one docker uses (found 2026-11-17, fixed 2026-11-20)
 
 Verified against the correct deployment hash, so this one is not #51 in
 disguise:
@@ -2438,6 +2438,28 @@ deployment whose topology you want explained.
 **Expected:** report the path docker reports, and show the env and compose
 directories separately when they differ. `explain topology` should take
 `--deployment` like its neighbours.
+
+
+### ✅ Fixed (2026-11-20) — stacker `fix/deployment-state-real-paths-53`
+
+Per the expected outcome: the report now gives the path docker reports. The
+agent already forwards every container's labels in its snapshot, and docker
+labels each container with the files it actually read —
+`com.docker.compose.project.config_files` / `...environment_files`. The
+state prefers those over the `<project>-<id>` synthesis (which matched
+nothing for the compose) and falls back to it when the snapshot carries no
+labelled container. When the compose and env directories differ — the
+marketplace-deploy case — the report says so instead of letting one path
+imply the other.
+
+The topology half of the entry is fixed too: `explain topology` takes
+`--deployment` and resolves through the shared chain (landed with #55).
+
+**How to verify:** `stacker deployment state --deployment <hash>` on the
+entry's project — `Compose:` must print the file docker reports (check with
+`docker inspect <container> --format '{{index .Config.Labels
+"com.docker.compose.project.config_files"}}'`), and when compose and env
+live in different directories the output notes the split.
 
 ## 54. ✅ FIXED — `sync` reports success when there is nothing to sync (found 2026-11-17, fixed 2026-11-20)
 
