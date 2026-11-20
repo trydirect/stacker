@@ -1109,7 +1109,6 @@ Resolve the host from the deployment lock when `deploy.server.host` is empty,
 the way `agent status` already does. Test: agent install succeeds
 immediately after a cloud deploy with no manual edit.
 
-## 30. ✅ FIXED — the marketplace serves a template version older than the source repository (found 2026-11-12, fixed 2026-11-19)
 ### ✅ Fixed (2026-11-19) — stacker `fix/agent-install-blank-host-29`
 
 Per the entry's fix direction: the host is resolved from the deployment
@@ -1130,7 +1129,7 @@ directory **without editing stacker.yml** — it must install using the host
 from `.stacker/deployment-*.lock` instead of refusing on the empty
 `deploy.server.host`.
 
-## 30. 🟠 CONFIRMED — the marketplace serves a template version older than the source repository (found 2026-11-12)
+## 30. ✅ FIXED — the marketplace serves a template version older than the source repository (found 2026-11-12, fixed 2026-11-19)
 
 ### Observed (2026-11-12)
 
@@ -2103,7 +2102,6 @@ the working advice.
 `--dry-run` error must end with `stacker deploy --target local`, not the
 identically failing `--target server`.
 
-## 49. 🔴 OPEN — the generated node Dockerfile hardcodes `server.js`, so most node projects crash-loop (found 2026-11-17)
 ## 49. ✅ FIXED — the generated node Dockerfile hardcodes `server.js`, so most node projects crash-loop (found 2026-11-17, fixed 2026-11-19)
 
 `stacker init --app-type node` writes:
