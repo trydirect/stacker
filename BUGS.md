@@ -390,7 +390,7 @@ The remote preflight returns `vec![]` on any SSH failure
 (`install_runner.rs`) — best-effort only. The watch verdict is now the hard
 safety net.
 
-## 8. 🟠 OPEN — `./file` bind mounts resolve against `.stacker/`, silently becoming directories
+## 8. ✅ FIXED — `./file` bind mounts resolve against `.stacker/`, silently becoming directories (found 2026-10-02, fixed by `809ea905`, verified live 2026-11-20)
 
 **Severity:** High — every local deploy of a template with a file bind breaks
 in a way that looks like an app bug. **File:** generated compose lives in
@@ -434,7 +434,26 @@ One behavior for local and remote, pick one:
   or
 - stage bind sources into `.stacker/` during render (mirrors the remote bundle).
 
-## 9. 🟠 OPEN — `app.dockerfile: Dockerfile` is rewritten to a file that is never generated
+
+### ✅ Fixed — dev `809ea905`, verified live 2026-11-20
+
+`normalize_generated_compose_paths`/`restage_relative_path` rewrite relative
+bind-mount sources against the project root: for a local deploy
+`./config.yml` becomes `../config.yml` (the generated compose lives in
+`.stacker/`), while sources that already live in `.stacker/` stay put and
+remote deploys keep `./` (the config bundle stages files next to the
+compose). The same pass handles `env_file` entries.
+
+Verified with the entry's exact repro (`app.volumes: ["./config.yml:..."]`,
+`stacker deploy --target local`): `docker inspect` reports the mount source
+as `<project root>/config.yml` (was `<root>/.stacker/config.yml`), and
+`cat` inside the container returns the file contents (was `Is a directory`).
+
+**How to verify:** the entry's repro — deploy locally with
+`./config.yml:/etc/nginx/conf.d/conf.yml:ro` and inspect the mount: it must
+point at the project root, and the file must be a file in the container.
+
+## 9. ✅ FIXED — `app.dockerfile: Dockerfile` is rewritten to a file that is never generated (found 2026-10-02, fixed by `cfa9d69f`, verified live 2026-11-20)
 
 **Severity:** High — `stacker deploy` fails at build for the most natural
 spelling of "my Dockerfile is in the project root". **File:**
@@ -476,6 +495,23 @@ the configured path relative to the compose location instead), or drop the
 rewrite entirely when the target path doesn't exist on disk. Workaround in
 use: rename to `Dockerfile.custom` (rewrite only matches
 `None | "Dockerfile" | "./Dockerfile"`).
+
+
+### ✅ Fixed — dev `cfa9d69f`, verified live 2026-11-20
+
+With `app.dockerfile` set, the generator never writes `.stacker/Dockerfile`
+(the user's own file is the build input), and the compose rewrite now knows
+it: an explicit `app.dockerfile` keeps — or restores — its configured path,
+so the build can never point at the file that is never generated.
+
+Verified live: a project with `app.dockerfile: Dockerfile` deploys locally
+with exit 0 and the generated compose carries `dockerfile: Dockerfile`
+(was `.stacker/Dockerfile`).
+
+**How to verify:** the entry's repro — `app.dockerfile: Dockerfile` plus a
+real `Dockerfile` at the project root, `stacker deploy --target local` must
+succeed and `.stacker/docker-compose.yml` must reference `Dockerfile`, not
+`.stacker/Dockerfile`.
 
 ## 10. 🟡 OPEN — `AppSource` accepts unknown fields silently
 
