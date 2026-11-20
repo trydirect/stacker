@@ -28,6 +28,27 @@ async fn create_template(
     .await
 }
 
+/// Poll for the submit webhook instead of sleeping a fixed 200 ms: the
+/// handlers answer first and send the webhook from a detached `tokio::spawn`,
+/// so a fixed sleep races CI load and fails the suite at random.
+async fn wait_for_submit_webhook(mock_user_service: &MockServer) -> Option<wiremock::Request> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let requests = mock_user_service.received_requests().await?;
+        if let Some(request) = requests
+            .iter()
+            .find(|request| request.url.path() == "/marketplace/sync")
+            .cloned()
+        {
+            return Some(request);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 async fn create_template_with_body(
     client: &Client,
     address: &str,
@@ -873,15 +894,12 @@ async fn submit_template_sends_template_submitted_webhook() {
         .expect("Failed to submit template for review");
     assert_eq!(StatusCode::OK, submit_response.status());
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    let requests = mock_user_service
-        .received_requests()
+    // The submit webhook is dispatched from a detached `tokio::spawn`, so it
+    // reaches the mock some time after the response — a fixed 200 ms sleep
+    // raced a loaded CI runner and failed the suite at random (the same fix
+    // already used in tests/marketplace_admin_review.rs).
+    let webhook_request = wait_for_submit_webhook(&mock_user_service)
         .await
-        .expect("Should capture webhook request");
-    let webhook_request = requests
-        .iter()
-        .find(|request| request.url.path() == "/marketplace/sync")
         .expect("Submit should send marketplace webhook");
     let payload: Value =
         serde_json::from_slice(&webhook_request.body).expect("Webhook body should be valid JSON");
