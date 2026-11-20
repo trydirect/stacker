@@ -555,7 +555,7 @@ message also hides the cause: it does not say which version was asked for.
   (with a warning), or stay a hard error with the requested version in the
   message?
 
-## 12. 🟠 OPEN — `stacker install <template>` writes no `.env`, so `${VAR}` defaults from `.env.example` are missing (found 2026-10-19)
+## 12. ✅ FIXED — `stacker install <template>` writes no `.env`, so `${VAR}` defaults from `.env.example` are missing (found 2026-10-19, fixed 2026-11-20)
 
 **Severity:** Medium - a marketplace template whose `stacker.yml` reads a
 plain (non-secret) value through `${VAR}` cannot be deployed after
@@ -581,6 +581,21 @@ Deploying from the template's own directory (with `.env` created from
 `stacker install` materializes the template's `.env.example` defaults (and
 the contract's generated values) into `.env`, or the deploy treats a
 `.env.example` default as the value.
+
+### ✅ Fixed (2026-11-20) — stacker `fix/install-file-set-12-33` (with #33)
+
+Both options from the expected are in: `stacker install` materializes the
+template's file set and seeds `.env` from the `.env.example` defaults (never
+overwriting what is already there), and the `${VAR}` resolver treats
+`.env.example` as defaults under the env file — so a template default is
+honoured even when `.env` was never written. The env file overrides the
+example.
+
+**How to verify:** `stacker install <template> --file ./stacker.yml --force`
+into an empty directory must write `.env` (from the template's
+`.env.example`), and `stacker deploy` must not fail on a `${VAR}` whose
+value is an `.env.example` default (the entry's `FLOWISE_USERNAME` case).
+
 ## 13. 🟠 NOT CONFIRMED — bake finalize drops the build box's volumes before it checks for secret conflicts (found 2026-10-26)
 
 ### Observed (2026-10-26)
@@ -1302,7 +1317,7 @@ Point the template at the documented installer URL (or make `get.try.direct`
 resolve), and add a build-and-push step when the config has no `app.image`.
 Test: render the template and assert the installer URL is the documented one.
 
-## 33. 🟠 OPEN — `stacker install` writes only `stacker.yml`, not the template's `scripts/` (found 2026-11-12)
+## 33. ✅ FIXED — `stacker install` writes only `stacker.yml`, not the template's `scripts/` (found 2026-11-12, fixed 2026-11-20)
 
 ### Observed (2026-11-12)
 
@@ -1319,6 +1334,20 @@ Have `stacker install` materialize the template's full file set, including
 scripts (and `.env.example` as `.env`, as noted in §12). Test: a fresh install
 contains the referenced files and can proceed to deploy without cloning the
 template repository.
+
+
+### ✅ Fixed (2026-11-20) — stacker `fix/install-file-set-12-33` (with #12)
+
+Per the fix direction: `stacker install` materializes the template's full
+file set from `latest_version.config_files` — `scripts/` and the rest —
+next to the stacker.yml it writes, and never overwrites a file that already
+exists. A fresh install can proceed to deploy without cloning the template
+repository.
+
+**How to verify:** install the n8n template into an empty directory — the
+files `stacker.yml` references (e.g. `scripts/n8n-entrypoint.sh`,
+`scripts/generate-secrets.sh`) must exist afterwards, and the referenced
+bind-mount source must be a file, not an empty directory.
 
 ## 34. 🟢 OPEN — the hook scanner false-positives on the marketplace template's own `generate-secrets.sh` (found 2026-11-12)
 
