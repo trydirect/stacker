@@ -764,6 +764,8 @@ pub struct AgentDeployAppCommand {
     pub environment: Option<String>,
     pub plan: bool,
     pub apply_plan: Option<String>,
+    /// The caller means to add an app this deployment does not have yet.
+    pub new_app: bool,
 }
 
 impl AgentDeployAppCommand {
@@ -786,7 +788,13 @@ impl AgentDeployAppCommand {
             environment,
             plan: false,
             apply_plan: None,
+            new_app: false,
         }
+    }
+
+    pub fn with_new_app(mut self, new_app: bool) -> Self {
+        self.new_app = new_app;
+        self
     }
 
     pub fn with_plan(mut self, plan: bool) -> Self {
@@ -852,7 +860,7 @@ impl CallableTrait for AgentDeployAppCommand {
         if let Ok(snapshot) = ctx.block_on(ctx.client.agent_snapshot(&hash)) {
             let item = snapshot_item(&snapshot);
             if let Some(apps) = item.get("apps").and_then(|v| v.as_array()) {
-                ensure_known_app(&self.app_code, apps)?;
+                ensure_known_app(&self.app_code, apps, self.new_app)?;
             }
         }
 
@@ -1791,29 +1799,46 @@ fn known_app_codes(apps: &[serde_json::Value]) -> Vec<String> {
         .collect()
 }
 
-/// Refuse `deploy-app` for a name this deployment does not know.
+/// Ask for confirmation before `deploy-app` adds an app under a name this
+/// deployment does not know.
 ///
-/// The agent names the remote stack's directory - and therefore its compose
-/// project - after the app code it is given. A name that is not an app of this
-/// deployment makes it stand up a *second* compose project beside the running
-/// one, which cannot see or replace the first: the containers collide on their
-/// published ports and the original is left orphaned (BUGS.md #57, found on a
-/// recorded walkthrough).
+/// Adding a service with `deploy-app <new-name>` is a real use; what is not
+/// is reaching that path by guessing. The agent names the remote stack's
+/// directory - and therefore its compose project - after the app code it is
+/// given, so an unintended name stands up a *second* compose project beside
+/// the running one. The two cannot see or replace each other, they collide on
+/// their published ports, and the first is left orphaned where no command can
+/// reach it (BUGS.md #57, found on a recorded walkthrough, where the name was
+/// guessed after `no such service: hello` named no alternative).
 ///
-/// An empty list means the snapshot told us nothing, so the check stays out of
-/// the way.
-fn ensure_known_app(app_code: &str, apps: &[serde_json::Value]) -> Result<(), CliError> {
+/// So an unknown name stops here and says what it would do, and `--new-app`
+/// says it was meant. An empty list means the snapshot told us nothing, so the
+/// check stays out of the way.
+fn ensure_known_app(
+    app_code: &str,
+    apps: &[serde_json::Value],
+    new_app: bool,
+) -> Result<(), CliError> {
     let codes = known_app_codes(apps);
     if codes.is_empty() || codes.iter().any(|c| c == app_code) {
         return Ok(());
     }
+    if new_app {
+        eprintln!(
+            "  ℹ adding '{app}' as a new app of this deployment (existing: {list})",
+            app = app_code,
+            list = codes.join(", ")
+        );
+        return Ok(());
+    }
     Err(CliError::ConfigValidation(format!(
         "'{app}' is not an app of this deployment. Apps here: {list}.\n\
-         Deploying a name the deployment does not know would create a second \
-         stack on the server beside the running one, and the two would fight \
-         over the same ports - so this stops here.\n\
-         Use one of the names above, or `stacker agent apps` to see them with \
-         their images.",
+         Deploying an unknown name adds a second stack on the server beside \
+         the running one; the two cannot replace each other and will fight \
+         over the same published ports.\n\
+         If you meant to update an existing app, use one of the names above - \
+         `stacker agent apps` lists them with their images.\n\
+         If you meant to add a new one, repeat the command with --new-app.",
         app = app_code,
         list = codes.join(", ")
     )))
@@ -4659,7 +4684,7 @@ monitoring:
         // The exact shape of BUGS.md #57: the deployment knows `hello`, the
         // user tries `app`, and the agent would quietly build a second stack.
         let apps = vec![app("hello")];
-        let err = ensure_known_app("app", &apps).expect_err("must refuse");
+        let err = ensure_known_app("app", &apps, false).expect_err("must refuse");
         let msg = err.to_string();
         assert!(
             msg.contains("'app' is not an app of this deployment"),
@@ -4673,22 +4698,45 @@ monitoring:
     }
 
     #[test]
+    fn adding_a_new_app_is_allowed_when_it_is_meant() {
+        // Adding a service is a real use of deploy-app; only the blind guess
+        // is not. --new-app is how the caller says which one this is.
+        let apps = vec![app("hello")];
+        assert!(ensure_known_app("redis", &apps, true).is_ok());
+    }
+
+    #[test]
+    fn the_refusal_points_at_both_ways_out() {
+        let apps = vec![app("hello")];
+        let msg = ensure_known_app("app", &apps, false)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("--new-app"), "the way to add one: {msg}");
+        assert!(
+            msg.contains("stacker agent apps"),
+            "the way to see existing ones: {msg}"
+        );
+    }
+
+    #[test]
     fn deploying_a_known_app_passes() {
         let apps = vec![app("hello"), app("postgres")];
-        assert!(ensure_known_app("hello", &apps).is_ok());
-        assert!(ensure_known_app("postgres", &apps).is_ok());
+        assert!(ensure_known_app("hello", &apps, false).is_ok());
+        assert!(ensure_known_app("postgres", &apps, false).is_ok());
     }
 
     #[test]
     fn an_empty_app_list_does_not_block_anything() {
         // No snapshot data is not evidence of a wrong name.
-        assert!(ensure_known_app("whatever", &[]).is_ok());
+        assert!(ensure_known_app("whatever", &[], false).is_ok());
     }
 
     #[test]
     fn the_refusal_lists_every_app_it_knows() {
         let apps = vec![app("hello"), app("postgres"), app("redis")];
-        let msg = ensure_known_app("app", &apps).unwrap_err().to_string();
+        let msg = ensure_known_app("app", &apps, false)
+            .unwrap_err()
+            .to_string();
         for code in ["hello", "postgres", "redis"] {
             assert!(msg.contains(code), "{code} missing from: {msg}");
         }
