@@ -19,6 +19,12 @@ use crate::cli::error::CliError;
 use crate::cli::runtime::CliRuntime;
 use crate::console::commands::CallableTrait;
 
+/// Shown when stacker.yml has no `monitoring.alerts` (BUGS.md #54): the
+/// message used to name a `notify:` key that exists nowhere — the alerts
+/// block the command reads is keyed `target:`.
+const NO_ALERTS_MESSAGE: &str = "No `monitoring.alerts` configured in stacker.yml. Add an \
+`alerts:` block with a `target:` to enable the container-down alarm.";
+
 pub struct MonitorCommand {
     /// Run a single check and exit (cron-friendly). Otherwise loops forever.
     pub once: bool,
@@ -105,12 +111,7 @@ impl CallableTrait for MonitorCommand {
         .map_err(|e| CliError::ConfigValidation(format!("Failed to read stacker.yml: {e}")))?;
 
         let Some(alerts) = config.monitoring.alerts.clone() else {
-            return Err(CliError::ConfigValidation(
-                "No `monitoring.alerts` configured in stacker.yml. Add an `alerts:` block with a \
-                 `notify:` target to enable the container-down alarm."
-                    .into(),
-            )
-            .into());
+            return Err(CliError::ConfigValidation(NO_ALERTS_MESSAGE.to_string()).into());
         };
         let interval = self.interval.unwrap_or(alerts.interval).max(1);
 
@@ -149,5 +150,20 @@ impl CallableTrait for MonitorCommand {
             std::thread::sleep(std::time::Duration::from_secs(interval));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // BUGS.md #54: the error must name the key it actually wants.
+    #[test]
+    fn no_alerts_message_names_the_real_key() {
+        assert!(NO_ALERTS_MESSAGE.contains("`target:`"), "{NO_ALERTS_MESSAGE}");
+        assert!(
+            !NO_ALERTS_MESSAGE.contains("notify: target"),
+            "{NO_ALERTS_MESSAGE}"
+        );
     }
 }
