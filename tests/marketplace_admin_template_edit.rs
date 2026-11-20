@@ -119,7 +119,10 @@ async fn admin_can_edit_an_approved_template() {
 
     let stored = fetch_template(&app.db_pool, &template_id).await;
     assert_eq!("Corrected Name", stored.name);
-    assert_eq!(Some("corrected short".to_string()), stored.short_description);
+    assert_eq!(
+        Some("corrected short".to_string()),
+        stored.short_description
+    );
     assert_eq!(Some(DRAFT_JSON.to_string()), stored.long_description);
     // An edit is not a review decision.
     assert_eq!("approved", stored.status);

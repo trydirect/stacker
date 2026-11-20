@@ -63,10 +63,7 @@ pub fn spawn(pg_pool: PgPool) {
 
             match db::agent::sweep_dead(&pg_pool, RETENTION_DAYS).await {
                 Ok(0) => tracing::debug!("agent_sweeper: nothing to remove"),
-                Ok(count) => tracing::info!(
-                    "agent_sweeper: removed {} dead agent row(s)",
-                    count
-                ),
+                Ok(count) => tracing::info!("agent_sweeper: removed {} dead agent row(s)", count),
                 Err(err) => {
                     tracing::warn!("agent_sweeper: dead sweep error: {}", err)
                 }

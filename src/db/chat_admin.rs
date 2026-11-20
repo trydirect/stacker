@@ -20,7 +20,10 @@ pub struct ConsentedChat {
 
 /// Most recently updated chats of users who accepted the AI chat analysis
 /// agreement, from both `chat_sessions` and `chat_conversations`.
-pub async fn recent_consented(pool: &PgPool, limit: i64) -> Result<Vec<ConsentedChat>, sqlx::Error> {
+pub async fn recent_consented(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<ConsentedChat>, sqlx::Error> {
     let rows = sqlx::query(
         r#"
         SELECT * FROM (
@@ -49,7 +52,11 @@ pub async fn recent_consented(pool: &PgPool, limit: i64) -> Result<Vec<Consented
         .map(|r| {
             let source: String = r.try_get("source")?;
             Ok(ConsentedChat {
-                source: if source == "session" { "session" } else { "conversation" },
+                source: if source == "session" {
+                    "session"
+                } else {
+                    "conversation"
+                },
                 id: r.try_get("id")?,
                 user_id: r.try_get("user_id")?,
                 title: r.try_get("title")?,

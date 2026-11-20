@@ -249,15 +249,17 @@ async fn run_recategorize(
             missing += 1;
             continue;
         };
-        let current: Option<(Option<i32>, serde_json::Value)> = sqlx::query_as(
-            "SELECT category_id, tags FROM stack_template WHERE slug = $1",
-        )
-        .bind(&row.slug)
-        .fetch_optional(&mut *tx)
-        .await?;
+        let current: Option<(Option<i32>, serde_json::Value)> =
+            sqlx::query_as("SELECT category_id, tags FROM stack_template WHERE slug = $1")
+                .bind(&row.slug)
+                .fetch_optional(&mut *tx)
+                .await?;
 
         let Some((current_category_id, current_tags)) = current else {
-            println!("[template] '{}' not found in stack_template — skipped", row.slug);
+            println!(
+                "[template] '{}' not found in stack_template — skipped",
+                row.slug
+            );
             missing += 1;
             continue;
         };
@@ -280,7 +282,9 @@ async fn run_recategorize(
         println!(
             "[template] '{}': category {} -> {}, tags {:?} -> {:?}",
             row.slug,
-            current_category_id.map(|i| i.to_string()).unwrap_or_else(|| "NULL".into()),
+            current_category_id
+                .map(|i| i.to_string())
+                .unwrap_or_else(|| "NULL".into()),
             category_id,
             current_tags,
             new_tags
@@ -310,7 +314,10 @@ async fn run_recategorize(
             continue;
         }
         if is_duplicate_spelling(name) {
-            println!("[category] delete unreferenced duplicate '{}' (id={})", name, id);
+            println!(
+                "[category] delete unreferenced duplicate '{}' (id={})",
+                name, id
+            );
             removed += 1;
             if !dry_run {
                 sqlx::query("DELETE FROM stack_category WHERE id = $1")
@@ -351,8 +358,14 @@ mod tests {
         assert_eq!(canonical_category("AI"), "AI");
         assert_eq!(canonical_category("Data Sciense"), "Data Science");
         assert_eq!(canonical_category("crm"), "CRM");
-        assert_eq!(canonical_category("project_management"), "Project Management");
-        assert_eq!(canonical_category("project-management"), "Project Management");
+        assert_eq!(
+            canonical_category("project_management"),
+            "Project Management"
+        );
+        assert_eq!(
+            canonical_category("project-management"),
+            "Project Management"
+        );
         assert_eq!(canonical_category("e-commerce"), "E-commerce");
     }
 
@@ -370,7 +383,12 @@ mod tests {
             "databases",
             "communication",
         ] {
-            assert_eq!(canonical_category(name), name, "identity broken for {}", name);
+            assert_eq!(
+                canonical_category(name),
+                name,
+                "identity broken for {}",
+                name
+            );
         }
     }
 

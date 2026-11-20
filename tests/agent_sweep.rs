@@ -240,17 +240,18 @@ async fn audit_log_preserved_after_agent_deletion() {
     db::agent::delete(&app.db_pool, agent.id).await.unwrap();
 
     // Audit log should survive, with agent_id NULLed and deployment_hash preserved
-    let row = sqlx::query(
-        "SELECT agent_id, deployment_hash FROM audit_log WHERE id = $1",
-    )
-    .bind(audit_id)
-    .fetch_one(&app.db_pool)
-    .await
-    .expect("Audit log row should still exist");
+    let row = sqlx::query("SELECT agent_id, deployment_hash FROM audit_log WHERE id = $1")
+        .bind(audit_id)
+        .fetch_one(&app.db_pool)
+        .await
+        .expect("Audit log row should still exist");
 
     let agent_id: Option<uuid::Uuid> = row.get("agent_id");
     let dep_hash: Option<String> = row.get("deployment_hash");
-    assert!(agent_id.is_none(), "agent_id should be NULL after ON DELETE SET NULL");
+    assert!(
+        agent_id.is_none(),
+        "agent_id should be NULL after ON DELETE SET NULL"
+    );
     assert_eq!(dep_hash.as_deref(), Some(hash.as_str()));
 }
 
