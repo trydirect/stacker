@@ -2651,3 +2651,55 @@ In order of how properly each fixes it:
 
 Found live, on 2026-11-20, during a recorded end-to-end walkthrough. Logs
 above are verbatim; server address, agent ids and image namespace trimmed.
+
+## 58. 💡 PROPOSAL — `agent add` / `agent update` / `agent remove`, with the old names kept as aliases (raised 2026-11-20)
+
+Not a defect: a naming decision that #57 argued for better than any review
+could have. `deploy-app` does two different things - it adds an app the
+deployment does not have, and it updates one it does - and the user cannot
+tell which one they are about to get. That ambiguity is what turned a wrong
+app name into a second stack on a live server.
+
+### The surface
+
+```
+stacker agent add <app> --image <image>        # must NOT exist yet
+stacker agent update <app> --image <image>     # must already exist
+stacker agent remove <app>                     # unchanged behaviour
+```
+
+Each verb can then be strict about the thing the other verb owns, and the
+error writes itself:
+
+- `add hello` when `hello` is already an app → "hello is already an app of
+  this deployment; use `stacker agent update hello`".
+- `update app` when `app` is not one → "app is not an app of this deployment.
+  Apps here: hello. To add it, `stacker agent add app`".
+
+That is the whole of #57's entry point, closed by the command names instead of
+by a flag. The `--new-app` flag added in PR #368 becomes unnecessary the day
+this lands: `add` says it by being called.
+
+### Compatibility
+
+`deploy-app` and `remove-app` stay as aliases, so every script, pipeline and
+recorded video keeps working:
+
+- `deploy-app` behaves as it does today (add or update, whichever applies)
+  and prints a one-line note naming the verb it resolved to - "updating an
+  existing app; `stacker agent update hello` says this directly".
+- `remove-app` is a plain alias of `remove`.
+- Both stay out of `--help`'s main listing (clap's `hide = true` keeps an
+  alias working while new readers see one way to do it).
+- No removal date. These are aliases, they cost two lines each, and breaking
+  someone's CI to tidy a help page is not a trade worth making.
+
+### Also worth aligning
+
+The server already uses this vocabulary - the MCP tool is
+`add_app_to_deployment` (`src/mcp/registry.rs:285`), not `deploy_app_to…`. The
+agent command type stays `deploy_app` on the wire regardless; this proposal is
+about the human surface, not the protocol.
+
+Docs to update when it lands: `docs/CHEATSHEET.md`, the README quick start,
+and the stream scripts that show the rollout.
