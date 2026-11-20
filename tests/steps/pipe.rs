@@ -8,7 +8,7 @@ use super::StepWorld;
 #[given(regex = r#"^I have a test deployment with hash "([^"]+)"$"#)]
 async fn given_test_deployment(world: &mut StepWorld, deployment_hash: String) {
     let pool = world.db_pool.as_ref().expect("no db_pool");
-    let proj_name = format!("proj-{}", &deployment_hash);
+    let proj_name = format!("proj-{}", deployment_hash);
 
     // Create a project first, then a deployment
     let project_id: i32 = sqlx::query_scalar(

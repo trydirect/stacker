@@ -2,8 +2,10 @@ mod common;
 
 use tokio::sync::OnceCell;
 
+#[allow(dead_code)]
 static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> &'static common::TwoUserTestApp {
     common::get_or_init_two_user_app(&APP)
         .await
@@ -28,7 +30,7 @@ async fn test_list_clouds_only_returns_own() {
 
     // User A lists → sees exactly 2
     let resp = client
-        .get(format!("{}/cloud", &app.address))
+        .get(format!("{}/cloud", app.address))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
@@ -40,7 +42,7 @@ async fn test_list_clouds_only_returns_own() {
 
     // User B lists → sees exactly 1
     let resp = client
-        .get(format!("{}/cloud", &app.address))
+        .get(format!("{}/cloud", app.address))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -62,7 +64,7 @@ async fn test_get_cloud_rejects_other_user() {
 
     // User B tries to GET User A's cloud → 404
     let resp = client
-        .get(format!("{}/cloud/{}", &app.address, cloud_id))
+        .get(format!("{}/cloud/{}", app.address, cloud_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -85,7 +87,7 @@ async fn test_update_cloud_rejects_other_user() {
 
     // User B tries to PUT User A's cloud → 404 (IDOR guard; avoids leaking existence via 400 — see 145b8c96)
     let resp = client
-        .put(format!("{}/cloud/{}", &app.address, cloud_id))
+        .put(format!("{}/cloud/{}", app.address, cloud_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .header("Content-Type", "application/json")
         .body(r#"{"provider":"htz","cloud_token":"stolen","save_token":true}"#)
@@ -110,7 +112,7 @@ async fn test_delete_cloud_rejects_other_user() {
 
     // User B tries to DELETE User A's cloud → 404 (IDOR guard; avoids leaking existence via 400 — see 145b8c96)
     let resp = client
-        .delete(format!("{}/cloud/{}", &app.address, cloud_id))
+        .delete(format!("{}/cloud/{}", app.address, cloud_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -133,7 +135,7 @@ async fn test_owner_can_access_own_cloud() {
 
     // User A GETs own cloud → 200
     let resp = client
-        .get(format!("{}/cloud/{}", &app.address, cloud_id))
+        .get(format!("{}/cloud/{}", app.address, cloud_id))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await

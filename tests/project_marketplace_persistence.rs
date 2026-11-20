@@ -7,8 +7,10 @@ use uuid::Uuid;
 
 use tokio::sync::OnceCell;
 
+#[allow(dead_code)]
 static APP: OnceCell<common::TestApp> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> &'static common::TestApp {
     common::get_or_init_app(&APP)
         .await

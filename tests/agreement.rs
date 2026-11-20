@@ -2,8 +2,10 @@ mod common;
 
 use tokio::sync::OnceCell;
 
+#[allow(dead_code)]
 static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> common::TestApp {
     common::get_or_init_app_fresh(&APP_CONFIG)
         .await
@@ -71,7 +73,7 @@ async fn get() {
     .expect("Failed to insert test agreement");
 
     let response = client
-        .get(format!("{}/agreement/{}", &app.address, agreement_id))
+        .get(format!("{}/agreement/{}", app.address, agreement_id))
         .header("Authorization", "Bearer test_token")
         .send()
         .await
@@ -99,7 +101,7 @@ async fn user_add() {
     let data = serde_json::json!({ "agrt_id": agreement_id });
 
     let response = client
-        .post(format!("{}/agreement", &app.address))
+        .post(format!("{}/agreement", app.address))
         .header("Authorization", "Bearer test_token")
         .json(&data)
         .send()
@@ -126,7 +128,7 @@ async fn user_add_via_api_prefix() {
     let data = serde_json::json!({ "agrt_id": agreement_id });
 
     let response = client
-        .post(format!("{}/api/agreement", &app.address))
+        .post(format!("{}/api/agreement", app.address))
         .header("Authorization", "Bearer test_token")
         .json(&data)
         .send()

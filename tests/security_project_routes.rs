@@ -2,24 +2,24 @@ mod common;
 
 use std::collections::BTreeSet;
 
-/// IDOR sweep over every project route.
-///
-/// The per-route tests in security_project.rs covered list/get/update/delete
-/// only; deploy went unchecked for years because nothing forced a test for it.
-/// This file does two things:
-///
-/// 1. `every_project_route_is_in_the_sweep` reads the routes registered in
-///    `project_scope` (src/startup.rs) and fails when a route that takes a
-///    project id is missing from `ROUTES` below. A new route cannot ship
-///    without being swept.
-/// 2. `other_user_gets_the_same_answer_as_for_a_missing_project` calls every
-///    route as User B against User A's project, and against a project id that
-///    does not exist. Both answers must be 404 (or 403) and identical: a
-///    handler that does not check ownership goes further on a real project
-///    and answers differently (200, 400, 500, another message).
-///
-/// Bodies are valid requests, so a handler cannot hide behind input
-/// validation: any difference comes from the project lookup.
+// IDOR sweep over every project route.
+//
+// The per-route tests in security_project.rs covered list/get/update/delete
+// only; deploy went unchecked for years because nothing forced a test for it.
+// This file does two things:
+//
+// 1. `every_project_route_is_in_the_sweep` reads the routes registered in
+//    `project_scope` (src/startup.rs) and fails when a route that takes a
+//    project id is missing from `ROUTES` below. A new route cannot ship
+//    without being swept.
+// 2. `other_user_gets_the_same_answer_as_for_a_missing_project` calls every
+//    route as User B against User A's project, and against a project id that
+//    does not exist. Both answers must be 404 (or 403) and identical: a
+//    handler that does not check ownership goes further on a real project
+//    and answers differently (200, 400, 500, another message).
+//
+// Bodies are valid requests, so a handler cannot hide behind input
+// validation: any difference comes from the project lookup.
 
 const MISSING_PROJECT_ID: i32 = 2_147_480_000;
 const APP_CODE: &str = "web";
@@ -188,7 +188,7 @@ async fn other_user_gets_the_same_answer_as_for_a_missing_project() {
 
     let client = reqwest::Client::new();
     let created = client
-        .post(format!("{}/project/{}/apps", &app.address, project_id))
+        .post(format!("{}/project/{}/apps", app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .json(&serde_json::json!({ "code": APP_CODE, "image": "nginx:alpine" }))
         .send()
@@ -202,7 +202,7 @@ async fn other_user_gets_the_same_answer_as_for_a_missing_project() {
 
     let mut failures = Vec::new();
     for prefix in ["/project", "/api/v1/project"] {
-        let base = format!("{}{}", &app.address, prefix);
+        let base = format!("{}{}", app.address, prefix);
         for (method, path) in ROUTES {
             let (missing_status, missing_body) =
                 call(&client, &base, method, path, MISSING_PROJECT_ID, cloud_id).await;
@@ -449,7 +449,7 @@ async fn role_fixture(app: &common::TwoUserTestApp, hash: &str) -> i32 {
     .await
     .unwrap();
     let created = reqwest::Client::new()
-        .post(format!("{}/project/{}/apps", &app.address, project_id))
+        .post(format!("{}/project/{}/apps", app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .json(&serde_json::json!({ "code": APP_CODE, "image": "nginx:alpine" }))
         .send()
@@ -500,7 +500,7 @@ async fn members_and_viewers_get_what_their_role_allows() {
         .pool_max_idle_per_host(0)
         .build()
         .unwrap();
-    let base = format!("{}/project", &app.address);
+    let base = format!("{}/project", app.address);
     let cloud_id = common::create_test_cloud(pool, common::USER_A_ID, "a-roles", "aws").await;
     let mut failures = Vec::new();
 

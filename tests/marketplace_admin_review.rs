@@ -25,6 +25,7 @@ use tokio::sync::OnceCell;
 //
 // The server itself still starts once, on the persistent runtime; only the pool
 // is per test. Same pattern as the other suites in this directory.
+#[allow(dead_code)]
 static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
 
 /// Replacement long description for the resubmit flow test. Long enough for
@@ -34,6 +35,7 @@ const UPDATED_LONG_DESCRIPTION: &str = "Updated long description covering the te
 use cases, requirements and customisation options in enough detail for the marketplace \
 listing page and the review checklist.";
 
+#[allow(dead_code)]
 async fn app() -> common::TestApp {
     common::get_or_init_app_fresh(&APP_CONFIG)
         .await

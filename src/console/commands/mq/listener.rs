@@ -623,7 +623,7 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                                         let row_for_firewall = row.clone();
                                         println!(
                                             "Deployment {} updated with status {}",
-                                            &row.id, &row.status
+                                            row.id, row.status
                                         );
                                         if let Err(e) =
                                             deployment::update(db_pool.get_ref(), row).await

@@ -3,9 +3,9 @@ mod common;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::json;
 
-/// A bearer token that looks like a JWT is taken as the admin service's
-/// login. Its role decides what Casbin allows, so the token must be signed
-/// by the admin service: a token anyone can write must not be accepted.
+// A bearer token that looks like a JWT is taken as the admin service's
+// login. Its role decides what Casbin allows, so the token must be signed
+// by the admin service: a token anyone can write must not be accepted.
 
 fn forged_jwt(role: &str) -> String {
     let header = URL_SAFE_NO_PAD.encode(json!({ "alg": "HS256", "typ": "JWT" }).to_string());

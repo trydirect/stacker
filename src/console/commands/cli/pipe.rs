@@ -3808,7 +3808,7 @@ impl CallableTrait for PipeListCommand {
 
                 println!(
                     "{:<38} {:<15} {:<15} {:<10} {:>8} {:>8} {}",
-                    &pipe.id,
+                    pipe.id,
                     truncate_str(pipe.source_display(), 14),
                     truncate_str(pipe.target_display(), 14),
                     status_icon,
@@ -3881,7 +3881,7 @@ impl CallableTrait for PipeListCommand {
 
             println!(
                 "{:<38} {:<15} {:<15} {:<10} {:>8} {:>8} {}",
-                &pipe.id,
+                pipe.id,
                 truncate_str(source, 14),
                 truncate_str(target, 14),
                 status_icon,
@@ -5126,7 +5126,7 @@ impl CallableTrait for PipeHistoryCommand {
 
             println!(
                 "{:<38} {:<10} {:<10} {:>10} {:<22} {}",
-                &exec.id,
+                exec.id,
                 truncate_str(&exec.trigger_type, 9),
                 status_icon,
                 duration,
@@ -5165,7 +5165,7 @@ impl CallableTrait for PipeReplayCommand {
         let ctx = CliRuntime::new("pipe replay")?;
         let _hash = resolve_deployment_hash(&self.deployment, &ctx)?;
 
-        let pb = progress::spinner(&format!("Replaying execution {}...", &self.execution_id));
+        let pb = progress::spinner(&format!("Replaying execution {}...", self.execution_id));
         let replay = ctx
             .block_on(ctx.client.replay_pipe_execution(&self.execution_id))
             .map_err(|e| {
@@ -5219,7 +5219,7 @@ impl CallableTrait for PipeDeployCommand {
 
         let template_pb = progress::spinner(&format!(
             "Resolving remote template for {} → {}...",
-            &local_pipe.id, &self.deployment_hash
+            local_pipe.id, self.deployment_hash
         ));
         let templates = ctx
             .block_on(ctx.client.list_pipe_templates(
@@ -5283,7 +5283,7 @@ impl CallableTrait for PipeDeployCommand {
         println!("  Local file:          {}", local_path.display());
         println!("  Remote template ID:  {}", template.id);
         println!("  Remote instance ID:  {}", remote.id);
-        println!("  Deployment:          {}", &remote.deployment_hash);
+        println!("  Deployment:          {}", remote.deployment_hash);
         println!("  Source:              {}", remote.source_container);
         if let Some(ref t) = remote.target_container {
             println!("  Target:              {}", t);
@@ -5457,7 +5457,7 @@ mod tests {
         let request = sample_template_request();
         let existing = sample_template_info();
 
-        let resolved = find_reusable_pipe_template(&[existing.clone()], &request)
+        let resolved = find_reusable_pipe_template(std::slice::from_ref(&existing), &request)
             .expect("lookup should succeed");
 
         let resolved = resolved.expect("template should be reused");

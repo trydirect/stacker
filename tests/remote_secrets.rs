@@ -18,8 +18,10 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use tokio::sync::OnceCell;
 
+#[allow(dead_code)]
 static APP: OnceCell<common::TestAppWithVault> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> &'static common::TestAppWithVault {
     common::get_or_init_vault_app(&APP)
         .await

@@ -10,22 +10,22 @@ use std::time::Duration;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// IDOR sweep over every MCP tool a regular user may call.
-///
-/// The tool list is not written here: it comes from `ToolRegistry::new()` and
-/// from the Casbin rules (`/mcp/tools/<name>`, action CALL) granted to
-/// `group_user` by the migrations. Every such tool is called as User B with
-/// arguments that point at User A's project, deployment, cloud and server,
-/// built from the tool's own input schema.
-///
-/// A tool passes when it refuses the call. It fails when it answers with
-/// data, when it is still running after a few seconds (it queued a command
-/// for the agent and is waiting for the result), or when User A's data or
-/// command queue changed afterwards.
-///
-/// Tools whose schema takes no resource reference act on the caller's own
-/// data; they must be listed in `NO_RESOURCE_TOOLS`, so a new tool cannot
-/// skip the sweep by accident.
+// IDOR sweep over every MCP tool a regular user may call.
+//
+// The tool list is not written here: it comes from `ToolRegistry::new()` and
+// from the Casbin rules (`/mcp/tools/<name>`, action CALL) granted to
+// `group_user` by the migrations. Every such tool is called as User B with
+// arguments that point at User A's project, deployment, cloud and server,
+// built from the tool's own input schema.
+//
+// A tool passes when it refuses the call. It fails when it answers with
+// data, when it is still running after a few seconds (it queued a command
+// for the agent and is waiting for the result), or when User A's data or
+// command queue changed afterwards.
+//
+// Tools whose schema takes no resource reference act on the caller's own
+// data; they must be listed in `NO_RESOURCE_TOOLS`, so a new tool cannot
+// skip the sweep by accident.
 
 const DEPLOYMENT_HASH: &str = "mcp-sweep-deployment-hash";
 const APP_CODE: &str = "web";
@@ -324,8 +324,10 @@ async fn other_user_cannot_use_mcp_tools_on_someone_elses_resources() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
         .mount(&external)
         .await;
-    let mut settings = stacker::configuration::Settings::default();
-    settings.user_service_url = external.uri();
+    let mut settings = stacker::configuration::Settings {
+        user_service_url: external.uri(),
+        ..Default::default()
+    };
     settings.vault.address = external.uri();
 
     let context = ToolContext {

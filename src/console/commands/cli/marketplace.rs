@@ -840,7 +840,7 @@ fn response_stack_definition(
                     dctypes::Volumes::Advanced(adv) => Some(format!(
                         "{}:{}",
                         adv.source.as_deref().unwrap_or(""),
-                        &adv.target
+                        adv.target
                     )),
                 })
                 .collect();

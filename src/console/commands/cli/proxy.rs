@@ -168,7 +168,7 @@ fn persist_proxy_config_to_stacker_yml(
                 if let Some(entry) = existing {
                     let mut entry_changed = false;
                     if let Some(ssl) = entry.get_mut("ssl") {
-                        let new_ssl = serde_yaml::to_value(&domain_config.ssl).unwrap_or_default();
+                        let new_ssl = serde_yaml::to_value(domain_config.ssl).unwrap_or_default();
                         if *ssl != new_ssl {
                             *ssl = new_ssl;
                             entry_changed = true;
