@@ -2498,3 +2498,134 @@ Deploy to cloud once, and the target follows:
 
 Both are one message each, in code that already has the information. Same
 area as #55, so whoever fixed that has the context.
+
+## 57. 🔴 OPEN — the agent belongs to a deployment, not to a server, and a live stream walked into every consequence (found 2026-11-20)
+
+**Severity: highest open entry.** This broke the product's main promise -
+"ship a new version with one command" - during a recorded walkthrough, four
+times in a row, with nothing wrong on the server.
+
+One project, one server, four deployments. The agent registers per
+deployment, so the registrations look like this:
+
+```
+1547  deployment_737cae1e…  agent 3c58dd4b…  heartbeat 2026-11-19T19:04  (dead)
+1548  deployment_e131d43e…  no agent at all                              ← the lock pointed here
+1549  deployment_8c2143da…  agent f5bf799c…  heartbeat now               (live)
+```
+
+### 1. A deployment with no agent swallows commands for five minutes
+
+```
+$ stacker agent deploy-app hello --image <ns>/hello:1.0.1 --force
+  ℹ resolved deployment deployment_e131d43e… (from .stacker/deployment-cloud.lock, target: cloud)
+  ⚠ Connection check skipped (agent did not respond in time)
+  ✗ Deploying hello — timed out
+  Error: … timed out (last status: queued, id: cmd_d910885f…)
+                                                      … took 5m17s
+```
+
+Nothing was wrong with the server: its live agent was on 1549, heart-beating
+every few seconds. 1548 has no registration at all, so the command sat in a
+queue nobody reads. "The agent started the command but did not finish in
+time - it may be busy or slow" is wrong on both counts; the agent never saw
+it.
+
+### 2. The timeout hint points back at the same dead deployment
+
+```
+  Retry the command (it may succeed now):
+    stacker agent status --deployment=deployment_e131d43e…
+  Or wait and check the result:
+    stacker agent history --deployment=deployment_e131d43e…
+
+$ stacker agent history --deployment=deployment_e131d43e…
+No commands found.
+```
+
+Both suggestions address the deployment that just failed to execute anything.
+`history` is empty because there is no agent to have a history. On camera this
+reads as "the tool suggests a command that does not work".
+
+### 3. `deployment use` is a workaround, not a fix
+
+Pinning the live deployment gets the command through:
+
+```
+$ stacker deployment use deployment_8c2143da…
+✓ Pinned deployment … (deploy.deployment_hash)
+```
+
+but the user had to learn, mid-stream, that deployments have agents, that one
+of theirs had none, and which one did. #55 made the resolution visible; it
+cannot make a dead registration alive.
+
+### 4. The app code and the compose service name disagree
+
+```
+$ stacker agent deploy-app hello --image <ns>/hello:1.0.1 --force
+  ✗ Deploying hello — Image pull had issues (continuing): no such service: hello (pull_warning)
+```
+
+`stacker agent apps` lists the app as `hello`; the compose the agent wrote to
+the server calls the same thing `app`. Deploying by the name the product
+itself reports fails.
+
+### 5. Deploying by the compose name collides with the previous deployment's container
+
+```
+$ stacker agent deploy-app app --image <ns>/hello:1.0.1 --force
+  ✗ Docker compose up failed:
+    warning msg="Found orphan containers ([project-hello-1]) for this project.
+     If you removed or renamed this service in your compose file, you can run
+     this command with the --remove-orphans flag to clean it up."
+     Container app-app-1  Creating … Starting
+    Error response from daemon: driver failed programming external connectivity
+     on endpoint app-app-1: Bind for 0.0.0.0:3000 failed: port is already allocated
+```
+
+Three times in a row, identically. On the server:
+
+```
+$ docker ps
+project-hello-1     0.0.0.0:3000->3000/tcp      ← previous deployment, compose project "project"
+statuspanel         0.0.0.0:5000->5000/tcp
+statuspanel_agent   5000/tcp
+```
+
+The compose **project name changed between deployments** (`project` →
+`app`), so the new stack cannot see, stop or replace the old container - it is
+a different docker project - and `--force` cannot help. The agent's own output
+names the orphan and even names the flag that would clear it, then fails on
+the port instead. There is no in-product way out: `remove-app hello` does not
+reach a service the current compose no longer declares, and the user had to
+`docker rm -f project-hello-1` over SSH, mid-stream, on camera.
+
+### The single cause, and what fixing it looks like
+
+A server is a thing; a deployment is an event. The agent - the only component
+that can act on the server - is bound to the event. One machine therefore
+accumulates one registration per deploy, of which exactly one is alive, and
+every command must guess which.
+
+In order of how properly each fixes it:
+
+1. **Register the agent against the server.** Commands address server + app;
+   deployments become history. Then `deployment use`, `--deployment` and this
+   entire class of failure disappear.
+2. **If the binding must stay:** when a deployment is created for a server
+   that already has a registered agent, rebind that registration to the new
+   deployment. Never create a deployment with no agent while its server has
+   one - #1548 should not have been possible.
+3. **Keep the compose project name stable** for the life of a server, or make
+   a deploy that changes it remove the previous project's containers first.
+   Failing on `port is already allocated` while printing the name of the
+   orphan is the worst of both.
+4. **Resolve by heartbeat, not only by lock.** The platform knows which
+   registration is alive; a command addressed to a dead one should say
+   "this deployment's agent last reported 2026-11-19; the live agent is on
+   deployment <hash>" instead of queueing for five minutes.
+5. **Make the timeout hint name a deployment that can answer.**
+
+Found live, on 2026-11-20, during a recorded end-to-end walkthrough. Logs
+above are verbatim; server address, agent ids and image namespace trimmed.
