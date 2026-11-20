@@ -658,6 +658,93 @@ fn extract_port_from_docker_ps_entry(spec: &str) -> Option<String> {
         .filter(|p| !p.is_empty())
 }
 
+/// Split the two-section remote pre-check output into (listeners, containers).
+///
+/// `__LISTENERS__` lines are `proc<TAB>address:port` (ss/netstat);
+/// `__CONTAINERS__` lines are `label<TAB>name<TAB>ports` (docker ps).
+fn split_remote_conflict_sections(output: &str) -> (&str, &str) {
+    let listeners = output
+        .split_once("__CONTAINERS__")
+        .map(|(before, _)| before)
+        .unwrap_or(output);
+    let listeners = listeners
+        .split_once("__LISTENERS__")
+        .map(|(_, rest)| rest)
+        .unwrap_or(listeners);
+    let containers = output
+        .split_once("__CONTAINERS__")
+        .map(|(_, rest)| rest)
+        .unwrap_or("");
+    (listeners, containers)
+}
+
+/// Classify remote port conflicts from the two-section pre-check output.
+///
+/// A `docker-proxy` listener is left to the container section — that is where
+/// its owner is visible — and every other listener counts as a host process.
+fn classify_remote_conflicts(
+    port_services: &[(String, String)],
+    output: &str,
+    user_at_host: &str,
+) -> Vec<String> {
+    let (listeners, containers) = split_remote_conflict_sections(output);
+
+    let mut occupied: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for line in listeners.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (proc, addr) = match line.split_once('\t') {
+            Some((proc, addr)) => (proc.trim(), addr.trim()),
+            None => ("-", line),
+        };
+        if proc.contains("docker-proxy") {
+            continue;
+        }
+        if let Some(port) = addr.rsplit(':').next() {
+            if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
+                occupied.insert(port.to_string());
+            }
+        }
+    }
+    let own_services: std::collections::HashSet<&str> =
+        port_services.iter().map(|(_, svc)| svc.as_str()).collect();
+    for line in containers.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // BUGS.md #20: a container labelled with one of this compose file's
+        // own service names belongs to the stack being deployed — `docker
+        // compose up` replaces it, so its ports are not a conflict. Same
+        // identification the tfa pre-check uses live (PR #150): the shipped
+        // compose marks every container with `my.stacker.service=<service>`.
+        let label = line.split('\t').next().unwrap_or("");
+        if own_services.contains(label.trim()) {
+            continue;
+        }
+        let ports = line.rsplit('\t').next().unwrap_or("");
+        for segment in ports.split(',') {
+            if let Some(port) = extract_port_from_docker_ps_entry(segment.trim()) {
+                occupied.insert(port);
+            }
+        }
+    }
+
+    let mut conflicts = Vec::new();
+    for (port, svc) in port_services {
+        if occupied.contains(port) {
+            conflicts.push(format!(
+                "port {} (service '{}') is already occupied on remote {} — \
+                 find the owning process with: ssh -t {} 'ss -tlnp sport = :{} || netstat -tlnp | grep :{}'",
+                port, svc, user_at_host, user_at_host, port, port
+            ));
+        }
+    }
+    conflicts
+}
+
 /// Ask Docker for the host ports currently bound by THIS compose project's containers.
 ///
 /// Uses `docker compose -p <project_name> -f <path> ps --format "{{.Ports}}"`.
@@ -714,7 +801,10 @@ fn check_remote_host_port_conflicts(
         return vec![];
     }
 
-    let check_cmd = r#"( ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null ) | awk '/LISTEN/{print $4}' | sed 's/.*://'; docker ps --format '{{.Ports}}' 2>/dev/null | tr ',' '\n' | sed -n 's/.*:\([0-9]*\)->.*/\1/p'"#;
+    // Two sections: host listeners with their process, and containers with
+    // their `my.stacker.service` label — so the classifier can tell the stack
+    // being deployed apart from a real conflict (BUGS.md #20).
+    let check_cmd = r#"echo '__LISTENERS__'; ( ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null ) | awk '/LISTEN/{print $NF"\t"$4}'; echo '__CONTAINERS__'; docker ps --format '{{.Label "my.stacker.service"}}\t{{.Names}}\t{{.Ports}}' 2>/dev/null"#;
 
     let output = match std::process::Command::new("ssh")
         .args(ssh_args)
@@ -727,23 +817,7 @@ fn check_remote_host_port_conflicts(
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let occupied: std::collections::HashSet<String> = stdout
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_digit()))
-        .collect();
-
-    let mut conflicts = Vec::new();
-    for (port, svc) in &port_services {
-        if occupied.contains(port) {
-            conflicts.push(format!(
-                "port {} (service '{}') is already occupied on remote {} — \
-                 find the owning process with: ssh -t {} 'ss -tlnp sport = :{} || netstat -tlnp | grep :{}'",
-                port, svc, user_at_host, user_at_host, port, port
-            ));
-        }
-    }
-    conflicts
+    classify_remote_conflicts(&port_services, &stdout, user_at_host)
 }
 
 /// Detect port-conflict error patterns in install-container output and return
@@ -1264,6 +1338,11 @@ impl DeployStrategy for CloudDeploy {
         if config.deploy.cloud.is_none() {
             return Err(CliError::CloudProviderMissing);
         }
+
+        // BUGS.md #48: `--dry-run` must run every check the deploy runs. This
+        // used to fire only in the real run, so the preview certified a
+        // build-only app that could never deploy to a remote target.
+        stacker_client::require_app_image_for_remote_deploy(config)?;
 
         Ok(())
     }
@@ -2770,6 +2849,11 @@ impl DeployStrategy for ServerDeploy {
         if config.deploy.server.is_none() {
             return Err(CliError::ServerHostMissing);
         }
+
+        // BUGS.md #48: `--dry-run` must run every check the deploy runs. This
+        // used to fire only in the real run, so the preview certified a
+        // build-only app that could never deploy to a remote target.
+        stacker_client::require_app_image_for_remote_deploy(config)?;
 
         Ok(())
     }
@@ -4693,6 +4777,56 @@ services:
             "should include port 8080: {:?}",
             hints
         );
+    }
+
+    // BUGS.md #20: a port held by the stack being deployed is not a conflict —
+    // `docker compose up` replaces those containers. The live shape (2026-11-13):
+    // docker-proxy holds 5678 for the shipped stack's own `project-n8n-1`,
+    // labelled `my.stacker.service=n8n`, and the deploy paused anyway.
+    #[test]
+    fn test_classify_remote_conflicts_ignores_the_stacks_own_containers() {
+        let output = "__LISTENERS__\n\
+docker-proxy\t0.0.0.0:5678\n\
+__CONTAINERS__\nn8n\tproject-n8n-1\t0.0.0.0:5678->5678/tcp\n";
+        let services = vec![("5678".to_string(), "n8n".to_string())];
+        let conflicts = classify_remote_conflicts(&services, output, "root@host");
+        assert!(
+            conflicts.is_empty(),
+            "own container is replaceable: {conflicts:?}"
+        );
+    }
+
+    #[test]
+    fn test_classify_remote_conflicts_flags_foreign_containers_and_host_processes() {
+        let output = "__LISTENERS__\n\
+nginx\t0.0.0.0:8080\n\
+docker-proxy\t0.0.0.0:5678\n\
+__CONTAINERS__\n\tleftover-n8n-1\t0.0.0.0:5678->5678/tcp\n\
+other\tsomeone-elses-1\t0.0.0.0:8080->80/tcp\n";
+        let services = vec![
+            ("5678".to_string(), "n8n".to_string()),
+            ("8080".to_string(), "n8n".to_string()),
+        ];
+        let conflicts = classify_remote_conflicts(&services, output, "root@host");
+        assert_eq!(conflicts.len(), 2, "{conflicts:?}");
+        assert!(
+            conflicts.iter().any(|c| c.contains("5678")),
+            "{conflicts:?}"
+        );
+        assert!(
+            conflicts.iter().any(|c| c.contains("8080")),
+            "{conflicts:?}"
+        );
+    }
+
+    #[test]
+    fn test_classify_remote_conflicts_accepts_netstat_style_listeners() {
+        let output = "__LISTENERS__\n\
+3651988/nginx\t0.0.0.0:8080\n\
+__CONTAINERS__\n";
+        let services = vec![("8080".to_string(), "n8n".to_string())];
+        let conflicts = classify_remote_conflicts(&services, output, "root@host");
+        assert_eq!(conflicts.len(), 1, "{conflicts:?}");
     }
 
     #[test]

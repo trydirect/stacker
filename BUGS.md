@@ -708,7 +708,7 @@ Keep the source file mode when uploading project files (at least the owner
 execute bit). Test: an executable file in the project arrives executable on the
 server.
 
-## 20. 🔴 CONFIRMED — a deploy ends `paused [port_conflict]` while the stack is up and healthy on that port (found 2026-10-27, confirmed 2026-11-12)
+## 20. 🟠 FIXED IN CODE — a deploy ends `paused [port_conflict]` while the stack is up and healthy on that port (found 2026-10-27, confirmed 2026-11-12, fixes shipped 2026-11-16/19, live re-test pending)
 
 ### Observed (2026-10-27)
 
@@ -786,6 +786,35 @@ end in "open this URL", that is the whole first impression.
 Exclude the containers of the stack being deployed (same compose project) when
 checking whether its ports are taken. Test: redeploying a running stack with
 unchanged ports does not report a port conflict.
+
+### Fixes shipped (tfa 2026-11-16, stacker 2026-11-19) — live re-test pending
+
+Three checks reported the stack's own containers as port conflicts:
+
+1. The tfa role pre-flights — fixed by PR #149 (a port held by the stack's own
+   container is replaceable) and PR #150 (recognise the shipped stack by its
+   `my.stacker.service` label, and stop the n8n role's legacy `docker compose
+   up` from starting a second copy of the app).
+2. The CLI's remote pre-flight (`check_remote_host_port_conflicts`) — it SSHed
+   `ss`+`docker ps` and flagged the stack's own published ports as occupied
+   before `docker compose up` would have replaced those very containers. It
+   now matches tfa's identification: containers labelled with this compose
+   file's own service names are skipped, and `docker-proxy` listeners defer to
+   the container section, which can tell who published them (stacker
+   `fix/own-stack-port-conflict-20`).
+3. The local pre-flight already excluded own containers.
+
+Not closed yet: per tfa #150 the close-out is a live
+`stacker deploy --target cloud --server <saved>` of a running stack ending
+`completed`.
+
+**How to verify (live, on a test server):** redeploy a running stack with
+unchanged ports — `stacker deploy --target server ...` twice in a row on the
+same host must end `completed`, not `paused [port_conflict]`. The 2026-11-13
+shape is the one to reproduce: the stack already up (`project-<app>-1`
+holding the app port, answering HTTP 200), same ports, second deploy. The
+CLI pre-flight half is visible without the pipeline: no "Host port conflict
+detected before deploy" may appear on the second run.
 
 ## 21. 🟠 NOT CONFIRMED — a bake of a `--target server` deployment records no server type, so Quick Deploy offers the default size (found 2026-10-27)
 
@@ -1058,7 +1087,7 @@ rather than show either.
 Find which of the two is authoritative and make both commands print it.
 Test: install and the deploy that follows report the same id.
 
-## 29. 🟠 CONFIRMED — `stacker agent install` refuses when `deploy.server.host` is empty, right after a cloud deploy created the server (found 2026-11-12)
+## 29. ✅ FIXED — `stacker agent install` refuses when `deploy.server.host` is empty, right after a cloud deploy created the server (found 2026-11-12, fixed 2026-11-19)
 
 ### Observed (2026-11-12, stacker-cli v0.3.4)
 
@@ -1079,6 +1108,27 @@ exactly the file the tool generates.
 Resolve the host from the deployment lock when `deploy.server.host` is empty,
 the way `agent status` already does. Test: agent install succeeds
 immediately after a cloud deploy with no manual edit.
+
+## 30. ✅ FIXED — the marketplace serves a template version older than the source repository (found 2026-11-12, fixed 2026-11-19)
+### ✅ Fixed (2026-11-19) — stacker `fix/agent-install-blank-host-29`
+
+Per the entry's fix direction: the host is resolved from the deployment
+lock, the way `agent status` resolves the deployment itself. A blank
+`deploy.server.host` now behaves like "not configured" everywhere in the
+install flow — the server selector falls back to the project's server
+instead of strict-matching an empty string, the deploy form falls back to
+the platform's server record, and the local-SSH path fills host/user/port/
+key from the lock (ignoring the loopback a local deploy leaves behind).
+
+Tests: the selector accepts a blank configured host (it refused before),
+and `effective_server_config` prefers the configured host, then the lock,
+then nothing.
+
+**How to verify (live, on a test server):** `stacker deploy --target cloud
+...` into a fresh project, then `stacker agent install` in the same
+directory **without editing stacker.yml** — it must install using the host
+from `.stacker/deployment-*.lock` instead of refusing on the empty
+`deploy.server.host`.
 
 ## 30. 🟠 CONFIRMED — the marketplace serves a template version older than the source repository (found 2026-11-12)
 
@@ -1103,6 +1153,34 @@ Establish when and by what the catalogue is refreshed from the repository,
 and surface the template's source commit in the API response so a stale copy
 is visible rather than inferred. Test: a template change merged to `main`
 appears in the API within the documented interval.
+
+### ✅ Fixed (2026-11-19) — stacker `fix/marketplace-source-commit-30`
+
+Established first, as the direction asks: **nothing refreshes the catalogue
+from the source repository** — no sync job, cron, DAG, CI step or webhook
+exists. The catalogue is a snapshot of the last manual `stacker publish`
+(and its review), so PR 68 could not arrive until someone re-published. The
+contract is now documented in `docs/MARKETPLACE_PUBLISH.md` ("Where catalogue
+content comes from"): the publish *is* the refresh, and it is manual.
+
+And staleness is now visible rather than inferred: every publish records the
+git commit of the checkout it was made from (`source_commit`, best-effort
+`git rev-parse HEAD`; absent for non-git checkouts and pre-existing versions),
+stored on `stack_template_version` and returned in the public detail API —
+`GET /api/templates/<slug>` → `item.latest_version.source_commit`. Set on
+create, update and resubmit, the three places a version is written.
+
+Tests: the publish body carries the commit (and omits it when unknown), the
+git output parser accepts only an object id, and a full round-trip
+(create → approve → public detail) asserts the API surfaces the commit.
+
+**How to verify:** `stacker publish` from a git checkout of the template
+repository, then
+`curl -s https://<host>/stacker/api/templates/<slug> | jq '.item.latest_version.source_commit'`
+— must print the checkout's HEAD sha (absent only for non-git checkouts and
+pre-existing versions). The staleness half is inherent and now documented:
+a merge to the source repo appears in the API only after the next publish
+(`docs/MARKETPLACE_PUBLISH.md`, "Where catalogue content comes from").
 
 ## 31. ✅ FIXED — `agent deploy-app --image` recreated the container without its published ports (found 2026-11-12, fixed 2026-11-12)
 
@@ -1950,7 +2028,7 @@ POSTGRES_PASSWORD=...`, then `stacker config validate` must print
 `Environment variable not found: $POSTGRES_PASSWORD` no matter what was
 set). With no secret set at all the failure is correct and unchanged.
 
-## 48. 🔴 OPEN — a project generated by `init` cannot be deployed to any server, and `--dry-run` says it can (found 2026-11-17)
+## 48. ✅ FIXED — a project generated by `init` cannot be deployed to any server, and `--dry-run` says it can (found 2026-11-17, fixed 2026-11-19)
 
 **Severity:** blocks the whole first-run story. `stacker init` generates a
 compose that builds the app; every remote target then refuses it, including
@@ -1995,7 +2073,38 @@ not one that fails identically.
 
 Found while rehearsing a full walkthrough, at the first remote deploy.
 
+### ✅ Fixed (2026-11-19) — stacker `fix/dry-run-validation-48`
+
+Both defects from the entry:
+
+1. **`--dry-run` now runs the deploy's checks.** The `app.image` requirement
+   moved into `CloudDeploy`/`ServerDeploy::validate`, which the preview runs
+   before anything else — a config that cannot deploy fails its preview with
+   the same message the real run gives.
+2. **The cloud error names a path that works.** The closing advice is now
+   `stacker deploy --target local`, with a plain statement that remote
+   targets (cloud and server alike) pull a pre-built image and never build
+   from source. The old text recommended `--target server`, which fails
+   identically.
+
+Note the underlying gap remains as designed: no remote target builds from
+source. A generated project deploys remotely once it publishes an image
+(`app.image`) — `stacker init` + `--target local` is the build-from-source
+path.
+
+Tests: strategy validation rejects a build-only app for both remote targets
+(the red run passed them) and accepts an image app; the message test expects
+the working advice.
+
+**How to verify (local):** in a `stacker init --app-type node` project —
+`stacker deploy --target server --server-host <ip> --server-ssh-key <key>
+--dry-run` must FAIL with `app.image is required for cloud/server deploys`
+(where it printed `✓ previewed successfully` before), and the cloud
+`--dry-run` error must end with `stacker deploy --target local`, not the
+identically failing `--target server`.
+
 ## 49. 🔴 OPEN — the generated node Dockerfile hardcodes `server.js`, so most node projects crash-loop (found 2026-11-17)
+## 49. ✅ FIXED — the generated node Dockerfile hardcodes `server.js`, so most node projects crash-loop (found 2026-11-17, fixed 2026-11-19)
 
 `stacker init --app-type node` writes:
 
@@ -2023,6 +2132,28 @@ docker ps:  hello-app-1   Restarting (1) 23 seconds ago
 `node <package.json main>`, else `server.js` as the last resort. The
 information is in the file the generator already reads to detect that this is
 a node project.
+
+### ✅ Fixed (2026-11-19) — stacker `fix/node-entry-cmd-49`
+
+Per the expected outcome: the generated CMD now comes from the project's own
+`package.json` — `["npm", "start"]` when `scripts.start` exists, else
+`node <package.json main>`, else `server.js` as the last resort (and only
+when the manifest is unreadable at all). Next.js keeps its
+build-then-`npm run start` flow. Both writers go through the same generator
+(`stacker init` and the deploy-time generation), so the fix covers the
+crash-looping quickstart path.
+
+Tests: `scripts.start` → `npm start`; `main` alone → `node index.js`; no
+clues → `node server.js`; the old test that pinned the bug is rewritten.
+The `node` example in `docs/STACKER_YML_REFERENCE.md` and the CHEATSHEET
+"Trap (#49)" note now describe the rule instead of the workaround.
+
+**How to verify (local):** in a project whose `package.json` has
+`scripts.start` — `stacker init --app-type node` must generate
+`CMD ["npm", "start"]` in `.stacker/Dockerfile`; with only `main: index.js`
+→ `CMD ["node", "index.js"]`; with neither → `CMD ["node", "server.js"]`.
+The same generator runs at deploy time, so a later `stacker deploy` does not
+overwrite the CMD with the old hardcoded form.
 
 ## 50. 🟠 OPEN — a local deploy reports success and a timeout in the same breath (found 2026-11-17)
 
