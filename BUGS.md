@@ -1654,7 +1654,7 @@ it still makes them impossible to teach in one breath.
 **Expected:** one spelling for both. Whichever wins, `--tail` and `--lines`
 should not be a coin flip, and the form in the docs must exist.
 
-## 41. 🟢 OPEN — `stacker find` glues the price to the raw billing enum (found 2026-11-14)
+## 41. ✅ FIXED — `stacker find` glues the price to the raw billing enum (found 2026-11-14, fixed 2026-11-16)
 
 ```
 ITEM                     NAME                         VENDOR               PLAN           DESCRIPTION
@@ -1674,6 +1674,17 @@ the first thing a new user sees when they search the catalogue.
 **Expected:** `$7.00 / day` or `$7.00 daily`, a separator between amount and
 period, the enum translated to a word, and the column width respected so
 DESCRIPTION stays aligned.
+
+
+### ✅ Fixed — dev `9d9bb69d`, verified 2026-11-20
+
+The plan cell separates the amount from the billing period (`$7.00/day` for
+`deployment_daily`, `/mo`, `/yr`, `/install`, and the separator for unknown
+periods too) and is clamped to the column width, so DESCRIPTION stays
+aligned. The entry was written after the fix landed and never flipped.
+
+**How to verify:** `stacker find n8n` — the paid row must read `$7.00/day`
+(no glued enum), and the DESCRIPTION column must stay aligned.
 
 ## 42. 🟠 OPEN — `proxy.type: nginx` silently deploys nginx-proxy-manager (found 2026-11-14)
 
@@ -1882,7 +1893,7 @@ missing, update what differs, and say which it did. Failing that, ship
 `stacker proxy update` and `stacker proxy remove` so a wrong entry can be
 repaired without the NPM UI.
 
-## 45. 🟡 FIX READY — a `proxy:` block makes the whole compose project invalid unless the app service is literally named `app` (found 2026-11-15, fix on a branch the same day)
+## 45. ✅ FIXED — a `proxy:` block makes the whole compose project invalid unless the app service is literally named `app` (found 2026-11-15, fixed by PR #342 on 2026-11-15, verified 2026-11-20)
 
 **Severity:** high. Every deploy and every agent install on the stack fails
 from then on, and the failure is in `docker compose up`, i.e. after the files
@@ -1934,6 +1945,22 @@ awaiting merge.** `proxy_dependencies` now returns the `app` service when it
 exists and otherwise the services named by `proxy.domains[].upstream`, keeping
 only those actually declared. Four tests; three fail against `origin/dev`,
 verified in a throwaway worktree.
+
+
+### ✅ Fixed — PR #342 (`fix/proxy-depends-on-existing-service`), verified 2026-11-20
+
+`proxy_dependencies` (src/cli/generator/compose.rs) replaces the hardcoded
+`depends_on: ["app"]`: with a buildable `app` it stays `app`; without one it
+depends on the services the proxy actually fronts — the host part of each
+`proxy.domains[].upstream`, kept only when a service by that name is
+declared. A dangling dependency can no longer invalidate the whole compose
+project.
+
+**How to verify:** take a template whose app service is not called `app`
+(e.g. `n8n` + `postgres`), add a `proxy:` block, deploy — `docker compose up`
+must not fail with `service "nginx" depends on undefined service "app"`
+(the generated compose's `nginx` service must `depends_on` the real service
+names).
 
 ## 46. 🟢 OPEN — every agent command logs a failed `check_connections` the agent does not allow (found 2026-11-15)
 
