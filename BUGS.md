@@ -2568,10 +2568,17 @@ $ stacker agent deploy-app hello --image <ns>/hello:1.0.1 --force
 ```
 
 `stacker agent apps` lists the app as `hello`; the compose the agent wrote to
-the server calls the same thing `app`. Deploying by the name the product
-itself reports fails.
+the server calls the same thing `app`. **Deploying by the name the product
+itself prints fails**, and the error does not say which names would work - so
+the only move left is to guess, which is exactly what happened next and what
+caused everything after it.
 
-### 5. Deploying by the compose name collides with the previous deployment's container
+### 5. The guess the error invited creates a second stack on the same machine
+
+The user had just been told `no such service: hello` by a command that had
+printed `hello` as the app name a minute earlier, so they tried the other name
+they could see. That is the reasonable next step, not a misuse - and the
+product let it through:
 
 ```
 $ stacker agent deploy-app app --image <ns>/hello:1.0.1 --force
@@ -2597,9 +2604,15 @@ The compose **project name changed between deployments** (`project` →
 `app`), so the new stack cannot see, stop or replace the old container - it is
 a different docker project - and `--force` cannot help. The agent's own output
 names the orphan and even names the flag that would clear it, then fails on
-the port instead. There is no in-product way out: `remove-app hello` does not
-reach a service the current compose no longer declares, and the user had to
-`docker rm -f project-hello-1` over SSH, mid-stream, on camera.
+the port instead. There is no in-product way out, and that is verified rather than assumed:
+every container operation the platform has is addressed by `app_code`, not by
+container name - `StopContainerTool` rejects a call without one
+(`src/mcp/tools/monitoring.rs:721`, "app_code is required to stop a specific
+container"), and `start_container`, `restart_container` and `remove_app` are
+built the same way. A container left over from a previous compose project is
+not an app of the current deployment, so no CLI command and no assistant tool
+can reach it. The user had to `docker rm -f project-hello-1` over SSH, on
+camera, during a recording whose whole premise is not needing SSH.
 
 ### The single cause, and what fixing it looks like
 
@@ -2617,15 +2630,24 @@ In order of how properly each fixes it:
    that already has a registered agent, rebind that registration to the new
    deployment. Never create a deployment with no agent while its server has
    one - #1548 should not have been possible.
-3. **Keep the compose project name stable** for the life of a server, or make
+3. **Accept the name the product prints.** `deploy-app <app>` must take the
+   app code from `agent apps` and resolve it to the compose service itself.
+   Until it does, the "no such service" error must list the names that exist
+   in this deployment - `no such service: hello; services here: app` - so
+   nobody has to guess.
+4. **Refuse to create a second compose project on a machine that already runs
+   one for this deployment.** The guess above should have stopped with "that
+   name belongs to compose project 'app', this deployment is 'project'",
+   not produced a parallel stack and a port collision.
+5. **Keep the compose project name stable** for the life of a server, or make
    a deploy that changes it remove the previous project's containers first.
    Failing on `port is already allocated` while printing the name of the
    orphan is the worst of both.
-4. **Resolve by heartbeat, not only by lock.** The platform knows which
+6. **Resolve by heartbeat, not only by lock.** The platform knows which
    registration is alive; a command addressed to a dead one should say
    "this deployment's agent last reported 2026-11-19; the live agent is on
    deployment <hash>" instead of queueing for five minutes.
-5. **Make the timeout hint name a deployment that can answer.**
+7. **Make the timeout hint name a deployment that can answer.**
 
 Found live, on 2026-11-20, during a recorded end-to-end walkthrough. Logs
 above are verbatim; server address, agent ids and image namespace trimmed.
