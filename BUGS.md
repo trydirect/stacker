@@ -1454,7 +1454,7 @@ clippy warnings and `build.rs:37`, with no behaviour change. Test:
 tree. Alternatively pin the toolchain in `rust-toolchain.toml`, but the
 lints are real, so the cleanup is the honest fix.
 
-## 37. 🟠 OPEN — `stacker proxy add` rewrites the whole `stacker.yml` and drops every comment (found 2026-11-14)
+## 37. ✅ FIXED — `stacker proxy add` rewrites the whole `stacker.yml` and drops every comment (found 2026-11-14, fixed 2026-11-20)
 
 **Severity:** high for anyone whose `stacker.yml` is hand-authored, which is
 every template in the catalogue.
@@ -1498,6 +1498,35 @@ offers only `--upstream` and `--ssl`.
 "Updated proxy config in" line, so the write happens just above it. The fix
 is an in-place edit of the `proxy:` block instead of serialising the parsed
 document back out.
+
+
+### ✅ Fixed (2026-11-20) — stacker `fix/proxy-add-preserves-comments-37`
+
+Per the expected outcome: the edit now splices only the top-level `proxy:`
+block into the file — a text edit, not a YAML round-trip — and every other
+byte stays identical: comments (including ones inside the old block's span
+are rewritten with it), quoting, inline lists, blank lines. A missing block
+is appended; the `.bak` backup is unchanged. Regression tests assert
+byte-identical surroundings and the append path (the red run failed them on
+the old serializer exactly as the entry describes).
+
+The "also in the same output" half: `--type
+nginx-proxy-manager|npm|caddy|traefik` records the flavour instead of
+silently flipping the config to NPM — caddy and traefik take their own
+flows, NPM is configured on deploy. The entry's "ask for plain `nginx`" is
+answered by the value's retirement (PRs #345/#347): the flag refuses `nginx`
+and the help names the supported set.
+
+**How to verify:** on a commented template (e.g. the n8n one from
+`awesome-selfhosted-stacker`) run
+`stacker proxy add n8n.example.com --upstream http://n8n:5678 --ssl off`
+then `git diff stacker.yml` — only the `proxy:` block may differ (before:
+every comment gone, quoting normalised, lists expanded). And
+`stacker proxy add x.example.com --type caddy` must record `type: caddy`,
+while `--type nginx` is refused.
+
+Note: the earlier branch `fix/bugs-37-41` is superseded by this one (its
+42/43 parts were replaced by the nginx retirement and the tfa normaliser).
 
 ## 38. ✅ FIXED — the agent could not resolve NPM credentials, so every remote proxy command failed: `vault_unavailable` (found 2026-11-14, fixed and verified live 2026-11-15)
 
