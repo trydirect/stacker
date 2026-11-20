@@ -2598,6 +2598,34 @@ async fn install_agent_via_local_ssh(
     Ok(())
 }
 
+/// The effective `deploy.server` for agent install (BUGS.md #29): a blank
+/// `deploy.server.host` is what a cloud deploy leaves behind — the host does
+/// not exist until the deploy makes it — and the real host lives in the
+/// deployment lock. Fill it from there before giving up.
+fn effective_server_config(
+    config_server: Option<&crate::cli::config_parser::ServerConfig>,
+    lock: Option<&crate::cli::deployment_lock::DeploymentLock>,
+) -> Option<crate::cli::config_parser::ServerConfig> {
+    if let Some(server) = config_server {
+        if !server.host.trim().is_empty() {
+            return Some(server.clone());
+        }
+    }
+    let host = lock?.server_ip.as_deref()?.trim();
+    // A local deploy's lock records the loopback — no remote host to install to.
+    if host.is_empty() || host == "127.0.0.1" {
+        return None;
+    }
+    Some(crate::cli::config_parser::ServerConfig {
+        host: host.to_string(),
+        user: lock
+            .and_then(|lock| lock.ssh_user.clone())
+            .unwrap_or_else(|| "root".to_string()),
+        ssh_key: lock.and_then(|lock| lock.ssh_key.clone()),
+        port: lock.and_then(|lock| lock.ssh_port).unwrap_or(22),
+    })
+}
+
 fn fallback_server_config_for_agent_install(
     server: &crate::cli::stacker_client::ServerInfo,
 ) -> Result<crate::cli::config_parser::ServerConfig, CliError> {
@@ -2737,7 +2765,7 @@ fn select_server_for_agent_install(
         .filter(|s| s.project_id == project_id)
         .collect();
 
-    if let Some(server_cfg) = configured_server {
+    if let Some(server_cfg) = configured_server.filter(|server| !server.host.trim().is_empty()) {
         matching_by_project
             .into_iter()
             .find(|s| s.srv_ip.as_deref() == Some(server_cfg.host.as_str()))
@@ -2750,6 +2778,9 @@ fn select_server_for_agent_install(
                 ))
             })
     } else {
+        // BUGS.md #29: a blank `deploy.server.host` is what a cloud deploy
+        // leaves behind — fall back to the project's server instead of
+        // refusing on a host that does not exist yet.
         matching_by_project.into_iter().next().ok_or_else(|| {
             CliError::ConfigValidation(format!(
                 "No server found for project '{}' (id={}).\n\
@@ -2770,7 +2801,15 @@ fn build_agent_install_deploy_request(
         || server.cloud_id.is_none();
 
     if server_target {
-        let server_cfg = match config.deploy.server.as_ref() {
+        // BUGS.md #29: a blank `deploy.server.host` must not reach the deploy
+        // form — fall back to the platform's server record, same as when no
+        // `deploy.server` exists at all.
+        let server_cfg = match config
+            .deploy
+            .server
+            .as_ref()
+            .filter(|server_cfg| !server_cfg.host.trim().is_empty())
+        {
             Some(server_cfg) => server_cfg.clone(),
             None => fallback_server_config_for_agent_install(server)?,
         };
@@ -2896,11 +2935,19 @@ impl CallableTrait for AgentInstallCommand {
             .clone()
             .unwrap_or_else(|| config.name.clone());
 
+        // BUGS.md #29: after a cloud deploy `deploy.server.host` is empty by
+        // design — the host does not exist until the deploy makes it, and the
+        // real address lives in the deployment lock. Resolve it before
+        // deciding anything, the way `agent status` resolves the deployment.
+        let lock = crate::cli::deployment_lock::DeploymentLock::load_active(&project_dir)?;
+        let effective_server =
+            effective_server_config(config.deploy.server.as_ref(), lock.as_ref());
+
         // Detect intranet server: use local SSH path when the host is a private IP
         // (or --local is explicitly set) so the cloud install service is bypassed.
         // If there's no deploy.server at all (e.g. cloud-deployed project), always
         // use the cloud install path.
-        let use_local_ssh = match config.deploy.server.as_ref() {
+        let use_local_ssh = match effective_server.as_ref() {
             Some(s) => self.local || is_private_host(s.host.as_str()),
             None => self.local,
         };
@@ -2908,10 +2955,11 @@ impl CallableTrait for AgentInstallCommand {
         let ctx = CliRuntime::new("agent install")?;
 
         if use_local_ssh {
-            let server_cfg = config.deploy.server.clone().ok_or_else(|| {
+            let server_cfg = effective_server.clone().ok_or_else(|| {
                 CliError::ConfigValidation(
                     "deploy.server must be configured for local agent install.\n\
-                     Run `stacker config setup server` first."
+                     Run `stacker config setup server` first, or deploy once — the host \
+                     is then read from the deployment lock."
                         .to_string(),
                 )
             })?;
@@ -2932,10 +2980,8 @@ impl CallableTrait for AgentInstallCommand {
 
             // Find the deployment hash for this project
             let pb = progress::spinner("Resolving deployment...");
-            let lock_for_local =
-                crate::cli::deployment_lock::DeploymentLock::load_active(&project_dir)?;
             let deployment_hash: Result<String, CliError> = ctx.block_on(async {
-                let project = if let Some(lock) = lock_for_local.as_ref() {
+                let project = if let Some(lock) = lock.as_ref() {
                     if let Some(pid) = lock.project_id {
                         ctx.client
                             .list_projects()
@@ -3024,8 +3070,8 @@ impl CallableTrait for AgentInstallCommand {
         // ── Cloud install path (public-IP servers) ────────────────────────────
         let pb = progress::spinner("Installing Status Panel agent");
 
-        // Load deployment lock to get the correct project_id (avoids name collision)
-        let lock = crate::cli::deployment_lock::DeploymentLock::load_active(&project_dir)?;
+        // (The deployment lock was loaded above — it seeds the project id and
+        // the blank-host resolution, BUGS.md #29.)
 
         let result: Result<stacker_client::DeployResponse, CliError> = ctx.block_on(async {
             let target_label = config.deploy.target.to_string();
@@ -3291,6 +3337,68 @@ mod tests {
             .expect_err("no server should match an unrelated project id");
 
         assert!(err.to_string().contains("No server found for project"));
+    }
+
+    // BUGS.md #29: `stacker agent install` refused right after a cloud deploy
+    // because `deploy.server.host` is empty — by design for a cloud deploy,
+    // where the host does not exist until the deploy makes it. A blank host
+    // must behave like "not configured": fall back to the project's server.
+    #[test]
+    fn select_server_for_agent_install_ignores_a_blank_configured_host() {
+        let servers = vec![crate::cli::stacker_client::ServerInfo {
+            srv_ip: Some("198.51.100.1".to_string()),
+            ..sample_server_info()
+        }];
+        let server_cfg = crate::cli::config_parser::ServerConfig {
+            host: String::new(),
+            user: "root".to_string(),
+            ssh_key: None,
+            port: 22,
+        };
+
+        let selected =
+            select_server_for_agent_install(servers, 42, Some(&server_cfg), "demo", "cloud")
+                .expect("a blank deploy.server.host must not refuse the install");
+        assert_eq!(selected.srv_ip.as_deref(), Some("198.51.100.1"));
+    }
+
+    #[test]
+    fn effective_server_config_fills_a_blank_host_from_the_deployment_lock() {
+        use crate::cli::deployment_lock::DeploymentLock;
+
+        let mut lock = DeploymentLock::for_local();
+        lock.server_ip = Some("198.51.100.7".to_string());
+        lock.ssh_user = Some("admin".to_string());
+        lock.ssh_port = Some(2222);
+
+        let blank = crate::cli::config_parser::ServerConfig {
+            host: String::new(),
+            user: "root".to_string(),
+            ssh_key: None,
+            port: 22,
+        };
+        let resolved = effective_server_config(Some(&blank), Some(&lock))
+            .expect("the lock fills the blank host");
+        assert_eq!(resolved.host, "198.51.100.7");
+        assert_eq!(resolved.user, "admin");
+        assert_eq!(resolved.port, 2222);
+
+        let explicit = crate::cli::config_parser::ServerConfig {
+            host: "203.0.113.9".to_string(),
+            user: "root".to_string(),
+            ssh_key: None,
+            port: 22,
+        };
+        let resolved =
+            effective_server_config(Some(&explicit), Some(&lock)).expect("configured host");
+        assert_eq!(resolved.host, "203.0.113.9");
+
+        let mut empty_lock = DeploymentLock::for_local();
+        empty_lock.server_ip = None;
+        assert!(effective_server_config(None, Some(&empty_lock)).is_none());
+        // A local deploy's lock (127.0.0.1) is not a remote host either.
+        assert!(effective_server_config(None, Some(&DeploymentLock::for_local())).is_none());
+        assert!(effective_server_config(None, None).is_none());
     }
 
     fn stack_var_value<'a>(deploy_form: &'a serde_json::Value, key: &str) -> Option<&'a str> {

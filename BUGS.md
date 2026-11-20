@@ -1087,7 +1087,7 @@ rather than show either.
 Find which of the two is authoritative and make both commands print it.
 Test: install and the deploy that follows report the same id.
 
-## 29. 🟠 CONFIRMED — `stacker agent install` refuses when `deploy.server.host` is empty, right after a cloud deploy created the server (found 2026-11-12)
+## 29. ✅ FIXED — `stacker agent install` refuses when `deploy.server.host` is empty, right after a cloud deploy created the server (found 2026-11-12, fixed 2026-11-19)
 
 ### Observed (2026-11-12, stacker-cli v0.3.4)
 
@@ -1108,6 +1108,26 @@ exactly the file the tool generates.
 Resolve the host from the deployment lock when `deploy.server.host` is empty,
 the way `agent status` already does. Test: agent install succeeds
 immediately after a cloud deploy with no manual edit.
+
+### ✅ Fixed (2026-11-19) — stacker `fix/agent-install-blank-host-29`
+
+Per the entry's fix direction: the host is resolved from the deployment
+lock, the way `agent status` resolves the deployment itself. A blank
+`deploy.server.host` now behaves like "not configured" everywhere in the
+install flow — the server selector falls back to the project's server
+instead of strict-matching an empty string, the deploy form falls back to
+the platform's server record, and the local-SSH path fills host/user/port/
+key from the lock (ignoring the loopback a local deploy leaves behind).
+
+Tests: the selector accepts a blank configured host (it refused before),
+and `effective_server_config` prefers the configured host, then the lock,
+then nothing.
+
+**How to verify (live, on a test server):** `stacker deploy --target cloud
+...` into a fresh project, then `stacker agent install` in the same
+directory **without editing stacker.yml** — it must install using the host
+from `.stacker/deployment-*.lock` instead of refusing on the empty
+`deploy.server.host`.
 
 ## 30. 🟠 CONFIRMED — the marketplace serves a template version older than the source repository (found 2026-11-12)
 
