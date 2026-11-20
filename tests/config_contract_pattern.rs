@@ -30,13 +30,22 @@ fn pattern_and_max_length_are_kept() {
 #[test]
 fn a_contract_nothing_could_satisfy_is_refused() {
     for (name, value) in [
-        ("pattern that does not compile", json!({"mutability": "provided", "pattern": "^(a"})),
+        (
+            "pattern that does not compile",
+            json!({"mutability": "provided", "pattern": "^(a"}),
+        ),
         (
             "min_length over length",
             json!({"mutability": "generated", "type": "alphanumeric", "length": 16, "min_length": 32}),
         ),
-        ("min_length over max_length", json!({"mutability": "provided", "min_length": 300, "max_length": 256})),
-        ("length over max_length", json!({"mutability": "provided", "length": 300, "max_length": 256})),
+        (
+            "min_length over max_length",
+            json!({"mutability": "provided", "min_length": 300, "max_length": 256}),
+        ),
+        (
+            "length over max_length",
+            json!({"mutability": "provided", "length": 300, "max_length": 256}),
+        ),
     ] {
         assert!(policy(value).is_err(), "{name} must be refused");
     }

@@ -1295,7 +1295,12 @@ async fn a_member_sees_the_projects_servers_to_deploy_to() {
     app.add_member(project, COLLEAGUE.id, "member").await;
 
     let (status, body) = app
-        .call(Some(COLLEAGUE), "GET", &format!("/server/project/{project}"), None)
+        .call(
+            Some(COLLEAGUE),
+            "GET",
+            &format!("/server/project/{project}"),
+            None,
+        )
         .await;
     assert_eq!(status, 200, "member: {body}");
     let ids: Vec<i64> = body["list"]
@@ -1317,11 +1322,21 @@ async fn a_viewer_and_an_outsider_do_not_get_the_projects_servers() {
     app.add_member(project, COLLEAGUE.id, "viewer").await;
 
     let (status, _) = app
-        .call(Some(COLLEAGUE), "GET", &format!("/server/project/{project}"), None)
+        .call(
+            Some(COLLEAGUE),
+            "GET",
+            &format!("/server/project/{project}"),
+            None,
+        )
         .await;
     assert_eq!(status, 403, "viewer");
     let (status, _) = app
-        .call(Some(PRO), "GET", &format!("/server/project/{project}"), None)
+        .call(
+            Some(PRO),
+            "GET",
+            &format!("/server/project/{project}"),
+            None,
+        )
         .await;
     assert_eq!(status, 404, "outsider");
 }
@@ -1340,7 +1355,12 @@ async fn a_member_picks_from_the_owners_saved_clouds_without_seeing_credentials(
 
     for who in [COLLEAGUE, TEAM] {
         let (status, body) = app
-            .call(Some(who), "GET", &format!("/project/{project}/clouds"), None)
+            .call(
+                Some(who),
+                "GET",
+                &format!("/project/{project}/clouds"),
+                None,
+            )
             .await;
         assert_eq!(status, 200, "{}: {body}", who.email);
         let list = body["list"].as_array().unwrap();
@@ -1349,7 +1369,12 @@ async fn a_member_picks_from_the_owners_saved_clouds_without_seeing_credentials(
         assert_eq!(list[0]["name"], "acme-htz");
         assert_eq!(list[0]["provider"], "htz");
         let text = body.to_string();
-        for field in ["cloud_token", "cloud_key", "cloud_secret", "test-cloud-token"] {
+        for field in [
+            "cloud_token",
+            "cloud_key",
+            "cloud_secret",
+            "test-cloud-token",
+        ] {
             assert!(!text.contains(field), "{field} leaked: {text}");
         }
     }
@@ -1365,11 +1390,21 @@ async fn a_viewer_and_an_outsider_do_not_get_the_owners_clouds() {
     app.add_member(project, COLLEAGUE.id, "viewer").await;
 
     let (status, _) = app
-        .call(Some(COLLEAGUE), "GET", &format!("/project/{project}/clouds"), None)
+        .call(
+            Some(COLLEAGUE),
+            "GET",
+            &format!("/project/{project}/clouds"),
+            None,
+        )
         .await;
     assert_eq!(status, 403, "viewer");
     let (status, _) = app
-        .call(Some(PRO), "GET", &format!("/project/{project}/clouds"), None)
+        .call(
+            Some(PRO),
+            "GET",
+            &format!("/project/{project}/clouds"),
+            None,
+        )
         .await;
     assert_eq!(status, 404, "outsider");
 }

@@ -204,8 +204,7 @@ pub async fn validate_marketplace_template_access_with_mode(
         .unwrap_or(true);
     let is_free = no_price && no_plan;
 
-    if !is_free
-        && !user_owns_template_by_any_identifier(user_service, user_token, template).await?
+    if !is_free && !user_owns_template_by_any_identifier(user_service, user_token, template).await?
     {
         // NOTE: the ownership check must apply regardless of product_id.
         // Guarding it on `product_id.is_some()` let a priced template with an
@@ -950,8 +949,10 @@ mod tests {
     async fn rejects_unowned_zero_price_but_plan_required_template_without_product_id() {
         // Not free by the gate's definition (a non-free plan requirement makes
         // it non-free) and unowned — must not slip through the product_id gap.
-        let user_service: Arc<dyn UserServiceConnector> =
-            Arc::new(TestUserService::new(&[("professional", true), ("enterprise", true)], &[]));
+        let user_service: Arc<dyn UserServiceConnector> = Arc::new(TestUserService::new(
+            &[("professional", true), ("enterprise", true)],
+            &[],
+        ));
 
         let template = models::StackTemplate {
             slug: "plan-required-no-product-id".to_string(),
@@ -964,7 +965,10 @@ mod tests {
         let result =
             validate_marketplace_template_access(&user_service, &test_user(), &template).await;
 
-        assert!(matches!(result, Err(MarketplaceAccessError::TemplateNotOwned)));
+        assert!(matches!(
+            result,
+            Err(MarketplaceAccessError::TemplateNotOwned)
+        ));
     }
 
     #[tokio::test]
@@ -1013,7 +1017,10 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok(), "a saved card authorizes post-deploy settlement");
+        assert!(
+            result.is_ok(),
+            "a saved card authorizes post-deploy settlement"
+        );
         assert!(svc.calls().contains(&CapturedCall::CanCharge));
     }
 
