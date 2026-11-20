@@ -1622,7 +1622,7 @@ collecting `${VAR}` names.
 **Expected:** a variable that appears only inside a `#` comment is not a
 reference and must not fail validation.
 
-## 40. 🟢 OPEN — `agent logs` and `logs` disagree on their own interface (found 2026-11-14, corrected the same day)
+## 40. ✅ FIXED — `agent logs` and `logs` disagree on their own interface (found 2026-11-14, corrected the same day, fixed 2026-11-20)
 
 `stacker logs` takes no positional app and uses `--service` plus `--tail`;
 `stacker agent logs` takes a positional `<APP>` and accepts neither `--lines`
@@ -1653,6 +1653,20 @@ it still makes them impossible to teach in one breath.
 
 **Expected:** one spelling for both. Whichever wins, `--tail` and `--lines`
 should not be a coin flip, and the form in the docs must exist.
+
+
+### ✅ Fixed (2026-11-20) — stacker `fix/logs-interface-40`
+
+The asymmetry is gone: both commands accept both spellings. `stacker logs`
+takes a positional app (sugar for `--service`, conflicting with it) and
+`--lines` as an alias of `--tail`; `stacker agent logs` accepts `--lines`
+and `--tail` as aliases of `--limit`. CLI regression tests cover every
+accepted form and the positional/`--service` conflict.
+
+**How to verify:** `stacker logs n8n --lines 25` and
+`stacker agent logs n8n --lines 25` must both parse (before: `error:
+unexpected argument`), and `stacker logs n8n --service other` must be
+rejected as a conflict.
 
 ## 41. 🟢 OPEN — `stacker find` glues the price to the raw billing enum (found 2026-11-14)
 
