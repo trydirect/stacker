@@ -1024,7 +1024,7 @@ Verify the key after installing it, with one real connection, before printing
 the authorized line; fail the deploy if it does not open. Test: the line is
 printed only after a successful authentication.
 
-## 27. 🟠 CONFIRMED — `stacker install --domain` is accepted and silently ignored (found 2026-11-12)
+## 27. ✅ FIXED — `stacker install --domain` is accepted and silently ignored (found 2026-11-12, fixed by PR 336 on 2026-11-13, verified 2026-11-20)
 
 ### Observed (2026-11-12, stacker-cli v0.3.4)
 
@@ -1063,6 +1063,29 @@ generated file.
 PR 336 takes the first route for the no-deploy-form path: `--domain` and
 `--set` into `install.inputs`, the cloud flags into `deploy.cloud`, and a
 message on stderr naming any flag it could not write.
+
+
+### ✅ Fixed — PR 336 (merged 2026-11-13), verified 2026-11-20
+
+The entry's fix direction already named the winning route: PR 336 wrote the
+flags into the file install generates for server-held templates —
+`--domain`/`--set` into `install.inputs`, `--key`/`--key-id`/`--provider`/
+`--region`/`--size` into `deploy.cloud` (creating the block when a provider
+is given, since one without a provider does not parse), and a stderr note
+naming any flag it could not write. Confirmed in `dev`:
+`write_install_flags`/`install_file_flags` in
+`src/console/commands/cli/marketplace.rs`.
+
+The acceptance line ("a value passed to `--domain` appears in the generated
+file") now has a direct file-level regression test
+(`install_domain_appears_in_the_generated_file`).
+
+**How to verify:** `stacker install <template> --name x --domain a.example.com
+--region fsn1 --size cpx22` — the generated `stacker.yml` must contain
+`install.inputs.commonDomain: a.example.com` and a `deploy.cloud` block with
+the region/size (before PR 336 the file kept the template defaults and the
+flags were dropped silently). Unwritable flags print a `Not written to ...`
+note on stderr.
 
 ## 28. 🟡 CONFIRMED — install and deploy report different project ids for the same project (found 2026-11-12)
 
