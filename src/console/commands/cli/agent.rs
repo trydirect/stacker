@@ -847,6 +847,15 @@ impl CallableTrait for AgentDeployAppCommand {
 
         let project_dir = std::env::current_dir().map_err(CliError::Io)?;
 
+        // A name this deployment does not know would make the agent build a
+        // second compose project on the same machine - see ensure_known_app.
+        if let Ok(snapshot) = ctx.block_on(ctx.client.agent_snapshot(&hash)) {
+            let item = snapshot_item(&snapshot);
+            if let Some(apps) = item.get("apps").and_then(|v| v.as_array()) {
+                ensure_known_app(&self.app_code, apps)?;
+            }
+        }
+
         check_active_connections(&ctx, &hash, self.force_recreate)?;
         let local_config = local_config_files_for_agent_deploy(
             &project_dir,
@@ -1772,6 +1781,42 @@ impl CallableTrait for AgentStatusCommand {
 
 fn snapshot_item<'a>(snap: &'a serde_json::Value) -> &'a serde_json::Value {
     snap.get("item").unwrap_or(snap)
+}
+
+/// The app codes an agent reports for a deployment.
+fn known_app_codes(apps: &[serde_json::Value]) -> Vec<String> {
+    apps.iter()
+        .filter_map(|a| a.get("code").and_then(|v| v.as_str()))
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Refuse `deploy-app` for a name this deployment does not know.
+///
+/// The agent names the remote stack's directory - and therefore its compose
+/// project - after the app code it is given. A name that is not an app of this
+/// deployment makes it stand up a *second* compose project beside the running
+/// one, which cannot see or replace the first: the containers collide on their
+/// published ports and the original is left orphaned (BUGS.md #57, found on a
+/// recorded walkthrough).
+///
+/// An empty list means the snapshot told us nothing, so the check stays out of
+/// the way.
+fn ensure_known_app(app_code: &str, apps: &[serde_json::Value]) -> Result<(), CliError> {
+    let codes = known_app_codes(apps);
+    if codes.is_empty() || codes.iter().any(|c| c == app_code) {
+        return Ok(());
+    }
+    Err(CliError::ConfigValidation(format!(
+        "'{app}' is not an app of this deployment. Apps here: {list}.\n\
+         Deploying a name the deployment does not know would create a second \
+         stack on the server beside the running one, and the two would fight \
+         over the same ports - so this stops here.\n\
+         Use one of the names above, or `stacker agent apps` to see them with \
+         their images.",
+        app = app_code,
+        list = codes.join(", ")
+    )))
 }
 
 fn print_apps_summary(apps: &[serde_json::Value]) {
@@ -4603,6 +4648,56 @@ monitoring:
             .and_then(|s| s.as_str())
             .unwrap_or("unknown");
         assert_eq!(status, "unknown");
+    }
+
+    fn app(code: &str) -> serde_json::Value {
+        serde_json::json!({ "code": code, "name": code, "image": "img:1" })
+    }
+
+    #[test]
+    fn deploying_a_name_the_deployment_does_not_know_is_refused() {
+        // The exact shape of BUGS.md #57: the deployment knows `hello`, the
+        // user tries `app`, and the agent would quietly build a second stack.
+        let apps = vec![app("hello")];
+        let err = ensure_known_app("app", &apps).expect_err("must refuse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("'app' is not an app of this deployment"),
+            "{msg}"
+        );
+        assert!(msg.contains("Apps here: hello"), "{msg}");
+        assert!(
+            msg.contains("second"),
+            "the reason must be in the message: {msg}"
+        );
+    }
+
+    #[test]
+    fn deploying_a_known_app_passes() {
+        let apps = vec![app("hello"), app("postgres")];
+        assert!(ensure_known_app("hello", &apps).is_ok());
+        assert!(ensure_known_app("postgres", &apps).is_ok());
+    }
+
+    #[test]
+    fn an_empty_app_list_does_not_block_anything() {
+        // No snapshot data is not evidence of a wrong name.
+        assert!(ensure_known_app("whatever", &[]).is_ok());
+    }
+
+    #[test]
+    fn the_refusal_lists_every_app_it_knows() {
+        let apps = vec![app("hello"), app("postgres"), app("redis")];
+        let msg = ensure_known_app("app", &apps).unwrap_err().to_string();
+        for code in ["hello", "postgres", "redis"] {
+            assert!(msg.contains(code), "{code} missing from: {msg}");
+        }
+    }
+
+    #[test]
+    fn known_app_codes_ignores_entries_without_a_code() {
+        let apps = vec![app("hello"), serde_json::json!({ "name": "nameless" })];
+        assert_eq!(known_app_codes(&apps), vec!["hello".to_string()]);
     }
 
     #[test]
