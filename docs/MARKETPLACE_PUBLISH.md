@@ -234,6 +234,26 @@ previous approved version remains live.
 Existing buyers automatically get access to all future versions — they don't
 re-purchase.
 
+### Where catalogue content comes from
+
+The catalogue is a snapshot of the last publish: there is **no automatic
+sync** from a template's source repository. A change merged to the source
+repository reaches the catalogue only when a maintainer re-publishes
+(`stacker publish`) and the new version passes review — that publish is the
+refresh, and it is manual.
+
+So a catalogue copy can lag its source repository. To make the lag visible
+rather than inferred, every publish records the git commit of the checkout it
+was made from, and the public detail API returns it:
+
+```
+GET /api/templates/<slug>
+→ { "item": { "template": …, "latest_version": { …, "source_commit": "9e107d9d…" } } }
+```
+
+`source_commit` is absent when the publish came from a checkout that is not a
+git repository, or from a version published before it existed.
+
 ---
 
 ## Common rejection reasons
