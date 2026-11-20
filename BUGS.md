@@ -2266,7 +2266,7 @@ deployment whose topology you want explained.
 directories separately when they differ. `explain topology` should take
 `--deployment` like its neighbours.
 
-## 54. 🟡 OPEN — `sync` reports success when there is nothing to sync (found 2026-11-17)
+## 54. ✅ FIXED — `sync` reports success when there is nothing to sync (found 2026-11-17, fixed 2026-11-20)
 
 `stacker sync` is described as "Synchronize project configuration without
 deploying it", which reads like the way to push a corrected compose to the
@@ -2292,6 +2292,25 @@ works and prints `· 5 container(s), all healthy`.
 **Expected:** `sync` either includes the compose in what it synchronizes or
 states what it covers; a sync with no compose present is a warning, not a
 success. The monitor error should name the key it actually wants.
+
+
+### ✅ Fixed (2026-11-20) — stacker `fix/sync-honest-coverage-54`
+
+Per the expected outcome: `sync` now states what it covers — the project
+configuration from `stacker.yml` — and what it does not: the server-side
+compose (the one the agent writes before every app deploy), which only
+`stacker deploy` regenerates and pushes. With no compose on disk the run is
+a **warning** (`⚠ ... no compose was present to sync`), not a plain
+success; JSON output carries `compose_present` and the coverage lines.
+
+And the `stacker monitor` no-alerts error names the key it actually wants
+(`target:`, not the nonexistent `notify: target`).
+
+**How to verify:** in a project, `rm .stacker/docker-compose.yml` then
+`stacker sync --verify` — the output must warn that the server-side compose
+was not updated and point at `stacker deploy` (before: two green ticks and
+no hint). With the compose present, `sync` must state the coverage split.
+And `stacker monitor --once` with no alerts must name `target:`.
 
 ## 55. ✅ FIXED — the agent commands read the lock of the inactive target (found 2026-11-17, fixed 2026-11-17)
 
