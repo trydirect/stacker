@@ -6,13 +6,16 @@ use crate::cli::install_runner::{CommandExecutor, CommandOutput, ShellExecutor};
 use crate::cli::local_compose::{resolve_local_compose_path, resolve_local_compose_project_name};
 use crate::console::commands::CallableTrait;
 
-/// `stacker logs [--service <name>] [--follow] [--tail <n>] [--since <duration>]`
+/// `stacker logs [<app>] [--service <name>] [--follow] [--tail|--lines <n>] [--since <duration>]`
 ///
 /// Shows container logs for the deployed stack.
 ///
 /// - **Local deployments**: delegates to `docker compose logs`.
 /// - **Remote deployments**: fetches logs from the Status Panel agent via the
 ///   Stacker server API (same as `stacker agent logs`).
+///
+/// The positional `<app>` is sugar for `--service`; `--lines` is an alias of
+/// `--tail`, so both commands share one teachable form (BUGS.md #40).
 pub struct LogsCommand {
     pub service: Option<String>,
     pub follow: bool,
