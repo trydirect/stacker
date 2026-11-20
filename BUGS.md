@@ -708,7 +708,7 @@ Keep the source file mode when uploading project files (at least the owner
 execute bit). Test: an executable file in the project arrives executable on the
 server.
 
-## 20. 🔴 CONFIRMED — a deploy ends `paused [port_conflict]` while the stack is up and healthy on that port (found 2026-10-27, confirmed 2026-11-12)
+## 20. 🟠 FIXED IN CODE — a deploy ends `paused [port_conflict]` while the stack is up and healthy on that port (found 2026-10-27, confirmed 2026-11-12, fixes shipped 2026-11-16/19, live re-test pending)
 
 ### Observed (2026-10-27)
 
@@ -786,6 +786,35 @@ end in "open this URL", that is the whole first impression.
 Exclude the containers of the stack being deployed (same compose project) when
 checking whether its ports are taken. Test: redeploying a running stack with
 unchanged ports does not report a port conflict.
+
+### Fixes shipped (tfa 2026-11-16, stacker 2026-11-19) — live re-test pending
+
+Three checks reported the stack's own containers as port conflicts:
+
+1. The tfa role pre-flights — fixed by PR #149 (a port held by the stack's own
+   container is replaceable) and PR #150 (recognise the shipped stack by its
+   `my.stacker.service` label, and stop the n8n role's legacy `docker compose
+   up` from starting a second copy of the app).
+2. The CLI's remote pre-flight (`check_remote_host_port_conflicts`) — it SSHed
+   `ss`+`docker ps` and flagged the stack's own published ports as occupied
+   before `docker compose up` would have replaced those very containers. It
+   now matches tfa's identification: containers labelled with this compose
+   file's own service names are skipped, and `docker-proxy` listeners defer to
+   the container section, which can tell who published them (stacker
+   `fix/own-stack-port-conflict-20`).
+3. The local pre-flight already excluded own containers.
+
+Not closed yet: per tfa #150 the close-out is a live
+`stacker deploy --target cloud --server <saved>` of a running stack ending
+`completed`.
+
+**How to verify (live, on a test server):** redeploy a running stack with
+unchanged ports — `stacker deploy --target server ...` twice in a row on the
+same host must end `completed`, not `paused [port_conflict]`. The 2026-11-13
+shape is the one to reproduce: the stack already up (`project-<app>-1`
+holding the app port, answering HTTP 200), same ports, second deploy. The
+CLI pre-flight half is visible without the pipeline: no "Host port conflict
+detected before deploy" may appear on the second run.
 
 ## 21. 🟠 NOT CONFIRMED — a bake of a `--target server` deployment records no server type, so Quick Deploy offers the default size (found 2026-10-27)
 
@@ -2009,6 +2038,7 @@ the working advice.
 identically failing `--target server`.
 
 ## 49. 🔴 OPEN — the generated node Dockerfile hardcodes `server.js`, so most node projects crash-loop (found 2026-11-17)
+## 49. ✅ FIXED — the generated node Dockerfile hardcodes `server.js`, so most node projects crash-loop (found 2026-11-17, fixed 2026-11-19)
 
 `stacker init --app-type node` writes:
 
@@ -2036,6 +2066,28 @@ docker ps:  hello-app-1   Restarting (1) 23 seconds ago
 `node <package.json main>`, else `server.js` as the last resort. The
 information is in the file the generator already reads to detect that this is
 a node project.
+
+### ✅ Fixed (2026-11-19) — stacker `fix/node-entry-cmd-49`
+
+Per the expected outcome: the generated CMD now comes from the project's own
+`package.json` — `["npm", "start"]` when `scripts.start` exists, else
+`node <package.json main>`, else `server.js` as the last resort (and only
+when the manifest is unreadable at all). Next.js keeps its
+build-then-`npm run start` flow. Both writers go through the same generator
+(`stacker init` and the deploy-time generation), so the fix covers the
+crash-looping quickstart path.
+
+Tests: `scripts.start` → `npm start`; `main` alone → `node index.js`; no
+clues → `node server.js`; the old test that pinned the bug is rewritten.
+The `node` example in `docs/STACKER_YML_REFERENCE.md` and the CHEATSHEET
+"Trap (#49)" note now describe the rule instead of the workaround.
+
+**How to verify (local):** in a project whose `package.json` has
+`scripts.start` — `stacker init --app-type node` must generate
+`CMD ["npm", "start"]` in `.stacker/Dockerfile`; with only `main: index.js`
+→ `CMD ["node", "index.js"]`; with neither → `CMD ["node", "server.js"]`.
+The same generator runs at deploy time, so a later `stacker deploy` does not
+overwrite the CMD with the old hardcoded form.
 
 ## 50. 🟠 OPEN — a local deploy reports success and a timeout in the same breath (found 2026-11-17)
 
@@ -2270,3 +2322,63 @@ Note: `stacker explain env` reads only the pinned hash and still prints
 `for unbound` — same shape as topology had; left alone to keep this diff
 focused. Already-saved locks from before this fix carry no hash until the
 next deploy; resolution keeps falling back to the id→API lookup for them.
+
+## 56. 🟢 OPEN — two commands that know the answer and do not say it (found 2026-11-19)
+
+Small, cheap, and both cost a real person a detour today. 0.3.10 taught the
+agent commands to print `ℹ resolved deployment <hash> (from …, target: …)`;
+these two never got the same treatment.
+
+### `status` does not say whose status it is
+
+In a project deployed locally, after a cloud **dry-run**:
+
+```
+$ stacker deploy --target cloud --key <cred> --dry-run --force-new
+  ✓ Remote cloud deploy dry-run validated payload and credentials
+$ stacker status
+NAME               IMAGE                ...  PORTS
+hello-app-1        hello-app            ...  0.0.0.0:3100->3000/tcp
+hello-postgres-1   postgres:16-alpine   ...  127.0.0.1:5432->5432/tcp
+```
+
+That output is correct - a dry run deploys nothing, the only lock in
+`.stacker/` is `deployment-local.lock`, and `dispatch_status`
+(`src/console/commands/cli/status.rs:751`) routes by
+`resolve_deploy_placement`, so the local branch runs `docker compose ps`. It
+still reads as "it showed me the wrong thing", because the output is raw
+`docker compose ps` with nothing above it: no placement, no project, no
+mention that there is no remote deployment to show.
+
+**Expected:** one line before the table, in the style the agent commands now
+use -
+
+```
+ℹ local deployment 'hello' (no remote deployment for this project)
+```
+
+and for the remote branch the same line naming the deployment it queried.
+
+### `target cloud` refuses without saying what to do
+
+```
+$ stacker target cloud
+Error: ConfigValidation("No cloud deployment lock found. Deploy to cloud first before switching.")
+```
+
+The rule is reasonable - `target` switches between targets this directory has
+actually deployed to, and registered cloud credentials are not a deployment -
+but `stacker target cloud` is the first thing a person tries when they want to
+go to the cloud, and the message stops at the diagnosis.
+
+**Expected:** name the next command, the way the deploy errors already do:
+
+```
+No cloud deployment lock found for this project.
+Deploy to cloud once, and the target follows:
+    stacker deploy --target cloud --key <saved-credential>
+    stacker config setup cloud     # to write deploy.cloud into stacker.yml first
+```
+
+Both are one message each, in code that already has the information. Same
+area as #55, so whoever fixed that has the context.
