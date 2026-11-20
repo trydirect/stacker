@@ -1462,6 +1462,30 @@ mod tests {
         assert_eq!(cloud.region.as_deref(), Some("nbg1"));
     }
 
+    // BUGS.md #27 acceptance: "a value passed to --domain appears in the
+    // generated file". PR 336 wrote the flags into stacker.yml for
+    // server-held templates; this pins the file end of that chain.
+    #[test]
+    fn install_domain_appears_in_the_generated_file() {
+        let mut inputs = Map::new();
+        inputs.insert("commonDomain".to_string(), json!("dify.com"));
+        let flags = InstallFileFlags {
+            inputs,
+            cloud: Vec::new(),
+        };
+
+        let (written, not_written) = write_install_flags(
+            "name: dify\ninstall:\n  inputs: {}\n",
+            &flags,
+        )
+        .expect("flags must write");
+        assert!(not_written.is_empty());
+        assert!(
+            written.contains("commonDomain: dify.com"),
+            "--domain must reach the generated file: {written}"
+        );
+    }
+
     #[test]
     fn install_domain_populates_common_domain_and_stack_vars() {
         let inputs = resolve_install_inputs(Map::new(), Some("DIFY.COM"), &[])
