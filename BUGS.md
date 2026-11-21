@@ -390,7 +390,7 @@ The remote preflight returns `vec![]` on any SSH failure
 (`install_runner.rs`) — best-effort only. The watch verdict is now the hard
 safety net.
 
-## 8. 🟠 OPEN — `./file` bind mounts resolve against `.stacker/`, silently becoming directories
+## 8. ✅ FIXED — `./file` bind mounts resolve against `.stacker/`, silently becoming directories (found 2026-10-02, fixed by `809ea905`, verified live 2026-11-20)
 
 **Severity:** High — every local deploy of a template with a file bind breaks
 in a way that looks like an app bug. **File:** generated compose lives in
@@ -434,7 +434,26 @@ One behavior for local and remote, pick one:
   or
 - stage bind sources into `.stacker/` during render (mirrors the remote bundle).
 
-## 9. 🟠 OPEN — `app.dockerfile: Dockerfile` is rewritten to a file that is never generated
+
+### ✅ Fixed — dev `809ea905`, verified live 2026-11-20
+
+`normalize_generated_compose_paths`/`restage_relative_path` rewrite relative
+bind-mount sources against the project root: for a local deploy
+`./config.yml` becomes `../config.yml` (the generated compose lives in
+`.stacker/`), while sources that already live in `.stacker/` stay put and
+remote deploys keep `./` (the config bundle stages files next to the
+compose). The same pass handles `env_file` entries.
+
+Verified with the entry's exact repro (`app.volumes: ["./config.yml:..."]`,
+`stacker deploy --target local`): `docker inspect` reports the mount source
+as `<project root>/config.yml` (was `<root>/.stacker/config.yml`), and
+`cat` inside the container returns the file contents (was `Is a directory`).
+
+**How to verify:** the entry's repro — deploy locally with
+`./config.yml:/etc/nginx/conf.d/conf.yml:ro` and inspect the mount: it must
+point at the project root, and the file must be a file in the container.
+
+## 9. ✅ FIXED — `app.dockerfile: Dockerfile` is rewritten to a file that is never generated (found 2026-10-02, fixed by `cfa9d69f`, verified live 2026-11-20)
 
 **Severity:** High — `stacker deploy` fails at build for the most natural
 spelling of "my Dockerfile is in the project root". **File:**
@@ -476,6 +495,23 @@ the configured path relative to the compose location instead), or drop the
 rewrite entirely when the target path doesn't exist on disk. Workaround in
 use: rename to `Dockerfile.custom` (rewrite only matches
 `None | "Dockerfile" | "./Dockerfile"`).
+
+
+### ✅ Fixed — dev `cfa9d69f`, verified live 2026-11-20
+
+With `app.dockerfile` set, the generator never writes `.stacker/Dockerfile`
+(the user's own file is the build input), and the compose rewrite now knows
+it: an explicit `app.dockerfile` keeps — or restores — its configured path,
+so the build can never point at the file that is never generated.
+
+Verified live: a project with `app.dockerfile: Dockerfile` deploys locally
+with exit 0 and the generated compose carries `dockerfile: Dockerfile`
+(was `.stacker/Dockerfile`).
+
+**How to verify:** the entry's repro — `app.dockerfile: Dockerfile` plus a
+real `Dockerfile` at the project root, `stacker deploy --target local` must
+succeed and `.stacker/docker-compose.yml` must reference `Dockerfile`, not
+`.stacker/Dockerfile`.
 
 ## 10. 🟡 OPEN — `AppSource` accepts unknown fields silently
 
@@ -555,7 +591,7 @@ message also hides the cause: it does not say which version was asked for.
   (with a warning), or stay a hard error with the requested version in the
   message?
 
-## 12. 🟠 OPEN — `stacker install <template>` writes no `.env`, so `${VAR}` defaults from `.env.example` are missing (found 2026-10-19)
+## 12. ✅ FIXED — `stacker install <template>` writes no `.env`, so `${VAR}` defaults from `.env.example` are missing (found 2026-10-19, fixed 2026-11-20)
 
 **Severity:** Medium - a marketplace template whose `stacker.yml` reads a
 plain (non-secret) value through `${VAR}` cannot be deployed after
@@ -581,6 +617,21 @@ Deploying from the template's own directory (with `.env` created from
 `stacker install` materializes the template's `.env.example` defaults (and
 the contract's generated values) into `.env`, or the deploy treats a
 `.env.example` default as the value.
+
+### ✅ Fixed (2026-11-20) — stacker `fix/install-file-set-12-33` (with #33)
+
+Both options from the expected are in: `stacker install` materializes the
+template's file set and seeds `.env` from the `.env.example` defaults (never
+overwriting what is already there), and the `${VAR}` resolver treats
+`.env.example` as defaults under the env file — so a template default is
+honoured even when `.env` was never written. The env file overrides the
+example.
+
+**How to verify:** `stacker install <template> --file ./stacker.yml --force`
+into an empty directory must write `.env` (from the template's
+`.env.example`), and `stacker deploy` must not fail on a `${VAR}` whose
+value is an `.env.example` default (the entry's `FLOWISE_USERNAME` case).
+
 ## 13. 🟠 NOT CONFIRMED — bake finalize drops the build box's volumes before it checks for secret conflicts (found 2026-10-26)
 
 ### Observed (2026-10-26)
@@ -1024,7 +1075,7 @@ Verify the key after installing it, with one real connection, before printing
 the authorized line; fail the deploy if it does not open. Test: the line is
 printed only after a successful authentication.
 
-## 27. 🟠 CONFIRMED — `stacker install --domain` is accepted and silently ignored (found 2026-11-12)
+## 27. ✅ FIXED — `stacker install --domain` is accepted and silently ignored (found 2026-11-12, fixed by PR 336 on 2026-11-13, verified 2026-11-20)
 
 ### Observed (2026-11-12, stacker-cli v0.3.4)
 
@@ -1063,6 +1114,29 @@ generated file.
 PR 336 takes the first route for the no-deploy-form path: `--domain` and
 `--set` into `install.inputs`, the cloud flags into `deploy.cloud`, and a
 message on stderr naming any flag it could not write.
+
+
+### ✅ Fixed — PR 336 (merged 2026-11-13), verified 2026-11-20
+
+The entry's fix direction already named the winning route: PR 336 wrote the
+flags into the file install generates for server-held templates —
+`--domain`/`--set` into `install.inputs`, `--key`/`--key-id`/`--provider`/
+`--region`/`--size` into `deploy.cloud` (creating the block when a provider
+is given, since one without a provider does not parse), and a stderr note
+naming any flag it could not write. Confirmed in `dev`:
+`write_install_flags`/`install_file_flags` in
+`src/console/commands/cli/marketplace.rs`.
+
+The acceptance line ("a value passed to `--domain` appears in the generated
+file") now has a direct file-level regression test
+(`install_domain_appears_in_the_generated_file`).
+
+**How to verify:** `stacker install <template> --name x --domain a.example.com
+--region fsn1 --size cpx22` — the generated `stacker.yml` must contain
+`install.inputs.commonDomain: a.example.com` and a `deploy.cloud` block with
+the region/size (before PR 336 the file kept the template defaults and the
+flags were dropped silently). Unwritable flags print a `Not written to ...`
+note on stderr.
 
 ## 28. 🟡 CONFIRMED — install and deploy report different project ids for the same project (found 2026-11-12)
 
@@ -1279,7 +1353,7 @@ Point the template at the documented installer URL (or make `get.try.direct`
 resolve), and add a build-and-push step when the config has no `app.image`.
 Test: render the template and assert the installer URL is the documented one.
 
-## 33. 🟠 OPEN — `stacker install` writes only `stacker.yml`, not the template's `scripts/` (found 2026-11-12)
+## 33. ✅ FIXED — `stacker install` writes only `stacker.yml`, not the template's `scripts/` (found 2026-11-12, fixed 2026-11-20)
 
 ### Observed (2026-11-12)
 
@@ -1296,6 +1370,20 @@ Have `stacker install` materialize the template's full file set, including
 scripts (and `.env.example` as `.env`, as noted in §12). Test: a fresh install
 contains the referenced files and can proceed to deploy without cloning the
 template repository.
+
+
+### ✅ Fixed (2026-11-20) — stacker `fix/install-file-set-12-33` (with #12)
+
+Per the fix direction: `stacker install` materializes the template's full
+file set from `latest_version.config_files` — `scripts/` and the rest —
+next to the stacker.yml it writes, and never overwrites a file that already
+exists. A fresh install can proceed to deploy without cloning the template
+repository.
+
+**How to verify:** install the n8n template into an empty directory — the
+files `stacker.yml` references (e.g. `scripts/n8n-entrypoint.sh`,
+`scripts/generate-secrets.sh`) must exist afterwards, and the referenced
+bind-mount source must be a file, not an empty directory.
 
 ## 34. 🟢 OPEN — the hook scanner false-positives on the marketplace template's own `generate-secrets.sh` (found 2026-11-12)
 
@@ -1493,7 +1581,7 @@ leftover agent row makes `sweep_dead_returns_zero_when_nothing_to_remove`
 see 1 instead of 0). It fails the same way on the unfixed base; nothing in
 this change touches behaviour.
 
-## 37. 🟠 OPEN — `stacker proxy add` rewrites the whole `stacker.yml` and drops every comment (found 2026-11-14)
+## 37. ✅ FIXED — `stacker proxy add` rewrites the whole `stacker.yml` and drops every comment (found 2026-11-14, fixed 2026-11-20)
 
 **Severity:** high for anyone whose `stacker.yml` is hand-authored, which is
 every template in the catalogue.
@@ -1537,6 +1625,35 @@ offers only `--upstream` and `--ssl`.
 "Updated proxy config in" line, so the write happens just above it. The fix
 is an in-place edit of the `proxy:` block instead of serialising the parsed
 document back out.
+
+
+### ✅ Fixed (2026-11-20) — stacker `fix/proxy-add-preserves-comments-37`
+
+Per the expected outcome: the edit now splices only the top-level `proxy:`
+block into the file — a text edit, not a YAML round-trip — and every other
+byte stays identical: comments (including ones inside the old block's span
+are rewritten with it), quoting, inline lists, blank lines. A missing block
+is appended; the `.bak` backup is unchanged. Regression tests assert
+byte-identical surroundings and the append path (the red run failed them on
+the old serializer exactly as the entry describes).
+
+The "also in the same output" half: `--type
+nginx-proxy-manager|npm|caddy|traefik` records the flavour instead of
+silently flipping the config to NPM — caddy and traefik take their own
+flows, NPM is configured on deploy. The entry's "ask for plain `nginx`" is
+answered by the value's retirement (PRs #345/#347): the flag refuses `nginx`
+and the help names the supported set.
+
+**How to verify:** on a commented template (e.g. the n8n one from
+`awesome-selfhosted-stacker`) run
+`stacker proxy add n8n.example.com --upstream http://n8n:5678 --ssl off`
+then `git diff stacker.yml` — only the `proxy:` block may differ (before:
+every comment gone, quoting normalised, lists expanded). And
+`stacker proxy add x.example.com --type caddy` must record `type: caddy`,
+while `--type nginx` is refused.
+
+Note: the earlier branch `fix/bugs-37-41` is superseded by this one (its
+42/43 parts were replaced by the nginx retirement and the tfa normaliser).
 
 ## 38. ✅ FIXED — the agent could not resolve NPM credentials, so every remote proxy command failed: `vault_unavailable` (found 2026-11-14, fixed and verified live 2026-11-15)
 
@@ -1632,7 +1749,7 @@ theorising is what found it. The hint that the command had worked by hand
 before was real, but it pointed at the wrong explanation: those servers
 predate mTLS rather than holding a fresher token.
 
-## 39. 🟢 OPEN — `secrets validate` reads `${VAR}` references out of comments (found 2026-11-14)
+## 39. ✅ FIXED — `secrets validate` reads `${VAR}` references out of comments (found 2026-11-14, fixed 2026-11-20)
 
 The validator fails the whole stack because of a variable that appears only
 inside a YAML comment:
@@ -1662,7 +1779,21 @@ collecting `${VAR}` names.
 **Expected:** a variable that appears only inside a `#` comment is not a
 reference and must not fail validation.
 
-## 40. 🟢 OPEN — `agent logs` and `logs` disagree on their own interface (found 2026-11-14, corrected the same day)
+## 40. ✅ FIXED — `agent logs` and `logs` disagree on their own interface (found 2026-11-14, corrected the same day, fixed 2026-11-20)
+
+### ✅ Fixed (2026-11-20) — stacker `fix/secrets-validate-comments-39`
+
+References are collected from parsed YAML scalars (keys and values), so
+comments drop out naturally while block-scalar content — where `#` is literal
+text — still counts. Unparseable YAML falls back to the old raw scan.
+Regression tests cover the comment case (the entry's exact repro), the
+block-scalar case and the fallback.
+
+**How to verify:** put `# ${BASE_PATH}/some/note` as the only occurrence of
+`BASE_PATH` in stacker.yml — `stacker secrets validate` must not list
+`BASE_PATH` and must exit 0 (before: `Error: ... 1 variable(s) referenced in
+stacker.yml are not set: BASE_PATH`, exit 1). A variable in a real value must
+still be checked.
 
 `stacker logs` takes no positional app and uses `--service` plus `--tail`;
 `stacker agent logs` takes a positional `<APP>` and accepts neither `--lines`
@@ -1694,7 +1825,22 @@ it still makes them impossible to teach in one breath.
 **Expected:** one spelling for both. Whichever wins, `--tail` and `--lines`
 should not be a coin flip, and the form in the docs must exist.
 
+
+### ✅ Fixed (2026-11-20) — stacker `fix/logs-interface-40`
+
+The asymmetry is gone: both commands accept both spellings. `stacker logs`
+takes a positional app (sugar for `--service`, conflicting with it) and
+`--lines` as an alias of `--tail`; `stacker agent logs` accepts `--lines`
+and `--tail` as aliases of `--limit`. CLI regression tests cover every
+accepted form and the positional/`--service` conflict.
+
+**How to verify:** `stacker logs n8n --lines 25` and
+`stacker agent logs n8n --lines 25` must both parse (before: `error:
+unexpected argument`), and `stacker logs n8n --service other` must be
+rejected as a conflict.
+
 ## 41. ✅ FIXED — `stacker find` glues the price to the raw billing enum (found 2026-11-14, fixed 2026-11-16)
+
 
 ```
 ITEM                     NAME                         VENDOR               PLAN           DESCRIPTION
@@ -2304,7 +2450,7 @@ is meant to start in legacy mode, and if not, which side writes the `false`.
 The test stand currently runs with the flag flipped to `true`, with the
 original saved next to it as `config.json.bak-<epoch>`.
 
-## 53. 🟠 OPEN — the reported remote compose path is not the one docker uses (found 2026-11-17)
+## 53. ✅ FIXED — the reported remote compose path is not the one docker uses (found 2026-11-17, fixed 2026-11-20)
 
 Verified against the correct deployment hash, so this one is not #51 in
 disguise:
@@ -2333,7 +2479,29 @@ deployment whose topology you want explained.
 directories separately when they differ. `explain topology` should take
 `--deployment` like its neighbours.
 
-## 54. 🟡 OPEN — `sync` reports success when there is nothing to sync (found 2026-11-17)
+
+### ✅ Fixed (2026-11-20) — stacker `fix/deployment-state-real-paths-53`
+
+Per the expected outcome: the report now gives the path docker reports. The
+agent already forwards every container's labels in its snapshot, and docker
+labels each container with the files it actually read —
+`com.docker.compose.project.config_files` / `...environment_files`. The
+state prefers those over the `<project>-<id>` synthesis (which matched
+nothing for the compose) and falls back to it when the snapshot carries no
+labelled container. When the compose and env directories differ — the
+marketplace-deploy case — the report says so instead of letting one path
+imply the other.
+
+The topology half of the entry is fixed too: `explain topology` takes
+`--deployment` and resolves through the shared chain (landed with #55).
+
+**How to verify:** `stacker deployment state --deployment <hash>` on the
+entry's project — `Compose:` must print the file docker reports (check with
+`docker inspect <container> --format '{{index .Config.Labels
+"com.docker.compose.project.config_files"}}'`), and when compose and env
+live in different directories the output notes the split.
+
+## 54. ✅ FIXED — `sync` reports success when there is nothing to sync (found 2026-11-17, fixed 2026-11-20)
 
 `stacker sync` is described as "Synchronize project configuration without
 deploying it", which reads like the way to push a corrected compose to the
@@ -2359,6 +2527,25 @@ works and prints `· 5 container(s), all healthy`.
 **Expected:** `sync` either includes the compose in what it synchronizes or
 states what it covers; a sync with no compose present is a warning, not a
 success. The monitor error should name the key it actually wants.
+
+
+### ✅ Fixed (2026-11-20) — stacker `fix/sync-honest-coverage-54`
+
+Per the expected outcome: `sync` now states what it covers — the project
+configuration from `stacker.yml` — and what it does not: the server-side
+compose (the one the agent writes before every app deploy), which only
+`stacker deploy` regenerates and pushes. With no compose on disk the run is
+a **warning** (`⚠ ... no compose was present to sync`), not a plain
+success; JSON output carries `compose_present` and the coverage lines.
+
+And the `stacker monitor` no-alerts error names the key it actually wants
+(`target:`, not the nonexistent `notify: target`).
+
+**How to verify:** in a project, `rm .stacker/docker-compose.yml` then
+`stacker sync --verify` — the output must warn that the server-side compose
+was not updated and point at `stacker deploy` (before: two green ticks and
+no hint). With the compose present, `sync` must state the coverage split.
+And `stacker monitor --once` with no alerts must name `target:`.
 
 ## 55. ✅ FIXED — the agent commands read the lock of the inactive target (found 2026-11-17, fixed 2026-11-17)
 

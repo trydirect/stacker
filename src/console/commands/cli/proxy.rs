@@ -242,16 +242,112 @@ fn persist_proxy_config_to_stacker_yml(
         }));
     }
 
-    let yaml = serde_yaml::to_string(&root)
-        .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
+    // Rewrite only the `proxy:` block in place — everything else in the file
+    // keeps its comments, quoting, inline lists and blank lines byte for byte
+    // (BUGS.md #37: a whole-file YAML round-trip destroyed them all).
+    let proxy_value = root.get("proxy").cloned().unwrap_or_default();
+    let block = render_proxy_block(&proxy_value)?;
+    let updated = replace_proxy_block(&raw_text, &block);
     std::fs::copy(&config_path, &backup_path)?;
-    std::fs::write(&config_path, yaml)?;
+    std::fs::write(&config_path, updated)?;
 
     Ok(Some(ProxyConfigPersistence {
         config_path,
         backup_path,
         changed,
     }))
+}
+
+/// Render the `proxy:` block as YAML nested one level under the key.
+fn render_proxy_block(proxy: &serde_yaml::Value) -> Result<String, CliError> {
+    let yaml = serde_yaml::to_string(proxy)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
+    let mut block = String::from("proxy:\n");
+    for line in yaml.lines() {
+        if line.is_empty() {
+            block.push('\n');
+        } else {
+            block.push_str("  ");
+            block.push_str(line);
+            block.push('\n');
+        }
+    }
+    Ok(block)
+}
+
+/// Replace (or append) the top-level `proxy:` block in raw `stacker.yml` text,
+/// leaving every other byte untouched (BUGS.md #37).
+fn replace_proxy_block(raw_text: &str, block: &str) -> String {
+    let mut block = block.to_string();
+    if !block.ends_with('\n') {
+        block.push('\n');
+    }
+
+    // Byte offset of every line start (a trailing "\n" yields a final empty
+    // line, which the bounds checks below tolerate).
+    let mut line_starts = vec![0usize];
+    for (idx, ch) in raw_text.char_indices() {
+        if ch == '\n' {
+            line_starts.push(idx + 1);
+        }
+    }
+    let line_count = line_starts.len();
+    let line_at = |i: usize| -> &str {
+        let end = line_starts.get(i + 1).copied().unwrap_or(raw_text.len());
+        &raw_text[line_starts[i]..end]
+    };
+    fn without_eol(line: &str) -> &str {
+        line.trim_end_matches(['\n', '\r'])
+    }
+
+    // The block starts at the top-level `proxy:` key.
+    let Some(start) = (0..line_count).find(|&i| without_eol(line_at(i)).starts_with("proxy:"))
+    else {
+        // No proxy block yet — append one after a blank separator line.
+        let mut out = String::with_capacity(raw_text.len() + block.len() + 1);
+        out.push_str(raw_text);
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        if !out.ends_with("\n\n") {
+            out.push('\n');
+        }
+        out.push_str(&block);
+        return out;
+    };
+
+    // The block spans every following blank or indented line; top-level
+    // comments are spanned too, so a comment in the middle of the block is
+    // rewritten with it instead of cutting the block in half.
+    let is_spanned = |line: &str| {
+        let trimmed = without_eol(line);
+        trimmed.is_empty() || line.starts_with(char::is_whitespace) || trimmed.starts_with('#')
+    };
+    let mut extent_end = start + 1;
+    while extent_end < line_count && is_spanned(line_at(extent_end)) {
+        extent_end += 1;
+    }
+
+    // Rewrite only up to the last indented line — blank lines and comments
+    // after the block stay where they are.
+    let mut content_end = start;
+    for i in (start + 1..extent_end).rev() {
+        let line = line_at(i);
+        if line.starts_with(char::is_whitespace) && !without_eol(line).is_empty() {
+            content_end = i;
+            break;
+        }
+    }
+
+    let tail_start = line_starts
+        .get(content_end + 1)
+        .copied()
+        .unwrap_or(raw_text.len());
+    let mut out = String::with_capacity(raw_text.len() + block.len());
+    out.push_str(&raw_text[..line_starts[start]]);
+    out.push_str(&block);
+    out.push_str(&raw_text[tail_start..]);
+    out
 }
 
 fn print_proxy_config_persistence(result: Option<&ProxyConfigPersistence>) {
@@ -329,7 +425,27 @@ pub fn run_detect(runtime: &dyn ContainerRuntime) -> Result<ProxyDetection, CliE
     detect_proxy(runtime)
 }
 
-/// `stacker proxy add <domain> [--upstream <host:port>] [--ssl[=auto|manual|off]]`
+/// Parse an explicit `--type` value into a `ProxyType` (BUGS.md #37). The
+/// supported set is the one `docs/STACKER_YML_REFERENCE.md` documents —
+/// `nginx` is a retired value and is not offered.
+pub fn parse_proxy_type(value: Option<&str>) -> Result<Option<ProxyType>, CliError> {
+    let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    match value.to_ascii_lowercase().as_str() {
+        "nginx-proxy-manager" | "nginxproxymanager" | "npm" => {
+            Ok(Some(ProxyType::NginxProxyManager))
+        }
+        "caddy" => Ok(Some(ProxyType::Caddy)),
+        "traefik" => Ok(Some(ProxyType::Traefik)),
+        other => Err(CliError::ConfigValidation(format!(
+            "Invalid proxy type '{}': expected nginx-proxy-manager (npm), caddy or traefik",
+            other
+        ))),
+    }
+}
+
+/// `stacker proxy add <domain> [--upstream <host:port>] [--ssl[=auto|manual|off]] [--type <TYPE>]`
 ///
 /// Adds a reverse-proxy entry for the given domain.
 pub struct ProxyAddCommand {
@@ -339,6 +455,7 @@ pub struct ProxyAddCommand {
     pub force: bool,
     pub json: bool,
     pub deployment: Option<String>,
+    pub proxy_type: Option<String>,
 }
 
 impl ProxyAddCommand {
@@ -357,12 +474,19 @@ impl ProxyAddCommand {
             force,
             json,
             deployment,
+            proxy_type: None,
         }
+    }
+
+    pub fn with_proxy_type(mut self, proxy_type: Option<String>) -> Self {
+        self.proxy_type = proxy_type;
+        self
     }
 }
 
 impl CallableTrait for ProxyAddCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let requested_type = parse_proxy_type(self.proxy_type.as_deref())?;
         let project_dir = std::env::current_dir()?;
         let domain_config =
             build_domain_config(&self.domain, self.upstream.as_deref(), self.ssl.as_deref());
@@ -371,6 +495,24 @@ impl CallableTrait for ProxyAddCommand {
             // Persist to stacker.yml first — the local config update does not
             // depend on the remote agent or Vault. If the agent call later
             // fails, the user's config is still saved.
+            let proxy_type = requested_type.unwrap_or(ProxyType::NginxProxyManager);
+            if proxy_type != ProxyType::NginxProxyManager {
+                // BUGS.md #37: the recorded type is what was asked for; the
+                // remote agent configures Nginx Proxy Manager only, so say so
+                // instead of silently flipping the config to it.
+                let persistence =
+                    persist_proxy_config_to_stacker_yml(&project_dir, proxy_type, domain_config)?;
+                if !self.json {
+                    print_proxy_config_persistence(persistence.as_ref());
+                }
+                eprintln!(
+                    "✓ Domain {} saved to stacker.yml as proxy.type '{}'; remote \
+                     auto-configuration is only available for nginx-proxy-manager — \
+                     this type is applied by the proxy itself on the next deploy.",
+                    self.domain, proxy_type
+                );
+                return Ok(());
+            }
             let persistence = persist_proxy_config_to_stacker_yml(
                 &project_dir,
                 ProxyType::NginxProxyManager,
@@ -408,10 +550,13 @@ impl CallableTrait for ProxyAddCommand {
 
         // Keep an already-configured Caddy/Traefik proxy as-is; default to
         // nginx otherwise, matching prior behavior for everyone who hasn't
-        // opted into either.
-        let existing_proxy_type = StackerConfig::from_file(&project_dir.join("stacker.yml"))
-            .map(|config| config.proxy.proxy_type)
-            .unwrap_or(ProxyType::Nginx);
+        // opted into either. `--type` overrides the configured type
+        // (BUGS.md #37).
+        let existing_proxy_type = requested_type.unwrap_or_else(|| {
+            StackerConfig::from_file(&project_dir.join("stacker.yml"))
+                .map(|config| config.proxy.proxy_type)
+                .unwrap_or(ProxyType::Nginx)
+        });
 
         if existing_proxy_type == ProxyType::Traefik {
             // Traefik routes via labels baked directly into the generated
@@ -429,6 +574,25 @@ impl CallableTrait for ProxyAddCommand {
             eprintln!(
                 "✓ Domain {} saved to stacker.yml; Traefik routing labels are generated \
                  automatically on the target service the next time you run `stacker deploy`.",
+                self.domain
+            );
+            return Ok(());
+        }
+
+        if existing_proxy_type == ProxyType::NginxProxyManager {
+            // BUGS.md #37: an explicit --type is recorded as asked; NPM is
+            // configured by the deploy, not by a hand-applied snippet.
+            let persistence = persist_proxy_config_to_stacker_yml(
+                &project_dir,
+                ProxyType::NginxProxyManager,
+                domain_config,
+            )?;
+            if !self.json {
+                print_proxy_config_persistence(persistence.as_ref());
+            }
+            eprintln!(
+                "✓ Domain {} saved to stacker.yml; Nginx Proxy Manager is configured \
+                 automatically on the next `stacker deploy`.",
                 self.domain
             );
             return Ok(());
@@ -753,6 +917,120 @@ proxy:
             .services
             .iter()
             .all(|service| service.name != "nginx_proxy_manager"));
+    }
+
+    // BUGS.md #37: one `proxy add` round-tripped the whole stacker.yml through
+    // a YAML serializer — every comment vanished, quoting was normalised,
+    // inline lists expanded, blank lines dropped. The edit must rewrite only
+    // the `proxy:` block and leave every other byte untouched.
+    #[test]
+    fn persist_proxy_config_to_stacker_yml_preserves_everything_outside_the_proxy_block() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        let before = concat!(
+            "# template header comment\n",
+            "name: n8n\n",
+            "version: \"2.0.0\"\n",
+            "\n",
+            "app:\n",
+            "  type: node\n",
+            "  ports: [\"5678:5678\"]\n",
+            "  environment:\n",
+            "    # ${BASE_PATH}/data, mounted below\n",
+            "    EMAIL_REGEX: \"^[^@\\\\s\\\"]+@example\\\\.com$\"\n",
+            "\n",
+            "proxy:\n",
+            "  type: none\n",
+            "  domains: []\n",
+            "\n",
+            "# deploy section follows\n",
+            "deploy:\n",
+            "  target: server\n",
+        );
+        std::fs::write(&config_path, before).unwrap();
+
+        let result = persist_proxy_config_to_stacker_yml(
+            dir.path(),
+            ProxyType::NginxProxyManager,
+            build_domain_config("n8n.example.com", Some("http://n8n:5678"), Some("off")),
+        )
+        .unwrap()
+        .expect("stacker.yml exists");
+
+        assert!(result.changed);
+        let after = std::fs::read_to_string(&config_path).unwrap();
+
+        // Everything before the proxy block is byte-identical.
+        let proxy_start = before.find("proxy:").unwrap();
+        assert!(after.starts_with(&before[..proxy_start]));
+        // Comments survive.
+        assert!(after.contains("# template header comment\n"));
+        assert!(after.contains("    # ${BASE_PATH}/data, mounted below\n"));
+        assert!(after.contains("# deploy section follows\n"));
+        // Quoting and inline lists survive.
+        assert!(after.contains("version: \"2.0.0\"\n"));
+        assert!(after.contains("  ports: [\"5678:5678\"]\n"));
+        assert!(after.contains("    EMAIL_REGEX: \"^[^@\\\\s\\\"]+@example\\\\.com$\"\n"));
+        // Blank lines survive.
+        assert!(after.contains("version: \"2.0.0\"\n\napp:\n"));
+        assert!(after.contains("\n\n# deploy section follows\n"));
+        // The proxy entry itself landed.
+        let config = StackerConfig::from_file_raw(&config_path).unwrap();
+        assert_eq!(config.proxy.domains.len(), 1);
+        assert_eq!(config.proxy.domains[0].domain, "n8n.example.com");
+    }
+
+    #[test]
+    fn persist_proxy_config_to_stacker_yml_appends_proxy_block_when_missing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        let before = "# a commented template\nname: demo\n\napp:\n  type: node\n";
+        std::fs::write(&config_path, before).unwrap();
+
+        let result = persist_proxy_config_to_stacker_yml(
+            dir.path(),
+            ProxyType::Caddy,
+            build_domain_config("demo.example.com", Some("http://app:8080"), Some("off")),
+        )
+        .unwrap()
+        .expect("stacker.yml exists");
+
+        assert!(result.changed);
+        let after = std::fs::read_to_string(&config_path).unwrap();
+        assert!(after.starts_with(before));
+        assert!(after.contains("# a commented template\n"));
+        assert!(after.contains("\nproxy:\n"));
+
+        let config = StackerConfig::from_file_raw(&config_path).unwrap();
+        assert_eq!(config.proxy.domains.len(), 1);
+        assert_eq!(config.proxy.domains[0].domain, "demo.example.com");
+    }
+
+    // BUGS.md #37's second half: `--type` names the proxy flavour instead of
+    // silently flipping the config to nginx-proxy-manager. `nginx` is a
+    // retired value (docs/STACKER_YML_REFERENCE: the supported set is
+    // nginx-proxy-manager, caddy, traefik) and is not offered.
+    #[test]
+    fn test_parse_proxy_type_accepts_the_supported_set_only() {
+        assert_eq!(parse_proxy_type(None).unwrap(), None);
+        assert_eq!(
+            parse_proxy_type(Some("nginx-proxy-manager")).unwrap(),
+            Some(ProxyType::NginxProxyManager)
+        );
+        assert_eq!(
+            parse_proxy_type(Some("npm")).unwrap(),
+            Some(ProxyType::NginxProxyManager)
+        );
+        assert_eq!(
+            parse_proxy_type(Some("caddy")).unwrap(),
+            Some(ProxyType::Caddy)
+        );
+        assert_eq!(
+            parse_proxy_type(Some("traefik")).unwrap(),
+            Some(ProxyType::Traefik)
+        );
+        assert!(parse_proxy_type(Some("nginx")).is_err());
+        assert!(parse_proxy_type(Some("haproxy")).is_err());
     }
 
     #[test]

@@ -58,3 +58,23 @@ fn test_proxy_add_help_shows_options() {
         .stdout(predicate::str::contains("--upstream"))
         .stdout(predicate::str::contains("--ssl"));
 }
+
+// BUGS.md #37: `--type` names the proxy flavour instead of silently flipping
+// the config to nginx-proxy-manager; the retired `nginx` value is refused.
+#[test]
+fn test_proxy_add_accepts_type_flag() {
+    stacker_cmd()
+        .args(["proxy", "add", "example.com", "--type", "caddy", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--type"));
+}
+
+#[test]
+fn test_proxy_add_rejects_unsupported_type() {
+    stacker_cmd()
+        .args(["proxy", "add", "example.com", "--type", "nginx"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("possible values"));
+}
