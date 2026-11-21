@@ -48,8 +48,8 @@ impl CallableTrait for ListProjectsCommand {
                         "{:<6} {:<30} {:<26} {:<26}",
                         p.id,
                         truncate(&p.name, 28),
-                        &p.created_at,
-                        &p.updated_at,
+                        p.created_at,
+                        p.updated_at,
                     );
                 }
 
@@ -109,8 +109,8 @@ impl CallableTrait for ListServersCommand {
                         s.cloud.clone().unwrap_or_else(|| "-".to_string()),
                         truncate(&s.region.clone().unwrap_or_else(|| "-".to_string()), 8),
                         truncate(&s.server.clone().unwrap_or_else(|| "-".to_string()), 8),
-                        &s.key_status,
-                        &s.connection_mode,
+                        s.key_status,
+                        s.connection_mode,
                     );
                 }
 
@@ -249,7 +249,7 @@ impl CallableTrait for ListSshKeysCommand {
                             .unwrap_or_else(|| "22".to_string()),
                         s.ssh_user.clone().unwrap_or_else(|| "root".to_string()),
                         status_icon,
-                        &s.connection_mode,
+                        s.connection_mode,
                     );
                 }
 
@@ -375,7 +375,7 @@ impl CallableTrait for ListCloudsCommand {
                         "{:<6} {:<24} {:<12} {:<10} {:<10} {:<10}",
                         c.id,
                         truncate(&c.name, 22),
-                        &c.provider,
+                        c.provider,
                         has_token,
                         has_key,
                         secret_indicator,

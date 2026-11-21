@@ -659,11 +659,11 @@ mod tests {
         HttpResponse::NotFound().finish()
     }
 
-    /// Vault KV v1 read where the install-service Ansible role wrote the
-    /// fields flat: `{"data": {"token": ..., "agent_id": ...}}`.
+    // Vault KV v1 read where the install-service Ansible role wrote the
+    // fields flat: `{"data": {"token": ..., "agent_id": ...}}`.
 
-    /// Vault KV v1 read where `store_agent_token` wrote the value, wrapping it
-    /// in a `{"data": {...}}` envelope that becomes the secret body itself.
+    // Vault KV v1 read where `store_agent_token` wrote the value, wrapping it
+    // in a `{"data": {...}}` envelope that becomes the secret body itself.
 
     #[tokio::test]
     /// Store and delete only: Stacker no longer reads agent tokens back, and

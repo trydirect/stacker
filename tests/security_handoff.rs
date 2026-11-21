@@ -22,7 +22,7 @@ async fn test_owner_can_mint_and_resolve_handoff() {
         create_test_deployment(&app.db_pool, USER_A_ID, project_id, "handoff-dep-001").await;
 
     let mint = client
-        .post(format!("{}/api/v1/handoff/mint", &app.address))
+        .post(format!("{}/api/v1/handoff/mint", app.address))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .json(&serde_json::json!({
             "deployment_id": deployment_id,
@@ -56,7 +56,7 @@ async fn test_owner_can_mint_and_resolve_handoff() {
     );
 
     let resolve = client
-        .post(format!("{}/api/v1/handoff/resolve", &app.address))
+        .post(format!("{}/api/v1/handoff/resolve", app.address))
         .json(&serde_json::json!({ "token": token }))
         .send()
         .await
@@ -82,7 +82,7 @@ async fn test_authenticated_user_can_mint_and_resolve_account_handoff() {
     let client = reqwest::Client::new();
 
     let mint = client
-        .post(format!("{}/api/v1/handoff/mint/account", &app.address))
+        .post(format!("{}/api/v1/handoff/mint/account", app.address))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
         .await
@@ -95,7 +95,7 @@ async fn test_authenticated_user_can_mint_and_resolve_account_handoff() {
         .expect("Mint response should include handoff token");
 
     let resolve = client
-        .post(format!("{}/api/v1/handoff/resolve", &app.address))
+        .post(format!("{}/api/v1/handoff/resolve", app.address))
         .json(&serde_json::json!({ "token": token }))
         .send()
         .await
@@ -129,7 +129,7 @@ async fn test_handoff_resolve_is_single_use() {
         create_test_deployment(&app.db_pool, USER_A_ID, project_id, "handoff-dep-once").await;
 
     let mint = client
-        .post(format!("{}/api/v1/handoff/mint", &app.address))
+        .post(format!("{}/api/v1/handoff/mint", app.address))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .json(&serde_json::json!({
             "deployment_id": deployment_id
@@ -143,7 +143,7 @@ async fn test_handoff_resolve_is_single_use() {
         .expect("Mint response should include handoff token");
 
     let first = client
-        .post(format!("{}/api/v1/handoff/resolve", &app.address))
+        .post(format!("{}/api/v1/handoff/resolve", app.address))
         .json(&serde_json::json!({ "token": token }))
         .send()
         .await
@@ -151,7 +151,7 @@ async fn test_handoff_resolve_is_single_use() {
     assert_eq!(first.status(), 200);
 
     let second = client
-        .post(format!("{}/api/v1/handoff/resolve", &app.address))
+        .post(format!("{}/api/v1/handoff/resolve", app.address))
         .json(&serde_json::json!({ "token": token }))
         .send()
         .await
@@ -171,7 +171,7 @@ async fn test_handoff_mint_rejects_other_user() {
         create_test_deployment(&app.db_pool, USER_A_ID, project_id, "handoff-dep-owner").await;
 
     let resp = client
-        .post(format!("{}/api/v1/handoff/mint", &app.address))
+        .post(format!("{}/api/v1/handoff/mint", app.address))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .json(&serde_json::json!({
             "deployment_id": deployment_id,
@@ -196,7 +196,7 @@ async fn test_handoff_mint_rejects_unauthenticated() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .post(format!("{}/api/v1/handoff/mint", &app.address))
+        .post(format!("{}/api/v1/handoff/mint", app.address))
         .json(&serde_json::json!({ "deployment_hash": "handoff-no-auth" }))
         .send()
         .await
@@ -232,7 +232,7 @@ async fn test_owner_can_mint_handoff_for_legacy_installation() {
     let client = reqwest::Client::new();
 
     let mint = client
-        .post(format!("{}/api/v1/handoff/mint", &app.address))
+        .post(format!("{}/api/v1/handoff/mint", app.address))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .json(&serde_json::json!({
             "deployment_id": 13830,
@@ -257,7 +257,7 @@ async fn test_owner_can_mint_handoff_for_legacy_installation() {
     assert!(command.starts_with("stacker connect --handoff "));
 
     let resolve = client
-        .post(format!("{}/api/v1/handoff/resolve", &app.address))
+        .post(format!("{}/api/v1/handoff/resolve", app.address))
         .json(&serde_json::json!({ "token": token }))
         .send()
         .await

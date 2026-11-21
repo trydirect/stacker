@@ -1591,7 +1591,7 @@ pub(crate) async fn deploy_project(
 
     if !form.validate().is_ok() {
         let errors = form.validate().unwrap_err().to_string();
-        let err_msg = format!("Invalid form data received {:?}", &errors);
+        let err_msg = format!("Invalid form data received {:?}", errors);
         tracing::debug!(err_msg);
 
         return Err(JsonResponse::<models::Project>::build().form_error(errors));
@@ -1972,7 +1972,7 @@ pub async fn saved_item(
 
     if !form.validate().is_ok() {
         let errors = form.validate().unwrap_err().to_string();
-        let err_msg = format!("Invalid form data received {:?}", &errors);
+        let err_msg = format!("Invalid form data received {:?}", errors);
         tracing::debug!(err_msg);
 
         return Err(JsonResponse::<models::Project>::build().form_error(errors));

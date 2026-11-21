@@ -102,7 +102,7 @@ fn compose_sync_carries_every_declared_setting() {
         stacker::cli::compose_service_sync::sync_configured_compose_services(
             dir.path(),
             &config,
-            &[name.clone()],
+            std::slice::from_ref(&name),
         )
         .unwrap_or_else(|e| panic!("compose_sync/{case}: {e}"));
         let written = std::fs::read_to_string(dir.path().join("compose.yml")).unwrap();

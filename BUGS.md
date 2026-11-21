@@ -1495,7 +1495,7 @@ file", `handle_deploy_app` never consumes it), so a caller that reaches
 `agent exec deploy_app` with `image` but no rewritten `compose_content` is
 still ignored. The CLI no longer depends on it.
 
-## 36. 🟢 OPEN — the clippy and fmt gates fail on pre-existing code (found 2026-11-13)
+## 36. ✅ FIXED — the clippy and fmt gates fail on pre-existing code (found 2026-11-13, fixed 2026-11-20)
 
 **Measured again 2026-11-15:** `cargo clippy --lib` reports 111 warnings on
 `dev`, none of them in the file that was being changed. So the gate still
@@ -1540,6 +1540,46 @@ clippy warnings and `build.rs:37`, with no behaviour change. Test:
 `cargo clippy -- -D warnings` and `cargo fmt -- --check` pass on a clean
 tree. Alternatively pin the toolchain in `rust-toolchain.toml`, but the
 lints are real, so the cleanup is the honest fix.
+
+### ✅ Fixed (2026-11-20) — stacker `chore/fmt-clippy-gates-36`
+
+One cleanup change with no behaviour change, as the fix direction asked:
+both gates now pass on a clean tree.
+
+- `cargo clippy --fix` absorbed the mechanical majority — redundant
+  references in `format!`/`println!` arguments and immediately-dereferenced
+  borrows (45 files), plus the `build.rs:37` useless conversion the entry
+  named.
+- The rest was settled by hand: detached `///` blocks that documented
+  nothing became plain comments; the copied `static APP` / `async fn app`
+  test scaffolding carries `#[allow(dead_code)]` (it is a shared template,
+  some files use only one half); the identical `else if` branches in the
+  audit validator's severity collapsed; its two script-body regexes moved
+  out of the per-file loop into `LazyLock` statics; `Settings::default()`
+  plus field assignment became a struct literal; the unused
+  `derive_builder` dependency left `Cargo.toml`.
+- Three spans genuinely hold a `std::sync::Mutex` across `.await`
+  (`marketplace_mine.rs`) — that is the point there: the tests share one
+  test user and must not interleave, each on its own single-threaded
+  runtime. They carry `#[allow(clippy::await_holding_lock)]` with the
+  reason. The large `Err` variants are prost/tonic-generated
+  (`pipe_proto`) and `tungstenite::Error` in a test helper — allowed
+  module- and fn-locally, not reshaped.
+- `cargo fmt --all` cleared the remaining 49 hunks (3 files at fix time).
+
+**How to verify:** on a clean tree of this branch, both gate commands exit 0:
+
+```bash
+cargo clean
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+```
+
+Full suite: 2416 passed / 7 failed / 7 ignored — every failure is the
+pre-existing `tests/agent_sweep.rs` family (test-DB state pollution: a
+leftover agent row makes `sweep_dead_returns_zero_when_nothing_to_remove`
+see 1 instead of 0). It fails the same way on the unfixed base; nothing in
+this change touches behaviour.
 
 ## 37. ✅ FIXED — `stacker proxy add` rewrites the whole `stacker.yml` and drops every comment (found 2026-11-14, fixed 2026-11-20)
 

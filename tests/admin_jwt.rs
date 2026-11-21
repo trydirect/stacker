@@ -11,8 +11,10 @@ use tokio::sync::OnceCell;
 // runtime that has already been dropped, and `acquire()` then blocks for the
 // full 120s timeout and fails with `PoolTimedOut`. The server still starts
 // once; only the pool is per test.
+#[allow(dead_code)]
 static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> common::TestApp {
     common::get_or_init_app_fresh(&APP_CONFIG)
         .await

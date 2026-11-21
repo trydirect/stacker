@@ -17,7 +17,7 @@ pub async fn add(
 ) -> Result<impl Responder> {
     if !form.validate().is_ok() {
         let errors = form.validate().unwrap_err().to_string();
-        let err_msg = format!("Invalid data received {:?}", &errors);
+        let err_msg = format!("Invalid data received {:?}", errors);
         tracing::debug!(err_msg);
 
         return Err(JsonResponse::<models::Project>::build().form_error(errors));

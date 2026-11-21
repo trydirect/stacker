@@ -729,7 +729,7 @@ pub async fn validate_all(
         .await
         .map_err(|e| {
             JsonResponse::<()>::build()
-                .internal_server_error(&format!("Failed to fetch servers: {}", e))
+                .internal_server_error(format!("Failed to fetch servers: {}", e))
         })?;
 
     let mut futures = Vec::with_capacity(servers.len());

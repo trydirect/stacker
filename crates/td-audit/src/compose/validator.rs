@@ -1,6 +1,14 @@
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::LazyLock;
+
+/// Script-body patterns compiled once: `Regex::new` inside the per-file loop
+/// rebuilt both on every file and was the check's slowest part.
+static LONG_BASE64_PAYLOAD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/]{1024,}={0,2}").expect("valid static regex"));
+static OBFUSCATED_EVAL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(eval\s*\$\(|`[^`]{50,}`)").expect("valid static regex"));
 
 /// Result of a single security check
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -812,8 +820,6 @@ fn check_hardened_images(stack_definition: &Value) -> SecurityCheckResult {
         passed,
         severity: if unpinned_warnings > 0 {
             "warning".to_string()
-        } else if passed {
-            "info".to_string()
         } else {
             "info".to_string()
         },
@@ -880,27 +886,23 @@ pub fn validate_shell_scripts(scripts: &[(&str, &str)]) -> SecurityCheckResult {
         }
 
         // Check for long base64-encoded payloads in scripts
-        if let Ok(re) = Regex::new(r"[A-Za-z0-9+/]{1024,}={0,2}") {
-            for mat in re.find_iter(content) {
-                let line = content[..mat.start()].lines().count() + 1;
-                script_findings.push(format!(
-                    "[WARNING] Long base64-encoded content ({} chars) in '{}' line {} — may contain hidden payload",
-                    mat.len(),
-                    name,
-                    line
-                ));
-            }
+        for mat in LONG_BASE64_PAYLOAD.find_iter(content) {
+            let line = content[..mat.start()].lines().count() + 1;
+            script_findings.push(format!(
+                "[WARNING] Long base64-encoded content ({} chars) in '{}' line {} — may contain hidden payload",
+                mat.len(),
+                name,
+                line
+            ));
         }
 
         // Check for obfuscated eval chains
-        if let Ok(re) = Regex::new(r"(?i)(eval\s*\$\(|`[^`]{50,}`)") {
-            if re.is_match(content) {
-                let line = content[..re.find(content).unwrap().start()].lines().count() + 1;
-                script_findings.push(format!(
-                    "[WARNING] Obfuscated eval/execution in '{}' line {} — review for hidden commands",
-                    name, line
-                ));
-            }
+        if let Some(mat) = OBFUSCATED_EVAL.find(content) {
+            let line = content[..mat.start()].lines().count() + 1;
+            script_findings.push(format!(
+                "[WARNING] Obfuscated eval/execution in '{}' line {} — review for hidden commands",
+                name, line
+            ));
         }
 
         findings.extend(script_findings);

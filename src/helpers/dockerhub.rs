@@ -146,7 +146,7 @@ impl<'a> DockerHub<'a> {
             .json::<RepoResults>()
             .await
             .map_err(|err| {
-                let msg = format!("🟥Error on getting results:: {} url: {}", &err, &url);
+                let msg = format!("🟥Error on getting results:: {} url: {}", err, url);
                 tracing::error!(msg);
                 msg
             })
@@ -226,7 +226,7 @@ impl<'a> DockerHub<'a> {
         // get exact tag name
         let url = format!(
             "https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags?name={}&page_size=100",
-            &self.creds.username, &self.repos, &t
+            self.creds.username, self.repos, t
         );
 
         tracing::debug!("Search vendor's public repos {:?}", url);
@@ -275,7 +275,7 @@ impl<'a> DockerHub<'a> {
 
         let url = format!(
             "https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags?name={}&page_size=100",
-            &self.creds.username, &self.repos, t
+            self.creds.username, self.repos, t
         );
 
         tracing::debug!("Search private repos {:?}", url);

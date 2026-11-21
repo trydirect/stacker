@@ -2,11 +2,11 @@ mod common;
 
 use common::{USER_A_ID, USER_A_TOKEN, USER_B_TOKEN};
 
-/// Chat sessions are owned by the authenticated user. Every handler scopes its
-/// query by the caller's user_id, so User B can never see, read, or delete
-/// User A's sessions. Message content is encrypted at rest (AES-256-GCM, same
-/// `Secret` helper used for cloud credentials), so the plaintext never lands in
-/// the database.
+// Chat sessions are owned by the authenticated user. Every handler scopes its
+// query by the caller's user_id, so User B can never see, read, or delete
+// User A's sessions. Message content is encrypted at rest (AES-256-GCM, same
+// `Secret` helper used for cloud credentials), so the plaintext never lands in
+// the database.
 
 /// Create a session directly for a user and return its id.
 async fn insert_session(pool: &sqlx::PgPool, user_id: &str, plaintext_marker: &str) -> uuid::Uuid {
@@ -68,7 +68,7 @@ async fn test_owner_can_create_list_read_delete() {
 
     // List returns the session but NOT message content
     let resp = client
-        .get(format!("{}/api/chat/sessions", &app.address))
+        .get(format!("{}/api/chat/sessions", app.address))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
         .await
@@ -88,7 +88,7 @@ async fn test_owner_can_create_list_read_delete() {
     let resp = client
         .get(format!(
             "{}/api/chat/sessions/{}/messages",
-            &app.address, session_id
+            app.address, session_id
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
@@ -103,7 +103,7 @@ async fn test_owner_can_create_list_read_delete() {
 
     // Delete
     let resp = client
-        .delete(format!("{}/api/chat/sessions/{}", &app.address, session_id))
+        .delete(format!("{}/api/chat/sessions/{}", app.address, session_id))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
         .await
@@ -152,7 +152,7 @@ async fn test_list_only_returns_own_sessions() {
 
     // User B lists — must not see User A's session
     let resp = client
-        .get(format!("{}/api/chat/sessions", &app.address))
+        .get(format!("{}/api/chat/sessions", app.address))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .send()
         .await
@@ -177,7 +177,7 @@ async fn test_read_other_users_session_is_404() {
     let resp = client
         .get(format!(
             "{}/api/chat/sessions/{}/messages",
-            &app.address, a_id
+            app.address, a_id
         ))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .send()
@@ -201,7 +201,7 @@ async fn test_delete_other_users_session_is_404_and_no_op() {
 
     // User B tries to delete User A's session
     let resp = client
-        .delete(format!("{}/api/chat/sessions/{}", &app.address, a_id))
+        .delete(format!("{}/api/chat/sessions/{}", app.address, a_id))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .send()
         .await
@@ -240,7 +240,7 @@ async fn test_append_persists_and_stays_encrypted() {
     let resp = client
         .post(format!(
             "{}/api/chat/sessions/{}/messages",
-            &app.address, session_id
+            app.address, session_id
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .header("Content-Type", "application/json")
@@ -285,7 +285,7 @@ async fn test_append_to_other_users_session_is_404() {
     let resp = client
         .post(format!(
             "{}/api/chat/sessions/{}/messages",
-            &app.address, a_id
+            app.address, a_id
         ))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .header("Content-Type", "application/json")
@@ -310,7 +310,7 @@ async fn test_rename_other_users_session_is_404() {
     let a_id = insert_session(&app.db_pool, USER_A_ID, "A session").await;
 
     let resp = client
-        .patch(format!("{}/api/chat/sessions/{}", &app.address, a_id))
+        .patch(format!("{}/api/chat/sessions/{}", app.address, a_id))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .header("Content-Type", "application/json")
         .body(serde_json::json!({"title": "hijacked"}).to_string())
@@ -339,7 +339,7 @@ async fn test_archive_moves_session_between_lists() {
     let resp = client
         .post(format!(
             "{}/api/chat/sessions/{}/archive",
-            &app.address, session_id
+            app.address, session_id
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
@@ -353,7 +353,7 @@ async fn test_archive_moves_session_between_lists() {
 
     // Default (active) list must NOT contain it
     let active = client
-        .get(format!("{}/api/chat/sessions", &app.address))
+        .get(format!("{}/api/chat/sessions", app.address))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
         .await
@@ -368,7 +368,7 @@ async fn test_archive_moves_session_between_lists() {
 
     // Archived list MUST contain it
     let archived = client
-        .get(format!("{}/api/chat/sessions?archived=true", &app.address))
+        .get(format!("{}/api/chat/sessions?archived=true", app.address))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
         .await
@@ -394,7 +394,7 @@ async fn test_archive_other_users_session_is_404() {
     let resp = client
         .post(format!(
             "{}/api/chat/sessions/{}/archive",
-            &app.address, a_id
+            app.address, a_id
         ))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .send()

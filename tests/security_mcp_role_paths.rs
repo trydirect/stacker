@@ -3,10 +3,10 @@ use serde_json::json;
 use stacker::mcp::{ToolContext, ToolRegistry};
 use std::sync::Arc;
 
-/// The Ansible role tools take a role name and read files under the roles
-/// directory. A name is a single directory name: an absolute path or a `..`
-/// component would let any user read README.md and defaults/main.yml from
-/// anywhere on the Stacker host.
+// The Ansible role tools take a role name and read files under the roles
+// directory. A name is a single directory name: an absolute path or a `..`
+// component would let any user read README.md and defaults/main.yml from
+// anywhere on the Stacker host.
 
 const ROLE_TOOLS: &[&str] = &[
     "get_role_details",

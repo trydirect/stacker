@@ -7,8 +7,10 @@ use tokio::sync::OnceCell;
 // runtime that has already been dropped, and `acquire()` then blocks for the
 // full 120s timeout and fails with `PoolTimedOut`. The server still starts
 // once; only the pool is per test.
+#[allow(dead_code)]
 static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> common::TestApp {
     common::get_or_init_app_fresh(&APP_CONFIG)
         .await
@@ -22,7 +24,7 @@ async fn list() {
     let client = reqwest::Client::new(); // client
 
     let response = client
-        .get(format!("{}/cloud", &app.address))
+        .get(format!("{}/cloud", app.address))
         .header("Authorization", "Bearer test_token")
         .send()
         .await
@@ -38,7 +40,7 @@ async fn add_cloud() {
     let client = reqwest::Client::new(); // client
 
     let response = client
-        .post(format!("{}/cloud", &app.address))
+        .post(format!("{}/cloud", app.address))
         .header("Authorization", "Bearer test_token")
         .header("Content-Type", "application/json")
         .body(r#"{"name":"Test Cloud","provider":"hetzner","cloud_token":"test_token"}"#)

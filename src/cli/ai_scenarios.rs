@@ -638,10 +638,8 @@ fn derive_image_repository_from_repo_url(repo_url: &str) -> Option<String> {
         path
     } else if let Some(path) = remote.strip_prefix("https://github.com/") {
         path
-    } else if let Some(path) = remote.strip_prefix("ssh://git@github.com/") {
-        path
     } else {
-        return None;
+        remote.strip_prefix("ssh://git@github.com/")?
     };
 
     let mut segments = path.split('/');

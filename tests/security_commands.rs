@@ -8,8 +8,10 @@ use reqwest::StatusCode;
 
 use tokio::sync::OnceCell;
 
+#[allow(dead_code)]
 static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> &'static common::TwoUserTestApp {
     common::get_or_init_two_user_app(&APP)
         .await

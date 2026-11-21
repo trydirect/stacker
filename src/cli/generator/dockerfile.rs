@@ -551,11 +551,7 @@ mod tests {
     #[test]
     fn test_project_aware_node_uses_package_json_main_without_start_script() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("package.json"),
-            r#"{ "main": "index.js" }"#,
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{ "main": "index.js" }"#).unwrap();
 
         let content = DockerfileBuilder::for_project(dir.path(), AppType::Node).build();
         assert!(

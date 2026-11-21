@@ -586,10 +586,10 @@ impl DeploymentLock {
     pub fn remove_deploy_server(config_path: &Path) -> Result<(), CliError> {
         Self::edit_config_value(config_path, |root| {
             if let Some(deploy) = root
-                .get_mut(&yaml_key("deploy"))
+                .get_mut(yaml_key("deploy"))
                 .and_then(|value| value.as_mapping_mut())
             {
-                deploy.remove(&yaml_key("server"));
+                deploy.remove(yaml_key("server"));
             }
             Ok(())
         })
@@ -687,9 +687,9 @@ fn yaml_key(key: &str) -> serde_yaml::Value {
 /// Read `parent[section][field]` as a string, if present.
 fn child_string(parent: &serde_yaml::Mapping, section: &str, field: &str) -> Option<String> {
     parent
-        .get(&yaml_key(section))
+        .get(yaml_key(section))
         .and_then(|value| value.as_mapping())
-        .and_then(|map| map.get(&yaml_key(field)))
+        .and_then(|map| map.get(yaml_key(field)))
         .and_then(|value| value.as_str())
         .map(|value| value.to_string())
 }

@@ -13,6 +13,7 @@ use tokio::sync::OnceCell;
 static APP: OnceCell<common::TestAppWithVaultShared> = OnceCell::const_new();
 static VAULT_MOCK_READY: OnceCell<()> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> common::TestAppWithVaultFresh {
     // Agent authentication reads the token back from Vault, so these tests
     // need a Vault that answers. `get_or_init_vault_app_fresh` keeps the
@@ -103,7 +104,7 @@ async fn register_test_agent(
     });
 
     let register_response = client
-        .post(format!("{}/api/v1/agent/register", &app.address))
+        .post(format!("{}/api/v1/agent/register", app.address))
         .header("X-Internal-Key", common::TEST_INTERNAL_KEY)
         .json(&register_payload)
         .send()
@@ -231,7 +232,7 @@ async fn wait_for_command(
     client
         .get(format!(
             "{}/api/v1/agent/commands/wait/{}",
-            &app.address, deployment_hash
+            app.address, deployment_hash
         ))
         .header("X-Agent-Id", agent_id)
         .header("Authorization", format!("Bearer {}", agent_token))
@@ -311,7 +312,7 @@ async fn test_agent_command_flow() {
     });
 
     let register_response = client
-        .post(format!("{}/api/v1/agent/register", &app.address))
+        .post(format!("{}/api/v1/agent/register", app.address))
         .header("X-Internal-Key", common::TEST_INTERNAL_KEY)
         .json(&register_payload)
         .send()
@@ -362,7 +363,7 @@ async fn test_agent_command_flow() {
 
     // Use a test Bearer token - the mock auth server will validate any token
     let create_command_response = client
-        .post(format!("{}/api/v1/commands", &app.address))
+        .post(format!("{}/api/v1/commands", app.address))
         .header("Authorization", "Bearer test_token_12345")
         .json(&command_payload)
         .send()
@@ -406,7 +407,7 @@ async fn test_agent_command_flow() {
     let wait_response = client
         .get(format!(
             "{}/api/v1/agent/commands/wait/{}",
-            &app.address, deployment_hash
+            app.address, deployment_hash
         ))
         .header("X-Agent-Id", &agent_id)
         .header("Authorization", format!("Bearer {}", agent_token))
@@ -461,7 +462,7 @@ async fn test_agent_command_flow() {
     });
 
     let report_response = client
-        .post(format!("{}/api/v1/agent/commands/report", &app.address))
+        .post(format!("{}/api/v1/agent/commands/report", app.address))
         .header("X-Agent-Id", &agent_id)
         .header("Authorization", format!("Bearer {}", agent_token))
         .json(&report_payload)
@@ -574,7 +575,7 @@ async fn test_trigger_pipe_report_persists_execution_history() {
     });
 
     let register_response = client
-        .post(format!("{}/api/v1/agent/register", &app.address))
+        .post(format!("{}/api/v1/agent/register", app.address))
         .header("X-Internal-Key", common::TEST_INTERNAL_KEY)
         .json(&register_payload)
         .send()
@@ -625,7 +626,7 @@ async fn test_trigger_pipe_report_persists_execution_history() {
     let wait_response = client
         .get(format!(
             "{}/api/v1/agent/commands/wait/{}",
-            &app.address, deployment_hash
+            app.address, deployment_hash
         ))
         .header("X-Agent-Id", &agent_id)
         .header("Authorization", format!("Bearer {}", agent_token))
@@ -670,7 +671,7 @@ async fn test_trigger_pipe_report_persists_execution_history() {
     });
 
     let report_response = client
-        .post(format!("{}/api/v1/agent/commands/report", &app.address))
+        .post(format!("{}/api/v1/agent/commands/report", app.address))
         .header("X-Agent-Id", &agent_id)
         .header("Authorization", format!("Bearer {}", agent_token))
         .json(&report_payload)
@@ -798,7 +799,7 @@ async fn test_agent_heartbeat() {
     });
 
     let register_response = client
-        .post(format!("{}/api/v1/agent/register", &app.address))
+        .post(format!("{}/api/v1/agent/register", app.address))
         .header("X-Internal-Key", common::TEST_INTERNAL_KEY)
         .json(&register_payload)
         .send()
@@ -832,7 +833,7 @@ async fn test_agent_heartbeat() {
     let wait_response = client
         .get(format!(
             "{}/api/v1/agent/commands/wait/{}?timeout=5",
-            &app.address, deployment_hash
+            app.address, deployment_hash
         ))
         .header("X-Agent-Id", agent_id)
         .header("Authorization", format!("Bearer {}", agent_token))
@@ -871,7 +872,7 @@ async fn test_command_priority_ordering() {
     });
 
     let register_response = client
-        .post(format!("{}/api/v1/agent/register", &app.address))
+        .post(format!("{}/api/v1/agent/register", app.address))
         .header("X-Internal-Key", common::TEST_INTERNAL_KEY)
         .json(&register_payload)
         .send()
@@ -900,7 +901,7 @@ async fn test_command_priority_ordering() {
         });
 
         client
-            .post(format!("{}/api/v1/commands", &app.address))
+            .post(format!("{}/api/v1/commands", app.address))
             .json(&cmd_payload)
             .send()
             .await
@@ -911,7 +912,7 @@ async fn test_command_priority_ordering() {
     let wait_response = client
         .get(format!(
             "{}/api/v1/agent/commands/wait/{}",
-            &app.address, deployment_hash
+            app.address, deployment_hash
         ))
         .header("X-Agent-Id", agent_id)
         .header("Authorization", format!("Bearer {}", agent_token))
@@ -984,7 +985,7 @@ async fn test_authenticated_command_creation() {
     {
         let anon_client = reqwest::Client::new();
         let response_no_auth = anon_client
-            .post(format!("{}/api/v1/commands", &app.address))
+            .post(format!("{}/api/v1/commands", app.address))
             .json(&cmd_payload)
             .send()
             .await
@@ -1000,7 +1001,7 @@ async fn test_authenticated_command_creation() {
 
     println!("\n=== Test 2: Command creation with authentication (should succeed) ===");
     let response_with_auth = client
-        .post(format!("{}/api/v1/commands", &app.address))
+        .post(format!("{}/api/v1/commands", app.address))
         .header("Authorization", "Bearer test_token_authenticated")
         .json(&cmd_payload)
         .send()
@@ -1032,7 +1033,7 @@ async fn test_authenticated_command_creation() {
     let list_response = client
         .get(format!(
             "{}/api/v1/commands/{}",
-            &app.address, deployment_hash
+            app.address, deployment_hash
         ))
         .header("Authorization", "Bearer test_token_authenticated")
         .send()
@@ -1110,7 +1111,7 @@ async fn test_command_priorities_and_permissions() {
         });
 
         let response = client
-            .post(format!("{}/api/v1/commands", &app.address))
+            .post(format!("{}/api/v1/commands", app.address))
             .header("Authorization", "Bearer test_token")
             .json(&payload)
             .send()
@@ -1139,7 +1140,7 @@ async fn test_command_priorities_and_permissions() {
     });
 
     let register_response = client
-        .post(format!("{}/api/v1/agent/register", &app.address))
+        .post(format!("{}/api/v1/agent/register", app.address))
         .header("X-Internal-Key", common::TEST_INTERNAL_KEY)
         .json(&register_payload)
         .send()
@@ -1159,7 +1160,7 @@ async fn test_command_priorities_and_permissions() {
     let wait_response = client
         .get(format!(
             "{}/api/v1/agent/commands/wait/{}",
-            &app.address, deployment_hash
+            app.address, deployment_hash
         ))
         .header("X-Agent-Id", agent_id)
         .header("Authorization", format!("Bearer {}", agent_token))
@@ -1236,7 +1237,7 @@ async fn test_trigger_pipe_failed_report_persists_execution_history() {
     });
 
     let report_response = client
-        .post(format!("{}/api/v1/agent/commands/report", &app.address))
+        .post(format!("{}/api/v1/agent/commands/report", app.address))
         .header("X-Agent-Id", &agent_id)
         .header("Authorization", format!("Bearer {}", agent_token))
         .json(&report_payload)
@@ -1359,7 +1360,7 @@ async fn test_replay_trigger_pipe_report_updates_existing_replay_execution() {
     });
 
     let report_response = client
-        .post(format!("{}/api/v1/agent/commands/report", &app.address))
+        .post(format!("{}/api/v1/agent/commands/report", app.address))
         .header("X-Agent-Id", &agent_id)
         .header("Authorization", format!("Bearer {}", agent_token))
         .json(&report_payload)
@@ -1448,7 +1449,7 @@ async fn test_activate_pipe_report_accepts_runtime_lifecycle_shape() {
     });
 
     let report_response = client
-        .post(format!("{}/api/v1/agent/commands/report", &app.address))
+        .post(format!("{}/api/v1/agent/commands/report", app.address))
         .header("X-Agent-Id", &agent_id)
         .header("Authorization", format!("Bearer {}", agent_token))
         .json(&report_payload)
@@ -1521,7 +1522,7 @@ async fn test_deactivate_pipe_report_accepts_runtime_lifecycle_shape() {
     });
 
     let report_response = client
-        .post(format!("{}/api/v1/agent/commands/report", &app.address))
+        .post(format!("{}/api/v1/agent/commands/report", app.address))
         .header("X-Agent-Id", &agent_id)
         .header("Authorization", format!("Bearer {}", agent_token))
         .json(&report_payload)
@@ -1575,7 +1576,7 @@ async fn register_with_owner(
         payload["user_id"] = json!(user_id);
     }
     client
-        .post(format!("{}/api/v1/agent/register", &app.address))
+        .post(format!("{}/api/v1/agent/register", app.address))
         .header("X-Internal-Key", common::TEST_INTERNAL_KEY)
         .json(&payload)
         .send()

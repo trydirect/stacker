@@ -4,8 +4,10 @@ use common::{USER_A_ID, USER_A_TOKEN, USER_B_TOKEN};
 
 use tokio::sync::OnceCell;
 
+#[allow(dead_code)]
 static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> &'static common::TwoUserTestApp {
     common::get_or_init_two_user_app(&APP)
         .await
@@ -44,7 +46,7 @@ async fn test_list_chats_only_returns_own() {
     let resp = client
         .get(format!(
             "{}/api/chat/history?project_id={}",
-            &app.address, TEST_PROJECT_ID
+            app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .send()
@@ -75,7 +77,7 @@ async fn test_get_chat_rejects_other_user() {
     let resp = client
         .get(format!(
             "{}/api/chat/history?project_id={}",
-            &app.address, TEST_PROJECT_ID
+            app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .send()
@@ -105,7 +107,7 @@ async fn test_update_chat_rejects_other_user() {
     // User B upserts chat for the same project_id.
     // This should create a SEPARATE chat for User B, not overwrite User A's.
     let resp = client
-        .put(format!("{}/api/chat/history", &app.address))
+        .put(format!("{}/api/chat/history", app.address))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .header("Content-Type", "application/json")
         .body(
@@ -128,7 +130,7 @@ async fn test_update_chat_rejects_other_user() {
     let resp = client
         .get(format!(
             "{}/api/chat/history?project_id={}",
-            &app.address, TEST_PROJECT_ID
+            app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
@@ -159,7 +161,7 @@ async fn test_delete_chat_rejects_other_user() {
     let resp = client
         .delete(format!(
             "{}/api/chat/history?project_id={}",
-            &app.address, TEST_PROJECT_ID
+            app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .send()
@@ -173,7 +175,7 @@ async fn test_delete_chat_rejects_other_user() {
     let resp = client
         .get(format!(
             "{}/api/chat/history?project_id={}",
-            &app.address, TEST_PROJECT_ID
+            app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
@@ -195,7 +197,7 @@ async fn test_owner_can_access_own_chat() {
 
     // User A creates chat via API
     let resp = client
-        .put(format!("{}/api/chat/history", &app.address))
+        .put(format!("{}/api/chat/history", app.address))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .header("Content-Type", "application/json")
         .body(
@@ -218,7 +220,7 @@ async fn test_owner_can_access_own_chat() {
     let resp = client
         .get(format!(
             "{}/api/chat/history?project_id={}",
-            &app.address, TEST_PROJECT_ID
+            app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
@@ -237,7 +239,7 @@ async fn test_owner_can_access_own_chat() {
     let resp = client
         .delete(format!(
             "{}/api/chat/history?project_id={}",
-            &app.address, TEST_PROJECT_ID
+            app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
@@ -253,7 +255,7 @@ async fn test_owner_can_access_own_chat() {
     let resp = client
         .get(format!(
             "{}/api/chat/history?project_id={}",
-            &app.address, TEST_PROJECT_ID
+            app.address, TEST_PROJECT_ID
         ))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()

@@ -2509,7 +2509,7 @@ async fn install_agent_via_local_ssh(
     // Helper: run a command on the remote, stream output, return exit code.
     let ssh_run = |cmd: &str| -> Result<std::process::Output, CliError> {
         std::process::Command::new("ssh")
-            .args(&ssh_args)
+            .args(ssh_args)
             .arg(&user_at_host)
             .arg(cmd)
             .output()
