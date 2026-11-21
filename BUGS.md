@@ -2440,7 +2440,7 @@ The `node` example in `docs/STACKER_YML_REFERENCE.md` and the CHEATSHEET
 The same generator runs at deploy time, so a later `stacker deploy` does not
 overwrite the CMD with the old hardcoded form.
 
-## 50. 🟠 OPEN — a local deploy reports success and a timeout in the same breath (found 2026-11-17)
+## 50. ✅ FIXED — a local deploy reports success and a timeout in the same breath (found 2026-11-17, fixed 2026-11-21)
 
 With the crash loop of #49 in progress:
 
@@ -2465,6 +2465,53 @@ program output rather than a suggestion.
 **Expected:** the readiness result decides the headline. A deploy whose
 containers never became ready is a failed deploy, and the next line should be
 how to see why - `stacker logs`, not an upsell.
+
+### ✅ Fixed (2026-11-21) — stacker `fix/local-deploy-readiness-verdict-50`
+
+The readiness result decides the headline, as the expected outcome asked.
+The deploy spinner now reports the mechanical step only — "docker compose
+accepted the files" — and the verdict comes from the health check:
+
+```
+  ✓ docker compose accepted the files
+  ✗ Local deployment failed — containers never became ready
+  See why with: stacker logs
+```
+
+A deploy whose containers never became ready is a **failed deploy**: the
+command exits non-zero and a `hooks.notify` deploy reports failure — the
+same verdict machinery a watched remote deploy gets. It still claims the
+active deployment target on purpose: the broken stack on this machine *is*
+the current state, and `stacker logs` must resolve it to show why. When the
+containers do come up, the headline is the readiness result too:
+
+```
+  ✓ docker compose accepted the files
+  ✓ All 2/2 containers running
+  ✓ Local deployment started successfully
+```
+
+Both smaller things are in: the advice after a timeout is `stacker logs`
+(not `stacker status`), and the suggestion block is indented like everything
+around it, so it reads as a suggestion rather than program output. `--no-watch`
+keeps the old single-line behaviour — the caller opted out of verification.
+
+**How to verify:** point `docker` at a stub whose `compose ps` reports
+non-running containers and run `stacker deploy --target local` (the test
+does exactly this — `tests/cli_deploy_local_readiness.rs` — and pins the
+whole expected outcome: failure exit, `stacker logs` advice, no upsell).
+With real docker: deploy a stack whose app container crash-loops; the
+run must end `✗ Local deployment failed`, exit non-zero, and next line must
+be `stacker logs`.
+
+`STACKER_LOCAL_WATCH_TIMEOUT_SECS` overrides the 120s readiness wait (the
+tests use it to stay fast).
+
+Test status on this branch: `cargo test --no-fail-fast` — 3045 passed / 10
+failed / 44 ignored across 133 suites. The five `tests/agent_sweep.rs`
+failures are the known family; the five marketplace failures are the fixture
+race and rating-suite flakes fixed in PR #370, which this branch is based
+behind — they pass once #370 is merged.
 
 ## 51. ❎ NOT A BUG — a redeploy creates a new deployment, and the agent commands need its hash (corrected 2026-11-17)
 

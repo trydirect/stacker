@@ -4270,7 +4270,18 @@ impl CallableTrait for DeployCommand {
 
         let result = match result {
             Ok(result) => {
-                progress::finish_success(&spin, &result.message);
+                // A local deploy that is about to be health-checked gets its
+                // verdict from the readiness check (BUGS.md #50): this spinner
+                // reports the mechanical step, not a success the check has
+                // not confirmed yet.
+                let verdict_from_readiness = matches!(result.target, DeployTarget::Local)
+                    && !self.dry_run
+                    && self.watch != Some(false);
+                if verdict_from_readiness {
+                    progress::finish_success(&spin, "docker compose accepted the files");
+                } else {
+                    progress::finish_success(&spin, &result.message);
+                }
                 result
             }
             Err(err) => {
@@ -4314,36 +4325,51 @@ impl CallableTrait for DeployCommand {
         match result.target {
             DeployTarget::Local => {
                 // Always do a quick health check for local deploy unless --no-watch
-                if self.watch != Some(false) {
+                let readiness = if self.watch != Some(false) {
                     watch_local_containers(
                         &project_dir,
                         self.file.as_deref(),
                         self.target.as_deref(),
-                    )?;
-                }
-
-                // Show platform features available to the user
-                let creds_path = std::env::var("XDG_CONFIG_HOME")
-                    .map(std::path::PathBuf::from)
-                    .or_else(|_| {
-                        std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
-                    })
-                    .map(|b| b.join("stacker/credentials.json"))
-                    .unwrap_or_default();
-                let logged_in = std::env::var("STACKER_TOKEN").is_ok() || creds_path.exists();
-
-                if !logged_in {
-                    eprintln!(
-                        "\n  Create a free account to deploy anywhere:\n\
-                           stacker login\n\
-                           (Free tier: 20 deploys/mo, 1 cloud provider — no credit card)"
-                    );
+                    )?
                 } else {
-                    eprintln!(
-                        "\n  Deploy to production:\n\
-                           stacker config setup cloud    (Hetzner $4/mo, 5 min setup)\n\
-                           stacker deploy --target cloud"
-                    );
+                    DeploymentWatchOutcome::Unknown
+                };
+
+                // The readiness result decides the headline (BUGS.md #50): a
+                // stack whose containers never became ready is a failed
+                // deploy, and what follows is how to see why — not an
+                // invitation to deploy somewhere else.
+                if matches!(readiness, DeploymentWatchOutcome::LocalNotReady) {
+                    watch_outcome = readiness;
+                } else {
+                    if matches!(readiness, DeploymentWatchOutcome::Completed) {
+                        eprintln!("  ✓ {}", result.message);
+                    }
+
+                    // Show platform features available to the user
+                    let creds_path = std::env::var("XDG_CONFIG_HOME")
+                        .map(std::path::PathBuf::from)
+                        .or_else(|_| {
+                            std::env::var("HOME")
+                                .map(|h| std::path::PathBuf::from(h).join(".config"))
+                        })
+                        .map(|b| b.join("stacker/credentials.json"))
+                        .unwrap_or_default();
+                    let logged_in = std::env::var("STACKER_TOKEN").is_ok() || creds_path.exists();
+
+                    if !logged_in {
+                        eprintln!(
+                            "\n  Create a free account to deploy anywhere:\n    \
+                             stacker login\n    \
+                             (Free tier: 20 deploys/mo, 1 cloud provider — no credit card)"
+                        );
+                    } else {
+                        eprintln!(
+                            "\n  Deploy to production:\n    \
+                             stacker config setup cloud    (Hetzner $4/mo, 5 min setup)\n    \
+                             stacker deploy --target cloud"
+                        );
+                    }
                 }
             }
             DeployTarget::Cloud | DeployTarget::Server if should_watch => {
@@ -4407,6 +4433,23 @@ impl CallableTrait for DeployCommand {
                 return Err(Box::new(CliError::DeployFailed {
                     target: result.target.clone(),
                     reason: failure.reason(),
+                }));
+            }
+            DeploymentWatchOutcome::LocalNotReady => {
+                // The spinner already said it in a TTY; a piped run (CI/QA)
+                // must see the verdict too, since indicatif is hidden there.
+                if progress::non_tty() {
+                    eprintln!(
+                        "\n  ✗ Local deployment failed — containers never became ready.\n  \
+                         See why with: stacker logs"
+                    );
+                }
+                if should_notify {
+                    notify::deploy_notify(false, &project_name);
+                }
+                return Err(Box::new(CliError::DeployFailed {
+                    target: result.target.clone(),
+                    reason: "containers never became ready — check `stacker logs`".to_string(),
                 }));
             }
             DeploymentWatchOutcome::Completed => {
@@ -5196,11 +5239,19 @@ fn choose_server_for_project(
 
 /// Poll `docker compose ps` until all containers are running/healthy
 /// or a timeout is reached.
+///
+/// The readiness result is the deploy's verdict (BUGS.md #50): `compose up`
+/// accepting the files says nothing about whether anything serves. Returns
+/// `Completed` when ready and `LocalNotReady` when the timeout expires —
+/// never a silent `Ok` after a failure.
+///
+/// `STACKER_LOCAL_WATCH_TIMEOUT_SECS` overrides the wait (default 120s) —
+/// used by the tests to keep a timeout case fast.
 fn watch_local_containers(
     project_dir: &Path,
     config_file: Option<&str>,
     target_override: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<DeploymentWatchOutcome, Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
 
     let compose_path = {
@@ -5230,12 +5281,18 @@ fn watch_local_containers(
     };
 
     if !compose_path.exists() {
-        return Ok(());
+        return Ok(DeploymentWatchOutcome::Unknown);
     }
 
     let compose_str = compose_path.to_string_lossy().to_string();
     let executor = ShellExecutor;
-    let timeout = Duration::from_secs(120);
+    let timeout = Duration::from_secs(
+        std::env::var("STACKER_LOCAL_WATCH_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .filter(|secs: &u64| *secs > 0)
+            .unwrap_or(120),
+    );
     let poll = Duration::from_secs(3);
     let start = Instant::now();
 
@@ -5257,7 +5314,7 @@ fn watch_local_containers(
                                 );
                                 // Show container summary
                                 print_container_summary(&compose_str, &executor);
-                                return Ok(());
+                                return Ok(DeploymentWatchOutcome::Completed);
                             }
                         }
                         _ => {}
@@ -5267,11 +5324,14 @@ fn watch_local_containers(
         }
 
         if start.elapsed() > timeout {
+            // The readiness result decides the headline: nothing is serving,
+            // so this is a failed deploy, and the next line is how to see why.
             progress::finish_error(
                 &spin,
-                "Timeout waiting for containers — check `stacker status`",
+                "Local deployment failed — containers never became ready",
             );
-            return Ok(());
+            eprintln!("  See why with: stacker logs");
+            return Ok(DeploymentWatchOutcome::LocalNotReady);
         }
 
         std::thread::sleep(poll);
@@ -5329,6 +5389,12 @@ fn is_terminal(status: &str) -> bool {
 enum DeploymentWatchOutcome {
     Completed,
     Failed(Box<DeploymentFailure>),
+    /// A local deploy whose containers never became ready: `docker compose up`
+    /// accepted the files, but nothing is serving. A failed deploy (BUGS.md
+    /// #50) — unlike `Failed`, it still claims the active target, because the
+    /// stack on this machine *is* the current state and `stacker logs` must
+    /// resolve it to show why.
+    LocalNotReady,
     /// Watch hit its own timeout while the deployment was still running —
     /// we don't know the outcome, so the CLI must not claim success.
     TimedOut,
