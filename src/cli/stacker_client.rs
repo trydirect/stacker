@@ -100,6 +100,19 @@ pub struct ProjectInfo {
     pub updated_at: String,
 }
 
+/// Resolve a project by name the way the server's install now does
+/// (BUGS.md #28): compare names after `sanitize_project_name` — the CLI may
+/// hold the raw `stacker.yml` name while the row carries the sanitized one —
+/// and, among legacy duplicates (nothing enforced uniqueness), prefer the
+/// newest row so every caller resolves the same id the install reported.
+fn pick_project_by_name<'a>(projects: &'a [ProjectInfo], name: &str) -> Option<&'a ProjectInfo> {
+    let want = crate::models::sanitize_project_name(name);
+    projects
+        .iter()
+        .filter(|project| crate::models::sanitize_project_name(&project.name) == want)
+        .max_by_key(|project| project.id)
+}
+
 /// Project app as returned by `/project/{id}/apps` endpoints
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectAppInfo {
@@ -671,18 +684,17 @@ impl StackerClient {
     /// Find a project by name (case-insensitive).
     pub async fn find_project_by_name(&self, name: &str) -> Result<Option<ProjectInfo>, CliError> {
         let projects = self.list_projects().await?;
-        let lower = name.to_lowercase();
-        Ok(projects
-            .into_iter()
-            .find(|p| p.name.to_lowercase() == lower))
+        Ok(pick_project_by_name(&projects, name).cloned())
     }
 
     pub async fn find_project(&self, reference: &str) -> Result<Option<ProjectInfo>, CliError> {
         let projects = self.list_projects().await?;
-        let lower = reference.to_lowercase();
-        Ok(projects.into_iter().find(|project| {
-            project.id.to_string() == reference || project.name.to_lowercase() == lower
-        }))
+        if let Ok(id) = reference.parse::<i32>() {
+            if let Some(project) = projects.iter().find(|project| project.id == id) {
+                return Ok(Some(project.clone()));
+            }
+        }
+        Ok(pick_project_by_name(&projects, reference).cloned())
     }
 
     /// List all apps for a project owned by the authenticated user.
@@ -4687,6 +4699,64 @@ mod tests {
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn project(id: i32, name: &str) -> ProjectInfo {
+        ProjectInfo {
+            id,
+            name: name.to_string(),
+            user_id: "test_user_id".to_string(),
+            metadata: serde_json::json!({}),
+            created_at: "2026-11-20T00:00:00Z".to_string(),
+            updated_at: "2026-11-20T00:00:00Z".to_string(),
+        }
+    }
+
+    /// The lookup must see through the spelling difference between the raw
+    /// `stacker.yml` name the CLI holds and the sanitized name the row
+    /// carries (`sanitize_project_name` maps both to `my_n8n`) — otherwise a
+    /// deploy misses the installed project and creates a second one.
+    #[test]
+    fn pick_project_by_name_matches_the_sanitized_name() {
+        let projects = vec![project(7, "my_n8n")];
+        assert_eq!(
+            pick_project_by_name(&projects, "My N8n").map(|p| p.id),
+            Some(7),
+            "raw and sanitized spellings of one name are one project"
+        );
+    }
+
+    /// Among legacy duplicates (nothing enforced uniqueness) every caller
+    /// must pick the same row — the newest — so the id the install printed is
+    /// the id the next lookup resolves (BUGS.md #28).
+    #[test]
+    fn pick_project_by_name_prefers_the_newest_of_legacy_duplicates() {
+        let projects = vec![
+            project(817, "n8n-video-demo"),
+            project(818, "n8n-video-demo"),
+            project(900, "other"),
+        ];
+        assert_eq!(
+            pick_project_by_name(&projects, "n8n-video-demo").map(|p| p.id),
+            Some(818),
+            "the newest row of a duplicated name wins"
+        );
+        // Deterministic regardless of the order the server returns them in.
+        let reversed = vec![
+            project(900, "other"),
+            project(818, "n8n-video-demo"),
+            project(817, "n8n-video-demo"),
+        ];
+        assert_eq!(
+            pick_project_by_name(&reversed, "n8n-video-demo").map(|p| p.id),
+            Some(818)
+        );
+    }
+
+    #[test]
+    fn pick_project_by_name_ignores_other_names() {
+        let projects = vec![project(1, "n8n-demo")];
+        assert!(pick_project_by_name(&projects, "n8n_other").is_none());
+    }
 
     #[test]
     fn stacker_api_failure_hides_endpoint_but_surfaces_body_for_4xx() {
