@@ -2703,3 +2703,70 @@ about the human surface, not the protocol.
 
 Docs to update when it lands: `docs/CHEATSHEET.md`, the README quick start,
 and the stream scripts that show the rollout.
+
+## 59. 🟠 OPEN — `agent install` creates a deployment and leaves the lock on the previous one (found 2026-11-19, recorded 2026-11-21)
+
+Should have been written down on the 19th, when it cost twenty minutes on a
+recorded walkthrough; it was described in chat and never filed. #55 says only
+that locks are "written as a side effect of deploying" - this is the case
+where the side effect does not happen at all.
+
+```
+$ stacker agent install --persist-config
+  ✓ Status Panel agent installation triggered
+    Deployment ID: 1547
+✓ Updated monitoring.status_panel=true in stacker.yml
+
+$ stacker agent status
+  ℹ resolved deployment deployment_c73cb51a… (from .stacker/deployment-cloud.lock, target: cloud)
+  ✓ Agent status fetched — ? unknown · 2 app(s)
+  ✗ Fetching containers — timed out
+```
+
+The install created deployment **1547** with its own agent registration; the
+lock still named **1546**, the deployment from before the install. So the
+command that just installed an agent is followed by commands that cannot see
+it: `? unknown`, containers queued, and a wait until the timeout. Pinning the
+new hash by hand fixes it, which is how the user found out that the install
+had made a deployment at all.
+
+The same command happily writes `monitoring.status_panel=true` into
+`stacker.yml` with `--persist-config`, so it is not shy about persisting
+things - it just does not record the deployment it created.
+
+**Expected:** an install that creates a deployment writes the lock for it, the
+way a deploy does. Failing that, it should print the hash it created and the
+one line that makes it current - `stacker deployment use <hash>` - instead of
+leaving the user to discover the gap through a timeout.
+
+## 60. 🟠 OPEN — the pre-flight connection check never runs, and the CLI blames a timeout (found 2026-11-21)
+
+Every single `deploy-app` in two days of use printed one of these:
+
+```
+⚠ Checking active connections — skipped
+⚠ Connection check skipped (agent did not respond in time)
+⚠ Connection check skipped (agent could not verify active connections)
+```
+
+It is not a timeout and not a slow agent. From the deployment's own event
+log:
+
+```
+4. 17:42:57 [command_queued / queued]  check_connections queued
+5. 17:42:59 [command_failed / failed]  Command validation failed:
+                                       program 'check_connections' is not allowed
+```
+
+Two seconds, a flat refusal. The platform accepts `check_connections` at
+enqueue - it is in the validated command list in
+`src/forms/status_panel.rs` - and the agent then rejects it as a program it
+is not allowed to run. So the check has never worked on this agent build, and
+the warning text sends whoever reads it to look at the network, the agent's
+load or its heartbeat, none of which are involved.
+
+**Expected:** the two sides agree on the command list, so the check either
+runs or is not offered; and when a command comes back `failed`, the CLI says
+what the failure was - "the agent refused the command: program
+'check_connections' is not allowed" - rather than describing it as silence.
+A wrong cause in a warning costs more than a missing feature.
