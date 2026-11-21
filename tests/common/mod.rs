@@ -565,6 +565,15 @@ fn read_marketplace_shared_fixture(file_name: &str) -> String {
     })
 }
 
+/// Fixture seeding upserts rows that carry two unique keys (`creator_user_id`
+/// and `public_slug`). When tests run in parallel against the one database a
+/// binary shares, concurrent upserts of the same row can have the speculative
+/// insert resolve its conflict on the *other* index than the one named in
+/// `ON CONFLICT`, which surfaces as a hard `duplicate key` error instead of
+/// the upsert — the marketplace suites failed at random under load that way.
+/// One process-wide lock makes the seeding deterministic.
+static FIXTURE_SEED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub fn marketplace_vendor_fixtures() -> Vec<MarketplaceVendorFixture> {
     serde_json::from_str(&read_marketplace_shared_fixture("vendors.json"))
         .expect("marketplace vendor fixtures should be valid JSON")
@@ -579,6 +588,7 @@ pub async fn seed_marketplace_vendor_fixture(
     pool: &PgPool,
     public_slug: &str,
 ) -> MarketplaceVendorFixture {
+    let _seed_guard = FIXTURE_SEED_LOCK.lock().await;
     let vendor = marketplace_vendor_fixtures()
         .into_iter()
         .find(|fixture| fixture.public_slug == public_slug)
@@ -637,6 +647,7 @@ pub async fn seed_marketplace_template_fixtures_for_vendor(
     pool: &PgPool,
     creator_user_id: &str,
 ) -> Vec<MarketplaceTemplateFixture> {
+    let _seed_guard = FIXTURE_SEED_LOCK.lock().await;
     let templates = marketplace_template_fixtures()
         .into_iter()
         .filter(|fixture| fixture.creator_user_id == creator_user_id)
@@ -691,6 +702,7 @@ pub async fn seed_marketplace_template_fixtures_for_vendor(
 }
 
 pub async fn seed_marketplace_template_ratings_for_vendor(pool: &PgPool, creator_user_id: &str) {
+    let _seed_guard = FIXTURE_SEED_LOCK.lock().await;
     let ratings_by_slug: std::collections::BTreeMap<&str, &[i32]> =
         std::collections::BTreeMap::from([
             // Internal rating storage is 0-10; public/template APIs expose 1-5 stars.

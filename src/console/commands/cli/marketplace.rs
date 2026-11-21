@@ -407,10 +407,7 @@ fn child_mapping<'a>(
 /// Existing files are never overwritten. `.env.example` is written as itself
 /// and, when no `.env` exists yet, its defaults are written to `.env` too.
 /// Returns the files written, for reporting.
-fn materialize_template_files(
-    project_dir: &Path,
-    version: &serde_json::Value,
-) -> Vec<PathBuf> {
+fn materialize_template_files(project_dir: &Path, version: &serde_json::Value) -> Vec<PathBuf> {
     let mut written = Vec::new();
     let empty = Vec::new();
     let files = version
@@ -1598,11 +1595,9 @@ mod tests {
             cloud: Vec::new(),
         };
 
-        let (written, not_written) = write_install_flags(
-            "name: dify\ninstall:\n  inputs: {}\n",
-            &flags,
-        )
-        .expect("flags must write");
+        let (written, not_written) =
+            write_install_flags("name: dify\ninstall:\n  inputs: {}\n", &flags)
+                .expect("flags must write");
         assert!(not_written.is_empty());
         assert!(
             written.contains("commonDomain: dify.com"),
