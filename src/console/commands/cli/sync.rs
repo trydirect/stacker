@@ -14,7 +14,10 @@ use std::path::PathBuf;
 /// left untouched.
 fn sync_summary_line(project_name: &str, project_id: i32, compose_present: bool) -> String {
     if compose_present {
-        format!("✓ Project '{}' synchronized (id={})", project_name, project_id)
+        format!(
+            "✓ Project '{}' synchronized (id={})",
+            project_name, project_id
+        )
     } else {
         format!(
             "⚠ Project '{}' configuration synchronized (id={}) — no compose was present to sync",

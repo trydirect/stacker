@@ -160,7 +160,10 @@ mod tests {
     // BUGS.md #54: the error must name the key it actually wants.
     #[test]
     fn no_alerts_message_names_the_real_key() {
-        assert!(NO_ALERTS_MESSAGE.contains("`target:`"), "{NO_ALERTS_MESSAGE}");
+        assert!(
+            NO_ALERTS_MESSAGE.contains("`target:`"),
+            "{NO_ALERTS_MESSAGE}"
+        );
         assert!(
             !NO_ALERTS_MESSAGE.contains("notify: target"),
             "{NO_ALERTS_MESSAGE}"

@@ -1138,7 +1138,7 @@ the region/size (before PR 336 the file kept the template defaults and the
 flags were dropped silently). Unwritable flags print a `Not written to ...`
 note on stderr.
 
-## 28. 🟡 CONFIRMED — install and deploy report different project ids for the same project (found 2026-11-12)
+## 28. ✅ FIXED — install and deploy report different project ids for the same project (found 2026-11-12, fixed 2026-11-21)
 
 ### Observed (2026-11-12, stacker-cli v0.3.4)
 
@@ -1160,6 +1160,80 @@ rather than show either.
 
 Find which of the two is authoritative and make both commands print it.
 Test: install and the deploy that follows report the same id.
+
+### ✅ Fixed (2026-11-21) — stacker `fix/install-deploy-one-project-id-28`
+
+### The chain, established first
+
+A project's identity is `(user, name)` — the deploy chain's
+"resolve-or-auto-create" already assumes it: it looks the name up, syncs the
+`stacker.yml` metadata into the row it found (`Found project ... syncing
+metadata`), or creates one row. Install did not participate in that identity
+at all:
+
+1. **Install always inserted.** `insert_project_from_form` created a new
+   project row on every install, never consulting names — a repeat install
+   under a name that already existed made a *second* row. Reproduced in a
+   test before the fix: install as `My N8n`, then `my n8n` → projects #1 and
+   #2.
+2. **Name lookups resolved arbitrarily.** The CLI's `find_project_by_name`
+   took the *first* name match out of the unsorted `/project` list, so with
+   two rows of one name the older won. That is the observed pair: install
+   printed the row it had just made (#818), the deploy that followed
+   resolved the older #817.
+3. **Spelling made a third class of miss.** Install stores
+   `sanitize_project_name(name)` while the deploy chain looked up — and
+   created — the raw `stacker.yml` name (`My N8n` vs `my_n8n`), so a lookup
+   could miss the installed project entirely and create yet another row.
+
+### What the fix does
+
+- **Install resolves-or-creates like the deploy chain.** A project of that
+  (user, normalized) name is reused and synced — metadata and request_json
+  updated, the same words the deploy chain prints — instead of duplicated.
+  Both install paths (stack template and catalog application) go through it.
+- **Name resolution is normalized and deterministic.** Both the CLI
+  (`find_project_by_name`, `find_project`) and the install-side lookup
+  compare names after `sanitize_project_name`, and among legacy duplicates
+  (nothing enforced uniqueness before) pick the newest row — the id most
+  recently printed is the one every later lookup resolves.
+
+So install prints the row the deploy will resolve: one name, one project,
+one id.
+
+### Tests
+
+Red first (`tests/marketplace_install_identity.rs`): installing twice under
+one name reported `#1` and `#2` — the bug in one line. Now it reports one id
+and one row, and a different name stays a separate project. Unit tests pin
+the sanitized matching and the duplicate pick.
+
+The fix also carries two test-infrastructure repairs the honest full run
+surfaced (see below): marketplace fixture seeding is serialized (parallel
+upserts of a row with two unique keys raced on the non-arbiter index and
+failed with `duplicate key` at random), and the rating suite resets the
+shared template's ratings/product link per test (assertions observed each
+other's writes).
+
+**How to verify:**
+
+```bash
+stacker install <template> --name my-n8n     # Installed '<slug>' as project #N
+stacker deploy                               # must resolve project #N too
+```
+
+Both must print the same id. Repeat the install with the same name (or the
+same name spelled `My N8n`): still #N, and one project row in
+`stacker deployment state` / `stacker projects`.
+
+Test status: `cargo test --no-fail-fast` — 3053 passed / 5 failed / 44
+ignored across 133 suites. All five failures are pre-existing test flakes,
+not this change: 4× the known `tests/agent_sweep.rs` family and one
+`project_team_seats` `PoolTimedOut` under full-suite load (30/30 in
+isolation). Note for anyone reading older entries: plain `cargo test` stops
+at the first failing target, so earlier "full suite" runs only ever covered
+the ~15 targets up to `agent_sweep`; this entry was verified with
+`--no-fail-fast`.
 
 ## 29. ✅ FIXED — `stacker agent install` refuses when `deploy.server.host` is empty, right after a cloud deploy created the server (found 2026-11-12, fixed 2026-11-19)
 
