@@ -101,8 +101,16 @@ pub enum CliError {
     AgentNotFound {
         deployment_hash: String,
     },
+    /// The resolved deployment's agent cannot pick commands up: nothing is
+    /// polling its queue (no agent registered, or a heartbeat stale under the
+    /// platform's own rule — `src/routes/agent/snapshot.rs:531-543`). Refused
+    /// **before** enqueueing on purpose: waiting would end the same way, only
+    /// after the full poll deadline (BUGS.md #61). `hint` carries the one
+    /// command that puts the CLI back on the deployment with the live agent.
     AgentOffline {
         deployment_hash: String,
+        reason: String,
+        hint: String,
     },
     AgentCommandTimeout {
         command_id: String,
@@ -222,11 +230,15 @@ impl fmt::Display for CliError {
                      Ensure the agent is installed and has registered with Stacker."
                 )
             }
-            Self::AgentOffline { deployment_hash } => {
+            Self::AgentOffline {
+                deployment_hash,
+                reason,
+                hint,
+            } => {
                 write!(
                     f,
-                    "Status Panel agent for deployment '{deployment_hash}' appears offline.\n\
-                     Check that the server is running and the agent process is active."
+                    "No agent is picking up commands for deployment '{deployment_hash}': {reason}.\n\
+                     {hint}"
                 )
             }
             Self::AgentCommandTimeout {
