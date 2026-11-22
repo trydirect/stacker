@@ -18,7 +18,12 @@ fn stacker_cmd() -> Command {
 }
 
 /// A `docker` that reports a healthy daemon and accepts `compose up`, while
-/// `compose ps` reports containers in the state named by `FAKE_DOCKER_STATE`.
+/// `compose ps` reports containers in the state named by `FAKE_DOCKER_STATE`
+/// — **only for the right `-p` project**, exactly like real compose: `ps`
+/// without the project name looks in the project named after the compose
+/// file's directory and sees nothing. That blind spot is BUGS.md #61 — the
+/// readiness check once ran `ps` without `-p` and every local deploy waited
+/// out its timeout on a healthy stack.
 fn fake_docker(root: &TempDir) -> PathBuf {
     let bin = root.path().join("bin");
     fs::create_dir_all(&bin).unwrap();
@@ -28,11 +33,15 @@ fn fake_docker(root: &TempDir) -> PathBuf {
         r#"#!/bin/sh
 case "$*" in
   *" ps "*|*" ps")
-    if [ "$FAKE_DOCKER_STATE" = "running" ]; then
-      echo '[{"State":"running","Name":"app","Service":"app"}]'
-    else
-      echo '[{"State":"exited","Name":"app","Service":"app"}]'
-    fi
+    case " $* " in
+      *" -p readiness-app "*)
+        if [ "$FAKE_DOCKER_STATE" = "running" ]; then
+          echo '[{"State":"running","Health":"healthy","Service":"app","Name":"readiness-app-1"}]'
+        else
+          echo '[{"State":"exited","Service":"app","Name":"readiness-app-1"}]'
+        fi
+        ;;
+    esac
     ;;
   *)
     echo fake
@@ -93,6 +102,7 @@ fn a_local_deploy_whose_containers_never_become_ready_is_a_failed_deploy() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("Local deployment failed"))
+        .stderr(predicate::str::contains("app: exited"))
         .stderr(predicate::str::contains("stacker logs"))
         .stderr(predicate::str::contains("Deploy to production").not())
         .stderr(predicate::str::contains("Create a free account").not())
