@@ -1760,6 +1760,11 @@ enum AgentCommands {
         /// Detected automatically when deploy.server.host is a private/intranet IP.
         #[arg(long)]
         local: bool,
+        /// Install through a deploy, creating a new deployment. By default an
+        /// install re-registers the agent on the project's existing deployment
+        /// (the hash does not change); this forces the deploy path anyway.
+        #[arg(long)]
+        new_deployment: bool,
     },
 }
 
@@ -2997,8 +3002,11 @@ fn get_command(
                     persist_config,
                     json,
                     local,
+                    new_deployment,
                 } => Box::new(
-                    agent::AgentInstallCommand::new(file, persist_config, json).with_local(local),
+                    agent::AgentInstallCommand::new(file, persist_config, json)
+                        .with_local(local)
+                        .with_new_deployment(new_deployment),
                 ),
             }
         }
