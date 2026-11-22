@@ -3302,6 +3302,7 @@ impl CallableTrait for AgentInstallCommand {
         match result {
             Ok(resp) => {
                 progress::finish_success(&pb, "Status Panel agent installation triggered");
+                record_installed_deployment(&ctx, &resp, &project_name, &config, &project_dir);
                 let persistence =
                     persist_agent_install_config_if_requested(&config_path, self.persist_config)?;
 
@@ -3339,6 +3340,101 @@ impl CallableTrait for AgentInstallCommand {
         }
 
         Ok(())
+    }
+}
+
+/// Record the deployment `agent install` created (BUGS.md #59).
+///
+/// An install that creates a deployment writes the lock for it, the way a
+/// deploy does. Otherwise the very next `stacker agent status` resolves the
+/// *previous* deployment and waits out its timeout against an agent that no
+/// longer runs — the install printed `Deployment ID: 1547` while the lock
+/// kept naming 1546. The existing lock is updated, not replaced: its
+/// server/ssh fields came from the deploy and are still true.
+///
+/// The pin in `stacker.yml` is never rewritten — pinning is the user's
+/// deliberate act (BUGS.md #55) — but when it points at the previous
+/// deployment, that is said out loud, with the one command that moves it.
+fn record_installed_deployment(
+    ctx: &CliRuntime,
+    resp: &crate::cli::stacker_client::DeployResponse,
+    project_name: &str,
+    config: &crate::cli::config_parser::StackerConfig,
+    project_dir: &Path,
+) {
+    let Some(deployment_id) = resp
+        .meta
+        .as_ref()
+        .and_then(|m| m.get("deployment_id"))
+        .and_then(|v| v.as_i64())
+    else {
+        return;
+    };
+
+    let deployment_hash = ctx.block_on(async {
+        ctx.client
+            .get_deployment_status(deployment_id as i32)
+            .await
+            .ok()
+            .flatten()
+            .map(|d| d.deployment_hash)
+    });
+    let Some(deployment_hash) = deployment_hash else {
+        eprintln!(
+            "  Deployment #{} was created — name its hash with: stacker deployments",
+            deployment_id
+        );
+        return;
+    };
+
+    let target = config.deploy.target.to_string();
+    let mut lock =
+        crate::cli::deployment_lock::DeploymentLock::load_for_target(project_dir, &target)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| crate::cli::deployment_lock::DeploymentLock {
+                target: target.clone(),
+                server_ip: None,
+                ssh_user: None,
+                ssh_port: None,
+                ssh_key: None,
+                server_name: None,
+                cloud_id: None,
+                deployment_id: None,
+                deployment_hash: None,
+                project_id: None,
+                project_name: None,
+                stacker_email: None,
+                deployed_at: String::new(),
+            });
+    lock.deployment_id = Some(deployment_id);
+    lock.deployment_hash = Some(deployment_hash.clone());
+    if let Some(project_id) = resp.id {
+        lock.project_id = Some(project_id as i64);
+    }
+    lock.project_name = Some(project_name.to_string());
+    lock.deployed_at = chrono::Utc::now().to_rfc3339();
+
+    match lock.save(project_dir) {
+        Ok(path) => eprintln!(
+            "  Deployment context saved to {} (deployment {})",
+            path.display(),
+            deployment_hash
+        ),
+        Err(err) => {
+            eprintln!("  Could not save the deployment lock: {err}");
+            return;
+        }
+    }
+
+    if let Some(pin) = config.deploy.deployment_hash.as_deref() {
+        if pin != deployment_hash {
+            eprintln!(
+                "  Note: your pin points at {pin}, but this install created {deployment_hash}.\n\
+                 Commands follow the pin — move it with:\n\
+                   stacker deployment use {deployment_hash}"
+            );
+        }
     }
 }
 
