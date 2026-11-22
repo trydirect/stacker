@@ -3186,10 +3186,42 @@ Fail fast, and say the true cause:
   by itself (it is a local file edit). Guess: the slow part was the agent
   operations around the pinning. A `time stacker deployment use …` sample
   from a slow case is what would chase this further.
-* `stacker deploy --target local` was not reproduced in this pass. Facts
-  found: the local readiness check waits up to 120 s when containers never
-  report ready (`watch_local_containers`,
-  `src/console/commands/cli/deploy.rs`), and docker on this machine measured
-  fast. Guess: a stack that never shows "running" costs those two minutes on
-  every local deploy. A timed sample of one slow local deploy would confirm
-  or kill it.
+* `stacker deploy --target local` — **reproduced the same day, root cause
+  found; fixed on `fix/local-readiness-project-and-states-61`**. Measured in
+  `~/work/stream-rehearsal/hello` with the released CLI (v0.3.10):
+
+  ```
+  $ time stacker deploy --target local
+    ✓ Local deployment started successfully
+    ✗ Timeout waiting for containers — check `stacker status`
+  stacker deploy --target local  2:06.44 total
+  ```
+
+  2:06 for a stack that was healthy the whole time (`hello-app-1 Started`).
+  The readiness check runs `docker compose ps` **without `-p`**
+  (`watch_local_containers`, `src/console/commands/cli/deploy.rs`), while the
+  deploy creates the project with `-p` (`local_compose_project_name`,
+  `src/cli/install_runner.rs:1021`). Compose without `-p` looks in the
+  project named after the compose file's directory (`.stacker`) and reports
+  nothing — verified live in the same project:
+
+  ```
+  $ docker compose -f .stacker/docker-compose.yml ps --format json
+  (empty, rc=0)
+  $ docker compose -p hello -f .stacker/docker-compose.yml ps --format json
+  {"Name":"hello-app-1","State":"running", …}
+  {"Name":"hello-postgres-1","State":"running","Health":"healthy", …}
+  ```
+
+  So the check saw `total == 0` on every poll, never became ready, and
+  waited out the 120 s — and could show no container states at all, which is
+  why the wait looked like a bare spinner. That is also what sat behind the
+  timeout half of entry 50: the containers were fine.
+
+  The fix passes the project name (`-p`) to `ps` and, while waiting, shows
+  what every container is doing — `app: starting · postgres: running
+  (healthy)` — with `last seen: …` on the timeout line, so a wait tells the
+  user what the stack is doing instead of spinning. With it, the same command
+  in the same directory: **2.4 s**, `✓ All 2/2 containers running`.
+  Regression tests pin both halves (a stub docker that reports containers
+  only for the right `-p` project, and the state display).
