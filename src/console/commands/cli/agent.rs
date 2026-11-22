@@ -2590,6 +2590,10 @@ pub struct AgentInstallCommand {
     pub json: bool,
     /// Force the local-SSH path even for public-IP servers.
     pub local: bool,
+    /// Force the deploy path — install through a new deployment even when the
+    /// project already has one (BUGS.md #59: the default re-registers the
+    /// agent on the existing deployment instead).
+    pub new_deployment: bool,
 }
 
 impl AgentInstallCommand {
@@ -2599,6 +2603,7 @@ impl AgentInstallCommand {
             persist_config,
             json,
             local: false,
+            new_deployment: false,
         }
     }
 
@@ -2606,6 +2611,29 @@ impl AgentInstallCommand {
         self.local = local;
         self
     }
+
+    pub fn with_new_deployment(mut self, new_deployment: bool) -> Self {
+        self.new_deployment = new_deployment;
+        self
+    }
+}
+
+/// The SSH key for a server, `~` expanded, when it exists on disk.
+///
+/// Shared by `install_agent_via_local_ssh` (which errors without it) and by
+/// the install path decision: the CLI can only re-register the agent itself
+/// when it can reach the server.
+fn resolved_ssh_key_path(
+    server_cfg: &crate::cli::config_parser::ServerConfig,
+) -> Option<std::path::PathBuf> {
+    let key = server_cfg.ssh_key.as_ref()?;
+    let path = if key.to_string_lossy().starts_with("~/") {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        std::path::PathBuf::from(home).join(&key.to_string_lossy()[2..])
+    } else {
+        key.clone()
+    };
+    path.exists().then_some(path)
 }
 
 use crate::helpers::ip::is_private_host;
@@ -2625,32 +2653,14 @@ async fn install_agent_via_local_ssh(
     ctx: &CliRuntime,
     stacker_url: &str,
 ) -> Result<(), CliError> {
-    let key_path = server_cfg
-        .ssh_key
-        .as_ref()
-        .map(|p| {
-            let s = p.to_string_lossy();
-            if s.starts_with("~/") {
-                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                std::path::PathBuf::from(home).join(&s[2..])
-            } else {
-                p.clone()
-            }
-        })
-        .ok_or_else(|| {
-            CliError::ConfigValidation(
-                "deploy.server.ssh_key is required for local agent install.\n\
-                 Set it in stacker.yml or run `stacker config setup server`."
-                    .to_string(),
-            )
-        })?;
-
-    if !key_path.exists() {
-        return Err(CliError::ConfigValidation(format!(
-            "SSH key not found: {}",
-            key_path.display()
-        )));
-    }
+    let key_path = resolved_ssh_key_path(server_cfg).ok_or_else(|| {
+        CliError::ConfigValidation(
+            "deploy.server.ssh_key is required for local agent install.\n\
+             Set it in stacker.yml or run `stacker config setup server`, or re-run with\n\
+             --new-deployment to install through a deploy."
+                .to_string(),
+        )
+    })?;
 
     let user_at_host = format!("{}@{}", server_cfg.user, server_cfg.host);
     let ssh_args = [
@@ -3101,16 +3111,93 @@ impl CallableTrait for AgentInstallCommand {
         let effective_server =
             effective_server_config(config.deploy.server.as_ref(), lock.as_ref());
 
-        // Detect intranet server: use local SSH path when the host is a private IP
-        // (or --local is explicitly set) so the cloud install service is bypassed.
-        // If there's no deploy.server at all (e.g. cloud-deployed project), always
-        // use the cloud install path.
-        let use_local_ssh = match effective_server.as_ref() {
-            Some(s) => self.local || is_private_host(s.host.as_str()),
-            None => self.local,
-        };
-
         let ctx = CliRuntime::new("agent install")?;
+
+        // Find the deployment this agent will belong to (best effort).
+        let pb = progress::spinner("Resolving deployment...");
+        let resolved_deployment: Result<String, CliError> = ctx.block_on(async {
+            let project = if let Some(lock) = lock.as_ref() {
+                if let Some(pid) = lock.project_id {
+                    ctx.client
+                        .list_projects()
+                        .await?
+                        .into_iter()
+                        .find(|p| p.id == pid as i32)
+                        .ok_or_else(|| {
+                            CliError::ConfigValidation(format!(
+                                "Project ID {} from lock file not found.\n\
+                                 Deploy the project first with: stacker deploy --target server",
+                                pid
+                            ))
+                        })?
+                } else {
+                    ctx.client
+                        .find_project_by_name(&project_name)
+                        .await?
+                        .ok_or_else(|| {
+                            CliError::ConfigValidation(format!(
+                                "Project '{}' not found on the Stacker server.\n\
+                                 Deploy the project first with: stacker deploy --target server",
+                                project_name
+                            ))
+                        })?
+                }
+            } else {
+                ctx.client
+                    .find_project_by_name(&project_name)
+                    .await?
+                    .ok_or_else(|| {
+                        CliError::ConfigValidation(format!(
+                            "Project '{}' not found on the Stacker server.\n\
+                             Deploy the project first with: stacker deploy --target server",
+                            project_name
+                        ))
+                    })?
+            };
+
+            let deployments = ctx
+                .client
+                .list_deployments(Some(project.id), Some(1))
+                .await?;
+            deployments
+                .into_iter()
+                .next()
+                .map(|d| d.deployment_hash)
+                .ok_or_else(|| {
+                    CliError::ConfigValidation(format!(
+                        "No active deployment found for project '{}'.\n\
+                         Deploy first with: stacker deploy --target server",
+                        project_name
+                    ))
+                })
+        });
+
+        match &resolved_deployment {
+            Ok(hash) => progress::finish_success(&pb, &format!("Deployment resolved: {}", hash)),
+            Err(_) => progress::finish_warning(&pb, "No existing deployment found"),
+        }
+
+        // `agent install` means "make sure an agent is here", not "cut a new
+        // release" (BUGS.md #59): when the project already has a deployment and
+        // this machine can reach the server, the agent is (re)registered on it —
+        // `POST /api/v1/agent/link` creates or returns the registration
+        // (`src/routes/agent/link.rs:89-127`) — and the deployment hash does
+        // not change, so every later command keeps working. The deploy path
+        // stays for the first install, for servers this machine cannot reach,
+        // and for `--new-deployment`.
+        let has_deployment = resolved_deployment.is_ok();
+        let use_local_ssh = if self.new_deployment {
+            false
+        } else {
+            match effective_server.as_ref() {
+                Some(s) => {
+                    self.local
+                        || is_private_host(s.host.as_str())
+                        || (has_deployment && resolved_ssh_key_path(s).is_some())
+                }
+                None => self.local,
+            }
+        };
 
         if use_local_ssh {
             let server_cfg = effective_server.clone().ok_or_else(|| {
@@ -3129,81 +3216,31 @@ impl CallableTrait for AgentInstallCommand {
                 .or_else(|| std::env::var("STACKER_URL").ok())
                 .unwrap_or_else(|| stacker_client::DEFAULT_STACKER_URL.to_string());
 
-            eprintln!(
-                "Server {} is on a private network — using local SSH to install agent.",
-                server_cfg.host
-            );
-            eprintln!("(Use --local to force this path for public-IP servers.)");
+            if self.local || is_private_host(server_cfg.host.as_str()) {
+                eprintln!(
+                    "Server {} is on a private network — using local SSH to install agent.",
+                    server_cfg.host
+                );
+                eprintln!("(Use --local to force this path for public-IP servers.)");
+            } else {
+                eprintln!(
+                    "An agent install re-registers on the existing deployment — no new deployment.\n\
+                     (Use --new-deployment to install through a deploy instead.)"
+                );
+            }
             eprintln!();
 
-            // Find the deployment hash for this project
-            let pb = progress::spinner("Resolving deployment...");
-            let deployment_hash: Result<String, CliError> = ctx.block_on(async {
-                let project = if let Some(lock) = lock.as_ref() {
-                    if let Some(pid) = lock.project_id {
-                        ctx.client
-                            .list_projects()
-                            .await?
-                            .into_iter()
-                            .find(|p| p.id == pid as i32)
-                            .ok_or_else(|| {
-                                CliError::ConfigValidation(format!(
-                                    "Project ID {} from lock file not found.\n\
-                                     Deploy the project first with: stacker deploy --target server",
-                                    pid
-                                ))
-                            })?
-                    } else {
-                        ctx.client
-                            .find_project_by_name(&project_name)
-                            .await?
-                            .ok_or_else(|| {
-                                CliError::ConfigValidation(format!(
-                                    "Project '{}' not found on the Stacker server.\n\
-                                     Deploy the project first with: stacker deploy --target server",
-                                    project_name
-                                ))
-                            })?
-                    }
-                } else {
-                    ctx.client
-                        .find_project_by_name(&project_name)
-                        .await?
-                        .ok_or_else(|| {
-                            CliError::ConfigValidation(format!(
-                                "Project '{}' not found on the Stacker server.\n\
-                                 Deploy the project first with: stacker deploy --target server",
-                                project_name
-                            ))
-                        })?
-                };
-
-                let deployments = ctx
-                    .client
-                    .list_deployments(Some(project.id), Some(1))
-                    .await?;
-                deployments
-                    .into_iter()
-                    .next()
-                    .map(|d| d.deployment_hash)
-                    .ok_or_else(|| {
-                        CliError::ConfigValidation(format!(
-                            "No active deployment found for project '{}'.\n\
-                             Deploy first with: stacker deploy --target server",
-                            project_name
-                        ))
-                    })
-            });
-            progress::finish_success(&pb, "Deployment resolved");
-
-            let deployment_hash = deployment_hash?;
-
+            let deployment_hash = resolved_deployment?;
             ctx.block_on(install_agent_via_local_ssh(
                 &server_cfg,
                 &deployment_hash,
                 &ctx,
                 &stacker_url,
             ))?;
+            eprintln!(
+                "  Agent is registered on deployment {} — the deployment is unchanged.",
+                deployment_hash
+            );
 
             // Persist the deployment hash into stacker.yml so that subsequent
             // `stacker agent status/logs` commands can find it without --deployment.
