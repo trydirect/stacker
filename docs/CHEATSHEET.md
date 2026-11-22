@@ -118,7 +118,8 @@ stacker ssh-key generate | show | upload | inject
 ## Which deployment am I talking to
 
 One project can hold several deployments - one saved context per target. Since
-0.3.10 every command that resolves one implicitly says so:
+0.3.10 every command that resolves one implicitly says so (the model behind
+this is in [DEPLOYMENT_LIFECYCLE.md](DEPLOYMENT_LIFECYCLE.md)):
 
 ```
 ℹ resolved deployment deployment_… (from .stacker/deployment-server.lock, target: server)
