@@ -2821,3 +2821,375 @@ Deploy to cloud once, and the target follows:
 
 Both are one message each, in code that already has the information. Same
 area as #55, so whoever fixed that has the context.
+
+## 57. 🔴 OPEN — the agent belongs to a deployment, not to a server, and a live stream walked into every consequence (found 2026-11-20)
+
+**Severity: highest open entry.** This broke the product's main promise -
+"ship a new version with one command" - during a recorded walkthrough, four
+times in a row, with nothing wrong on the server.
+
+One project, one server, four deployments. The agent registers per
+deployment, so the registrations look like this:
+
+```
+1547  deployment_737cae1e…  agent 3c58dd4b…  heartbeat 2026-11-19T19:04  (dead)
+1548  deployment_e131d43e…  no agent at all                              ← the lock pointed here
+1549  deployment_8c2143da…  agent f5bf799c…  heartbeat now               (live)
+```
+
+### 1. A deployment with no agent swallows commands for five minutes
+
+```
+$ stacker agent deploy-app hello --image <ns>/hello:1.0.1 --force
+  ℹ resolved deployment deployment_e131d43e… (from .stacker/deployment-cloud.lock, target: cloud)
+  ⚠ Connection check skipped (agent did not respond in time)
+  ✗ Deploying hello — timed out
+  Error: … timed out (last status: queued, id: cmd_d910885f…)
+                                                      … took 5m17s
+```
+
+Nothing was wrong with the server: its live agent was on 1549, heart-beating
+every few seconds. 1548 has no registration at all, so the command sat in a
+queue nobody reads. "The agent started the command but did not finish in
+time - it may be busy or slow" is wrong on both counts; the agent never saw
+it.
+
+### 2. The timeout hint points back at the same dead deployment
+
+```
+  Retry the command (it may succeed now):
+    stacker agent status --deployment=deployment_e131d43e…
+  Or wait and check the result:
+    stacker agent history --deployment=deployment_e131d43e…
+
+$ stacker agent history --deployment=deployment_e131d43e…
+No commands found.
+```
+
+Both suggestions address the deployment that just failed to execute anything.
+`history` is empty because there is no agent to have a history. On camera this
+reads as "the tool suggests a command that does not work".
+
+### 3. `deployment use` is a workaround, not a fix
+
+Pinning the live deployment gets the command through:
+
+```
+$ stacker deployment use deployment_8c2143da…
+✓ Pinned deployment … (deploy.deployment_hash)
+```
+
+but the user had to learn, mid-stream, that deployments have agents, that one
+of theirs had none, and which one did. #55 made the resolution visible; it
+cannot make a dead registration alive.
+
+### 4. The app code and the compose service name disagree
+
+```
+$ stacker agent deploy-app hello --image <ns>/hello:1.0.1 --force
+  ✗ Deploying hello — Image pull had issues (continuing): no such service: hello (pull_warning)
+```
+
+`stacker agent apps` lists the app as `hello`; the compose the agent wrote to
+the server calls the same thing `app`. **Deploying by the name the product
+itself prints fails**, and the error does not say which names would work - so
+the only move left is to guess, which is exactly what happened next and what
+caused everything after it.
+
+### 5. The guess the error invited creates a second stack on the same machine
+
+The user had just been told `no such service: hello` by a command that had
+printed `hello` as the app name a minute earlier, so they tried the other name
+they could see. That is the reasonable next step, not a misuse - and the
+product let it through:
+
+```
+$ stacker agent deploy-app app --image <ns>/hello:1.0.1 --force
+  ✗ Docker compose up failed:
+    warning msg="Found orphan containers ([project-hello-1]) for this project.
+     If you removed or renamed this service in your compose file, you can run
+     this command with the --remove-orphans flag to clean it up."
+     Container app-app-1  Creating … Starting
+    Error response from daemon: driver failed programming external connectivity
+     on endpoint app-app-1: Bind for 0.0.0.0:3000 failed: port is already allocated
+```
+
+Three times in a row, identically. On the server:
+
+```
+$ docker ps
+project-hello-1     0.0.0.0:3000->3000/tcp      ← previous deployment, compose project "project"
+statuspanel         0.0.0.0:5000->5000/tcp
+statuspanel_agent   5000/tcp
+```
+
+The compose **project name changed between deployments** (`project` →
+`app`), so the new stack cannot see, stop or replace the old container - it is
+a different docker project - and `--force` cannot help. The agent's own output
+names the orphan and even names the flag that would clear it, then fails on
+the port instead. There is no in-product way out, and that is verified rather than assumed:
+every container operation the platform has is addressed by `app_code`, not by
+container name - `StopContainerTool` rejects a call without one
+(`src/mcp/tools/monitoring.rs:721`, "app_code is required to stop a specific
+container"), and `start_container`, `restart_container` and `remove_app` are
+built the same way. A container left over from a previous compose project is
+not an app of the current deployment, so no CLI command and no assistant tool
+can reach it. The user had to `docker rm -f project-hello-1` over SSH, on
+camera, during a recording whose whole premise is not needing SSH.
+
+### The single cause, and what fixing it looks like
+
+A server is a thing; a deployment is an event. The agent - the only component
+that can act on the server - is bound to the event. One machine therefore
+accumulates one registration per deploy, of which exactly one is alive, and
+every command must guess which.
+
+In order of how properly each fixes it:
+
+1. **Register the agent against the server.** Commands address server + app;
+   deployments become history. Then `deployment use`, `--deployment` and this
+   entire class of failure disappear.
+2. **If the binding must stay:** when a deployment is created for a server
+   that already has a registered agent, rebind that registration to the new
+   deployment. Never create a deployment with no agent while its server has
+   one - #1548 should not have been possible.
+3. **Accept the name the product prints.** `deploy-app <app>` must take the
+   app code from `agent apps` and resolve it to the compose service itself.
+   Until it does, the "no such service" error must list the names that exist
+   in this deployment - `no such service: hello; services here: app` - so
+   nobody has to guess.
+4. **Refuse to create a second compose project on a machine that already runs
+   one for this deployment.** The guess above should have stopped with "that
+   name belongs to compose project 'app', this deployment is 'project'",
+   not produced a parallel stack and a port collision.
+5. **Keep the compose project name stable** for the life of a server, or make
+   a deploy that changes it remove the previous project's containers first.
+   Failing on `port is already allocated` while printing the name of the
+   orphan is the worst of both.
+6. **Resolve by heartbeat, not only by lock.** The platform knows which
+   registration is alive; a command addressed to a dead one should say
+   "this deployment's agent last reported 2026-11-19; the live agent is on
+   deployment <hash>" instead of queueing for five minutes.
+7. **Make the timeout hint name a deployment that can answer.**
+
+Found live, on 2026-11-20, during a recorded end-to-end walkthrough. Logs
+above are verbatim; server address, agent ids and image namespace trimmed.
+
+## 58. 💡 PROPOSAL — `agent add` / `agent update` / `agent remove`, with the old names kept as aliases (raised 2026-11-20)
+
+Not a defect: a naming decision that #57 argued for better than any review
+could have. `deploy-app` does two different things - it adds an app the
+deployment does not have, and it updates one it does - and the user cannot
+tell which one they are about to get. That ambiguity is what turned a wrong
+app name into a second stack on a live server.
+
+### The surface
+
+```
+stacker agent add <app> --image <image>        # must NOT exist yet
+stacker agent update <app> --image <image>     # must already exist
+stacker agent remove <app>                     # unchanged behaviour
+```
+
+Each verb can then be strict about the thing the other verb owns, and the
+error writes itself:
+
+- `add hello` when `hello` is already an app → "hello is already an app of
+  this deployment; use `stacker agent update hello`".
+- `update app` when `app` is not one → "app is not an app of this deployment.
+  Apps here: hello. To add it, `stacker agent add app`".
+
+That is the whole of #57's entry point, closed by the command names instead of
+by a flag. The `--new-app` flag added in PR #368 becomes unnecessary the day
+this lands: `add` says it by being called.
+
+### Compatibility
+
+`deploy-app` and `remove-app` stay as aliases, so every script, pipeline and
+recorded video keeps working:
+
+- `deploy-app` behaves as it does today (add or update, whichever applies)
+  and prints a one-line note naming the verb it resolved to - "updating an
+  existing app; `stacker agent update hello` says this directly".
+- `remove-app` is a plain alias of `remove`.
+- Both stay out of `--help`'s main listing (clap's `hide = true` keeps an
+  alias working while new readers see one way to do it).
+- No removal date. These are aliases, they cost two lines each, and breaking
+  someone's CI to tidy a help page is not a trade worth making.
+
+### Also worth aligning
+
+The server already uses this vocabulary - the MCP tool is
+`add_app_to_deployment` (`src/mcp/registry.rs:285`), not `deploy_app_to…`. The
+agent command type stays `deploy_app` on the wire regardless; this proposal is
+about the human surface, not the protocol.
+
+Docs to update when it lands: `docs/CHEATSHEET.md`, the README quick start,
+and the stream scripts that show the rollout.
+
+## 59. 🟠 OPEN — `agent install` creates a deployment and leaves the lock on the previous one (found 2026-11-19, recorded 2026-11-21)
+
+Should have been written down on the 19th, when it cost twenty minutes on a
+recorded walkthrough; it was described in chat and never filed. #55 says only
+that locks are "written as a side effect of deploying" - this is the case
+where the side effect does not happen at all.
+
+```
+$ stacker agent install --persist-config
+  ✓ Status Panel agent installation triggered
+    Deployment ID: 1547
+✓ Updated monitoring.status_panel=true in stacker.yml
+
+$ stacker agent status
+  ℹ resolved deployment deployment_c73cb51a… (from .stacker/deployment-cloud.lock, target: cloud)
+  ✓ Agent status fetched — ? unknown · 2 app(s)
+  ✗ Fetching containers — timed out
+```
+
+The install created deployment **1547** with its own agent registration; the
+lock still named **1546**, the deployment from before the install. So the
+command that just installed an agent is followed by commands that cannot see
+it: `? unknown`, containers queued, and a wait until the timeout. Pinning the
+new hash by hand fixes it, which is how the user found out that the install
+had made a deployment at all.
+
+The same command happily writes `monitoring.status_panel=true` into
+`stacker.yml` with `--persist-config`, so it is not shy about persisting
+things - it just does not record the deployment it created.
+
+**Expected:** an install that creates a deployment writes the lock for it, the
+way a deploy does. Failing that, it should print the hash it created and the
+one line that makes it current - `stacker deployment use <hash>` - instead of
+leaving the user to discover the gap through a timeout.
+
+## 60. 🟠 OPEN — the pre-flight connection check never runs, and the CLI blames a timeout (found 2026-11-21)
+
+Every single `deploy-app` in two days of use printed one of these:
+
+```
+⚠ Checking active connections — skipped
+⚠ Connection check skipped (agent did not respond in time)
+⚠ Connection check skipped (agent could not verify active connections)
+```
+
+It is not a timeout and not a slow agent. From the deployment's own event
+log:
+
+```
+4. 17:42:57 [command_queued / queued]  check_connections queued
+5. 17:42:59 [command_failed / failed]  Command validation failed:
+                                       program 'check_connections' is not allowed
+```
+
+Two seconds, a flat refusal. The platform accepts `check_connections` at
+enqueue - it is in the validated command list in
+`src/forms/status_panel.rs` - and the agent then rejects it as a program it
+is not allowed to run. So the check has never worked on this agent build, and
+the warning text sends whoever reads it to look at the network, the agent's
+load or its heartbeat, none of which are involved.
+
+**Expected:** the two sides agree on the command list, so the check either
+runs or is not offered; and when a command comes back `failed`, the CLI says
+what the failure was - "the agent refused the command: program
+'check_connections' is not allowed" - rather than describing it as silence.
+A wrong cause in a warning costs more than a missing feature.
+
+## 61. 🟠 OPEN — agent commands sit out their whole timeout when no agent will ever pick them up (reported 2026-11-22, measured the same day)
+
+### Observed (2026-11-22, this machine)
+
+Reported by Vasili: after the deployment of 2026-11-21, `stacker deploy
+--target local`, `stacker agent …` and operations around `stacker deployment
+use <hash>` "take a lot of time for some reason". The pattern was first seen
+on 2026-11-19/20 while deploying `hello` (session "Greedy squishing Karp")
+and is still there today.
+
+Measured here, same day:
+
+```
+$ cd /Users/vasilipascal/work/stream-project && time stacker agent status
+COMMAND                  TYPE            STATUS     CREATED
+cmd_843d5e73-e8cd-421…   list_containers ? queued   2026-11-19T18:32:4…
+cmd_11f19e24-a50a-411…   list_containers ? queued   2026-11-19T18:28:5…
+cmd_04f80564-cd0b-403…   list_containers ? queued   2026-11-19T18:27:4…
+…
+stacker agent status  0.04s user 0.04s system 0% cpu 1:04.68 total
+```
+
+One `agent status` costs **65 seconds**, and the commands it lists have been
+`queued` since 2026-11-19 — nobody ever ran them. That project's lock
+(`stream-project/.stacker/deployment-cloud.lock`) names deployment 1546 /
+`deployment_c73cb51a…` — the deployment `agent install` left behind, the
+same hash as in entry 59's transcript.
+
+Controls, same machine, same API:
+
+```
+$ time stacker deployments        → 2.12s   (the API is fine)
+$ time stacker deployment use …   → 0.019s  (it only edits stacker.yml:
+    src/console/commands/cli/deployment.rs:111
+    DeploymentLock::set_deploy_deployment_hash)
+$ time docker ps                  → 0.05s   (docker is fine)
+```
+
+From the `hello` stream (session "Greedy squishing Karp", 2026-11-20):
+
+```
+❯ stacker agent deploy-app app --image trydirect/hello:0.1.1 --force
+  ℹ resolved deployment deployment_291b78b5-… (from stacker.yml deploy.deployment_hash)
+  ⚠ Checking active connections — skipped
+  ⚠ Connection check skipped (agent did not respond in time)
+⠼ Deploying app [queued]            ← stayed like this 15+ minutes
+```
+
+("она уже минут 15 работает !!!! Почему так долго ??" — Vasili, same
+session), and one command in the same flow printed `took 5m10s` in the shell
+prompt. The session's own diagnosis: the command was bound to deployment
+`291b78b5` (1552) whose agent is **offline**; the live agent belongs to
+`fe496276` (1553), created by the later `stacker deploy`.
+
+### Why the minutes (code)
+
+Agent commands are enqueued and then polled every 2 s until they finish,
+against a hard deadline with **no early exit** (`run_agent_command`,
+`src/console/commands/cli/agent.rs:233-245`):
+
+* default deadline 60 s — `DEFAULT_TIMEOUT_SECS`, `agent.rs:31`;
+* `deploy-app` passes 300 s — `agent.rs:877-879` (`.with_timeout(300)` +
+  `run_agent_command(…, 300)`).
+
+When the resolved deployment's agent is offline — the stale pin/lock of
+entries 55/57/59 sends commands to a deployment nobody serves — no agent
+ever picks the command up, and the CLI waits out the full deadline. The 65 s
+measurement is the 60 s default plus overhead; the `took 5m10s` is the 300 s
+`deploy-app` deadline plus overhead. The loop already holds the answer while
+it waits — `last_status` is still `queued` in the timeout error it finally
+prints — but "queued" together with "the agent is offline" never becomes an
+early answer.
+
+### Expected
+
+Fail fast, and say the true cause:
+
+1. Before enqueueing, resolve the deployment's agent. Offline or no
+   heartbeat → refuse: "deployment X's agent is offline (last seen …); this
+   command would only wait out its timeout. Pin the deployment that owns the
+   live agent: `stacker deployments` → `stacker deployment use <hash>`" —
+   and do not enqueue at all.
+2. While waiting, if a command stays `queued` past a short window and the
+   agent is offline, stop and say "no agent will pick this up" instead of
+   spinning to the deadline.
+
+### Open halves of the report
+
+* `stacker deployment use <hash>` measured 0.019 s here and cannot be slow
+  by itself (it is a local file edit). Guess: the slow part was the agent
+  operations around the pinning. A `time stacker deployment use …` sample
+  from a slow case is what would chase this further.
+* `stacker deploy --target local` was not reproduced in this pass. Facts
+  found: the local readiness check waits up to 120 s when containers never
+  report ready (`watch_local_containers`,
+  `src/console/commands/cli/deploy.rs`), and docker on this machine measured
+  fast. Guess: a stack that never shows "running" costs those two minutes on
+  every local deploy. A timed sample of one slow local deploy would confirm
+  or kill it.
