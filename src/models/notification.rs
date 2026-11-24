@@ -30,17 +30,6 @@ pub struct NotificationDispatch {
     pub sent_at: Option<DateTime<Utc>>,
 }
 
-/// Event types a channel can subscribe to (see
-/// config/shared-fixtures/api-contracts/notifications-events.json).
-pub const NOTIFICATION_EVENT_TYPES: [&str; 8] = [
-    "deploy.succeeded",
-    "deploy.failed",
-    "backup.succeeded",
-    "backup.failed",
-    "preview.ready",
-    "preview.failed",
-    "container.down",
-    "channel.test",
-];
-
-pub const CHANNEL_TYPES: [&str; 5] = ["slack", "discord", "telegram", "email", "webhook"];
+/// Event types and channel types live in the `notification-core` crate so its
+/// unit tests run without building the service (see crates/notification-core).
+pub use notification_core::{CHANNEL_TYPES, NOTIFICATION_EVENT_TYPES};

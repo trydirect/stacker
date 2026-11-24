@@ -4258,6 +4258,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61807f77802ff30975e01f4f071c8ba10c022052f98b3294119f3e615d13e5be"
 
 [[package]]
+name = "notification-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hmac 0.12.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7020,6 +7033,7 @@ dependencies = [
  "lazy_static",
  "md-5",
  "mockito",
+ "notification-core",
  "pipe-adapter-mail",
  "pipe-adapter-sdk",
  "predicates",

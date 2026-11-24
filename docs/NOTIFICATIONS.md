@@ -16,6 +16,13 @@ BDD-сценарии: `config/shared-fixtures/features/notifications.feature`.
 
 ## Модель
 
+Архитектура модулей (2026-11-24): чистая логика вынесена в листовой крейт
+`crates/notification-core` (события, payload'ы каналов, маскирование, redaction,
+retry/backoff, HTTP-доставка) — его юнит-тесты гоняются без сборки монолита;
+обвязка (Vault, db-слой, роуты) остаётся в `src/services/notification.rs` и
+`src/routes/notification/`. Такой же принцип действует для следующих WS-потоков:
+чистая логика — в `crates/`, интеграция — в монолит.
+
 - `notification_channel` — канал: per-project или глобальный admin-канал
   (`project_id IS NULL`, решение N1 от 2026-11-24). Типы: `slack`, `discord`,
   `telegram`, `email`, `webhook`. Глобальный канал может создать только

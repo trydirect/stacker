@@ -274,6 +274,22 @@ async fn test_message_is_delivered_and_recorded() {
     assert_eq!(body["item"]["status"], "sent");
     assert_eq!(body["item"]["eventType"], "channel.test");
     assert_eq!(body["item"]["attempts"], 1);
+
+    // The dispatch is visible in the delivery log.
+    let list = reqwest::Client::new()
+        .get(format!(
+            "{}/api/v1/notifications/dispatches?channelId={}",
+            harness.app.address, id
+        ))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .send()
+        .await
+        .expect("dispatch list request");
+    assert_eq!(list.status(), StatusCode::OK);
+    let list_body = body_of(list).await;
+    let items = list_body["list"].as_array().expect("dispatch list");
+    assert!(!items.is_empty());
+    assert_eq!(items[0]["eventType"], "channel.test");
 }
 
 #[tokio::test]
@@ -311,6 +327,91 @@ async fn provider_rate_limit_is_retried_with_backoff() {
     let body = body_of(response).await;
     assert_eq!(body["item"]["status"], "sent");
     assert_eq!(body["item"]["attempts"], 3);
+}
+
+#[tokio::test]
+async fn project_events_reach_only_subscribed_project_channels() {
+    // N3 fan-out: the events filter is an allow-list and only the project's
+    // own channels receive its events.
+    let harness = vault_app().await;
+    let project_id = common::create_test_project(&harness.app.db_pool, common::USER_A_ID).await;
+
+    let fail_target = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&fail_target)
+        .await;
+    let ok_target = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&ok_target)
+        .await;
+
+    let failing = json!({ "url": fail_target.uri() });
+    let succeeding = json!({ "url": ok_target.uri() });
+    let name_fail = format!("sub-fail-{}", uuid::Uuid::new_v4());
+    let name_ok = format!("sub-ok-{}", uuid::Uuid::new_v4());
+
+    for (name, secret, events) in [
+        (
+            name_fail.as_str(),
+            &failing,
+            vec!["deploy.failed".to_string()],
+        ),
+        (
+            name_ok.as_str(),
+            &succeeding,
+            vec!["deploy.succeeded".to_string()],
+        ),
+    ] {
+        stub_vault_secret(
+            &harness.vault_server,
+            &secret_path(harness, project_id, name),
+            secret,
+        )
+        .await;
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/api/v1/notifications/channels",
+                harness.app.address
+            ))
+            .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+            .json(&json!({
+                "name": name,
+                "projectId": project_id,
+                "channelType": "slack",
+                "secret": secret,
+                "events": events,
+            }))
+            .send()
+            .await
+            .expect("create channel request");
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    let event = stacker::services::notification::build_event(
+        "deploy.failed",
+        Some(i64::from(project_id)),
+        "deployment",
+        "hash-1",
+        "hash-1",
+        "Deployment hash-1 failed: boom",
+    );
+    let dispatches = stacker::services::notification::dispatch_project_event(
+        &harness.app.db_pool,
+        &harness.vault,
+        project_id,
+        &event,
+    )
+    .await
+    .expect("dispatch");
+
+    // Only the deploy.failed subscriber is delivered to (mock expects assert
+    // the actual HTTP calls).
+    assert_eq!(dispatches.len(), 1);
+    assert_eq!(dispatches[0].status, "sent");
 }
 
 #[tokio::test]
