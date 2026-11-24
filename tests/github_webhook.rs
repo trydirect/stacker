@@ -294,3 +294,126 @@ async fn repo_connect_requires_project_ownership() {
     let response = connect_repo(app, other_project, &repo_name, common::USER_A_TOKEN).await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+// --- Auto-deploy (G5) -----------------------------------------------------
+
+async fn deployment_count(pool: &sqlx::PgPool, project_id: i32) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM deployment WHERE project_id = $1")
+        .bind(project_id)
+        .fetch_one(pool)
+        .await
+        .expect("count deployments")
+}
+
+#[tokio::test]
+async fn matched_push_without_saved_server_is_skipped() {
+    let app = app().await;
+    stub_webhook_secret(&app.vault_server).await;
+
+    let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
+    let repo_name = format!("alice/shop-{}", uuid::Uuid::new_v4());
+    db::github::insert_repo(
+        &app.db_pool,
+        common::USER_A_ID,
+        42,
+        Some(project_id),
+        &repo_name,
+        "main",
+        &[],
+        true,
+    )
+    .await
+    .expect("insert repo");
+
+    let response = send_webhook(
+        app,
+        "push",
+        &uuid::Uuid::new_v4().to_string(),
+        &push_body(&repo_name, &["src/a.rs"]),
+        WEBHOOK_SECRET,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = response.json().await.expect("json");
+    let triggered = body["item"]["triggered"].as_array().expect("triggered");
+    assert_eq!(triggered.len(), 1);
+    assert_eq!(triggered[0]["projectId"], project_id);
+    assert_eq!(triggered[0]["outcome"], "skipped");
+    assert!(triggered[0]["reason"]
+        .as_str()
+        .expect("reason")
+        .contains("saved server"));
+
+    // Nothing was deployed.
+    assert_eq!(deployment_count(&app.db_pool, project_id).await, 0);
+}
+
+#[tokio::test]
+async fn matched_push_redeploys_onto_saved_server() {
+    let app = app().await;
+    stub_webhook_secret(&app.vault_server).await;
+
+    let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
+    // The deploy pipeline reads ProjectForm{custom} from project.metadata.
+    sqlx::query(
+        "UPDATE project SET metadata = $1 WHERE id = $2",
+    )
+    .bind(serde_json::json!({
+        "custom": { "web": [], "custom_stack_code": "test-stack" }
+    }))
+    .bind(project_id)
+    .execute(&app.db_pool)
+    .await
+    .expect("set project metadata");
+
+    // A previously deployed project: it has a saved server row and an app.
+    common::create_test_server(&app.db_pool, common::USER_A_ID, project_id, "active", None).await;
+    let project_app = stacker::models::ProjectApp::new(
+        project_id,
+        "web".to_string(),
+        "Test App".to_string(),
+        "nginx:stable".to_string(),
+    );
+    stacker::db::project_app::insert(&app.db_pool, &project_app)
+        .await
+        .expect("insert app");
+
+    let repo_name = format!("alice/shop-{}", uuid::Uuid::new_v4());
+    db::github::insert_repo(
+        &app.db_pool,
+        common::USER_A_ID,
+        42,
+        Some(project_id),
+        &repo_name,
+        "main",
+        &[],
+        true,
+    )
+    .await
+    .expect("insert repo");
+
+    let response = send_webhook(
+        app,
+        "push",
+        &uuid::Uuid::new_v4().to_string(),
+        &push_body(&repo_name, &["src/a.rs"]),
+        WEBHOOK_SECRET,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = response.json().await.expect("json");
+    let triggered = body["item"]["triggered"].as_array().expect("triggered");
+    assert_eq!(triggered.len(), 1);
+    assert_eq!(triggered[0]["projectId"], project_id);
+    // With a saved server the deploy pipeline starts (queued when the install
+    // connector answers, failed when it cannot be reached) — never "skipped".
+    assert_ne!(triggered[0]["outcome"], "skipped");
+
+    // The deployment record exists: the G5 seam reached deploy_project.
+    assert_eq!(
+        deployment_count(&app.db_pool, project_id).await,
+        1,
+        "deploy pipeline did not reach the deployment insert: {:?}",
+        triggered[0]
+    );
+}

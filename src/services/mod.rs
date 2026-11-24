@@ -25,6 +25,7 @@ pub mod project;
 pub mod project_app_service;
 pub mod project_cleanup_notifier;
 mod rating;
+pub mod redeploy;
 pub mod resilience_engine;
 pub mod server_cleanup_notifier;
 pub mod step_executor;

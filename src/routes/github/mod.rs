@@ -5,12 +5,16 @@
 //! Signature verification, payload normalization and watch-path matching
 //! live in the pure `github-events` crate.
 
+use crate::connectors::{
+    install_service::InstallServiceConnector, user_service::UserServiceConnector,
+};
 use crate::db;
-use crate::helpers::JsonResponse;
+use crate::helpers::{JsonResponse, MqManager, VaultClient};
 use crate::services::VaultService;
 use actix_web::{post, web, HttpRequest, Responder, Result};
 use serde_json::json;
 use sqlx::PgPool;
+use std::sync::Arc;
 
 pub mod repos;
 
@@ -27,7 +31,11 @@ pub async fn webhook_handler(
     request: HttpRequest,
     body: web::Bytes,
     pg_pool: web::Data<PgPool>,
-    settings: web::Data<crate::configuration::Settings>,
+    mq_manager: web::Data<MqManager>,
+    sets: web::Data<crate::configuration::Settings>,
+    user_service: web::Data<Arc<dyn UserServiceConnector>>,
+    install_service: web::Data<Arc<dyn InstallServiceConnector>>,
+    vault_client: web::Data<VaultClient>,
 ) -> Result<impl Responder> {
     let event_name = header(&request, "X-GitHub-Event")
         .ok_or_else(|| JsonResponse::bad_request("Missing X-GitHub-Event header"))?
@@ -38,7 +46,7 @@ pub async fn webhook_handler(
     let signature = header(&request, "X-Hub-Signature-256");
 
     // The GitHub App webhook secret lives in Vault only.
-    let vault = VaultService::from_settings(&settings.vault)
+    let vault = VaultService::from_settings(&sets.vault)
         .map_err(|error| JsonResponse::internal_server_error(error.to_string()))?;
     let secret = vault
         .fetch_secret_value(&vault.github_webhook_secret_path())
@@ -66,9 +74,9 @@ pub async fn webhook_handler(
     let event = github_events::parse_event(&event_name, &payload)
         .map_err(|error| JsonResponse::bad_request(error))?;
 
-    // G5 seam: matched repos are where auto-deploy will be triggered; the
-    // deploy plan wiring lands with G5.
+    // G5: matched repos are auto-deployed onto their saved servers below.
     let mut matched = Vec::new();
+    let mut matched_rows = Vec::new();
     match &event {
         github_events::GitEvent::Push(push) => {
             let repos = db::github::list_push_repos(pg_pool.get_ref(), &push.repo, &push.branch)
@@ -76,12 +84,15 @@ pub async fn webhook_handler(
                 .map_err(JsonResponse::internal_server_error)?;
             for repo in repos {
                 match github_events::matches_watch_paths(&repo.watch_paths, &push.changed_files) {
-                    Ok(true) => matched.push(json!({
-                        "id": repo.id,
-                        "projectId": repo.project_id,
-                        "repo": repo.repo,
-                        "branch": repo.branch,
-                    })),
+                    Ok(true) => {
+                        matched.push(json!({
+                            "id": repo.id,
+                            "projectId": repo.project_id,
+                            "repo": repo.repo,
+                            "branch": repo.branch,
+                        }));
+                        matched_rows.push(repo);
+                    }
                     Ok(false) => {}
                     Err(error) => {
                         tracing::warn!(
@@ -109,11 +120,55 @@ pub async fn webhook_handler(
         _ => {}
     }
 
+    // G5: auto-deploy each matched repo's project onto its saved server
+    // (never provisions a new VM). Best-effort per repo, reported inline.
+    let mut triggered = Vec::new();
+    for repo in matched_rows {
+        let Some(project_id) = repo.project_id else {
+            continue;
+        };
+        let attempt = match db::project::fetch(pg_pool.get_ref(), project_id).await {
+            Ok(Some(project)) => {
+                let user = crate::services::redeploy::webhook_acting_user(&repo.user_id);
+                crate::services::redeploy::redeploy_saved_project(
+                    &user,
+                    &project,
+                    pg_pool.get_ref(),
+                    mq_manager.get_ref(),
+                    sets.get_ref(),
+                    user_service.get_ref(),
+                    install_service.get_ref(),
+                    vault_client.get_ref(),
+                )
+                .await
+            }
+            Ok(None) => crate::services::redeploy::RedeployAttempt {
+                project_id,
+                deployment_id: None,
+                outcome: "skipped".to_string(),
+                reason: Some("project not found".to_string()),
+            },
+            Err(error) => crate::services::redeploy::RedeployAttempt {
+                project_id,
+                deployment_id: None,
+                outcome: "failed".to_string(),
+                reason: Some(error),
+            },
+        };
+        triggered.push(json!({
+            "projectId": attempt.project_id,
+            "deploymentId": attempt.deployment_id,
+            "outcome": attempt.outcome,
+            "reason": attempt.reason,
+        }));
+    }
+
     Ok(JsonResponse::build()
         .set_item(json!({
             "received": true,
             "event": event_name,
             "matched": matched,
+            "triggered": triggered,
         }))
         .ok("Webhook processed"))
 }
