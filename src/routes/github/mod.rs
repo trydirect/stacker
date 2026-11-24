@@ -12,6 +12,8 @@ use actix_web::{post, web, HttpRequest, Responder, Result};
 use serde_json::json;
 use sqlx::PgPool;
 
+pub mod repos;
+
 fn header<'a>(request: &'a HttpRequest, name: &str) -> Option<&'a str> {
     request
         .headers()
@@ -67,27 +69,44 @@ pub async fn webhook_handler(
     // G5 seam: matched repos are where auto-deploy will be triggered; the
     // deploy plan wiring lands with G5.
     let mut matched = Vec::new();
-    if let github_events::GitEvent::Push(push) = &event {
-        let repos = db::github::list_push_repos(pg_pool.get_ref(), &push.repo, &push.branch)
-            .await
-            .map_err(JsonResponse::internal_server_error)?;
-        for repo in repos {
-            match github_events::matches_watch_paths(&repo.watch_paths, &push.changed_files) {
-                Ok(true) => matched.push(json!({
-                    "id": repo.id,
-                    "projectId": repo.project_id,
-                    "repo": repo.repo,
-                    "branch": repo.branch,
-                })),
-                Ok(false) => {}
-                Err(error) => {
-                    tracing::warn!(
-                        repo = %repo.repo,
-                        "watch path patterns rejected, push not matched: {}", error
-                    );
+    match &event {
+        github_events::GitEvent::Push(push) => {
+            let repos = db::github::list_push_repos(pg_pool.get_ref(), &push.repo, &push.branch)
+                .await
+                .map_err(JsonResponse::internal_server_error)?;
+            for repo in repos {
+                match github_events::matches_watch_paths(&repo.watch_paths, &push.changed_files) {
+                    Ok(true) => matched.push(json!({
+                        "id": repo.id,
+                        "projectId": repo.project_id,
+                        "repo": repo.repo,
+                        "branch": repo.branch,
+                    })),
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            repo = %repo.repo,
+                            "watch path patterns rejected, push not matched: {}", error
+                        );
+                    }
                 }
             }
         }
+        github_events::GitEvent::Installation(installation) => {
+            db::github::upsert_installation(
+                pg_pool.get_ref(),
+                installation.installation_id,
+                Some(&installation.account_login),
+            )
+            .await
+            .map_err(JsonResponse::internal_server_error)?;
+        }
+        github_events::GitEvent::InstallationRepositories(update) => {
+            db::github::upsert_installation(pg_pool.get_ref(), update.installation_id, None)
+                .await
+                .map_err(JsonResponse::internal_server_error)?;
+        }
+        _ => {}
     }
 
     Ok(JsonResponse::build()

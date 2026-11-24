@@ -5,7 +5,11 @@
 G2 ✅ (2026-11-24): ресивер `POST /api/v1/github/webhook` — проверка
 `X-Hub-Signature-256` (HMAC, constant-time), anti-replay по `X-GitHub-Delivery`,
 нормализация событий. G3 ✅ (2026-11-24): watch paths (glob + `!`-исключения).
-G4 (Repo Connect API/UI) и G5 (триггер деплоя из matched-списка) впереди.
+G4 ✅ (2026-11-24): Repo Connect API `/api/v1/github/repos` (CRUD, owner-gated),
+installation-события пишутся в `github_installation`; переключатель auto-deploy —
+`github_repo.autodeploy` (поле каталога `autodeploy` вытеснено).
+G5 (триггер деплоя из matched-списка) — следующий шаг: примитив
+`redeploy_saved_project` (см. план).
 
 План: `config/PLAN-github-webhooks.md` (продолжение `PLAN-managed-previews.md`).
 Контракт: `config/shared-fixtures/api-contracts/github-webhooks.json`.

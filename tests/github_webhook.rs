@@ -178,3 +178,119 @@ async fn push_outside_watch_paths_does_not_match() {
     let matched = body["item"]["matched"].as_array().expect("matched list");
     assert!(matched.is_empty());
 }
+
+#[tokio::test]
+async fn installation_event_is_recorded() {
+    let app = app().await;
+    stub_webhook_secret(&app.vault_server).await;
+
+    let installation_id = 9000 + uuid::Uuid::new_v4().as_u128() % 1000;
+    let body = json!({
+        "action": "created",
+        "installation": { "id": installation_id, "account": { "login": "alice" } },
+        "repositories": [ { "full_name": "alice/shop" } ]
+    });
+    let response = send_webhook(
+        app,
+        "installation",
+        &uuid::Uuid::new_v4().to_string(),
+        &body,
+        WEBHOOK_SECRET,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM github_installation WHERE installation_id = $1",
+    )
+    .bind(installation_id as i64)
+    .fetch_one(&app.db_pool)
+    .await
+    .expect("count installations");
+    assert_eq!(count, 1);
+}
+
+// --- Repo Connect API (G4) -----------------------------------------------
+
+async fn connect_repo(
+    app: &common::TestAppWithVault,
+    project_id: i32,
+    repo: &str,
+    token: &str,
+) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{}/api/v1/github/repos", app.address))
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&json!({
+            "projectId": project_id,
+            "installationId": 42,
+            "repo": repo,
+            "branch": "main",
+            "watchPaths": ["src/*"],
+            "autodeploy": true,
+        }))
+        .send()
+        .await
+        .expect("connect repo request")
+}
+
+#[tokio::test]
+async fn repo_connect_crud_roundtrip() {
+    let app = app().await;
+    let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
+    let repo_name = format!("alice/shop-{}", uuid::Uuid::new_v4());
+
+    let created = connect_repo(app, project_id, &repo_name, common::USER_A_TOKEN).await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created_body: Value = created.json().await.expect("json");
+    let repo_id = created_body["item"]["id"].as_i64().expect("repo id");
+    assert_eq!(created_body["item"]["projectId"], project_id);
+
+    // Duplicate repo+branch is rejected.
+    let duplicate = connect_repo(app, project_id, &repo_name, common::USER_A_TOKEN).await;
+    assert_eq!(duplicate.status(), StatusCode::CONFLICT);
+
+    // Update switches auto-deploy off.
+    let updated = reqwest::Client::new()
+        .patch(format!("{}/api/v1/github/repos/{}", app.address, repo_id))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .json(&json!({ "autodeploy": false }))
+        .send()
+        .await
+        .expect("patch request");
+    assert_eq!(updated.status(), StatusCode::OK);
+    let updated_body: Value = updated.json().await.expect("json");
+    assert_eq!(updated_body["item"]["autodeploy"], false);
+
+    // List shows it; delete removes it.
+    let list = reqwest::Client::new()
+        .get(format!(
+            "{}/api/v1/github/repos?projectId={}",
+            app.address, project_id
+        ))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .send()
+        .await
+        .expect("list request");
+    let list_body: Value = list.json().await.expect("json");
+    assert_eq!(list_body["list"].as_array().expect("list").len(), 1);
+
+    let deleted = reqwest::Client::new()
+        .delete(format!("{}/api/v1/github/repos/{}", app.address, repo_id))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .send()
+        .await
+        .expect("delete request");
+    assert_eq!(deleted.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn repo_connect_requires_project_ownership() {
+    let app = app().await;
+    // A project owned by another user: User A must not connect repos to it.
+    let other_project = common::create_test_project(&app.db_pool, common::USER_B_ID).await;
+    let repo_name = format!("alice/shop-{}", uuid::Uuid::new_v4());
+
+    let response = connect_repo(app, other_project, &repo_name, common::USER_A_TOKEN).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
