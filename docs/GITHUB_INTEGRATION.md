@@ -8,8 +8,9 @@ G2 ✅ (2026-11-24): ресивер `POST /api/v1/github/webhook` — прове
 G4 ✅ (2026-11-24): Repo Connect API `/api/v1/github/repos` (CRUD, owner-gated),
 installation-события пишутся в `github_installation`; переключатель auto-deploy —
 `github_repo.autodeploy` (поле каталога `autodeploy` вытеснено).
-G5 (триггер деплоя из matched-списка) — следующий шаг: примитив
-`redeploy_saved_project` (см. план).
+G5 ✅ (2026-11-24): auto-deploy matched-push через `redeploy_saved_project`
+(`src/services/redeploy.rs`) — деплой на существующий сервер (`server.server_id`),
+новая VM не создаётся; ответ вебхука несёт `triggered` (queued|skipped|failed).
 
 План: `config/PLAN-github-webhooks.md` (продолжение `PLAN-managed-previews.md`).
 Контракт: `config/shared-fixtures/api-contracts/github-webhooks.json`.
