@@ -1,12 +1,10 @@
 # Notifications — каналы уведомлений (Slack / Discord / Telegram / email / webhook)
 
-Статус: в работе (WS-N). N1 готов (2026-11-24): миграция
-`20261124111150_create_notification_tables`. N2 готов и протестирован (2026-11-24):
-модели, формы, db-слой, адаптеры slack/discord/telegram/webhook (webhook — с HMAC
-`X-Stacker-Signature`), REST `/api/v1/notifications/*`, casbin-миграция
-`20261124111654_add_casbin_notification_rules`; тесты зелёные (6 интеграционных
-`tests/notification_channels.rs` + unit-тесты маскирования/редакции). N3 (шина событий)
-и N4 (email через notify) впереди.
+Статус: WS-N завершён (2026-11-24). N1 ✅ схема, N2 ✅ REST/адаптеры, N3 ✅ шина
+событий, N4 ✅ email/`container.down`/CLI. Тесты: notification-core 10/10 (~10мс),
+`notification_channels` 9/9, lib зелёный. Остаток усиления (не блокирует):
+SSRF-блок приватных диапазонов, admin-harness тест глобальных каналов,
+интеграция email с живым notify-сервисом.
 
 План: `config/PLAN-notifications.md`.
 Контракты (источник истины):

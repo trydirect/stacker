@@ -3,7 +3,7 @@ use crate::forms::{
     CreateNotificationChannelRequest, NotificationChannelResponse,
     NotificationDispatchResponse, UpdateNotificationChannelRequest,
 };
-use crate::helpers::JsonResponse;
+use crate::helpers::{JsonResponse, MqManager};
 use crate::models;
 use crate::routes::project::access::{self, Need};
 use crate::services::{notification as notify, VaultService};
@@ -300,6 +300,7 @@ pub async fn test_handler(
     user: web::ReqData<Arc<models::User>>,
     path: web::Path<i32>,
     pg_pool: web::Data<PgPool>,
+    mq_manager: web::Data<MqManager>,
     settings: web::Data<crate::configuration::Settings>,
 ) -> Result<impl Responder> {
     let channel_id = path.into_inner();
@@ -317,9 +318,14 @@ pub async fn test_handler(
     .await?;
 
     let vault = build_vault(settings.get_ref())?;
-    let dispatch = notify::send_test_message(pg_pool.get_ref(), &vault, &channel)
-        .await
-        .map_err(JsonResponse::internal_server_error)?;
+    let dispatch = notify::send_test_message(
+        pg_pool.get_ref(),
+        Some(mq_manager.get_ref()),
+        &vault,
+        &channel,
+    )
+    .await
+    .map_err(JsonResponse::internal_server_error)?;
 
     // 200 always carries the dispatch; the message reflects the outcome (m3).
     let message = if dispatch.status == "sent" {

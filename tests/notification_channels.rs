@@ -401,6 +401,7 @@ async fn project_events_reach_only_subscribed_project_channels() {
     );
     let dispatches = stacker::services::notification::dispatch_project_event(
         &harness.app.db_pool,
+        None,
         &harness.vault,
         project_id,
         &event,
