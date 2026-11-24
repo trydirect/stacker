@@ -40,8 +40,13 @@ pub struct BackupSpec {
     /// Database name (postgres/mysql); empty uses the engine default
     /// (`$POSTGRES_DB`).
     pub database: String,
-    /// Syncopia upload endpoint (POST target and file download base).
+    /// Backup storage upload endpoint (POST target and file download base).
     pub endpoint: String,
+    /// Extra HTTP headers for upload/download, as (name, value) pairs. Names
+    /// come from configuration per destination — nothing vendor-specific is
+    /// hardcoded here. Values may reference environment variables
+    /// (`$BACKUP_DEVICE`, `$BACKUP_CHECKSUM`, ...).
+    pub extra_headers: Vec<(String, String)>,
 }
 
 /// Shell-quote a value for a single-quoted shell string.
@@ -49,13 +54,17 @@ fn shq(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
-/// Upload pipeline shared by all sources: stream stdin to the syncopia
+/// Upload pipeline shared by all sources: stream stdin to the backup storage
 /// upload endpoint. The per-run bearer token comes from `$BACKUP_TOKEN`.
-fn upload_pipeline(endpoint: &str) -> String {
-    format!(
-        "curl -fsS -X POST --data-binary @- {url} -H 'Authorization: Bearer $BACKUP_TOKEN' -H 'X-ElBackup-Device-ID: $BACKUP_DEVICE' -H 'X-ElBackup-File-Checksum: $BACKUP_CHECKSUM'",
+fn upload_pipeline(endpoint: &str, extra_headers: &[(String, String)]) -> String {
+    let mut command = format!(
+        "curl -fsS -X POST --data-binary @- {url} -H 'Authorization: Bearer $BACKUP_TOKEN'",
         url = shq(&format!("{}/upload", endpoint.trim_end_matches('/')))
-    )
+    );
+    for (name, value) in extra_headers {
+        command.push_str(&format!(" -H {}", shq(&format!("{}: {}", name, value))));
+    }
+    command
 }
 
 /// Embed a pipeline inside `sh -c '...'`: re-escape single quotes.
@@ -68,7 +77,7 @@ pub fn build_dump_command(spec: &BackupSpec) -> Result<String, String> {
     if spec.target.trim().is_empty() {
         return Err("backup target must not be empty".to_string());
     }
-    let upload = upload_pipeline(&spec.endpoint);
+    let upload = upload_pipeline(&spec.endpoint, &spec.extra_headers);
     Ok(match spec.source {
         DumpSource::Postgres => {
             let db = if spec.database.is_empty() {
@@ -247,6 +256,16 @@ mod tests {
             target: "shop-postgres-1".to_string(),
             database: "shop".to_string(),
             endpoint: "https://backup.example".to_string(),
+            extra_headers: vec![
+                (
+                    "X-Backup-Device-Id".to_string(),
+                    "$BACKUP_DEVICE".to_string(),
+                ),
+                (
+                    "X-Backup-Checksum".to_string(),
+                    "$BACKUP_CHECKSUM".to_string(),
+                ),
+            ],
         };
         let command = build_dump_command(&spec).unwrap();
         assert!(command.contains("docker exec 'shop-postgres-1'"));
@@ -254,6 +273,23 @@ mod tests {
         assert!(command.contains("shop"));
         assert!(command.contains("https://backup.example/upload"));
         assert!(command.contains("$BACKUP_TOKEN"));
+        // Configured headers render generically, whatever they are named.
+        assert!(command.contains("X-Backup-Device-Id: $BACKUP_DEVICE"));
+        assert!(command.contains("X-Backup-Checksum: $BACKUP_CHECKSUM"));
+    }
+
+    #[test]
+    fn test_upload_without_extra_headers_has_only_auth() {
+        let spec = BackupSpec {
+            source: DumpSource::Mongo,
+            target: "shop-mongo-1".to_string(),
+            database: String::new(),
+            endpoint: "https://backup.example".to_string(),
+            extra_headers: Vec::new(),
+        };
+        let command = build_dump_command(&spec).unwrap();
+        assert!(command.contains("Authorization: Bearer $BACKUP_TOKEN"));
+        assert_eq!(command.matches("-H '").count(), 1);
     }
 
     #[test]
@@ -263,6 +299,7 @@ mod tests {
             target: "postgres_data".to_string(),
             database: String::new(),
             endpoint: "https://backup.example".to_string(),
+            extra_headers: Vec::new(),
         };
         let command = build_dump_command(&spec).unwrap();
         assert!(command.contains("-v 'postgres_data:/data:ro'"));
@@ -276,6 +313,7 @@ mod tests {
             target: "  ".to_string(),
             database: String::new(),
             endpoint: "https://backup.example".to_string(),
+            extra_headers: Vec::new(),
         };
         assert!(build_dump_command(&spec).is_err());
     }
@@ -287,6 +325,7 @@ mod tests {
             target: "shop-postgres-1".to_string(),
             database: "shop".to_string(),
             endpoint: "https://backup.example".to_string(),
+            extra_headers: Vec::new(),
         };
         let command = build_restore_command(&spec, "f-1").unwrap();
         assert!(command.contains("https://backup.example/upload/files/f-1"));
@@ -301,6 +340,7 @@ mod tests {
             target: "shop-mysql-1".to_string(),
             database: String::new(),
             endpoint: "https://backup.example".to_string(),
+            extra_headers: Vec::new(),
         };
         assert!(build_restore_command(&spec, " ").is_err());
     }
