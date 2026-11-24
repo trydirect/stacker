@@ -1603,6 +1603,9 @@ enum AgentCommands {
         /// Revalidate and apply a previously generated deploy-app plan fingerprint
         #[arg(long, value_name = "FINGERPRINT", conflicts_with = "plan")]
         apply_plan: Option<String>,
+        /// Add an app this deployment does not have yet, instead of updating one
+        #[arg(long = "new-app")]
+        new_app: bool,
     },
     /// Remove an app container from the remote deployment
     #[command(name = "remove-app")]
@@ -2900,6 +2903,7 @@ fn get_command(
                     environment,
                     plan,
                     apply_plan,
+                    new_app,
                 } => Box::new(
                     agent::AgentDeployAppCommand::new(
                         app,
@@ -2911,7 +2915,8 @@ fn get_command(
                         environment,
                     )
                     .with_plan(plan)
-                    .with_apply_plan(apply_plan),
+                    .with_apply_plan(apply_plan)
+                    .with_new_app(new_app),
                 ),
                 AgentCommands::RemoveApp {
                     app,
