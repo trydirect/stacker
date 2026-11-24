@@ -22,6 +22,7 @@ pub(crate) mod server;
 pub(crate) mod agreement;
 pub(crate) mod chat;
 pub(crate) mod marketplace;
+pub(crate) mod notification;
 
 pub use project::*;
 

@@ -16,6 +16,7 @@ pub mod deployment_container;
 pub mod managed_usage;
 pub mod marketplace;
 pub mod marketplace_billing;
+pub mod notification;
 pub mod pipe;
 pub mod product;
 pub mod project;

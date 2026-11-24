@@ -266,6 +266,31 @@ impl VaultService {
         )
     }
 
+    /// Notification channel secret: per-project channel or global admin
+    /// channel (project_id is None) — decision N1 (2026-11-24).
+    pub fn notification_secret_path(
+        &self,
+        user_id: &str,
+        project_id: Option<i32>,
+        name: &str,
+    ) -> String {
+        match project_id {
+            Some(project_id) => format!(
+                "{}/users/{}/projects/{}/notifications/{}",
+                self.prefix.trim_matches('/'),
+                user_id,
+                project_id,
+                name
+            ),
+            None => format!(
+                "{}/users/{}/notifications/global/{}",
+                self.prefix.trim_matches('/'),
+                user_id,
+                name
+            ),
+        }
+    }
+
     pub fn status_panel_npm_credentials_path(&self, server_id: i32) -> String {
         format!(
             "{}/hosts/{}/npm_credentials",

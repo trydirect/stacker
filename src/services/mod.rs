@@ -19,6 +19,7 @@ pub mod managed_usage;
 pub mod managed_usage_sweeper;
 pub mod marketplace_access;
 pub mod marketplace_assets;
+pub mod notification;
 pub mod payout_provider;
 pub mod project;
 pub mod project_app_service;
