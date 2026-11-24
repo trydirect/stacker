@@ -291,6 +291,11 @@ impl VaultService {
         }
     }
 
+    /// GitHub App webhook secret (WS-G): one secret per Stacker instance.
+    pub fn github_webhook_secret_path(&self) -> String {
+        format!("{}/github/webhook_secret", self.prefix.trim_matches('/'))
+    }
+
     pub fn status_panel_npm_credentials_path(&self, server_id: i32) -> String {
         format!(
             "{}/hosts/{}/npm_credentials",

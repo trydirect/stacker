@@ -2987,6 +2987,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "github-events"
+version = "0.1.0"
+dependencies = [
+ "globset",
+ "hmac 0.12.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7024,6 +7035,7 @@ dependencies = [
  "futures",
  "futures-lite 2.6.1",
  "futures-util",
+ "github-events",
  "glob",
  "health-monitor",
  "hmac 0.12.1",

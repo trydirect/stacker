@@ -263,6 +263,10 @@ pub async fn run(
             .service(project_scope("/project"))
             .service(project_scope("/api/v1/project"))
             .service(
+                web::scope("/api/v1/github")
+                    .service(crate::routes::github::webhook_handler),
+            )
+            .service(
                 web::scope("/api/v1/notifications")
                     .service(crate::routes::notification::create_handler)
                     .service(crate::routes::notification::list_handler)

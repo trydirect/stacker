@@ -5,7 +5,7 @@ edition = "2021"
 default-run= "server"
 
 [workspace]
-members = ["crates/pipe-adapter-sdk", "crates/pipe-adapter-mail", "crates/td-audit", "crates/health-monitor", "crates/notification-core"]
+members = ["crates/pipe-adapter-sdk", "crates/pipe-adapter-mail", "crates/td-audit", "crates/health-monitor", "crates/notification-core", "crates/github-events"]
 # A published name reservation, not part of the build. See its Cargo.toml.
 exclude = ["crates/stacker-cli"]
 resolver = "2"
@@ -47,6 +47,7 @@ serde = { version = "1.0.195", features = ["derive"] }
 td-audit = { path = "crates/td-audit" }
 health-monitor = { path = "crates/health-monitor" }
 notification-core = { path = "crates/notification-core" }
+github-events = { path = "crates/github-events" }
 tokio = { version = "1.28.1", features = ["full"] }
 tracing = { version = "0.1.40", features = ["log"] }
 tracing-bunyan-formatter = "0.3.8"

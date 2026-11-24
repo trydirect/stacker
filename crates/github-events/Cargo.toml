@@ -1,0 +1,15 @@
+[package]
+name = "github-events"
+version = "0.1.0"
+edition = "2021"
+description = "Pure GitHub App webhook logic for TryDirect Stacker: signature verification, event normalization (push / pull_request / installation), and watch-path matching. No database, no Vault, no HTTP — the Stacker service layer drives persistence and auth."
+
+[dependencies]
+globset = "0.4"
+hmac = "0.12.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10.8"
+
+[features]
+default = []

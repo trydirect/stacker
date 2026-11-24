@@ -13,6 +13,7 @@ pub mod command;
 pub mod dag;
 pub(crate) mod deployment;
 pub mod deployment_container;
+pub mod github;
 pub mod managed_usage;
 pub mod marketplace;
 pub mod marketplace_billing;
