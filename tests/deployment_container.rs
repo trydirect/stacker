@@ -12,6 +12,7 @@ use stacker::db;
 use stacker::models::ObservedContainer;
 use tokio::sync::OnceCell;
 
+#[allow(dead_code)]
 static APP: OnceCell<common::TestAppWithVaultShared> = OnceCell::const_new();
 
 async fn pool() -> PgPool {

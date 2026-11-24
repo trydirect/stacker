@@ -428,7 +428,7 @@ fn hex_decode(value: &str) -> Result<Vec<u8>, PayoutProviderError> {
     }
 
     let mut bytes = Vec::with_capacity(value.len() / 2);
-    for chunk in value.as_bytes().chunks_exact(2) {
+    for chunk in value.as_bytes().as_chunks::<2>().0 {
         let high = hex_value(chunk[0])?;
         let low = hex_value(chunk[1])?;
         bytes.push((high << 4) | low);

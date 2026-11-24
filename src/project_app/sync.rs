@@ -208,16 +208,14 @@ pub(crate) async fn sync_project_level_apps_from_form(
             app.deployment_id = None;
             db::project_app::update(pool, &app).await?;
             if let Some(contract) = app.config_contract.clone() {
-                db::project_app::set_config_contract(pool, project_id, &app.code, contract)
-                    .await?;
+                db::project_app::set_config_contract(pool, project_id, &app.code, contract).await?;
             }
         } else {
             let code = desired_app.code.clone();
             let contract = desired_app.config_contract.clone();
             db::project_app::insert(pool, &desired_app).await?;
             if let Some(contract) = contract {
-                db::project_app::set_config_contract(pool, project_id, &code, contract)
-                    .await?;
+                db::project_app::set_config_contract(pool, project_id, &code, contract).await?;
             }
         }
     }

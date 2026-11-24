@@ -38,7 +38,7 @@ async fn given_resilience_instance(world: &mut StepWorld) {
 
     // Create a project + deployment for this instance
     let deployment_hash = format!("res-deploy-{}", uuid::Uuid::new_v4());
-    let proj_name = format!("proj-{}", &deployment_hash);
+    let proj_name = format!("proj-{}", deployment_hash);
 
     let project_id: i32 = sqlx::query_scalar(
         r#"INSERT INTO project (stack_id, user_id, name, metadata, request_json, created_at, updated_at)

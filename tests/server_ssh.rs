@@ -6,11 +6,13 @@ use wiremock::{Mock, ResponseTemplate};
 
 use tokio::sync::OnceCell;
 
+#[allow(dead_code)]
 static APP: OnceCell<common::TestAppWithVaultShared> = OnceCell::const_new();
 
 // Creates a fresh `PgPool` bound to each test's own tokio runtime (see
 // `get_or_init_vault_app_fresh` docs) to avoid `PoolTimedOut` hangs from
 // reusing a pool across the different runtimes `#[tokio::test]` spins up.
+#[allow(dead_code)]
 async fn app() -> common::TestAppWithVaultFresh {
     common::get_or_init_vault_app_fresh(&APP)
         .await
@@ -72,7 +74,7 @@ async fn test_get_public_key_vault_path_null_returns_400() {
     let resp = client
         .get(format!(
             "{}/server/{}/ssh-key/public",
-            &app.address, server_id
+            app.address, server_id
         ))
         .header("Authorization", "Bearer test-token")
         .send()
@@ -116,14 +118,14 @@ async fn test_get_public_key_vault_returns_404_propagates_as_404() {
     Mock::given(method("GET"))
         .and(path_regex(vault_ssh_path_regex("test_user_id", server_id)))
         .respond_with(ResponseTemplate::new(404).set_body_json(json!({"errors": []})))
-        .mount(&app.vault_server)
+        .mount(app.vault_server)
         .await;
 
     let client = reqwest::Client::new();
     let resp = client
         .get(format!(
             "{}/server/{}/ssh-key/public",
-            &app.address, server_id
+            app.address, server_id
         ))
         .header("Authorization", "Bearer test-token")
         .send()
@@ -161,7 +163,7 @@ async fn test_get_public_key_no_active_key_returns_404() {
     let resp = client
         .get(format!(
             "{}/server/{}/ssh-key/public",
-            &app.address, server_id
+            app.address, server_id
         ))
         .header("Authorization", "Bearer test-token")
         .send()
@@ -197,14 +199,14 @@ async fn test_get_public_key_success() {
             expected_pub_key,
             "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----",
         )))
-        .mount(&app.vault_server)
+        .mount(app.vault_server)
         .await;
 
     let client = reqwest::Client::new();
     let resp = client
         .get(format!(
             "{}/server/{}/ssh-key/public",
-            &app.address, server_id
+            app.address, server_id
         ))
         .header("Authorization", "Bearer test-token")
         .send()
@@ -241,14 +243,14 @@ async fn test_generate_key_vault_down_returns_private_key_inline() {
     Mock::given(method("POST"))
         .and(path_regex(vault_ssh_path_regex("test_user_id", server_id)))
         .respond_with(ResponseTemplate::new(500).set_body_string("vault unavailable"))
-        .mount(&app.vault_server)
+        .mount(app.vault_server)
         .await;
 
     let client = reqwest::Client::new();
     let resp = client
         .post(format!(
             "{}/server/{}/ssh-key/generate",
-            &app.address, server_id
+            app.address, server_id
         ))
         .header("Authorization", "Bearer test-token")
         .send()
@@ -304,14 +306,14 @@ async fn test_generate_key_success_stores_in_vault_no_private_key_exposed() {
     Mock::given(method("POST"))
         .and(path_regex(vault_ssh_path_regex("test_user_id", server_id)))
         .respond_with(ResponseTemplate::new(204))
-        .mount(&app.vault_server)
+        .mount(app.vault_server)
         .await;
 
     let client = reqwest::Client::new();
     let resp = client
         .post(format!(
             "{}/server/{}/ssh-key/generate",
-            &app.address, server_id
+            app.address, server_id
         ))
         .header("Authorization", "Bearer test-token")
         .send()
@@ -369,7 +371,7 @@ async fn test_generate_key_already_active_returns_400() {
     let resp = client
         .post(format!(
             "{}/server/{}/ssh-key/generate",
-            &app.address, server_id
+            app.address, server_id
         ))
         .header("Authorization", "Bearer test-token")
         .send()
@@ -407,12 +409,12 @@ async fn test_delete_key_clears_vault_and_db() {
     Mock::given(method("DELETE"))
         .and(path_regex(vault_ssh_path_regex("test_user_id", server_id)))
         .respond_with(ResponseTemplate::new(204))
-        .mount(&app.vault_server)
+        .mount(app.vault_server)
         .await;
 
     let client = reqwest::Client::new();
     let resp = client
-        .delete(format!("{}/server/{}/ssh-key", &app.address, server_id))
+        .delete(format!("{}/server/{}/ssh-key", app.address, server_id))
         .header("Authorization", "Bearer test-token")
         .send()
         .await
@@ -446,7 +448,7 @@ async fn test_delete_key_none_returns_400() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .delete(format!("{}/server/{}/ssh-key", &app.address, server_id))
+        .delete(format!("{}/server/{}/ssh-key", app.address, server_id))
         .header("Authorization", "Bearer test-token")
         .send()
         .await
@@ -481,7 +483,7 @@ async fn test_authorize_public_key_invalid_public_key_returns_400_before_vault()
     let resp = client
         .post(format!(
             "{}/server/{}/ssh-key/authorize-public-key",
-            &app.address, server_id
+            app.address, server_id
         ))
         .header("Authorization", "Bearer test-token")
         .json(&json!({"public_key": "not-a-public-key"}))
@@ -512,7 +514,7 @@ async fn test_authorize_public_key_vault_path_null_returns_400_before_vault() {
     let resp = client
         .post(format!(
             "{}/server/{}/ssh-key/authorize-public-key",
-            &app.address, server_id
+            app.address, server_id
         ))
         .header("Authorization", "Bearer test-token")
         .json(&json!({"public_key": public_key}))
@@ -549,7 +551,7 @@ async fn test_authorize_public_key_missing_server_ip_returns_400_before_vault() 
     let resp = client
         .post(format!(
             "{}/server/{}/ssh-key/authorize-public-key",
-            &app.address, server_id
+            app.address, server_id
         ))
         .header("Authorization", "Bearer test-token")
         .json(&json!({"public_key": public_key}))
@@ -586,14 +588,14 @@ async fn test_authorize_public_key_vault_read_failure_does_not_leak_private_key(
     Mock::given(method("GET"))
         .and(path_regex(vault_ssh_path_regex("test_user_id", server_id)))
         .respond_with(ResponseTemplate::new(500).set_body_string("vault unavailable"))
-        .mount(&app.vault_server)
+        .mount(app.vault_server)
         .await;
 
     let client = reqwest::Client::new();
     let resp = client
         .post(format!(
             "{}/server/{}/ssh-key/authorize-public-key",
-            &app.address, server_id
+            app.address, server_id
         ))
         .header("Authorization", "Bearer test-token")
         .json(&json!({"public_key": public_key}))
@@ -631,9 +633,9 @@ async fn test_ssh_key_endpoints_require_auth() {
 
     for (verb, path) in endpoints {
         let req = match *verb {
-            "GET" => client.get(format!("{}{}", &app.address, path)),
-            "POST" => client.post(format!("{}{}", &app.address, path)),
-            "DELETE" => client.delete(format!("{}{}", &app.address, path)),
+            "GET" => client.get(format!("{}{}", app.address, path)),
+            "POST" => client.post(format!("{}{}", app.address, path)),
+            "DELETE" => client.delete(format!("{}{}", app.address, path)),
             _ => unreachable!(),
         };
         let resp = req.send().await.expect("request failed");

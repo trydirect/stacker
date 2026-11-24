@@ -1,5 +1,8 @@
 use serde_json::Value as JsonValue;
 
+// prost/tonic-generated service client: its `Result` Err variant is a large
+// tonic Status. Not our API to reshape — silence for this module only.
+#[allow(clippy::result_large_err)]
 pub mod pipe_proto {
     tonic::include_proto!("pipe");
 }

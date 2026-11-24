@@ -5,8 +5,10 @@ use sqlx::Row;
 
 use tokio::sync::OnceCell;
 
+#[allow(dead_code)]
 static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> &'static common::TwoUserTestApp {
     common::get_or_init_two_user_app(&APP)
         .await
@@ -41,7 +43,7 @@ async fn test_list_clients_only_returns_own() {
     // User B tries to access User A's client via update (no list endpoint exists).
     // This confirms B cannot interact with A's client at all.
     let resp = client
-        .put(format!("{}/client/{}", &app.address, client_id))
+        .put(format!("{}/client/{}", app.address, client_id))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .send()
         .await
@@ -63,7 +65,7 @@ async fn test_update_client_rejects_other_user() {
     let client_id = insert_client(&app.db_pool, USER_A_ID).await;
 
     let resp = client
-        .put(format!("{}/client/{}", &app.address, client_id))
+        .put(format!("{}/client/{}", app.address, client_id))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .send()
         .await
@@ -96,7 +98,7 @@ async fn test_enable_client_rejects_other_user() {
     let client_id: i32 = rec.get("id");
 
     let resp = client
-        .put(format!("{}/client/{}/enable", &app.address, client_id))
+        .put(format!("{}/client/{}/enable", app.address, client_id))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .send()
         .await
@@ -119,7 +121,7 @@ async fn test_disable_client_rejects_other_user() {
     let client_id = insert_client(&app.db_pool, USER_A_ID).await;
 
     let resp = client
-        .put(format!("{}/client/{}/disable", &app.address, client_id))
+        .put(format!("{}/client/{}/disable", app.address, client_id))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .send()
         .await
@@ -143,7 +145,7 @@ async fn test_owner_can_manage_own_client() {
 
     // Owner can update (regenerate secret)
     let resp = client
-        .put(format!("{}/client/{}", &app.address, client_id))
+        .put(format!("{}/client/{}", app.address, client_id))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
         .await
@@ -156,7 +158,7 @@ async fn test_owner_can_manage_own_client() {
 
     // Owner can disable
     let resp = client
-        .put(format!("{}/client/{}/disable", &app.address, client_id))
+        .put(format!("{}/client/{}/disable", app.address, client_id))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
         .await
@@ -169,7 +171,7 @@ async fn test_owner_can_manage_own_client() {
 
     // Owner can re-enable
     let resp = client
-        .put(format!("{}/client/{}/enable", &app.address, client_id))
+        .put(format!("{}/client/{}/enable", app.address, client_id))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
         .await

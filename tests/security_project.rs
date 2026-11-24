@@ -2,8 +2,10 @@ mod common;
 
 use tokio::sync::OnceCell;
 
+#[allow(dead_code)]
 static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> &'static common::TwoUserTestApp {
     common::get_or_init_two_user_app(&APP)
         .await
@@ -27,7 +29,7 @@ async fn test_list_projects_only_returns_own() {
 
     // User A lists → sees exactly 2
     let resp = client
-        .get(format!("{}/project", &app.address))
+        .get(format!("{}/project", app.address))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
@@ -39,7 +41,7 @@ async fn test_list_projects_only_returns_own() {
 
     // User B lists → sees exactly 1
     let resp = client
-        .get(format!("{}/project", &app.address))
+        .get(format!("{}/project", app.address))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -61,7 +63,7 @@ async fn test_get_project_rejects_other_user() {
 
     // User B tries to GET User A's project → 404
     let resp = client
-        .get(format!("{}/project/{}", &app.address, project_id))
+        .get(format!("{}/project/{}", app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -84,7 +86,7 @@ async fn test_update_project_rejects_other_user() {
 
     // User B tries to PUT User A's project → 404 (commit 145b8c96: avoid leaking resource existence via IDOR)
     let resp = client
-        .put(format!("{}/project/{}", &app.address, project_id))
+        .put(format!("{}/project/{}", app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .header("Content-Type", "application/json")
         .body(r#"{"custom_stack_code":"hijacked","commonDomain":"test.com","dockerhub_user":"x","dockerhub_password":"x","apps":[]}"#)
@@ -109,7 +111,7 @@ async fn test_delete_project_rejects_other_user() {
 
     // User B tries to DELETE User A's project → 404 (commit 145b8c96: avoid leaking resource existence via IDOR)
     let resp = client
-        .delete(format!("{}/project/{}", &app.address, project_id))
+        .delete(format!("{}/project/{}", app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -132,7 +134,7 @@ async fn test_owner_can_access_own_project() {
 
     // User A GETs own project → 200
     let resp = client
-        .get(format!("{}/project/{}", &app.address, project_id))
+        .get(format!("{}/project/{}", app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
@@ -192,7 +194,7 @@ async fn test_deploy_rejects_other_users_project() {
 
     // User B tries to deploy User A's project → 404
     let resp = reqwest::Client::new()
-        .post(format!("{}/project/{}/deploy", &app.address, project_id))
+        .post(format!("{}/project/{}/deploy", app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .json(&deploy_body())
         .send()
@@ -218,7 +220,7 @@ async fn test_deploy_with_saved_cloud_rejects_other_users_project() {
     let resp = reqwest::Client::new()
         .post(format!(
             "{}/project/{}/deploy/{}",
-            &app.address, project_id, cloud_id
+            app.address, project_id, cloud_id
         ))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .json(&deploy_body())
@@ -245,7 +247,7 @@ async fn test_deploy_rejects_other_users_saved_cloud() {
     let resp = reqwest::Client::new()
         .post(format!(
             "{}/project/{}/deploy/{}",
-            &app.address, project_id, cloud_id
+            app.address, project_id, cloud_id
         ))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .json(&deploy_body())

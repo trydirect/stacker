@@ -478,7 +478,7 @@ pub fn run_generate_remote_payload(
         .to_string();
     edit_stacker_yml(path, |root| {
         // Ensure deploy section exists
-        if !root.contains_key(&serde_yaml::Value::String("deploy".to_string())) {
+        if !root.contains_key(serde_yaml::Value::String("deploy".to_string())) {
             root.insert(
                 serde_yaml::Value::String("deploy".to_string()),
                 serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
@@ -491,7 +491,7 @@ pub fn run_generate_remote_payload(
                     serde_yaml::Value::String("cloud".to_string()),
                 );
                 // Update cloud section
-                if !deploy_map.contains_key(&serde_yaml::Value::String("cloud".to_string())) {
+                if !deploy_map.contains_key(serde_yaml::Value::String("cloud".to_string())) {
                     let mut cloud_map = serde_yaml::Mapping::new();
                     cloud_map.insert(
                         serde_yaml::Value::String("provider".to_string()),
@@ -695,7 +695,7 @@ pub fn run_setup_ai(
     let ai_endpoint = config.ai.endpoint.clone();
     let ai_tasks = config.ai.tasks.clone();
     edit_stacker_yml(path, |root| {
-        if !root.contains_key(&serde_yaml::Value::String("ai".to_string())) {
+        if !root.contains_key(serde_yaml::Value::String("ai".to_string())) {
             root.insert(
                 serde_yaml::Value::String("ai".to_string()),
                 serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),

@@ -12,7 +12,7 @@ async fn given_test_deployment_with_status(
     status: String,
 ) {
     let pool = world.db_pool.as_ref().expect("no db_pool");
-    let proj_name = format!("proj-{}", &deployment_hash);
+    let proj_name = format!("proj-{}", deployment_hash);
 
     let project_id: i32 = sqlx::query_scalar(
         r#"INSERT INTO project (stack_id, user_id, name, metadata, request_json, created_at, updated_at)

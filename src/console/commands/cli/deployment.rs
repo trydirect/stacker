@@ -141,6 +141,70 @@ impl DeploymentStateCommand {
     }
 }
 
+/// First entry of a compose label that lists files comma-separated
+/// (`com.docker.compose.project.config_files`, `...environment_files`).
+fn first_label_file(value: Option<&serde_json::Value>) -> Option<String> {
+    let raw = value?.as_str()?;
+    raw.split(',')
+        .map(str::trim)
+        .find(|entry| !entry.is_empty())
+        .map(str::to_string)
+}
+
+/// The paths docker itself reports (BUGS.md #53): the agent forwards each
+/// container's labels, and compose labels every container with
+/// `com.docker.compose.project.config_files` / `...environment_files` — the
+/// files it actually read. The synthesized `<project>-<id>` guess the state
+/// used to print matched nothing on the host.
+fn runtime_paths_from_snapshot(snapshot: &serde_json::Value) -> (Option<String>, Option<String>) {
+    let mut compose_path = None;
+    let mut env_path = None;
+    let mut take = |container: &serde_json::Value| {
+        let Some(labels) = container
+            .get("labels")
+            .and_then(serde_json::Value::as_object)
+        else {
+            return;
+        };
+        if compose_path.is_none() {
+            compose_path = first_label_file(labels.get("com.docker.compose.project.config_files"));
+        }
+        if env_path.is_none() {
+            env_path = first_label_file(labels.get("com.docker.compose.project.environment_files"));
+        }
+    };
+
+    if let Some(containers) = snapshot
+        .get("containers")
+        .and_then(serde_json::Value::as_array)
+    {
+        for container in containers {
+            take(container);
+        }
+    }
+    // Raw agent reports keep the labels inside the command result — read both
+    // the aggregate and the single-app shapes.
+    if let Some(commands) = snapshot
+        .get("commands")
+        .and_then(serde_json::Value::as_array)
+    {
+        for command in commands {
+            let Some(result) = command.get("result") else {
+                continue;
+            };
+            for key in ["containers", "system_containers"] {
+                if let Some(containers) = result.get(key).and_then(serde_json::Value::as_array) {
+                    for container in containers {
+                        take(container);
+                    }
+                }
+            }
+        }
+    }
+
+    (compose_path, env_path)
+}
+
 fn print_state(state: &DeploymentState, json: bool) {
     if json {
         println!(
@@ -157,6 +221,13 @@ fn print_state(state: &DeploymentState, json: bool) {
     println!("Agent:      {}", state.agent.status);
     println!("Compose:    {}", state.runtime.compose_path);
     println!("Env:        {}", state.runtime.env_path);
+    // BUGS.md #53: the two live in different directories on a marketplace
+    // deploy — say so instead of letting one path imply the other.
+    let compose_dir = std::path::Path::new(&state.runtime.compose_path).parent();
+    let env_dir = std::path::Path::new(&state.runtime.env_path).parent();
+    if compose_dir != env_dir {
+        println!("  (compose and env live in different directories on the host)");
+    }
 
     if !state.apps.is_empty() {
         println!("\nApps:");
@@ -348,6 +419,24 @@ fn run_remote_deployment_state(
                     .with_context("deploymentHash", deployment_hash.clone()),
                 )
             })?;
+
+        // BUGS.md #53: prefer the paths docker reports over the synthesized
+        // guess — the agent forwards each container's labels, and compose
+        // labels every container with the files it actually read.
+        let state = match client.agent_snapshot_by_project(state.project.id).await {
+            Ok((snapshot, _)) => {
+                let mut state = state;
+                let (compose_path, env_path) = runtime_paths_from_snapshot(&snapshot);
+                if let Some(compose_path) = compose_path {
+                    state.runtime.compose_path = compose_path;
+                }
+                if let Some(env_path) = env_path {
+                    state.runtime.env_path = env_path;
+                }
+                state
+            }
+            Err(_) => state,
+        };
 
         print_state(&state, json);
         Ok(())
@@ -590,5 +679,54 @@ impl CallableTrait for DeploymentRollbackCommand {
         })?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // BUGS.md #53: the reported compose path must be the one docker reports.
+    // The agent forwards each container's labels, and compose labels them with
+    // the files it actually read — the synthesized `<project>-<id>` guess
+    // matched nothing on the host.
+    #[test]
+    fn runtime_paths_come_from_the_compose_labels_the_agent_forwards() {
+        let snapshot = serde_json::json!({
+            "commands": [{
+                "result": {
+                    "type": "all_health",
+                    "containers": [{
+                        "name": "project-n8n-1",
+                        "labels": {
+                            "com.docker.compose.project.config_files":
+                                "/home/trydirect/project/docker-compose.yml",
+                            "com.docker.compose.project.environment_files":
+                                "/home/trydirect/project-123/.env",
+                            "my.stacker.service": "n8n"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        let (compose_path, env_path) = runtime_paths_from_snapshot(&snapshot);
+        assert_eq!(
+            compose_path.as_deref(),
+            Some("/home/trydirect/project/docker-compose.yml")
+        );
+        assert_eq!(
+            env_path.as_deref(),
+            Some("/home/trydirect/project-123/.env")
+        );
+    }
+
+    #[test]
+    fn runtime_paths_absent_without_labels() {
+        let snapshot = serde_json::json!({
+            "containers": [{ "name": "x", "image": "nginx" }],
+            "commands": [{ "result": { "containers": [{ "name": "y" }] } }]
+        });
+        assert_eq!(runtime_paths_from_snapshot(&snapshot), (None, None));
     }
 }

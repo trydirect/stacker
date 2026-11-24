@@ -2,8 +2,10 @@ mod common;
 
 use tokio::sync::OnceCell;
 
+#[allow(dead_code)]
 static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> &'static common::TwoUserTestApp {
     common::get_or_init_two_user_app(&APP)
         .await
@@ -22,7 +24,7 @@ async fn test_new_project_default_unprotected() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .post(format!("{}/project", &app.address))
+        .post(format!("{}/project", app.address))
         .header("Content-Type", "application/json")
         .body(r#"{"custom":{"custom_stack_code":"default-unprot","web":[{"_id":"a1","code":"nginx","name":"Nginx","type":"web","restart":"always","dockerhub_name":"nginx","custom":true}]}}"#)
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
@@ -46,10 +48,7 @@ async fn test_enable_protection_via_patch() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .patch(format!(
-            "{}/project/{}/protection",
-            &app.address, project_id
-        ))
+        .patch(format!("{}/project/{}/protection", app.address, project_id))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
@@ -71,10 +70,7 @@ async fn test_delete_protected_project_returns_403() {
 
     // Enable protection
     let resp = client
-        .patch(format!(
-            "{}/project/{}/protection",
-            &app.address, project_id
-        ))
+        .patch(format!("{}/project/{}/protection", app.address, project_id))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
@@ -85,7 +81,7 @@ async fn test_delete_protected_project_returns_403() {
 
     // Try to delete — should be blocked
     let resp = client
-        .delete(format!("{}/project/{}", &app.address, project_id))
+        .delete(format!("{}/project/{}", app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
@@ -112,7 +108,7 @@ async fn test_delete_unprotected_project_succeeds() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .delete(format!("{}/project/{}", &app.address, project_id))
+        .delete(format!("{}/project/{}", app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
@@ -134,10 +130,7 @@ async fn test_disable_protection_requires_name() {
 
     // Enable protection
     let resp = client
-        .patch(format!(
-            "{}/project/{}/protection",
-            &app.address, project_id
-        ))
+        .patch(format!("{}/project/{}/protection", app.address, project_id))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
@@ -148,10 +141,7 @@ async fn test_disable_protection_requires_name() {
 
     // Try to disable without confirmation_name — should fail
     let resp = client
-        .patch(format!(
-            "{}/project/{}/protection",
-            &app.address, project_id
-        ))
+        .patch(format!("{}/project/{}/protection", app.address, project_id))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": false}"#)
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
@@ -175,10 +165,7 @@ async fn test_disable_protection_wrong_name_rejected() {
 
     // Enable protection
     let resp = client
-        .patch(format!(
-            "{}/project/{}/protection",
-            &app.address, project_id
-        ))
+        .patch(format!("{}/project/{}/protection", app.address, project_id))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
@@ -189,10 +176,7 @@ async fn test_disable_protection_wrong_name_rejected() {
 
     // Try to disable with wrong name
     let resp = client
-        .patch(format!(
-            "{}/project/{}/protection",
-            &app.address, project_id
-        ))
+        .patch(format!("{}/project/{}/protection", app.address, project_id))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": false, "confirmation_name": "wrong-name"}"#)
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
@@ -212,10 +196,7 @@ async fn test_disable_protection_correct_name_succeeds() {
 
     // Enable protection
     let resp = client
-        .patch(format!(
-            "{}/project/{}/protection",
-            &app.address, project_id
-        ))
+        .patch(format!("{}/project/{}/protection", app.address, project_id))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
@@ -226,10 +207,7 @@ async fn test_disable_protection_correct_name_succeeds() {
 
     // Disable with correct name ("Test Project" is the name from create_test_project)
     let resp = client
-        .patch(format!(
-            "{}/project/{}/protection",
-            &app.address, project_id
-        ))
+        .patch(format!("{}/project/{}/protection", app.address, project_id))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": false, "confirmation_name": "Test Project"}"#)
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
@@ -242,7 +220,7 @@ async fn test_disable_protection_correct_name_succeeds() {
 
     // Now delete should succeed
     let resp = client
-        .delete(format!("{}/project/{}", &app.address, project_id))
+        .delete(format!("{}/project/{}", app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
@@ -273,10 +251,7 @@ async fn test_protection_shows_deployment_and_server_counts() {
 
     // Enable protection
     let resp = client
-        .patch(format!(
-            "{}/project/{}/protection",
-            &app.address, project_id
-        ))
+        .patch(format!("{}/project/{}/protection", app.address, project_id))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
@@ -287,7 +262,7 @@ async fn test_protection_shows_deployment_and_server_counts() {
 
     // Try to delete — should be blocked with counts
     let resp = client
-        .delete(format!("{}/project/{}", &app.address, project_id))
+        .delete(format!("{}/project/{}", app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
@@ -308,10 +283,7 @@ async fn test_idor_cannot_toggle_other_users_protection() {
 
     // User B tries to enable protection on User A's project
     let resp = client
-        .patch(format!(
-            "{}/project/{}/protection",
-            &app.address, project_id
-        ))
+        .patch(format!("{}/project/{}/protection", app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
@@ -335,10 +307,7 @@ async fn test_project_list_includes_is_protected() {
 
     // Enable protection on the project
     let resp = client
-        .patch(format!(
-            "{}/project/{}/protection",
-            &app.address, project_id
-        ))
+        .patch(format!("{}/project/{}/protection", app.address, project_id))
         .header("Content-Type", "application/json")
         .body(r#"{"is_protected": true}"#)
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
@@ -349,7 +318,7 @@ async fn test_project_list_includes_is_protected() {
 
     // List projects — should include is_protected
     let resp = client
-        .get(format!("{}/project", &app.address))
+        .get(format!("{}/project", app.address))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await

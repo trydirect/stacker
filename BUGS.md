@@ -390,7 +390,7 @@ The remote preflight returns `vec![]` on any SSH failure
 (`install_runner.rs`) — best-effort only. The watch verdict is now the hard
 safety net.
 
-## 8. 🟠 OPEN — `./file` bind mounts resolve against `.stacker/`, silently becoming directories
+## 8. ✅ FIXED — `./file` bind mounts resolve against `.stacker/`, silently becoming directories (found 2026-10-02, fixed by `809ea905`, verified live 2026-11-20)
 
 **Severity:** High — every local deploy of a template with a file bind breaks
 in a way that looks like an app bug. **File:** generated compose lives in
@@ -434,7 +434,26 @@ One behavior for local and remote, pick one:
   or
 - stage bind sources into `.stacker/` during render (mirrors the remote bundle).
 
-## 9. 🟠 OPEN — `app.dockerfile: Dockerfile` is rewritten to a file that is never generated
+
+### ✅ Fixed — dev `809ea905`, verified live 2026-11-20
+
+`normalize_generated_compose_paths`/`restage_relative_path` rewrite relative
+bind-mount sources against the project root: for a local deploy
+`./config.yml` becomes `../config.yml` (the generated compose lives in
+`.stacker/`), while sources that already live in `.stacker/` stay put and
+remote deploys keep `./` (the config bundle stages files next to the
+compose). The same pass handles `env_file` entries.
+
+Verified with the entry's exact repro (`app.volumes: ["./config.yml:..."]`,
+`stacker deploy --target local`): `docker inspect` reports the mount source
+as `<project root>/config.yml` (was `<root>/.stacker/config.yml`), and
+`cat` inside the container returns the file contents (was `Is a directory`).
+
+**How to verify:** the entry's repro — deploy locally with
+`./config.yml:/etc/nginx/conf.d/conf.yml:ro` and inspect the mount: it must
+point at the project root, and the file must be a file in the container.
+
+## 9. ✅ FIXED — `app.dockerfile: Dockerfile` is rewritten to a file that is never generated (found 2026-10-02, fixed by `cfa9d69f`, verified live 2026-11-20)
 
 **Severity:** High — `stacker deploy` fails at build for the most natural
 spelling of "my Dockerfile is in the project root". **File:**
@@ -476,6 +495,23 @@ the configured path relative to the compose location instead), or drop the
 rewrite entirely when the target path doesn't exist on disk. Workaround in
 use: rename to `Dockerfile.custom` (rewrite only matches
 `None | "Dockerfile" | "./Dockerfile"`).
+
+
+### ✅ Fixed — dev `cfa9d69f`, verified live 2026-11-20
+
+With `app.dockerfile` set, the generator never writes `.stacker/Dockerfile`
+(the user's own file is the build input), and the compose rewrite now knows
+it: an explicit `app.dockerfile` keeps — or restores — its configured path,
+so the build can never point at the file that is never generated.
+
+Verified live: a project with `app.dockerfile: Dockerfile` deploys locally
+with exit 0 and the generated compose carries `dockerfile: Dockerfile`
+(was `.stacker/Dockerfile`).
+
+**How to verify:** the entry's repro — `app.dockerfile: Dockerfile` plus a
+real `Dockerfile` at the project root, `stacker deploy --target local` must
+succeed and `.stacker/docker-compose.yml` must reference `Dockerfile`, not
+`.stacker/Dockerfile`.
 
 ## 10. 🟡 OPEN — `AppSource` accepts unknown fields silently
 
@@ -555,7 +591,7 @@ message also hides the cause: it does not say which version was asked for.
   (with a warning), or stay a hard error with the requested version in the
   message?
 
-## 12. 🟠 OPEN — `stacker install <template>` writes no `.env`, so `${VAR}` defaults from `.env.example` are missing (found 2026-10-19)
+## 12. ✅ FIXED — `stacker install <template>` writes no `.env`, so `${VAR}` defaults from `.env.example` are missing (found 2026-10-19, fixed 2026-11-20)
 
 **Severity:** Medium - a marketplace template whose `stacker.yml` reads a
 plain (non-secret) value through `${VAR}` cannot be deployed after
@@ -581,6 +617,21 @@ Deploying from the template's own directory (with `.env` created from
 `stacker install` materializes the template's `.env.example` defaults (and
 the contract's generated values) into `.env`, or the deploy treats a
 `.env.example` default as the value.
+
+### ✅ Fixed (2026-11-20) — stacker `fix/install-file-set-12-33` (with #33)
+
+Both options from the expected are in: `stacker install` materializes the
+template's file set and seeds `.env` from the `.env.example` defaults (never
+overwriting what is already there), and the `${VAR}` resolver treats
+`.env.example` as defaults under the env file — so a template default is
+honoured even when `.env` was never written. The env file overrides the
+example.
+
+**How to verify:** `stacker install <template> --file ./stacker.yml --force`
+into an empty directory must write `.env` (from the template's
+`.env.example`), and `stacker deploy` must not fail on a `${VAR}` whose
+value is an `.env.example` default (the entry's `FLOWISE_USERNAME` case).
+
 ## 13. 🟠 NOT CONFIRMED — bake finalize drops the build box's volumes before it checks for secret conflicts (found 2026-10-26)
 
 ### Observed (2026-10-26)
@@ -1087,7 +1138,7 @@ the region/size (before PR 336 the file kept the template defaults and the
 flags were dropped silently). Unwritable flags print a `Not written to ...`
 note on stderr.
 
-## 28. 🟡 CONFIRMED — install and deploy report different project ids for the same project (found 2026-11-12)
+## 28. ✅ FIXED — install and deploy report different project ids for the same project (found 2026-11-12, fixed 2026-11-21)
 
 ### Observed (2026-11-12, stacker-cli v0.3.4)
 
@@ -1109,6 +1160,80 @@ rather than show either.
 
 Find which of the two is authoritative and make both commands print it.
 Test: install and the deploy that follows report the same id.
+
+### ✅ Fixed (2026-11-21) — stacker `fix/install-deploy-one-project-id-28`
+
+### The chain, established first
+
+A project's identity is `(user, name)` — the deploy chain's
+"resolve-or-auto-create" already assumes it: it looks the name up, syncs the
+`stacker.yml` metadata into the row it found (`Found project ... syncing
+metadata`), or creates one row. Install did not participate in that identity
+at all:
+
+1. **Install always inserted.** `insert_project_from_form` created a new
+   project row on every install, never consulting names — a repeat install
+   under a name that already existed made a *second* row. Reproduced in a
+   test before the fix: install as `My N8n`, then `my n8n` → projects #1 and
+   #2.
+2. **Name lookups resolved arbitrarily.** The CLI's `find_project_by_name`
+   took the *first* name match out of the unsorted `/project` list, so with
+   two rows of one name the older won. That is the observed pair: install
+   printed the row it had just made (#818), the deploy that followed
+   resolved the older #817.
+3. **Spelling made a third class of miss.** Install stores
+   `sanitize_project_name(name)` while the deploy chain looked up — and
+   created — the raw `stacker.yml` name (`My N8n` vs `my_n8n`), so a lookup
+   could miss the installed project entirely and create yet another row.
+
+### What the fix does
+
+- **Install resolves-or-creates like the deploy chain.** A project of that
+  (user, normalized) name is reused and synced — metadata and request_json
+  updated, the same words the deploy chain prints — instead of duplicated.
+  Both install paths (stack template and catalog application) go through it.
+- **Name resolution is normalized and deterministic.** Both the CLI
+  (`find_project_by_name`, `find_project`) and the install-side lookup
+  compare names after `sanitize_project_name`, and among legacy duplicates
+  (nothing enforced uniqueness before) pick the newest row — the id most
+  recently printed is the one every later lookup resolves.
+
+So install prints the row the deploy will resolve: one name, one project,
+one id.
+
+### Tests
+
+Red first (`tests/marketplace_install_identity.rs`): installing twice under
+one name reported `#1` and `#2` — the bug in one line. Now it reports one id
+and one row, and a different name stays a separate project. Unit tests pin
+the sanitized matching and the duplicate pick.
+
+The fix also carries two test-infrastructure repairs the honest full run
+surfaced (see below): marketplace fixture seeding is serialized (parallel
+upserts of a row with two unique keys raced on the non-arbiter index and
+failed with `duplicate key` at random), and the rating suite resets the
+shared template's ratings/product link per test (assertions observed each
+other's writes).
+
+**How to verify:**
+
+```bash
+stacker install <template> --name my-n8n     # Installed '<slug>' as project #N
+stacker deploy                               # must resolve project #N too
+```
+
+Both must print the same id. Repeat the install with the same name (or the
+same name spelled `My N8n`): still #N, and one project row in
+`stacker deployment state` / `stacker projects`.
+
+Test status: `cargo test --no-fail-fast` — 3053 passed / 5 failed / 44
+ignored across 133 suites. All five failures are pre-existing test flakes,
+not this change: 4× the known `tests/agent_sweep.rs` family and one
+`project_team_seats` `PoolTimedOut` under full-suite load (30/30 in
+isolation). Note for anyone reading older entries: plain `cargo test` stops
+at the first failing target, so earlier "full suite" runs only ever covered
+the ~15 targets up to `agent_sweep`; this entry was verified with
+`--no-fail-fast`.
 
 ## 29. ✅ FIXED — `stacker agent install` refuses when `deploy.server.host` is empty, right after a cloud deploy created the server (found 2026-11-12, fixed 2026-11-19)
 
@@ -1302,7 +1427,7 @@ Point the template at the documented installer URL (or make `get.try.direct`
 resolve), and add a build-and-push step when the config has no `app.image`.
 Test: render the template and assert the installer URL is the documented one.
 
-## 33. 🟠 OPEN — `stacker install` writes only `stacker.yml`, not the template's `scripts/` (found 2026-11-12)
+## 33. ✅ FIXED — `stacker install` writes only `stacker.yml`, not the template's `scripts/` (found 2026-11-12, fixed 2026-11-20)
 
 ### Observed (2026-11-12)
 
@@ -1319,6 +1444,20 @@ Have `stacker install` materialize the template's full file set, including
 scripts (and `.env.example` as `.env`, as noted in §12). Test: a fresh install
 contains the referenced files and can proceed to deploy without cloning the
 template repository.
+
+
+### ✅ Fixed (2026-11-20) — stacker `fix/install-file-set-12-33` (with #12)
+
+Per the fix direction: `stacker install` materializes the template's full
+file set from `latest_version.config_files` — `scripts/` and the rest —
+next to the stacker.yml it writes, and never overwrites a file that already
+exists. A fresh install can proceed to deploy without cloning the template
+repository.
+
+**How to verify:** install the n8n template into an empty directory — the
+files `stacker.yml` references (e.g. `scripts/n8n-entrypoint.sh`,
+`scripts/generate-secrets.sh`) must exist afterwards, and the referenced
+bind-mount source must be a file, not an empty directory.
 
 ## 34. 🟢 OPEN — the hook scanner false-positives on the marketplace template's own `generate-secrets.sh` (found 2026-11-12)
 
@@ -1430,7 +1569,7 @@ file", `handle_deploy_app` never consumes it), so a caller that reaches
 `agent exec deploy_app` with `image` but no rewritten `compose_content` is
 still ignored. The CLI no longer depends on it.
 
-## 36. 🟢 OPEN — the clippy and fmt gates fail on pre-existing code (found 2026-11-13)
+## 36. ✅ FIXED — the clippy and fmt gates fail on pre-existing code (found 2026-11-13, fixed 2026-11-20)
 
 **Measured again 2026-11-15:** `cargo clippy --lib` reports 111 warnings on
 `dev`, none of them in the file that was being changed. So the gate still
@@ -1475,6 +1614,46 @@ clippy warnings and `build.rs:37`, with no behaviour change. Test:
 `cargo clippy -- -D warnings` and `cargo fmt -- --check` pass on a clean
 tree. Alternatively pin the toolchain in `rust-toolchain.toml`, but the
 lints are real, so the cleanup is the honest fix.
+
+### ✅ Fixed (2026-11-20) — stacker `chore/fmt-clippy-gates-36`
+
+One cleanup change with no behaviour change, as the fix direction asked:
+both gates now pass on a clean tree.
+
+- `cargo clippy --fix` absorbed the mechanical majority — redundant
+  references in `format!`/`println!` arguments and immediately-dereferenced
+  borrows (45 files), plus the `build.rs:37` useless conversion the entry
+  named.
+- The rest was settled by hand: detached `///` blocks that documented
+  nothing became plain comments; the copied `static APP` / `async fn app`
+  test scaffolding carries `#[allow(dead_code)]` (it is a shared template,
+  some files use only one half); the identical `else if` branches in the
+  audit validator's severity collapsed; its two script-body regexes moved
+  out of the per-file loop into `LazyLock` statics; `Settings::default()`
+  plus field assignment became a struct literal; the unused
+  `derive_builder` dependency left `Cargo.toml`.
+- Three spans genuinely hold a `std::sync::Mutex` across `.await`
+  (`marketplace_mine.rs`) — that is the point there: the tests share one
+  test user and must not interleave, each on its own single-threaded
+  runtime. They carry `#[allow(clippy::await_holding_lock)]` with the
+  reason. The large `Err` variants are prost/tonic-generated
+  (`pipe_proto`) and `tungstenite::Error` in a test helper — allowed
+  module- and fn-locally, not reshaped.
+- `cargo fmt --all` cleared the remaining 49 hunks (3 files at fix time).
+
+**How to verify:** on a clean tree of this branch, both gate commands exit 0:
+
+```bash
+cargo clean
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+```
+
+Full suite: 2416 passed / 7 failed / 7 ignored — every failure is the
+pre-existing `tests/agent_sweep.rs` family (test-DB state pollution: a
+leftover agent row makes `sweep_dead_returns_zero_when_nothing_to_remove`
+see 1 instead of 0). It fails the same way on the unfixed base; nothing in
+this change touches behaviour.
 
 ## 37. ✅ FIXED — `stacker proxy add` rewrites the whole `stacker.yml` and drops every comment (found 2026-11-14, fixed 2026-11-20)
 
@@ -1644,7 +1823,7 @@ theorising is what found it. The hint that the command had worked by hand
 before was real, but it pointed at the wrong explanation: those servers
 predate mTLS rather than holding a fresher token.
 
-## 39. 🟢 OPEN — `secrets validate` reads `${VAR}` references out of comments (found 2026-11-14)
+## 39. ✅ FIXED — `secrets validate` reads `${VAR}` references out of comments (found 2026-11-14, fixed 2026-11-20)
 
 The validator fails the whole stack because of a variable that appears only
 inside a YAML comment:
@@ -1674,7 +1853,21 @@ collecting `${VAR}` names.
 **Expected:** a variable that appears only inside a `#` comment is not a
 reference and must not fail validation.
 
-## 40. 🟢 OPEN — `agent logs` and `logs` disagree on their own interface (found 2026-11-14, corrected the same day)
+## 40. ✅ FIXED — `agent logs` and `logs` disagree on their own interface (found 2026-11-14, corrected the same day, fixed 2026-11-20)
+
+### ✅ Fixed (2026-11-20) — stacker `fix/secrets-validate-comments-39`
+
+References are collected from parsed YAML scalars (keys and values), so
+comments drop out naturally while block-scalar content — where `#` is literal
+text — still counts. Unparseable YAML falls back to the old raw scan.
+Regression tests cover the comment case (the entry's exact repro), the
+block-scalar case and the fallback.
+
+**How to verify:** put `# ${BASE_PATH}/some/note` as the only occurrence of
+`BASE_PATH` in stacker.yml — `stacker secrets validate` must not list
+`BASE_PATH` and must exit 0 (before: `Error: ... 1 variable(s) referenced in
+stacker.yml are not set: BASE_PATH`, exit 1). A variable in a real value must
+still be checked.
 
 `stacker logs` takes no positional app and uses `--service` plus `--tail`;
 `stacker agent logs` takes a positional `<APP>` and accepts neither `--lines`
@@ -1706,7 +1899,22 @@ it still makes them impossible to teach in one breath.
 **Expected:** one spelling for both. Whichever wins, `--tail` and `--lines`
 should not be a coin flip, and the form in the docs must exist.
 
-## 41. 🟢 OPEN — `stacker find` glues the price to the raw billing enum (found 2026-11-14)
+
+### ✅ Fixed (2026-11-20) — stacker `fix/logs-interface-40`
+
+The asymmetry is gone: both commands accept both spellings. `stacker logs`
+takes a positional app (sugar for `--service`, conflicting with it) and
+`--lines` as an alias of `--tail`; `stacker agent logs` accepts `--lines`
+and `--tail` as aliases of `--limit`. CLI regression tests cover every
+accepted form and the positional/`--service` conflict.
+
+**How to verify:** `stacker logs n8n --lines 25` and
+`stacker agent logs n8n --lines 25` must both parse (before: `error:
+unexpected argument`), and `stacker logs n8n --service other` must be
+rejected as a conflict.
+
+## 41. ✅ FIXED — `stacker find` glues the price to the raw billing enum (found 2026-11-14, fixed 2026-11-16)
+
 
 ```
 ITEM                     NAME                         VENDOR               PLAN           DESCRIPTION
@@ -1726,6 +1934,17 @@ the first thing a new user sees when they search the catalogue.
 **Expected:** `$7.00 / day` or `$7.00 daily`, a separator between amount and
 period, the enum translated to a word, and the column width respected so
 DESCRIPTION stays aligned.
+
+
+### ✅ Fixed — dev `9d9bb69d`, verified 2026-11-20
+
+The plan cell separates the amount from the billing period (`$7.00/day` for
+`deployment_daily`, `/mo`, `/yr`, `/install`, and the separator for unknown
+periods too) and is clamped to the column width, so DESCRIPTION stays
+aligned. The entry was written after the fix landed and never flipped.
+
+**How to verify:** `stacker find n8n` — the paid row must read `$7.00/day`
+(no glued enum), and the DESCRIPTION column must stay aligned.
 
 ## 42. 🟠 OPEN — `proxy.type: nginx` silently deploys nginx-proxy-manager (found 2026-11-14)
 
@@ -1934,7 +2153,7 @@ missing, update what differs, and say which it did. Failing that, ship
 `stacker proxy update` and `stacker proxy remove` so a wrong entry can be
 repaired without the NPM UI.
 
-## 45. 🟡 FIX READY — a `proxy:` block makes the whole compose project invalid unless the app service is literally named `app` (found 2026-11-15, fix on a branch the same day)
+## 45. ✅ FIXED — a `proxy:` block makes the whole compose project invalid unless the app service is literally named `app` (found 2026-11-15, fixed by PR #342 on 2026-11-15, verified 2026-11-20)
 
 **Severity:** high. Every deploy and every agent install on the stack fails
 from then on, and the failure is in `docker compose up`, i.e. after the files
@@ -1986,6 +2205,22 @@ awaiting merge.** `proxy_dependencies` now returns the `app` service when it
 exists and otherwise the services named by `proxy.domains[].upstream`, keeping
 only those actually declared. Four tests; three fail against `origin/dev`,
 verified in a throwaway worktree.
+
+
+### ✅ Fixed — PR #342 (`fix/proxy-depends-on-existing-service`), verified 2026-11-20
+
+`proxy_dependencies` (src/cli/generator/compose.rs) replaces the hardcoded
+`depends_on: ["app"]`: with a buildable `app` it stays `app`; without one it
+depends on the services the proxy actually fronts — the host part of each
+`proxy.domains[].upstream`, kept only when a service by that name is
+declared. A dangling dependency can no longer invalidate the whole compose
+project.
+
+**How to verify:** take a template whose app service is not called `app`
+(e.g. `n8n` + `postgres`), add a `proxy:` block, deploy — `docker compose up`
+must not fail with `service "nginx" depends on undefined service "app"`
+(the generated compose's `nginx` service must `depends_on` the real service
+names).
 
 ## 46. 🟢 OPEN — every agent command logs a failed `check_connections` the agent does not allow (found 2026-11-15)
 
@@ -2205,7 +2440,7 @@ The `node` example in `docs/STACKER_YML_REFERENCE.md` and the CHEATSHEET
 The same generator runs at deploy time, so a later `stacker deploy` does not
 overwrite the CMD with the old hardcoded form.
 
-## 50. 🟠 OPEN — a local deploy reports success and a timeout in the same breath (found 2026-11-17)
+## 50. ✅ FIXED — a local deploy reports success and a timeout in the same breath (found 2026-11-17, fixed 2026-11-21)
 
 With the crash loop of #49 in progress:
 
@@ -2230,6 +2465,53 @@ program output rather than a suggestion.
 **Expected:** the readiness result decides the headline. A deploy whose
 containers never became ready is a failed deploy, and the next line should be
 how to see why - `stacker logs`, not an upsell.
+
+### ✅ Fixed (2026-11-21) — stacker `fix/local-deploy-readiness-verdict-50`
+
+The readiness result decides the headline, as the expected outcome asked.
+The deploy spinner now reports the mechanical step only — "docker compose
+accepted the files" — and the verdict comes from the health check:
+
+```
+  ✓ docker compose accepted the files
+  ✗ Local deployment failed — containers never became ready
+  See why with: stacker logs
+```
+
+A deploy whose containers never became ready is a **failed deploy**: the
+command exits non-zero and a `hooks.notify` deploy reports failure — the
+same verdict machinery a watched remote deploy gets. It still claims the
+active deployment target on purpose: the broken stack on this machine *is*
+the current state, and `stacker logs` must resolve it to show why. When the
+containers do come up, the headline is the readiness result too:
+
+```
+  ✓ docker compose accepted the files
+  ✓ All 2/2 containers running
+  ✓ Local deployment started successfully
+```
+
+Both smaller things are in: the advice after a timeout is `stacker logs`
+(not `stacker status`), and the suggestion block is indented like everything
+around it, so it reads as a suggestion rather than program output. `--no-watch`
+keeps the old single-line behaviour — the caller opted out of verification.
+
+**How to verify:** point `docker` at a stub whose `compose ps` reports
+non-running containers and run `stacker deploy --target local` (the test
+does exactly this — `tests/cli_deploy_local_readiness.rs` — and pins the
+whole expected outcome: failure exit, `stacker logs` advice, no upsell).
+With real docker: deploy a stack whose app container crash-loops; the
+run must end `✗ Local deployment failed`, exit non-zero, and next line must
+be `stacker logs`.
+
+`STACKER_LOCAL_WATCH_TIMEOUT_SECS` overrides the 120s readiness wait (the
+tests use it to stay fast).
+
+Test status on this branch: `cargo test --no-fail-fast` — 3045 passed / 10
+failed / 44 ignored across 133 suites. The five `tests/agent_sweep.rs`
+failures are the known family; the five marketplace failures are the fixture
+race and rating-suite flakes fixed in PR #370, which this branch is based
+behind — they pass once #370 is merged.
 
 ## 51. ❎ NOT A BUG — a redeploy creates a new deployment, and the agent commands need its hash (corrected 2026-11-17)
 
@@ -2289,7 +2571,7 @@ is meant to start in legacy mode, and if not, which side writes the `false`.
 The test stand currently runs with the flag flipped to `true`, with the
 original saved next to it as `config.json.bak-<epoch>`.
 
-## 53. 🟠 OPEN — the reported remote compose path is not the one docker uses (found 2026-11-17)
+## 53. ✅ FIXED — the reported remote compose path is not the one docker uses (found 2026-11-17, fixed 2026-11-20)
 
 Verified against the correct deployment hash, so this one is not #51 in
 disguise:
@@ -2318,7 +2600,29 @@ deployment whose topology you want explained.
 directories separately when they differ. `explain topology` should take
 `--deployment` like its neighbours.
 
-## 54. 🟡 OPEN — `sync` reports success when there is nothing to sync (found 2026-11-17)
+
+### ✅ Fixed (2026-11-20) — stacker `fix/deployment-state-real-paths-53`
+
+Per the expected outcome: the report now gives the path docker reports. The
+agent already forwards every container's labels in its snapshot, and docker
+labels each container with the files it actually read —
+`com.docker.compose.project.config_files` / `...environment_files`. The
+state prefers those over the `<project>-<id>` synthesis (which matched
+nothing for the compose) and falls back to it when the snapshot carries no
+labelled container. When the compose and env directories differ — the
+marketplace-deploy case — the report says so instead of letting one path
+imply the other.
+
+The topology half of the entry is fixed too: `explain topology` takes
+`--deployment` and resolves through the shared chain (landed with #55).
+
+**How to verify:** `stacker deployment state --deployment <hash>` on the
+entry's project — `Compose:` must print the file docker reports (check with
+`docker inspect <container> --format '{{index .Config.Labels
+"com.docker.compose.project.config_files"}}'`), and when compose and env
+live in different directories the output notes the split.
+
+## 54. ✅ FIXED — `sync` reports success when there is nothing to sync (found 2026-11-17, fixed 2026-11-20)
 
 `stacker sync` is described as "Synchronize project configuration without
 deploying it", which reads like the way to push a corrected compose to the
@@ -2344,6 +2648,25 @@ works and prints `· 5 container(s), all healthy`.
 **Expected:** `sync` either includes the compose in what it synchronizes or
 states what it covers; a sync with no compose present is a warning, not a
 success. The monitor error should name the key it actually wants.
+
+
+### ✅ Fixed (2026-11-20) — stacker `fix/sync-honest-coverage-54`
+
+Per the expected outcome: `sync` now states what it covers — the project
+configuration from `stacker.yml` — and what it does not: the server-side
+compose (the one the agent writes before every app deploy), which only
+`stacker deploy` regenerates and pushes. With no compose on disk the run is
+a **warning** (`⚠ ... no compose was present to sync`), not a plain
+success; JSON output carries `compose_present` and the coverage lines.
+
+And the `stacker monitor` no-alerts error names the key it actually wants
+(`target:`, not the nonexistent `notify: target`).
+
+**How to verify:** in a project, `rm .stacker/docker-compose.yml` then
+`stacker sync --verify` — the output must warn that the server-side compose
+was not updated and point at `stacker deploy` (before: two green ticks and
+no hint). With the compose present, `sync` must state the coverage split.
+And `stacker monitor --once` with no alerts must name `target:`.
 
 ## 55. ✅ FIXED — the agent commands read the lock of the inactive target (found 2026-11-17, fixed 2026-11-17)
 
@@ -2499,7 +2822,7 @@ Deploy to cloud once, and the target follows:
 Both are one message each, in code that already has the information. Same
 area as #55, so whoever fixed that has the context.
 
-## 57. 🔴 OPEN — the agent belongs to a deployment, not to a server, and a live stream walked into every consequence (found 2026-11-20)
+## 57. ✅ FIXED — the agent belongs to a deployment, not to a server, and a live stream walked into every consequence (found 2026-11-19, fixed 2026-11-23)
 
 **Severity: highest open entry.** This broke the product's main promise -
 "ship a new version with one command" - during a recorded walkthrough, four
@@ -2652,6 +2975,28 @@ In order of how properly each fixes it:
 Found live, on 2026-11-20, during a recorded end-to-end walkthrough. Logs
 above are verbatim; server address, agent ids and image namespace trimmed.
 
+### ✅ Fixed (2026-11-23) — PRs #368, #375, #376 (with #55's resolution)
+
+The model stayed — an agent belongs to a deployment — and it is now written
+down as the design (`docs/DEPLOYMENT_LIFECYCLE.md`: the Vault scope, the
+agent token and the terraform workspace are all keyed by the deployment
+hash). What was fixed is the walk into the consequences:
+
+* **#368** — `deploy-app` no longer acts on a guessed app name: an unknown
+  name stops and lists the deployment's apps, with both ways out
+  (`--new-app` adds one on purpose).
+* **#376** — `agent install` re-registers the agent on the existing
+  deployment instead of cutting a new one, so the hash underfoot does not
+  change.
+* **#375** — a command whose agent provably cannot pick it up is refused
+  immediately with the fix, instead of queueing into a multi-minute timeout.
+* **#55** — every implicit resolution says which deployment it picked.
+
+**How to verify:** `stacker agent deploy-app <name-not-in-the-deployment>`
+refuses and lists the apps; `stacker agent install` twice shows one
+deployment in `stacker deployments`; `stacker agent status` right after an
+install resolves the deployment the install used.
+
 ## 58. 💡 PROPOSAL — `agent add` / `agent update` / `agent remove`, with the old names kept as aliases (raised 2026-11-20)
 
 Not a defect: a naming decision that #57 argued for better than any review
@@ -2704,7 +3049,7 @@ about the human surface, not the protocol.
 Docs to update when it lands: `docs/CHEATSHEET.md`, the README quick start,
 and the stream scripts that show the rollout.
 
-## 59. 🟠 OPEN — `agent install` creates a deployment and leaves the lock on the previous one (found 2026-11-19, recorded 2026-11-21)
+## 59. ✅ FIXED — `agent install` creates a deployment and leaves the lock on the previous one (found 2026-11-19, recorded 2026-11-21, fixed 2026-11-23)
 
 Should have been written down on the 19th, when it cost twenty minutes on a
 recorded walkthrough; it was described in chat and never filed. #55 says only
@@ -2739,7 +3084,29 @@ way a deploy does. Failing that, it should print the hash it created and the
 one line that makes it current - `stacker deployment use <hash>` - instead of
 leaving the user to discover the gap through a timeout.
 
-## 60. 🟠 OPEN — the pre-flight connection check never runs, and the CLI blames a timeout (found 2026-11-21)
+### ✅ Fixed (2026-11-23) — PRs #375 (recording) and #376 (the root)
+
+Two halves, in this order:
+
+1. **The install records what it creates** (#375): the deployment it just
+   created goes into `.stacker/deployment-*.lock` — the existing lock is
+   updated, keeping its server/ssh fields — and when the pin in `stacker.yml`
+   points at the previous deployment, that is said out loud with the
+   copyable `stacker deployment use <hash>`.
+2. **The root** (#376): when the project already has a deployment and this
+   machine can reach the server, `agent install` re-registers the agent on
+   it (`POST /api/v1/agent/link` creates or returns the registration,
+   `src/routes/agent/link.rs:89-127`) — no new deployment at all.
+   `--new-deployment` forces the deploy path (first installs and unreachable
+   servers take it anyway).
+
+**How to verify:** `stacker agent install` in a project with a deployment
+prints `Agent is registered on deployment <hash> — the deployment is
+unchanged` and `stacker deployments` grows no new row. Without a deployment
+(or with `--new-deployment`) it deploys, and the lock it writes names the
+created hash; the next `stacker agent status` resolves it with no flags.
+
+## 60. ✅ FIXED (CLI half) — the pre-flight connection check never runs, and the CLI blamed a timeout (found 2026-11-21, fixed 2026-11-23)
 
 Every single `deploy-app` in two days of use printed one of these:
 
@@ -2770,3 +3137,144 @@ runs or is not offered; and when a command comes back `failed`, the CLI says
 what the failure was - "the agent refused the command: program
 'check_connections' is not allowed" - rather than describing it as silence.
 A wrong cause in a warning costs more than a missing feature.
+
+### ✅ Fixed (2026-11-23) — the CLI half, PR #375
+
+The warning now names the failure the agent reported:
+
+    ⚠ Connection check skipped (the agent refused the command: Command
+      validation failed: program 'check_connections' is not allowed)
+
+instead of "agent did not respond in time" / "agent could not verify active
+connections", which sent the reader to look at the network.
+
+**Still open, and it belongs to the status panel agent, not this repo:** the
+two sides still disagree on the command list — the platform accepts
+`check_connections` at enqueue (`src/forms/status_panel.rs`) and the agent
+refuses it as a program it may not run. Until that is settled the check
+either goes from the CLI's pre-flight or is allowed by the agent.
+
+**How to verify (CLI half):** run `agent deploy-app` against an agent build
+that refuses `check_connections` — the warning must carry the agent's own
+words (`program 'check_connections' is not allowed`), not a timeout story.
+
+## 61. ✅ FIXED — agent commands sit out their whole timeout when no agent will ever pick them up (reported 2026-11-22, fixed 2026-11-23)
+
+### Observed (2026-11-22, this machine)
+
+Reported by Vasili: after the deployment of 2026-11-21, `stacker deploy
+--target local`, `stacker agent …` and operations around `stacker deployment
+use <hash>` "take a lot of time for some reason". The pattern was first seen
+on 2026-11-19/20 while deploying `hello` (session "Greedy squishing Karp")
+and is still there today.
+
+Measured here, same day:
+
+```
+$ cd /Users/vasilipascal/work/stream-project && time stacker agent status
+COMMAND                  TYPE            STATUS     CREATED
+cmd_843d5e73-e8cd-421…   list_containers ? queued   2026-11-19T18:32:4…
+cmd_11f19e24-a50a-411…   list_containers ? queued   2026-11-19T18:28:5…
+cmd_04f80564-cd0b-403…   list_containers ? queued   2026-11-19T18:27:4…
+…
+stacker agent status  0.04s user 0.04s system 0% cpu 1:04.68 total
+```
+
+One `agent status` costs **65 seconds**, and the commands it lists have been
+`queued` since 2026-11-19 — nobody ever ran them. That project's lock
+(`stream-project/.stacker/deployment-cloud.lock`) names deployment 1546 /
+`deployment_c73cb51a…` — the deployment `agent install` left behind, the
+same hash as in entry 59's transcript.
+
+Controls, same machine, same API:
+
+```
+$ time stacker deployments        → 2.12s   (the API is fine)
+$ time stacker deployment use …   → 0.019s  (it only edits stacker.yml:
+    src/console/commands/cli/deployment.rs:111
+    DeploymentLock::set_deploy_deployment_hash)
+$ time docker ps                  → 0.05s   (docker is fine)
+```
+
+From the `hello` stream (session "Greedy squishing Karp", 2026-11-20):
+
+```
+❯ stacker agent deploy-app app --image trydirect/hello:0.1.1 --force
+  ℹ resolved deployment deployment_291b78b5-… (from stacker.yml deploy.deployment_hash)
+  ⚠ Checking active connections — skipped
+  ⚠ Connection check skipped (agent did not respond in time)
+⠼ Deploying app [queued]            ← stayed like this 15+ minutes
+```
+
+("она уже минут 15 работает !!!! Почему так долго ??" — Vasili, same
+session), and one command in the same flow printed `took 5m10s` in the shell
+prompt. The session's own diagnosis: the command was bound to deployment
+`291b78b5` (1552) whose agent is **offline**; the live agent belongs to
+`fe496276` (1553), created by the later `stacker deploy`.
+
+### Why the minutes (code)
+
+Agent commands are enqueued and then polled every 2 s until they finish,
+against a hard deadline with **no early exit** (`run_agent_command`,
+`src/console/commands/cli/agent.rs:233-245`):
+
+* default deadline 60 s — `DEFAULT_TIMEOUT_SECS`, `agent.rs:31`;
+* `deploy-app` passes 300 s — `agent.rs:877-879` (`.with_timeout(300)` +
+  `run_agent_command(…, 300)`).
+
+When the resolved deployment's agent is offline — the stale pin/lock of
+entries 55/57/59 sends commands to a deployment nobody serves — no agent
+ever picks the command up, and the CLI waits out the full deadline. The 65 s
+measurement is the 60 s default plus overhead; the `took 5m10s` is the 300 s
+`deploy-app` deadline plus overhead. The loop already holds the answer while
+it waits — `last_status` is still `queued` in the timeout error it finally
+prints — but "queued" together with "the agent is offline" never becomes an
+early answer.
+
+### Expected
+
+Fail fast, and say the true cause:
+
+1. Before enqueueing, resolve the deployment's agent. Offline or no
+   heartbeat → refuse: "deployment X's agent is offline (last seen …); this
+   command would only wait out its timeout. Pin the deployment that owns the
+   live agent: `stacker deployments` → `stacker deployment use <hash>`" —
+   and do not enqueue at all.
+2. While waiting, if a command stays `queued` past a short window and the
+   agent is offline, stop and say "no agent will pick this up" instead of
+   spinning to the deadline.
+
+### Open halves of the report
+
+* `stacker deployment use <hash>` measured 0.019 s here and cannot be slow
+  by itself (it is a local file edit). Guess: the slow part was the agent
+  operations around the pinning. A `time stacker deployment use …` sample
+  from a slow case is what would chase this further.
+* `stacker deploy --target local` was not reproduced in this pass. Facts
+  found: the local readiness check waits up to 120 s when containers never
+  report ready (`watch_local_containers`,
+  `src/console/commands/cli/deploy.rs`), and docker on this machine measured
+  fast. Guess: a stack that never shows "running" costs those two minutes on
+  every local deploy. A timed sample of one slow local deploy would confirm
+  or kill it.
+
+### ✅ Fixed (2026-11-23) — PRs #373 (the local-deploy half) and #375 (the agent half)
+
+* **Local deploy** (#373): the readiness check ran `docker compose ps`
+  without `-p` and saw nothing — every deploy waited out 120 s on a healthy
+  stack. Measured before/after in `~/work/stream-rehearsal/hello`:
+  2:06.44 → 2.4 s. The wait now shows what every container is doing
+  (`app: starting · postgres: running (healthy)`), with `last seen: …` on
+  the timeout line.
+* **Agent commands** (#375): refused before enqueueing when nothing can
+  pick them up — evidence-based, as discussed: a slow but alive agent keeps
+  its full window, a fresh registration waits like any other, a started
+  command is never cut off. The refusal names the newest deployment with a
+  copyable `stacker deployment use <hash>`.
+
+**How to verify:** `stacker deploy --target local` in a project with a
+running stack finishes in seconds with `All N/N containers running`;
+`stacker agent exec health --deployment <hash-of-a-dead-deployment>` returns
+immediately with `No agent is picking up commands …` and the fix line —
+while the same command against a busy-but-alive agent still waits its
+window and succeeds.

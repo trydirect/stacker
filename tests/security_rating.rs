@@ -5,8 +5,10 @@ use sqlx::Row;
 
 use tokio::sync::OnceCell;
 
+#[allow(dead_code)]
 static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> &'static common::TwoUserTestApp {
     common::get_or_init_two_user_app(&APP)
         .await
@@ -37,7 +39,7 @@ async fn test_edit_rating_rejects_other_user() {
     let rating_id = insert_rating(&app.db_pool, USER_A_ID).await;
 
     let resp = client
-        .put(format!("{}/rating/{}", &app.address, rating_id))
+        .put(format!("{}/rating/{}", app.address, rating_id))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .header("Content-Type", "application/json")
         .body(serde_json::json!({"comment": "hacked", "rate": 1}).to_string())
@@ -62,7 +64,7 @@ async fn test_delete_rating_rejects_other_user() {
     let rating_id = insert_rating(&app.db_pool, USER_A_ID).await;
 
     let resp = client
-        .delete(format!("{}/rating/{}", &app.address, rating_id))
+        .delete(format!("{}/rating/{}", app.address, rating_id))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .send()
         .await
@@ -95,7 +97,7 @@ async fn test_owner_can_edit_own_rating() {
 
     // Owner edits the rating
     let resp = client
-        .put(format!("{}/rating/{}", &app.address, rating_id))
+        .put(format!("{}/rating/{}", app.address, rating_id))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .header("Content-Type", "application/json")
         .body(serde_json::json!({"comment": "updated comment", "rate": 8}).to_string())
@@ -111,7 +113,7 @@ async fn test_owner_can_edit_own_rating() {
 
     // Owner deletes (soft-delete) the rating
     let resp = client
-        .delete(format!("{}/rating/{}", &app.address, rating_id))
+        .delete(format!("{}/rating/{}", app.address, rating_id))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
         .await

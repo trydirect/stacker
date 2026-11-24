@@ -30,12 +30,11 @@ pub const CONTAINER_SSH_KEY_PATH: &str = "/root/.ssh/id_rsa";
 /// Runtime policy for shell hook execution during deploy.
 ///
 /// Separates two concerns:
-///   * `no_hooks`         — skip all hooks unconditionally (CI-safe deploys).
-///   * `allow_untrusted`  — permit hooks even when `StackerConfig::origin`
-///                           is `MarketplaceGenerated`. Default is to refuse
-///                           so a hostile marketplace template can't drive
-///                           local execution just because the user typed
-///                           `stacker deploy` after `stacker install`.
+///   * `no_hooks` — skip all hooks unconditionally (CI-safe deploys).
+///   * `allow_untrusted` — permit hooks even when `StackerConfig::origin`
+///     is `MarketplaceGenerated`. Default is to refuse so a hostile
+///     marketplace template can't drive local execution just because the
+///     user typed `stacker deploy` after `stacker install`.
 ///
 /// Both flags default to `false`. `run_hook` reads this policy together with
 /// the config's origin and either runs, skips, or errors.
@@ -607,7 +606,7 @@ fn collect_compose_host_port_services(compose_path: &Path) -> Vec<(String, Strin
     };
     let services = match doc
         .as_mapping()
-        .and_then(|m| m.get(&serde_yaml::Value::String("services".to_string())))
+        .and_then(|m| m.get(serde_yaml::Value::String("services".to_string())))
         .and_then(|v| v.as_mapping())
     {
         Some(s) => s,
@@ -645,10 +644,9 @@ fn extract_port_from_docker_ps_entry(spec: &str) -> Option<String> {
         return None;
     }
     // e.g. "0.0.0.0:3000->3000/tcp" or ":::3000->3000/tcp" or "3000/tcp"
-    let host_part = if let Some(arrow) = spec.find("->") {
+    let host_part = {
+        let arrow = spec.find("->")?;
         &spec[..arrow]
-    } else {
-        return None; // no host binding, container-only port
     };
     // host_part is e.g. "0.0.0.0:3000" or ":::3000"
     host_part
@@ -832,9 +830,8 @@ pub(crate) fn detect_port_conflicts_in_output(stderr: &str, stdout: &str) -> Vec
         LazyLock::new(|| regex::Regex::new(r"Bind for [\d.]+:(\d+) failed").unwrap());
     static ALLOCATED_RE: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"port (\d+) is already allocated").unwrap());
-    static PRECHECK_PORTS_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"(?i)ingress ports ([\d,\s]+or\s+\d+|\d+)").unwrap()
-    });
+    static PRECHECK_PORTS_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?i)ingress ports ([\d,\s]+or\s+\d+|\d+)").unwrap());
 
     let combined = format!("{}\n{}", stderr, stdout);
     let lower = combined.to_lowercase();
@@ -2586,7 +2583,7 @@ fn deploy_to_intranet_server(
     // 1. Resolve the remote home directory so rsync gets an absolute path.
     let remote_home = {
         let out = std::process::Command::new("ssh")
-            .args(&ssh_args)
+            .args(ssh_args)
             .arg(&user_at_host)
             .arg("echo $HOME")
             .output()
@@ -2606,7 +2603,7 @@ fn deploy_to_intranet_server(
 
     eprintln!("  Creating remote directory {}...", remote_dir_abs);
     let mkdir_status = std::process::Command::new("ssh")
-        .args(&ssh_args)
+        .args(ssh_args)
         .arg(&user_at_host)
         .arg(format!("mkdir -p {}", remote_dir_abs))
         .status()
@@ -2631,7 +2628,7 @@ fn deploy_to_intranet_server(
     // fail later with a cryptic error.
     {
         let docker_check = std::process::Command::new("ssh")
-            .args(&ssh_args)
+            .args(ssh_args)
             .arg(&user_at_host)
             .arg("docker --version 2>/dev/null && docker compose version 2>/dev/null")
             .output()
@@ -2737,7 +2734,7 @@ fn deploy_to_intranet_server(
             })?;
 
         let ssh_status = std::process::Command::new("ssh")
-            .args(&ssh_args)
+            .args(ssh_args)
             .arg(&user_at_host)
             .arg(format!("tar xzf - -C {}", remote_dir_abs))
             .stdin(tar_stdout)
@@ -2801,7 +2798,7 @@ fn deploy_to_intranet_server(
 
     eprintln!("  Running docker compose on {}...", server_cfg.host);
     let output = std::process::Command::new("ssh")
-        .args(&ssh_args)
+        .args(ssh_args)
         .arg(&user_at_host)
         .arg(&compose_cmd)
         .output()
@@ -4847,7 +4844,10 @@ __CONTAINERS__\n";
         // legacy payloads without error_kind were left unclassified and the
         // CLI printed "An unclassified internal error occurred".
         let hints = detect_port_conflicts_in_output("", PRECHECK_PORT_CONFLICT_ANSIBLE_ERROR);
-        assert!(!hints.is_empty(), "should detect port conflict from precheck marker");
+        assert!(
+            !hints.is_empty(),
+            "should detect port conflict from precheck marker"
+        );
     }
 
     #[test]

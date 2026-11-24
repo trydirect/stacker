@@ -34,7 +34,7 @@ fn configure_protoc() -> Result<(), Box<dyn std::error::Error>> {
 fn collect_proto_include_paths() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let mut includes = vec![PathBuf::from("proto")];
 
-    let vendored_include = PathBuf::from(protoc_bin_vendored::include_path()?);
+    let vendored_include = protoc_bin_vendored::include_path()?;
     if vendored_include
         .join("google/protobuf/struct.proto")
         .exists()

@@ -138,7 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut consumer = channel
         .basic_consume(
             &queue_name,
-            &format!("agent-executor-{}", &args.deployment_hash),
+            &format!("agent-executor-{}", args.deployment_hash),
             BasicConsumeOptions::default(),
             FieldTable::default(),
         )

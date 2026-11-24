@@ -4270,7 +4270,18 @@ impl CallableTrait for DeployCommand {
 
         let result = match result {
             Ok(result) => {
-                progress::finish_success(&spin, &result.message);
+                // A local deploy that is about to be health-checked gets its
+                // verdict from the readiness check (BUGS.md #50): this spinner
+                // reports the mechanical step, not a success the check has
+                // not confirmed yet.
+                let verdict_from_readiness = matches!(result.target, DeployTarget::Local)
+                    && !self.dry_run
+                    && self.watch != Some(false);
+                if verdict_from_readiness {
+                    progress::finish_success(&spin, "docker compose accepted the files");
+                } else {
+                    progress::finish_success(&spin, &result.message);
+                }
                 result
             }
             Err(err) => {
@@ -4314,36 +4325,51 @@ impl CallableTrait for DeployCommand {
         match result.target {
             DeployTarget::Local => {
                 // Always do a quick health check for local deploy unless --no-watch
-                if self.watch != Some(false) {
+                let readiness = if self.watch != Some(false) {
                     watch_local_containers(
                         &project_dir,
                         self.file.as_deref(),
                         self.target.as_deref(),
-                    )?;
-                }
-
-                // Show platform features available to the user
-                let creds_path = std::env::var("XDG_CONFIG_HOME")
-                    .map(std::path::PathBuf::from)
-                    .or_else(|_| {
-                        std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
-                    })
-                    .map(|b| b.join("stacker/credentials.json"))
-                    .unwrap_or_default();
-                let logged_in = std::env::var("STACKER_TOKEN").is_ok() || creds_path.exists();
-
-                if !logged_in {
-                    eprintln!(
-                        "\n  Create a free account to deploy anywhere:\n\
-                           stacker login\n\
-                           (Free tier: 20 deploys/mo, 1 cloud provider — no credit card)"
-                    );
+                    )?
                 } else {
-                    eprintln!(
-                        "\n  Deploy to production:\n\
-                           stacker config setup cloud    (Hetzner $4/mo, 5 min setup)\n\
-                           stacker deploy --target cloud"
-                    );
+                    DeploymentWatchOutcome::Unknown
+                };
+
+                // The readiness result decides the headline (BUGS.md #50): a
+                // stack whose containers never became ready is a failed
+                // deploy, and what follows is how to see why — not an
+                // invitation to deploy somewhere else.
+                if matches!(readiness, DeploymentWatchOutcome::LocalNotReady) {
+                    watch_outcome = readiness;
+                } else {
+                    if matches!(readiness, DeploymentWatchOutcome::Completed) {
+                        eprintln!("  ✓ {}", result.message);
+                    }
+
+                    // Show platform features available to the user
+                    let creds_path = std::env::var("XDG_CONFIG_HOME")
+                        .map(std::path::PathBuf::from)
+                        .or_else(|_| {
+                            std::env::var("HOME")
+                                .map(|h| std::path::PathBuf::from(h).join(".config"))
+                        })
+                        .map(|b| b.join("stacker/credentials.json"))
+                        .unwrap_or_default();
+                    let logged_in = std::env::var("STACKER_TOKEN").is_ok() || creds_path.exists();
+
+                    if !logged_in {
+                        eprintln!(
+                            "\n  Create a free account to deploy anywhere:\n    \
+                             stacker login\n    \
+                             (Free tier: 20 deploys/mo, 1 cloud provider — no credit card)"
+                        );
+                    } else {
+                        eprintln!(
+                            "\n  Deploy to production:\n    \
+                             stacker config setup cloud    (Hetzner $4/mo, 5 min setup)\n    \
+                             stacker deploy --target cloud"
+                        );
+                    }
                 }
             }
             DeployTarget::Cloud | DeployTarget::Server if should_watch => {
@@ -4407,6 +4433,23 @@ impl CallableTrait for DeployCommand {
                 return Err(Box::new(CliError::DeployFailed {
                     target: result.target.clone(),
                     reason: failure.reason(),
+                }));
+            }
+            DeploymentWatchOutcome::LocalNotReady => {
+                // The spinner already said it in a TTY; a piped run (CI/QA)
+                // must see the verdict too, since indicatif is hidden there.
+                if progress::non_tty() {
+                    eprintln!(
+                        "\n  ✗ Local deployment failed — containers never became ready.\n  \
+                         See why with: stacker logs"
+                    );
+                }
+                if should_notify {
+                    notify::deploy_notify(false, &project_name);
+                }
+                return Err(Box::new(CliError::DeployFailed {
+                    target: result.target.clone(),
+                    reason: "containers never became ready — check `stacker logs`".to_string(),
                 }));
             }
             DeploymentWatchOutcome::Completed => {
@@ -5196,102 +5239,171 @@ fn choose_server_for_project(
 
 /// Poll `docker compose ps` until all containers are running/healthy
 /// or a timeout is reached.
+///
+/// The readiness result is the deploy's verdict (BUGS.md #50): `compose up`
+/// accepting the files says nothing about whether anything serves. Returns
+/// `Completed` when ready and `LocalNotReady` when the timeout expires —
+/// never a silent `Ok` after a failure.
+///
+/// `STACKER_LOCAL_WATCH_TIMEOUT_SECS` overrides the wait (default 120s) —
+/// used by the tests to keep a timeout case fast.
 fn watch_local_containers(
     project_dir: &Path,
     config_file: Option<&str>,
     target_override: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<DeploymentWatchOutcome, Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
 
-    let compose_path = {
-        let output_dir = project_dir.join(OUTPUT_DIR);
-        let config_path = match config_file {
-            Some(f) => project_dir.join(f),
-            None => project_dir.join(DEFAULT_CONFIG_FILE),
-        };
-        // Try to read compose_file from the resolved local target; fall back to
-        // .stacker/docker-compose.yml.
-        if let Ok(config) = StackerConfig::from_file(&config_path)
-            .and_then(|config| config.with_resolved_deploy_target(target_override))
-        {
-            if let Some(ref existing) = config.deploy.compose_file {
-                let p = project_dir.join(existing);
-                if p.exists() {
-                    p
-                } else {
-                    output_dir.join("docker-compose.yml")
+    let config_path = match config_file {
+        Some(f) => project_dir.join(f),
+        None => project_dir.join(DEFAULT_CONFIG_FILE),
+    };
+    // Read compose_file and the compose project name from the resolved local
+    // target; fall back to .stacker/docker-compose.yml. The project name
+    // matters: `docker compose ps` without `-p` looks in the project named
+    // after the compose file's directory (`.stacker`), not in the project the
+    // deploy just created with `-p` — so this check saw *nothing* and every
+    // local deploy waited out the readiness timeout while its stack was fine
+    // (BUGS.md #61).
+    let config = StackerConfig::from_file(&config_path)
+        .and_then(|config| config.with_resolved_deploy_target(target_override));
+    let (compose_path, project_name) = match &config {
+        Ok(config) => {
+            let output_dir = project_dir.join(OUTPUT_DIR);
+            let path = match &config.deploy.compose_file {
+                Some(existing) => {
+                    let p = project_dir.join(existing);
+                    if p.exists() {
+                        p
+                    } else {
+                        output_dir.join("docker-compose.yml")
+                    }
                 }
-            } else {
-                output_dir.join("docker-compose.yml")
-            }
-        } else {
-            output_dir.join("docker-compose.yml")
+                None => output_dir.join("docker-compose.yml"),
+            };
+            (
+                path,
+                Some(crate::cli::install_runner::local_compose_project_name(
+                    config,
+                )),
+            )
         }
+        Err(_) => (
+            project_dir.join(OUTPUT_DIR).join("docker-compose.yml"),
+            None,
+        ),
     };
 
     if !compose_path.exists() {
-        return Ok(());
+        return Ok(DeploymentWatchOutcome::Unknown);
     }
 
     let compose_str = compose_path.to_string_lossy().to_string();
     let executor = ShellExecutor;
-    let timeout = Duration::from_secs(120);
+    let timeout = Duration::from_secs(
+        std::env::var("STACKER_LOCAL_WATCH_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .filter(|secs: &u64| *secs > 0)
+            .unwrap_or(120),
+    );
     let poll = Duration::from_secs(3);
     let start = Instant::now();
 
     let spin = progress::spinner("Checking container health...");
+    let mut last_states: Option<String> = None;
 
     loop {
-        let args = vec!["compose", "-f", &compose_str, "ps", "--format", "json"];
+        let args = compose_ps_args(project_name.as_deref(), &compose_str, "json");
         if let Ok(output) = executor.execute("docker", &args) {
             if output.success() {
                 let stdout = output.stdout.trim();
                 if !stdout.is_empty() {
                     match parse_container_statuses(stdout) {
                         Some((running, total)) if total > 0 => {
-                            progress::update_health(&spin, running, total);
+                            // Show what every container is doing, not only
+                            // the count of running ones: `starting`,
+                            // `restarting`, `exited` as they happen is what
+                            // tells the user what the stack is doing while
+                            // they wait (BUGS.md #61).
+                            let states =
+                                describe_container_states(stdout).unwrap_or_else(String::new);
+                            progress::update_health_with_detail(&spin, running, total, &states);
+                            last_states = Some(states);
                             if running == total {
                                 progress::finish_success(
                                     &spin,
                                     &format!("All {}/{} containers running", running, total),
                                 );
                                 // Show container summary
-                                print_container_summary(&compose_str, &executor);
-                                return Ok(());
+                                print_container_summary(
+                                    &compose_str,
+                                    project_name.as_deref(),
+                                    &executor,
+                                );
+                                return Ok(DeploymentWatchOutcome::Completed);
                             }
                         }
-                        _ => {}
+                        _ => {
+                            progress::update_health_with_detail(
+                                &spin,
+                                0,
+                                0,
+                                "waiting for the containers to appear",
+                            );
+                        }
                     }
                 }
             }
         }
 
         if start.elapsed() > timeout {
+            // The readiness result decides the headline: nothing is serving,
+            // so this is a failed deploy, and the next line is how to see why.
             progress::finish_error(
                 &spin,
-                "Timeout waiting for containers — check `stacker status`",
+                "Local deployment failed — containers never became ready",
             );
-            return Ok(());
+            eprintln!(
+                "    last seen: {}",
+                last_states.unwrap_or_else(|| "no containers reported".to_string())
+            );
+            eprintln!("  See why with: stacker logs");
+            return Ok(DeploymentWatchOutcome::LocalNotReady);
         }
 
         std::thread::sleep(poll);
     }
 }
 
+/// `docker compose ps` arguments for the project the deploy created.
+///
+/// Without `-p <project>`, compose looks in the project named after the
+/// compose file's directory (` .stacker`) and reports nothing at all — the
+/// readiness check saw empty output while the stack was running (BUGS.md
+/// #61).
+fn compose_ps_args<'a>(
+    project_name: Option<&'a str>,
+    compose_str: &'a str,
+    format: &'a str,
+) -> Vec<&'a str> {
+    let mut args = vec!["compose"];
+    if let Some(name) = project_name {
+        args.push("-p");
+        args.push(name);
+    }
+    args.push("-f");
+    args.push(compose_str);
+    args.push("ps");
+    args.push("--format");
+    args.push(format);
+    args
+}
+
 /// Parse `docker compose ps --format json` output and count running containers.
 /// Returns `(running_count, total_count)`.
 fn parse_container_statuses(json_str: &str) -> Option<(usize, usize)> {
-    // docker compose ps --format json outputs one JSON object per line,
-    // or a JSON array depending on the version.
-    let containers: Vec<serde_json::Value> = if json_str.trim_start().starts_with('[') {
-        serde_json::from_str(json_str).ok()?
-    } else {
-        // One JSON object per line
-        json_str
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .collect()
-    };
+    let containers = parse_container_list(json_str)?;
 
     let total = containers.len();
     let running = containers
@@ -5305,9 +5417,58 @@ fn parse_container_statuses(json_str: &str) -> Option<(usize, usize)> {
     Some((running, total))
 }
 
+/// `docker compose ps --format json` output as parsed container objects:
+/// either a JSON array or one JSON object per line, depending on the version.
+fn parse_container_list(json_str: &str) -> Option<Vec<serde_json::Value>> {
+    if json_str.trim_start().starts_with('[') {
+        serde_json::from_str(json_str).ok()
+    } else {
+        // One JSON object per line
+        Some(
+            json_str
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .collect(),
+        )
+    }
+}
+
+/// `app: running (healthy) · postgres: restarting` — what each container is
+/// doing right now. The readiness poll shows this while it waits: seeing
+/// `starting`/`restarting`/`exited` as they happen is what tells the user
+/// what the stack is doing instead of a bare spinner (BUGS.md #61).
+fn describe_container_states(json_str: &str) -> Option<String> {
+    let containers = parse_container_list(json_str)?;
+    if containers.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = containers
+        .iter()
+        .map(|c| {
+            let name = c
+                .get("Service")
+                .or_else(|| c.get("Name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let state = c.get("State").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let health = c.get("Health").and_then(|v| v.as_str()).unwrap_or("");
+            if health.is_empty() {
+                format!("{}: {}", name, state)
+            } else {
+                format!("{}: {} ({})", name, state, health)
+            }
+        })
+        .collect();
+    Some(parts.join(" · "))
+}
+
 /// Print a brief container summary table.
-fn print_container_summary(compose_str: &str, executor: &dyn CommandExecutor) {
-    let args = vec!["compose", "-f", compose_str, "ps", "--format", "table"];
+fn print_container_summary(
+    compose_str: &str,
+    project_name: Option<&str>,
+    executor: &dyn CommandExecutor,
+) {
+    let args = compose_ps_args(project_name, compose_str, "table");
     if let Ok(output) = executor.execute("docker", &args) {
         if output.success() && !output.stdout.trim().is_empty() {
             eprintln!();
@@ -5329,6 +5490,12 @@ fn is_terminal(status: &str) -> bool {
 enum DeploymentWatchOutcome {
     Completed,
     Failed(Box<DeploymentFailure>),
+    /// A local deploy whose containers never became ready: `docker compose up`
+    /// accepted the files, but nothing is serving. A failed deploy (BUGS.md
+    /// #50) — unlike `Failed`, it still claims the active target, because the
+    /// stack on this machine *is* the current state and `stacker logs` must
+    /// resolve it to show why.
+    LocalNotReady,
     /// Watch hit its own timeout while the deployment was still running —
     /// we don't know the outcome, so the CLI must not claim success.
     TimedOut,
@@ -5795,6 +5962,54 @@ deploy:
                 .expect("cloud.ssh_key must resolve despite target: server");
 
         assert_eq!(public_key, TEST_PUBLIC_KEY);
+    }
+
+    /// `ps` must ask for the project the deploy created: without `-p`,
+    /// compose looks in the project named after the compose file's directory
+    /// and reports nothing at all (BUGS.md #61).
+    #[test]
+    fn compose_ps_args_pin_the_deploy_project() {
+        let args = compose_ps_args(Some("hello"), "/x/.stacker/docker-compose.yml", "json");
+        assert_eq!(
+            args,
+            vec![
+                "compose",
+                "-p",
+                "hello",
+                "-f",
+                "/x/.stacker/docker-compose.yml",
+                "ps",
+                "--format",
+                "json"
+            ]
+        );
+        let without_project = compose_ps_args(None, "/x/docker-compose.yml", "json");
+        assert_eq!(
+            without_project,
+            vec![
+                "compose",
+                "-f",
+                "/x/docker-compose.yml",
+                "ps",
+                "--format",
+                "json"
+            ]
+        );
+    }
+
+    /// While the readiness poll waits, it shows what each container is doing
+    /// (BUGS.md #61): seeing `starting`/`restarting`/`exited` as they happen
+    /// is the difference between a calm wait and a bare spinner.
+    #[test]
+    fn describe_container_states_shows_every_container() {
+        let json = r#"[
+            {"State":"running","Health":"healthy","Service":"app","Name":"hello-app-1"},
+            {"State":"restarting","Service":"postgres","Name":"hello-postgres-1"}
+        ]"#;
+        assert_eq!(
+            describe_container_states(json).as_deref(),
+            Some("app: running (healthy) · postgres: restarting")
+        );
     }
 
     /// Mock executor that records commands and returns configurable output.

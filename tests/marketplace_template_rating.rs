@@ -6,8 +6,10 @@ use sqlx::Row;
 
 use tokio::sync::OnceCell;
 
+#[allow(dead_code)]
 static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> common::TestApp {
     common::get_or_init_app_fresh(&APP_CONFIG)
         .await
@@ -16,21 +18,47 @@ async fn app() -> common::TestApp {
 
 const USER_TOKEN: &str = "test-bearer-token";
 
+/// These tests share one database (the app is per-binary) and the same seeded
+/// template, and they assert on rating counts and averages — running them
+/// concurrently makes them observe each other's writes and fail at random.
+/// One lock keeps the suite deterministic.
+static RATING_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn seed_template(app: &common::TestApp, slug: &str) -> uuid::Uuid {
     let vendor = common::seed_marketplace_vendor_fixture(&app.db_pool, "acme-cloud").await;
     common::seed_marketplace_template_fixtures_for_vendor(&app.db_pool, &vendor.creator_user_id)
         .await;
 
-    sqlx::query("SELECT id FROM stack_template WHERE slug = $1")
+    let template_id: uuid::Uuid = sqlx::query("SELECT id FROM stack_template WHERE slug = $1")
         .bind(slug)
         .fetch_one(&app.db_pool)
         .await
         .expect("seeded template should exist")
-        .get("id")
+        .get("id");
+
+    // Each test gets a clean slate for the template it shares with the rest of
+    // the suite: a previous test's rating or product link stays visible in the
+    // one database the binary shares, which is what made assertions here fail
+    // at random depending on test order.
+    sqlx::query(
+        "DELETE FROM rating WHERE obj_id IN (SELECT product_id FROM stack_template WHERE id = $1)",
+    )
+    .bind(template_id)
+    .execute(&app.db_pool)
+    .await
+    .expect("rating cleanup should work");
+    sqlx::query("UPDATE stack_template SET product_id = NULL WHERE id = $1")
+        .bind(template_id)
+        .execute(&app.db_pool)
+        .await
+        .expect("product link cleanup should work");
+
+    template_id
 }
 
 #[tokio::test]
 async fn public_rating_summary_does_not_create_product_for_unrated_template() {
+    let _test_guard = RATING_TEST_LOCK.lock().await;
     let app = app().await;
     let template_id = seed_template(&app, "wordpress-pro").await;
 
@@ -67,6 +95,7 @@ async fn public_rating_summary_does_not_create_product_for_unrated_template() {
 
 #[tokio::test]
 async fn user_can_rate_template_by_template_id_without_product_id_knowledge() {
+    let _test_guard = RATING_TEST_LOCK.lock().await;
     let app = app().await;
     let template_id = seed_template(&app, "wordpress-pro").await;
 
@@ -108,6 +137,7 @@ async fn user_can_rate_template_by_template_id_without_product_id_knowledge() {
 
 #[tokio::test]
 async fn user_rating_upsert_updates_existing_template_rating() {
+    let _test_guard = RATING_TEST_LOCK.lock().await;
     let app = app().await;
     let template_id = seed_template(&app, "wordpress-pro").await;
     let client = reqwest::Client::new();
@@ -165,6 +195,7 @@ async fn user_rating_upsert_updates_existing_template_rating() {
 
 #[tokio::test]
 async fn user_can_fetch_and_delete_own_template_rating() {
+    let _test_guard = RATING_TEST_LOCK.lock().await;
     let app = app().await;
     let template_id = seed_template(&app, "wordpress-pro").await;
     let client = reqwest::Client::new();
@@ -221,6 +252,7 @@ async fn user_can_fetch_and_delete_own_template_rating() {
 
 #[tokio::test]
 async fn template_rating_rejects_invalid_star_values() {
+    let _test_guard = RATING_TEST_LOCK.lock().await;
     let app = app().await;
     let template_id = seed_template(&app, "wordpress-pro").await;
 
