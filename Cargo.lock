@@ -1042,6 +1042,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "backup-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+]
+
+[[package]]
 name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7019,6 +7026,7 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "async-trait",
+ "backup-core",
  "base64 0.22.1",
  "brotli 3.5.0",
  "casbin",
