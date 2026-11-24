@@ -71,16 +71,22 @@ heartbeat is older than 5 minutes, or when it never reported
 an offline agent sit in `queued` until the CLI's poll deadline (60 s
 default, 300 s for `deploy-app`) — nobody is polling to pick them up.
 
-## In flight
+## Landed (2026-11-23)
 
-Tracked in BUGS.md; this section is updated as they land:
+The gaps this section tracked are closed (details and verify steps in
+BUGS.md #57, #59, #60, #61):
 
-* #59 — `agent install` should record the deployment it created (or
-  re-register onto the existing one) instead of leaving the lock behind.
-* #61 — commands to a provably offline agent should refuse immediately with
-  the fix (heartbeat evidence, not impatience: a slow but alive agent keeps
-  its full wait window).
-* #60 — a command that comes back `failed` must report why.
+* `agent install` records the deployment it creates — and when the project
+  already has one, it **re-registers the agent on it** (`agent link`)
+  instead of deploying a new release; `--new-deployment` forces the old
+  path.
+* A command whose agent provably cannot pick it up is refused before
+  enqueueing, with the fix line; a slow but alive agent keeps its full wait
+  window.
+* A command the agent refuses reports the agent's own words.
+
+Still open, and it belongs to the status panel agent: the platform and the
+agent disagree on the `check_connections` command list (BUGS.md #60).
 
 ## Related
 

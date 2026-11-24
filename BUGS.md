@@ -2822,7 +2822,7 @@ Deploy to cloud once, and the target follows:
 Both are one message each, in code that already has the information. Same
 area as #55, so whoever fixed that has the context.
 
-## 57. 🔴 OPEN — the agent belongs to a deployment, not to a server, and a live stream walked into every consequence (found 2026-11-20)
+## 57. ✅ FIXED — the agent belongs to a deployment, not to a server, and a live stream walked into every consequence (found 2026-11-19, fixed 2026-11-23)
 
 **Severity: highest open entry.** This broke the product's main promise -
 "ship a new version with one command" - during a recorded walkthrough, four
@@ -2975,6 +2975,28 @@ In order of how properly each fixes it:
 Found live, on 2026-11-20, during a recorded end-to-end walkthrough. Logs
 above are verbatim; server address, agent ids and image namespace trimmed.
 
+### ✅ Fixed (2026-11-23) — PRs #368, #375, #376 (with #55's resolution)
+
+The model stayed — an agent belongs to a deployment — and it is now written
+down as the design (`docs/DEPLOYMENT_LIFECYCLE.md`: the Vault scope, the
+agent token and the terraform workspace are all keyed by the deployment
+hash). What was fixed is the walk into the consequences:
+
+* **#368** — `deploy-app` no longer acts on a guessed app name: an unknown
+  name stops and lists the deployment's apps, with both ways out
+  (`--new-app` adds one on purpose).
+* **#376** — `agent install` re-registers the agent on the existing
+  deployment instead of cutting a new one, so the hash underfoot does not
+  change.
+* **#375** — a command whose agent provably cannot pick it up is refused
+  immediately with the fix, instead of queueing into a multi-minute timeout.
+* **#55** — every implicit resolution says which deployment it picked.
+
+**How to verify:** `stacker agent deploy-app <name-not-in-the-deployment>`
+refuses and lists the apps; `stacker agent install` twice shows one
+deployment in `stacker deployments`; `stacker agent status` right after an
+install resolves the deployment the install used.
+
 ## 58. 💡 PROPOSAL — `agent add` / `agent update` / `agent remove`, with the old names kept as aliases (raised 2026-11-20)
 
 Not a defect: a naming decision that #57 argued for better than any review
@@ -3027,7 +3049,7 @@ about the human surface, not the protocol.
 Docs to update when it lands: `docs/CHEATSHEET.md`, the README quick start,
 and the stream scripts that show the rollout.
 
-## 59. 🟠 OPEN — `agent install` creates a deployment and leaves the lock on the previous one (found 2026-11-19, recorded 2026-11-21)
+## 59. ✅ FIXED — `agent install` creates a deployment and leaves the lock on the previous one (found 2026-11-19, recorded 2026-11-21, fixed 2026-11-23)
 
 Should have been written down on the 19th, when it cost twenty minutes on a
 recorded walkthrough; it was described in chat and never filed. #55 says only
@@ -3062,7 +3084,29 @@ way a deploy does. Failing that, it should print the hash it created and the
 one line that makes it current - `stacker deployment use <hash>` - instead of
 leaving the user to discover the gap through a timeout.
 
-## 60. 🟠 OPEN — the pre-flight connection check never runs, and the CLI blames a timeout (found 2026-11-21)
+### ✅ Fixed (2026-11-23) — PRs #375 (recording) and #376 (the root)
+
+Two halves, in this order:
+
+1. **The install records what it creates** (#375): the deployment it just
+   created goes into `.stacker/deployment-*.lock` — the existing lock is
+   updated, keeping its server/ssh fields — and when the pin in `stacker.yml`
+   points at the previous deployment, that is said out loud with the
+   copyable `stacker deployment use <hash>`.
+2. **The root** (#376): when the project already has a deployment and this
+   machine can reach the server, `agent install` re-registers the agent on
+   it (`POST /api/v1/agent/link` creates or returns the registration,
+   `src/routes/agent/link.rs:89-127`) — no new deployment at all.
+   `--new-deployment` forces the deploy path (first installs and unreachable
+   servers take it anyway).
+
+**How to verify:** `stacker agent install` in a project with a deployment
+prints `Agent is registered on deployment <hash> — the deployment is
+unchanged` and `stacker deployments` grows no new row. Without a deployment
+(or with `--new-deployment`) it deploys, and the lock it writes names the
+created hash; the next `stacker agent status` resolves it with no flags.
+
+## 60. ✅ FIXED (CLI half) — the pre-flight connection check never runs, and the CLI blamed a timeout (found 2026-11-21, fixed 2026-11-23)
 
 Every single `deploy-app` in two days of use printed one of these:
 
@@ -3094,7 +3138,27 @@ what the failure was - "the agent refused the command: program
 'check_connections' is not allowed" - rather than describing it as silence.
 A wrong cause in a warning costs more than a missing feature.
 
-## 61. 🟠 OPEN — agent commands sit out their whole timeout when no agent will ever pick them up (reported 2026-11-22, measured the same day)
+### ✅ Fixed (2026-11-23) — the CLI half, PR #375
+
+The warning now names the failure the agent reported:
+
+    ⚠ Connection check skipped (the agent refused the command: Command
+      validation failed: program 'check_connections' is not allowed)
+
+instead of "agent did not respond in time" / "agent could not verify active
+connections", which sent the reader to look at the network.
+
+**Still open, and it belongs to the status panel agent, not this repo:** the
+two sides still disagree on the command list — the platform accepts
+`check_connections` at enqueue (`src/forms/status_panel.rs`) and the agent
+refuses it as a program it may not run. Until that is settled the check
+either goes from the CLI's pre-flight or is allowed by the agent.
+
+**How to verify (CLI half):** run `agent deploy-app` against an agent build
+that refuses `check_connections` — the warning must carry the agent's own
+words (`program 'check_connections' is not allowed`), not a timeout story.
+
+## 61. ✅ FIXED — agent commands sit out their whole timeout when no agent will ever pick them up (reported 2026-11-22, fixed 2026-11-23)
 
 ### Observed (2026-11-22, this machine)
 
@@ -3193,3 +3257,24 @@ Fail fast, and say the true cause:
   fast. Guess: a stack that never shows "running" costs those two minutes on
   every local deploy. A timed sample of one slow local deploy would confirm
   or kill it.
+
+### ✅ Fixed (2026-11-23) — PRs #373 (the local-deploy half) and #375 (the agent half)
+
+* **Local deploy** (#373): the readiness check ran `docker compose ps`
+  without `-p` and saw nothing — every deploy waited out 120 s on a healthy
+  stack. Measured before/after in `~/work/stream-rehearsal/hello`:
+  2:06.44 → 2.4 s. The wait now shows what every container is doing
+  (`app: starting · postgres: running (healthy)`), with `last seen: …` on
+  the timeout line.
+* **Agent commands** (#375): refused before enqueueing when nothing can
+  pick them up — evidence-based, as discussed: a slow but alive agent keeps
+  its full window, a fresh registration waits like any other, a started
+  command is never cut off. The refusal names the newest deployment with a
+  copyable `stacker deployment use <hash>`.
+
+**How to verify:** `stacker deploy --target local` in a project with a
+running stack finishes in seconds with `All N/N containers running`;
+`stacker agent exec health --deployment <hash-of-a-dead-deployment>` returns
+immediately with `No agent is picking up commands …` and the fix line —
+while the same command against a busy-but-alive agent still waits its
+window and succeeds.
