@@ -2,11 +2,19 @@
 
 Status: in progress. 1.1 ✅ (2026-11-24): migration
 `20261124142356_create_backup_tables` (`backup_destination`, `backup_job`,
-`backup_run`). Crate `crates/backup-core` ✅: dump/restore command builders for
-agent-exec (postgres/mysql/mongo/volume, the per-run token only via
-`$BACKUP_TOKEN`), retention policy B2 (7 daily + 4 weekly) — tests 9/9 in
-~10ms. 1.2-1.6 ahead (db layer, REST, CLI, storage connector, scheduler,
+`backup_run`). Crate `crates/backup-core` ✅: typed `DumpPlan`/`RestorePlan`
+(postgres/mysql/mongo/volume; the per-run token referenced by env name only),
+retention policy B2 (7 daily + 4 weekly). 1.2 in progress: models + db layer
+(`src/models/backup.rs`, `src/db/backup.rs`) and the enqueue service
+(`src/services/backup.rs`) build the plan and queue a `backup` agent command —
+runtime-tested (`tests/backup_db.rs`). Pending for 1.2: the agent-side native
+`backup` command (Status Panel, `status/` repo) that executes the plan and
+streams to storage. 1.3-1.6 ahead (storage connector, scheduler, REST/CLI,
 restore e2e).
+
+A `backup` agent command carries `{action, run_id, plan}` where `plan` is a
+`DumpPlan`/`RestorePlan`. The command queue stores only the token env var
+*name* (`BACKUP_TOKEN`), never a secret value.
 
 The storage backend is pluggable: today a REST backup-storage service, tomorrow
 anything with a compatible API (e.g. a restic-based client). Nothing

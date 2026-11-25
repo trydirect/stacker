@@ -1,6 +1,7 @@
 pub mod agent_dispatcher;
 pub mod agent_sweeper;
 pub mod agent_token;
+pub mod backup;
 pub mod config_renderer;
 pub mod dag_executor;
 pub mod deploy_plan;
