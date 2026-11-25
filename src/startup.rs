@@ -263,6 +263,23 @@ pub async fn run(
             .service(project_scope("/project"))
             .service(project_scope("/api/v1/project"))
             .service(
+                web::scope("/api/v1/github")
+                    .service(crate::routes::github::webhook_handler)
+                    .service(crate::routes::github::repos::create_handler)
+                    .service(crate::routes::github::repos::list_handler)
+                    .service(crate::routes::github::repos::update_handler)
+                    .service(crate::routes::github::repos::delete_handler),
+            )
+            .service(
+                web::scope("/api/v1/notifications")
+                    .service(crate::routes::notification::create_handler)
+                    .service(crate::routes::notification::list_handler)
+                    .service(crate::routes::notification::update_handler)
+                    .service(crate::routes::notification::delete_handler)
+                    .service(crate::routes::notification::test_handler)
+                    .service(crate::routes::notification::dispatch_list_handler),
+            )
+            .service(
                 web::scope("/dockerhub")
                     .service(crate::routes::dockerhub::search_namespaces)
                     .service(crate::routes::dockerhub::list_repositories)

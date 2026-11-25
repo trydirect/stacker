@@ -1,0 +1,12 @@
+[package]
+name = "backup-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pure backup logic for TryDirect Stacker: typed dump/restore execution plans for the agent command queue and retention policy (7 daily + 4 weekly). No database, no Vault, no HTTP client — the agent streams to storage, the Stacker service layer drives persistence and scheduling."
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde = { version = "1", features = ["derive"] }
+
+[features]
+default = []

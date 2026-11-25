@@ -612,6 +612,24 @@ const ROUTES: &[(&str, &str, Kind, &str)] = &[
     ("POST", "/api/v1/agent/commands/report", Agent, ""),
     ("GET", "/api/v1/agent/notifications", Agent, ""),
     ("POST", "/api/v1/agent/audit", Agent, ""),
+    // notifications (WS-N)
+    ("GET", "/api/v1/notifications/channels", Own, ""),
+    ("POST", "/api/v1/notifications/channels", Own, ""),
+    ("GET", "/api/v1/notifications/dispatches", Own, ""),
+    ("PATCH", "/api/v1/notifications/channels/{id}", Sweep, ""),
+    ("DELETE", "/api/v1/notifications/channels/{id}", Sweep, ""),
+    (
+        "POST",
+        "/api/v1/notifications/channels/{id}/test",
+        Sweep,
+        "",
+    ),
+    // github (WS-G)
+    ("GET", "/api/v1/github/repos", Own, ""),
+    ("POST", "/api/v1/github/repos", Own, ""),
+    ("PATCH", "/api/v1/github/repos/{id}", Sweep, ""),
+    ("DELETE", "/api/v1/github/repos/{id}", Sweep, ""),
+    ("POST", "/api/v1/github/webhook", Token, "webhook signature"),
 ];
 
 fn table() -> BTreeMap<(String, String), (Kind, &'static str)> {
@@ -885,6 +903,8 @@ impl Fixture {
             "server",
             "client",
             "rating",
+            "channel",
+            "repo",
         ] {
             m.insert(key, MISSING_INT.to_string());
         }
@@ -1438,6 +1458,38 @@ fn sweep_requests() -> BTreeMap<(&'static str, &'static str), (&'static str, &'s
             "/api/v1/pipes/dlq/{pdlq}",
             "",
         ),
+        // notifications (WS-N)
+        (
+            "PATCH",
+            "/api/v1/notifications/channels/{id}",
+            "/api/v1/notifications/channels/{channel}",
+            "{}",
+        ),
+        (
+            "DELETE",
+            "/api/v1/notifications/channels/{id}",
+            "/api/v1/notifications/channels/{channel}",
+            "",
+        ),
+        (
+            "POST",
+            "/api/v1/notifications/channels/{id}/test",
+            "/api/v1/notifications/channels/{channel}/test",
+            "",
+        ),
+        // github (WS-G)
+        (
+            "PATCH",
+            "/api/v1/github/repos/{id}",
+            "/api/v1/github/repos/{repo}",
+            "{}",
+        ),
+        (
+            "DELETE",
+            "/api/v1/github/repos/{id}",
+            "/api/v1/github/repos/{repo}",
+            "",
+        ),
     ];
     let mut map = BTreeMap::new();
     for (method, path, url, body) in rows {
@@ -1509,6 +1561,8 @@ async fn seed(pool: &sqlx::PgPool) -> Fixture {
     let pdlq = insert_returning(pool, &format!("INSERT INTO dead_letter_queue (pipe_instance_id, error, created_by) VALUES ('{pinstance}', 'boom', $1) RETURNING id::text"), a).await;
     let step = insert_returning(pool, &format!("INSERT INTO pipe_dag_steps (pipe_template_id, name, step_type, config) SELECT '{ptemplate}', 'a-step', 'source', '{{}}'::jsonb WHERE $1 IS NOT NULL RETURNING id::text"), a).await;
     let command = insert_returning(pool, &format!("INSERT INTO commands (command_id, deployment_hash, type, status, parameters, created_by, created_at) VALUES ('cmd_matrix_a', '{HASH}', 'health', 'queued', '{{}}'::jsonb, $1, NOW()) RETURNING command_id"), a).await;
+    let channel = insert_returning(pool, "INSERT INTO notification_channel (user_id, name, channel_type, vault_path) VALUES ($1, 'matrix-a', 'webhook', 'secret/matrix/a') RETURNING id::text", a).await;
+    let repo = insert_returning(pool, "INSERT INTO github_repo (user_id, installation_id, repo, branch) VALUES ($1, 1, 'matrix/a', 'main') RETURNING id::text", a).await;
 
     let mut m = BTreeMap::new();
     m.insert("project", project.to_string());
@@ -1526,6 +1580,8 @@ async fn seed(pool: &sqlx::PgPool) -> Fixture {
     m.insert("pdlq", pdlq);
     m.insert("step", step);
     m.insert("command", command);
+    m.insert("channel", channel);
+    m.insert("repo", repo);
     Fixture(m)
 }
 

@@ -185,6 +185,16 @@ pub async fn report_handler(
                 if let Some(result) = result_payload.as_ref() {
                     let observed = crate::routes::agent::observed_containers_from_report(result);
                     if !observed.is_empty() {
+                        // WS-N N4: capture the previous state before the
+                        // upsert so a running -> exited/dead transition can be
+                        // reported as `container.down`.
+                        let previous = db::deployment_container::fetch_by_deployment(
+                            agent_pool.as_ref(),
+                            &payload.deployment_hash,
+                        )
+                        .await
+                        .unwrap_or_default();
+
                         // Best-effort: the report itself is already stored, and
                         // failing the agent's request because bookkeeping fell
                         // over would turn a display problem into a lost report.
@@ -200,6 +210,14 @@ pub async fn report_handler(
                                 error = %err,
                                 "Failed to record observed containers"
                             );
+                        } else {
+                            crate::services::notification::notify_container_down_transitions(
+                                agent_pool.as_ref(),
+                                &payload.deployment_hash,
+                                &previous,
+                                &observed,
+                            )
+                            .await;
                         }
                     }
                 }
