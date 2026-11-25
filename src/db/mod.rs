@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod agent_audit_log;
 pub(crate) mod agreement;
+pub mod backup;
 pub mod bake_job;
 pub mod bake_registry;
 pub mod baked_snapshot;
