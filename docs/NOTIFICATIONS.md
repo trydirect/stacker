@@ -1,60 +1,63 @@
-# Notifications — каналы уведомлений (Slack / Discord / Telegram / email / webhook)
+# Notifications — delivery channels (Slack / Discord / Telegram / email / webhook)
 
-Статус: WS-N завершён (2026-11-24). N1 ✅ схема, N2 ✅ REST/адаптеры, N3 ✅ шина
-событий, N4 ✅ email/`container.down`/CLI. Тесты: notification-core 10/10 (~10мс),
-`notification_channels` 9/9, lib зелёный. Остаток усиления (не блокирует):
-SSRF-блок приватных диапазонов, admin-harness тест глобальных каналов,
-интеграция email с живым notify-сервисом.
+Status: WS-N complete (2026-11-24). N1 ✅ schema, N2 ✅ REST/adapters, N3 ✅ event
+bus, N4 ✅ email/`container.down`/CLI. Tests: notification-core 10/10 (~10ms),
+`notification_channels` 9/9, lib green. Remaining hardening (non-blocking):
+SSRF block for private ranges, admin-harness test for global channels,
+email integration against a live notify service.
 
-План: `config/PLAN-notifications.md`.
-Контракты (источник истины):
+Plan: `config/PLAN-notifications.md`.
+Contracts (source of truth):
 - `config/shared-fixtures/api-contracts/notifications-channels.json`
 - `config/shared-fixtures/api-contracts/notifications-events.json`
-BDD-сценарии: `config/shared-fixtures/features/notifications.feature`.
+BDD scenarios: `config/shared-fixtures/features/notifications.feature`.
 
-## Модель
+## Model
 
-Архитектура модулей (2026-11-24): чистая логика вынесена в листовой крейт
-`crates/notification-core` (события, payload'ы каналов, маскирование, redaction,
-retry/backoff, HTTP-доставка) — его юнит-тесты гоняются без сборки монолита;
-обвязка (Vault, db-слой, роуты) остаётся в `src/services/notification.rs` и
-`src/routes/notification/`. Такой же принцип действует для следующих WS-потоков:
-чистая логика — в `crates/`, интеграция — в монолит.
+Module layout (2026-11-24): pure logic lives in the leaf crate
+`crates/notification-core` (events, channel payloads, masking, redaction,
+retry/backoff, HTTP delivery) — its unit tests run without building the
+monolith; the glue (Vault, db layer, routes) stays in
+`src/services/notification.rs` and `src/routes/notification/`. The same
+principle applies to the following workstreams: pure logic in `crates/`,
+integration in the monolith.
 
-- `notification_channel` — канал: per-project или глобальный admin-канал
-  (`project_id IS NULL`, решение N1 от 2026-11-24). Типы: `slack`, `discord`,
-  `telegram`, `email`, `webhook`. Глобальный канал может создать только
-  пользователь с ролью `root`/`group_admin`. Секреты (webhook URL, bot token)
-  хранятся **только в Vault** по `vault_path` и никогда не возвращаются
-  API/логами/MCP — в ответах только `targetHint` (замаскированный адрес).
-- `notification_dispatch` — попытка доставки: `status` (`pending`/`sent`/`failed`/
-  `skipped`), `attempts`, `last_error` (секреты редактируются перед записью).
+- `notification_channel` — a channel: per-project or a global admin channel
+  (`project_id IS NULL`, decision N1 of 2026-11-24). Types: `slack`, `discord`,
+  `telegram`, `email`, `webhook`. Only users with the `root`/`group_admin` role
+  can create a global channel. Secrets (webhook URL, bot token) are stored
+  **only in Vault** under `vault_path` and never returned by API/logs/MCP —
+  responses carry just a `targetHint` (masked address).
+- `notification_dispatch` — a delivery attempt: `status`
+  (`pending`/`sent`/`failed`/`skipped`), `attempts`, `last_error`
+  (secrets are redacted before recording).
 
-## События (edge-triggered)
+## Events (edge-triggered)
 
 `deploy.succeeded`, `deploy.failed`, `backup.succeeded`, `backup.failed`,
 `preview.ready`, `preview.failed`, `container.down`, `channel.test`.
 
-Одно уведомление на переход состояния, не на каждый опрос. Доставка at-least-once
-с retry/backoff на 429/5xx. Фильтр `events` канала — allow-list; пустой список =
-все события. **События проекта уходят только в каналы этого проекта**; глобальные
-admin-каналы зарезервированы под события уровня организации (защита от
-кросс-тенантной утечки, code-review B1).
+One notification per state transition, not per poll. Delivery is at-least-once
+with retry/backoff on 429/5xx. A channel's `events` filter is an allow-list;
+an empty list means all events. **Project events go only to that project's
+channels**; global admin channels are reserved for organization-level events
+(guard against cross-tenant leakage, code-review B1).
 
-## Связи с другими потоками
+## Relations to other workstreams
 
-- WS-1 (бэкапы, `PLAN-backups-syncopia.md`): события `backup.succeeded/failed`.
-- WS-G (GitHub, `PLAN-github-webhooks.md`): `preview.ready/failed` дополнительно
-  доставляются PR-комментарием через GitHub App (не через адаптеры каналов).
-- Существующий webhook-таргет `stacker monitor`
-  (`src/console/commands/cli/monitor.rs:63-92`) подключается к той же шине как
-  событие `container.down`.
-- Email — через существующий канал RabbitMQ → notify
+- WS-1 (backups, `config/PLAN-backups.md`): `backup.succeeded/failed` events.
+- WS-G (GitHub, `config/PLAN-github-webhooks.md`): `preview.ready/failed` are
+  additionally delivered as PR comments through the GitHub App (not through the
+  channel adapters).
+- The existing webhook target `stacker monitor`
+  (`src/console/commands/cli/monitor.rs:63-92`) connects to the same bus as the
+  `container.down` event.
+- Email goes through the existing RabbitMQ → notify channel
   (`src/services/project_cleanup_notifier.rs`).
 
-## Правила проекта
+## Project rules
 
-- Только новые миграции; `cargo sqlx prepare` после изменения sqlx-запросов.
-- Новые endpoints — ревью `api-reviewer` + casbin-миграция
-  (маршруты `/api/v1/notifications/*`).
-- Секреты — только в Vault (`src/services/vault_service.rs`).
+- New migrations only; run `cargo sqlx prepare` after changing sqlx queries.
+- New endpoints need `api-reviewer` review + a casbin migration
+  (routes under `/api/v1/notifications/*`).
+- Secrets live only in Vault (`src/services/vault_service.rs`).

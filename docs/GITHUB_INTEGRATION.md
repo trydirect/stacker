@@ -1,45 +1,48 @@
-# GitHub-интеграция — App, вебхуки, watch paths, auto-deploy (WS-G)
+# GitHub integration — App, webhooks, watch paths, auto-deploy (WS-G)
 
-Статус: в работе. G1 ✅ (2026-11-24): схема `github_installation`, `github_repo`,
-`github_webhook_delivery` + casbin-правило анонимного вебхука.
-G2 ✅ (2026-11-24): ресивер `POST /api/v1/github/webhook` — проверка
-`X-Hub-Signature-256` (HMAC, constant-time), anti-replay по `X-GitHub-Delivery`,
-нормализация событий. G3 ✅ (2026-11-24): watch paths (glob + `!`-исключения).
+Status: complete. G1 ✅ (2026-11-24): schema `github_installation`, `github_repo`,
+`github_webhook_delivery` + casbin rule for the anonymous webhook route.
+G2 ✅ (2026-11-24): receiver `POST /api/v1/github/webhook` — verifies
+`X-Hub-Signature-256` (HMAC, constant-time), anti-replay via `X-GitHub-Delivery`,
+event normalization. G3 ✅ (2026-11-24): watch paths (glob + `!` exclusions).
 G4 ✅ (2026-11-24): Repo Connect API `/api/v1/github/repos` (CRUD, owner-gated),
-installation-события пишутся в `github_installation`; переключатель auto-deploy —
-`github_repo.autodeploy` (поле каталога `autodeploy` вытеснено).
-G5 ✅ (2026-11-24): auto-deploy matched-push через `redeploy_saved_project`
-(`src/services/redeploy.rs`) — деплой на существующий сервер (`server.server_id`),
-новая VM не создаётся; ответ вебхука несёт `triggered` (queued|skipped|failed).
+installation events land in `github_installation`; the auto-deploy switch is
+`github_repo.autodeploy` (it superseded the catalog `autodeploy` field).
+G5 ✅ (2026-11-24): auto-deploy of matched pushes through `redeploy_saved_project`
+(`src/services/redeploy.rs`) — deploys onto the existing server
+(`server.server_id`), never provisions a new VM; the webhook response carries
+`triggered` (queued|skipped|failed).
 
-План: `config/PLAN-github-webhooks.md` (продолжение `PLAN-managed-previews.md`).
-Контракт: `config/shared-fixtures/api-contracts/github-webhooks.json`.
-BDD-сценарии: `config/shared-fixtures/features/github-autodeploy.feature`.
+Plan: `config/PLAN-github-webhooks.md` (continuation of `PLAN-managed-previews.md`).
+Contract: `config/shared-fixtures/api-contracts/github-webhooks.json`.
+BDD scenarios: `config/shared-fixtures/features/github-autodeploy.feature`.
 
-## Архитектура модулей
+## Module layout
 
-Чистая логика — в листовом крейте `crates/github-events` (верификация подписи,
-нормализация `push`/`pull_request`/`installation`/`installation_repositories`,
-матчинг watch paths) — его тесты идут без сборки монолита. Обвязка (Vault,
-db, роуты) — в `src/routes/github/`, `src/db/github.rs`, `src/models/github.rs`.
+Pure logic lives in the leaf crate `crates/github-events` (signature
+verification, normalization of `push`/`pull_request`/`installation`/
+`installation_repositories`, watch-path matching) — its tests run without
+building the monolith. The glue (Vault, db, routes) lives in
+`src/routes/github/`, `src/db/github.rs`, `src/models/github.rs`.
 
-## Модель
+## Model
 
-- `github_installation` — установка GitHub App (user_id ↔ installation_id).
-- `github_repo` — подключённый репозиторий: repo, branch, `watch_paths[]`,
-  `autodeploy`, привязка к `project_id`.
-- `github_webhook_delivery` — anti-replay: delivery id обрабатывается один раз.
+- `github_installation` — a GitHub App installation (user_id ↔ installation_id).
+- `github_repo` — a connected repository: repo, branch, `watch_paths[]`,
+  `autodeploy`, linked to `project_id`.
+- `github_webhook_delivery` — anti-replay: a delivery id is processed once.
 
-## Вебхук
+## Webhook
 
-- Аутентификация — только `X-Hub-Signature-256` (секрет в Vault по пути
-  `github/webhook_secret`, casbin-маршрут анонимный — прецедент payout webhook).
-- Повтор delivery id → `200 {duplicate: true}` без обработки.
-- Push матчится по repo + branch + watch paths → список `matched` в ответе
-  (шов для G5: триггер deploy plan оттуда).
+- Authentication is `X-Hub-Signature-256` only (secret in Vault under
+  `github/webhook_secret`; the casbin route is anonymous — same precedent as
+  the payout webhook).
+- A repeated delivery id returns `200 {duplicate: true}` without processing.
+- A push matches on repo + branch + watch paths → the response carries a
+  `matched` list (the seam for G5: the deploy plan is triggered from there).
 
-## Правила проекта
+## Project rules
 
-- Только новые миграции; `cargo sqlx prepare` после изменения sqlx-запросов.
-- G4 добавит REST-эндпоинты подключения репо → casbin-миграция + `api-reviewer`.
-- Секреты (webhook secret, App private key) — только в Vault.
+- New migrations only; run `cargo sqlx prepare` after changing sqlx queries.
+- Repo-connect REST endpoints need `api-reviewer` review + a casbin migration.
+- Secrets (webhook secret, App private key) live only in Vault.
