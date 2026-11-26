@@ -17,6 +17,7 @@ pub(crate) mod test;
 pub use health_checks::{health_check, health_metrics, prometheus_metrics};
 pub(crate) mod cloud;
 pub(crate) mod project;
+pub(crate) mod sandbox;
 pub(crate) mod server;
 
 pub(crate) mod agreement;

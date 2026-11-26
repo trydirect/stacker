@@ -642,6 +642,15 @@ const ROUTES: &[(&str, &str, Kind, &str)] = &[
     ("GET", "/api/v1/backups/jobs/{id}/runs", Sweep, ""),
     ("POST", "/api/v1/backups/jobs/{id}/run", Sweep, ""),
     ("POST", "/api/v1/backups/runs/{id}/restore", Sweep, ""),
+    // sandboxes (WS-S)
+    ("GET", "/api/v1/sandboxes", Own, ""),
+    ("POST", "/api/v1/sandboxes", Own, ""),
+    ("GET", "/api/v1/sandboxes/{id}", Sweep, ""),
+    ("DELETE", "/api/v1/sandboxes/{id}", Sweep, ""),
+    ("POST", "/api/v1/sandboxes/{id}/exec", Sweep, ""),
+    ("POST", "/api/v1/sandboxes/{id}/files", Sweep, ""),
+    ("GET", "/api/v1/sandboxes/{id}/files", Sweep, ""),
+    ("GET", "/api/v1/sandboxes/{id}/files/list", Sweep, ""),
 ];
 
 fn table() -> BTreeMap<(String, String), (Kind, &'static str)> {
@@ -931,6 +940,7 @@ impl Fixture {
             "pexecution",
             "pdlq",
             "step",
+            "sandbox",
         ] {
             m.insert(key, MISSING_UUID.to_string());
         }
@@ -1548,6 +1558,44 @@ fn sweep_requests() -> BTreeMap<(&'static str, &'static str), (&'static str, &'s
             "/api/v1/backups/runs/{backuprun}/restore",
             "{}",
         ),
+        // sandboxes (WS-S) — bodies/queries must be valid so the request
+        // reaches the ownership check (a bad body 400s before it).
+        (
+            "GET",
+            "/api/v1/sandboxes/{id}",
+            "/api/v1/sandboxes/{sandbox}",
+            "",
+        ),
+        (
+            "DELETE",
+            "/api/v1/sandboxes/{id}",
+            "/api/v1/sandboxes/{sandbox}",
+            "",
+        ),
+        (
+            "POST",
+            "/api/v1/sandboxes/{id}/exec",
+            "/api/v1/sandboxes/{sandbox}/exec",
+            r#"{"command":"true"}"#,
+        ),
+        (
+            "POST",
+            "/api/v1/sandboxes/{id}/files",
+            "/api/v1/sandboxes/{sandbox}/files",
+            r#"{"path":"/tmp/a","contentBase64":"aGk="}"#,
+        ),
+        (
+            "GET",
+            "/api/v1/sandboxes/{id}/files",
+            "/api/v1/sandboxes/{sandbox}/files?path=/tmp",
+            "",
+        ),
+        (
+            "GET",
+            "/api/v1/sandboxes/{id}/files/list",
+            "/api/v1/sandboxes/{sandbox}/files/list?path=/tmp",
+            "",
+        ),
     ];
     let mut map = BTreeMap::new();
     for (method, path, url, body) in rows {
@@ -1624,6 +1672,7 @@ async fn seed(pool: &sqlx::PgPool) -> Fixture {
     let backupdest = insert_returning(pool, "INSERT INTO backup_destination (user_id, name, endpoint, vault_path) VALUES ($1, 'matrix-a', 'https://b.example', 'backup/matrix-a') RETURNING id::text", a).await;
     let backupjob = insert_returning(pool, &format!("INSERT INTO backup_job (user_id, project_id, destination_id, name, source, target, schedule) VALUES ($1, '{project}', '{backupdest}', 'matrix-a', 'postgres', 'shop-postgres-1', '0 3 * * *') RETURNING id::text"), a).await;
     let backuprun = insert_returning(pool, &format!("INSERT INTO backup_run (job_id, project_id, status, remote_file_id) VALUES ('{backupjob}', '{project}', 'uploaded', 'matrix-a.bin') RETURNING id::text"), a).await;
+    let sandbox = insert_returning(pool, &format!("INSERT INTO sandbox (id, user_id, project_id, status, image) VALUES (gen_random_uuid(), $1, '{project}', 'running', 'alpine:3.20') RETURNING id::text"), a).await;
 
     let mut m = BTreeMap::new();
     m.insert("project", project.to_string());
@@ -1646,6 +1695,7 @@ async fn seed(pool: &sqlx::PgPool) -> Fixture {
     m.insert("backupdest", backupdest);
     m.insert("backupjob", backupjob);
     m.insert("backuprun", backuprun);
+    m.insert("sandbox", sandbox);
     Fixture(m)
 }
 

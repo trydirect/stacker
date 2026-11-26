@@ -300,6 +300,17 @@ pub async fn run(
                     .service(crate::routes::backup::trigger_restore),
             )
             .service(
+                web::scope("/api/v1/sandboxes")
+                    .service(crate::routes::sandbox::create_handler)
+                    .service(crate::routes::sandbox::list_handler)
+                    .service(crate::routes::sandbox::get_handler)
+                    .service(crate::routes::sandbox::kill_handler)
+                    .service(crate::routes::sandbox::exec_handler)
+                    .service(crate::routes::sandbox::write_file_handler)
+                    .service(crate::routes::sandbox::read_file_handler)
+                    .service(crate::routes::sandbox::list_files_handler),
+            )
+            .service(
                 web::scope("/dockerhub")
                     .service(crate::routes::dockerhub::search_namespaces)
                     .service(crate::routes::dockerhub::list_repositories)
