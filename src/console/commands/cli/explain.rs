@@ -150,6 +150,11 @@ impl ExplainEnvCommand {
             );
             println!("  runtime env:         {}", explain.runtime_env_path);
             println!("  runtime compose:     {}", explain.runtime_compose_path);
+            println!(
+                "  note: runtime paths are the canonical layout; own-server agents \
+                 resolve the compose dir at deploy time and write the env as \
+                 <compose-dir>/.env next to the deployed compose"
+            );
         }
 
         Ok(())
@@ -219,6 +224,11 @@ impl CallableTrait for ExplainTopologyCommand {
             println!("  runtime compose: {}", topology.runtime_compose_path);
             println!("  local env:      {}", topology.local_authoring_env_path);
             println!("  runtime env:    {}", topology.runtime_env_path);
+            println!(
+                "  note: runtime paths are the canonical layout; own-server agents \
+                 resolve the compose dir at deploy time and write the env as \
+                 <compose-dir>/.env next to the deployed compose"
+            );
         }
 
         Ok(())
