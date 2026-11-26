@@ -29,6 +29,10 @@ on 401), retry on 5xx/timeout, and the control-plane ops Stacker needs:
 `list_files`. Wired into scheduler retention (pruned archives are deleted from
 storage). The heavy data path (upload/download) stays agent-side. Tests:
 wiremock (4). 1.6 ahead (restore e2e).
+BDD ✅: `tests/features/backups.feature` (6 acceptance scenarios — create
+destination/job, list, vault_path never leaked, invalid source rejected,
+cross-user read/delete refused) + `tests/steps/backup.rs`, wired into the
+cucumber harness (`cargo test --test bdd`, 340 scenarios / 1847 steps green).
 
 A `backup` agent command carries `{action, run_id, plan}` where `plan` is a
 `DumpPlan`/`RestorePlan`. The command queue stores only the token env var

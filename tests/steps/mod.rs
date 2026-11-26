@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod agent_executor;
+pub mod backup;
 pub mod bake_sanitization;
 pub mod cdc;
 pub mod cloud_server;
