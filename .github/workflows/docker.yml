@@ -66,6 +66,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.ref }}
+      # Reclaim disk for the large Rust build (see rust.yml).
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
       - name: Export PostgreSQL connection env
         run: |
           # Inside a job container, services resolve by name on the shared

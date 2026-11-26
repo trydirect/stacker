@@ -107,6 +107,14 @@ jobs:
       SQLX_OFFLINE: true
     steps:
       - uses: actions/checkout@v4
+      # Large Rust builds exhaust the runner's ~14 GB free disk (rustc/LLVM
+      # "No space left on device", linker failures). Drop preinstalled
+      # toolchains we don't use to reclaim ~15 GB.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
       - name: Export PostgreSQL connection env
         run: |
           echo "PGHOST=127.0.0.1" >> "$GITHUB_ENV"
