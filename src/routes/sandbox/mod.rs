@@ -166,6 +166,9 @@ pub struct CreateSandboxBody {
     pub inactivity_timeout_sec: Option<i32>,
     #[serde(rename = "maxLifetimeSec")]
     pub max_lifetime_sec: Option<i32>,
+    /// Write-only env; encrypted at rest, never returned.
+    #[serde(default)]
+    pub env: Option<serde_json::Value>,
 }
 
 fn sandbox_response(s: &models::Sandbox) -> models::SandboxResponse {
@@ -198,6 +201,15 @@ pub async fn create_handler(
         None => None,
     };
 
+    // Env is write-only: encrypt at rest, never returned by the API (S3).
+    let env_encrypted = match &body.env {
+        Some(env) => Some(
+            crate::helpers::chat::encrypt_messages(env)
+                .map_err(JsonResponse::internal_server_error)?,
+        ),
+        None => None,
+    };
+
     let sandbox = db::sandbox::insert(
         pg_pool.get_ref(),
         &user.id,
@@ -211,7 +223,7 @@ pub async fn create_handler(
         body.pids_limit.unwrap_or(128),
         body.inactivity_timeout_sec.unwrap_or(1800),
         body.max_lifetime_sec.unwrap_or(86400),
-        None,
+        env_encrypted.as_deref(),
     )
     .await
     .map_err(JsonResponse::internal_server_error)?;
