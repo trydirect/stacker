@@ -145,6 +145,9 @@ pub async fn run(
     // problems.
     crate::services::agent_sweeper::spawn(api_pool.get_ref().clone());
 
+    // WS-1 1.4: periodically enqueue due backup runs and apply retention.
+    crate::services::backup_scheduler::spawn(api_pool.get_ref().clone());
+
     let payout_provider = crate::services::init_payout_provider(&settings.payouts)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;
     let payout_provider = web::Data::new(payout_provider);

@@ -16,8 +16,13 @@ vault_path never leaked (masked endpoint only). Run lifecycle: when the agent
 reports a `backup` command, the run is marked uploaded/failed and
 `backup.succeeded`/`backup.failed` is emitted on the WS-N bus (report handler
 → `notify_backup_result`). Tests: `tests/backup_rest.rs`, security matrix
-(route classification + live IDOR). 1.3, 1.4, 1.6 ahead (storage connector,
-scheduler, restore e2e).
+(route classification + live IDOR).
+1.4 ✅ (2026-11-26): background scheduler (`src/services/backup_scheduler.rs`)
+— every minute it finds due jobs (next cron time after the last run has
+arrived; standard 5-field schedules supported), enqueues a `backup` command
+via the project's deployment, and applies retention (B2: 7 daily + 4 weekly →
+mark pruned). Cron matching via the `cron` crate. 1.3, 1.6 ahead (storage
+connector, restore e2e).
 
 A `backup` agent command carries `{action, run_id, plan}` where `plan` is a
 `DumpPlan`/`RestorePlan`. The command queue stores only the token env var

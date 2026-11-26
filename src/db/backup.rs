@@ -229,6 +229,21 @@ pub async fn list_finished_runs(pool: &PgPool, job_id: i32) -> Result<Vec<Backup
     .map_err(|e| format!("Failed to list finished backup runs: {}", e))
 }
 
+/// When the job last produced a run (for scheduler due-detection). Falls back
+/// to the job's creation time when it has never run.
+pub async fn last_run_at(
+    pool: &PgPool,
+    job_id: i32,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, String> {
+    let row: Option<(Option<chrono::DateTime<chrono::Utc>>,)> =
+        sqlx::query_as(r#"SELECT MAX(created_at) FROM backup_run WHERE job_id = $1"#)
+            .bind(job_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("Failed to fetch last backup run: {}", e))?;
+    Ok(row.and_then(|(ts,)| ts))
+}
+
 pub async fn mark_run_running(pool: &PgPool, id: i32) -> Result<(), String> {
     sqlx::query(
         r#"

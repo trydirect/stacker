@@ -158,6 +158,20 @@ pub async fn enqueue_restore(
         .map_err(|e| format!("Failed to queue restore command: {}", e))
 }
 
+/// `BackupRun` feeds the retention policy in `backup-core`.
+impl backup_core::RetentionRun for crate::models::BackupRun {
+    type Id = i32;
+    fn id(&self) -> i32 {
+        self.id
+    }
+    fn finished_at(&self) -> chrono::DateTime<chrono::Utc> {
+        self.finished_at.unwrap_or(self.created_at)
+    }
+    fn key(&self) -> i64 {
+        i64::from(self.id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
