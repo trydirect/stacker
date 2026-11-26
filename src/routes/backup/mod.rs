@@ -334,3 +334,49 @@ pub async fn list_runs(
     let responses: Vec<RunResponse> = runs.iter().map(run_response).collect();
     Ok(JsonResponse::build().set_list(responses).ok("Backup runs"))
 }
+
+/// Trigger a backup run for a job: enqueue the `backup` command for the
+/// project's agent. Returns the created run id + queued command id.
+#[post("/jobs/{id}/run")]
+pub async fn trigger_run(
+    user: web::ReqData<Arc<models::User>>,
+    path: web::Path<i32>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let job = fetch_owned_job(pg_pool.get_ref(), &user, path.into_inner()).await?;
+    let dest = db::backup::fetch_destination(pg_pool.get_ref(), job.destination_id)
+        .await
+        .map_err(JsonResponse::internal_server_error)?
+        .ok_or_else(|| JsonResponse::not_found("Backup destination not found"))?;
+
+    // Address the agent via the project's deployment.
+    let deployments = db::deployment::fetch_by_project_id(pg_pool.get_ref(), job.project_id)
+        .await
+        .map_err(JsonResponse::internal_server_error)?;
+    let deployment = deployments
+        .into_iter()
+        .next()
+        .ok_or_else(|| JsonResponse::bad_request("Project has no deployment to back up"))?;
+
+    // The OAuth2 token endpoint of the storage auth provider (not a secret).
+    let token_url = std::env::var("BACKUP_TOKEN_URL").unwrap_or_default();
+    if token_url.is_empty() {
+        return Err(JsonResponse::internal_server_error(
+            "backup token endpoint is not configured (BACKUP_TOKEN_URL)",
+        ));
+    }
+
+    let (run_id, command_id) = crate::services::backup::enqueue_backup_run(
+        pg_pool.get_ref(),
+        deployment.id,
+        &job,
+        &dest,
+        &token_url,
+    )
+    .await
+    .map_err(JsonResponse::internal_server_error)?;
+
+    Ok(JsonResponse::build()
+        .set_item(json!({ "runId": run_id, "commandId": command_id }))
+        .created("Backup run queued"))
+}

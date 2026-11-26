@@ -365,6 +365,11 @@ enum StackerCommands {
         #[command(subcommand)]
         command: NotifyCommands,
     },
+    /// Manage backups (destinations, jobs, runs)
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommands,
+    },
     /// Explain path and topology decisions
     Explain {
         #[command(subcommand)]
@@ -599,6 +604,30 @@ enum NotifyCommands {
         /// Filter by project id
         #[arg(long)]
         project: Option<i32>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum BackupCommands {
+    /// List backup jobs
+    List {
+        /// Filter by project id
+        #[arg(long)]
+        project: Option<i32>,
+    },
+    /// Trigger a backup run for a job
+    Run {
+        /// Job id
+        #[arg(long)]
+        id: i32,
+    },
+    /// List backup destinations
+    Destinations,
+    /// List runs for a job
+    Runs {
+        /// Job id
+        #[arg(long)]
+        job: i32,
     },
 }
 
@@ -2312,14 +2341,32 @@ fn get_command(
                 secret,
                 events,
             } => Box::new(stacker::console::commands::cli::notify::NotifyCommand::add(
-                name, channel_type, project, secret, events,
+                name,
+                channel_type,
+                project,
+                secret,
+                events,
             )),
-            NotifyCommands::Test { id } => Box::new(
-                stacker::console::commands::cli::notify::NotifyCommand::test(id),
-            ),
-            NotifyCommands::List { project } => Box::new(
-                stacker::console::commands::cli::notify::NotifyCommand::list(project),
-            ),
+            NotifyCommands::Test { id } => {
+                Box::new(stacker::console::commands::cli::notify::NotifyCommand::test(id))
+            }
+            NotifyCommands::List { project } => {
+                Box::new(stacker::console::commands::cli::notify::NotifyCommand::list(project))
+            }
+        },
+        StackerCommands::Backup { command } => match command {
+            BackupCommands::List { project } => {
+                Box::new(stacker::console::commands::cli::backup::BackupCommand::list(project))
+            }
+            BackupCommands::Run { id } => {
+                Box::new(stacker::console::commands::cli::backup::BackupCommand::trigger(id))
+            }
+            BackupCommands::Destinations => {
+                Box::new(stacker::console::commands::cli::backup::BackupCommand::destinations())
+            }
+            BackupCommands::Runs { job } => {
+                Box::new(stacker::console::commands::cli::backup::BackupCommand::runs(job))
+            }
         },
         StackerCommands::Deployment { command } => match command {
             DeploymentCommands::State {

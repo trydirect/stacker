@@ -10,12 +10,14 @@ enqueue service (`src/services/backup.rs`) — builds the plan and queues a
 `backup` agent command; runtime-tested (`tests/backup_db.rs`). The agent-side
 native `backup` command (Status Panel, `status/` repo) is specified in its
 `FEATURES.md` (status#144).
-1.5 (partial): REST `/api/v1/backups/*` (destinations, jobs, runs) + casbin —
-owner-gated, vault_path never leaked (masked endpoint only),
-`tests/backup_rest.rs`. Remaining for 1.5: CLI `stacker backup`, and
-`backup.succeeded`/`backup.failed` events on the WS-N bus (need the run
-lifecycle / agent report). 1.3-1.6 ahead (storage connector, scheduler,
-restore e2e).
+1.5 ✅ (2026-11-26): REST `/api/v1/backups/*` (destinations, jobs, runs, trigger)
++ casbin + CLI `stacker backup {list,run,destinations,runs}`. Owner-gated,
+vault_path never leaked (masked endpoint only). Run lifecycle: when the agent
+reports a `backup` command, the run is marked uploaded/failed and
+`backup.succeeded`/`backup.failed` is emitted on the WS-N bus (report handler
+→ `notify_backup_result`). Tests: `tests/backup_rest.rs`, security matrix
+(route classification + live IDOR). 1.3, 1.4, 1.6 ahead (storage connector,
+scheduler, restore e2e).
 
 A `backup` agent command carries `{action, run_id, plan}` where `plan` is a
 `DumpPlan`/`RestorePlan`. The command queue stores only the token env var

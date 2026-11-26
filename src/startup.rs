@@ -289,7 +289,8 @@ pub async fn run(
                     .service(crate::routes::backup::get_job)
                     .service(crate::routes::backup::update_job)
                     .service(crate::routes::backup::delete_job)
-                    .service(crate::routes::backup::list_runs),
+                    .service(crate::routes::backup::list_runs)
+                    .service(crate::routes::backup::trigger_run),
             )
             .service(
                 web::scope("/dockerhub")

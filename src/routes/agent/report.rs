@@ -309,6 +309,79 @@ pub async fn report_handler(
                 }
             }
 
+            // Backup run lifecycle (WS-1 1.5): mark the run and emit an event.
+            if command.r#type == "backup" {
+                if let Some(run_id) = command
+                    .parameters
+                    .as_ref()
+                    .and_then(|p| p.get("run_id"))
+                    .and_then(|v| v.as_i64())
+                {
+                    let run_id = run_id as i32;
+                    let success = status == models::CommandStatus::Completed;
+                    let result = result_payload.as_ref();
+                    if success {
+                        let size = result
+                            .and_then(|r| r.get("size_bytes"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        let checksum = result
+                            .and_then(|r| r.get("checksum"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let file_id = result
+                            .and_then(|r| r.get("remote_file_id"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        if let Err(e) = db::backup::mark_run_uploaded(
+                            agent_pool.as_ref(),
+                            run_id,
+                            size,
+                            &checksum,
+                            &file_id,
+                        )
+                        .await
+                        {
+                            tracing::warn!(run_id, error = %e, "failed to mark backup run uploaded");
+                        }
+                    } else {
+                        let error = result
+                            .and_then(|r| r.get("error"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("backup failed")
+                            .to_string();
+                        if let Err(e) =
+                            db::backup::mark_run_failed(agent_pool.as_ref(), run_id, &error).await
+                        {
+                            tracing::warn!(run_id, error = %e, "failed to mark backup run failed");
+                        }
+                    }
+                    // Emit backup.succeeded / backup.failed to the project's channels.
+                    if let Ok(Some(run)) = db::backup::fetch_run(agent_pool.as_ref(), run_id).await
+                    {
+                        if let Ok(Some(job)) =
+                            db::backup::fetch_job(agent_pool.as_ref(), run.job_id).await
+                        {
+                            let detail = if success {
+                                "completed"
+                            } else {
+                                "see run error"
+                            };
+                            crate::services::notification::notify_backup_result(
+                                agent_pool.as_ref(),
+                                run.project_id,
+                                &job.name,
+                                success,
+                                detail,
+                            )
+                            .await;
+                        }
+                    }
+                }
+            }
+
             // Persist trigger_pipe results as pipe execution history
             if command.r#type == "trigger_pipe" {
                 if let Some(ref result) = result_payload {

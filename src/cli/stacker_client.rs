@@ -646,12 +646,8 @@ impl StackerClient {
         &self,
         body: &serde_json::Value,
     ) -> Result<reqwest::Response, CliError> {
-        self.send_notifications_request(
-            reqwest::Method::POST,
-            "/channels",
-            Some(body),
-        )
-        .await
+        self.send_notifications_request(reqwest::Method::POST, "/channels", Some(body))
+            .await
     }
 
     pub async fn test_notification_channel(
@@ -662,6 +658,62 @@ impl StackerClient {
             reqwest::Method::POST,
             &format!("/channels/{}/test", channel_id),
             None,
+        )
+        .await
+    }
+
+    fn backups_endpoint(&self, suffix: &str) -> String {
+        format!("{}/api/v1/backups{}", self.base_url, suffix)
+    }
+
+    async fn send_backups_request(
+        &self,
+        method: reqwest::Method,
+        suffix: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<reqwest::Response, CliError> {
+        let url = self.backups_endpoint(suffix);
+        let mut request = self.http.request(method, &url).bearer_auth(&self.token);
+        if let Some(payload) = body {
+            request = request.json(payload);
+        }
+        request.send().await.map_err(|e| CliError::DeployFailed {
+            target: self.target.clone(),
+            reason: format!("Stacker server failed: backup request: {}", e),
+        })
+    }
+
+    pub async fn list_backup_jobs(
+        &self,
+        project: Option<i32>,
+    ) -> Result<reqwest::Response, CliError> {
+        let suffix = match project {
+            Some(p) => format!("/jobs?projectId={}", p),
+            None => "/jobs".to_string(),
+        };
+        self.send_backups_request(reqwest::Method::GET, &suffix, None)
+            .await
+    }
+
+    pub async fn list_backup_destinations(&self) -> Result<reqwest::Response, CliError> {
+        self.send_backups_request(reqwest::Method::GET, "/destinations", None)
+            .await
+    }
+
+    pub async fn list_backup_runs(&self, job_id: i32) -> Result<reqwest::Response, CliError> {
+        self.send_backups_request(
+            reqwest::Method::GET,
+            &format!("/jobs/{}/runs", job_id),
+            None,
+        )
+        .await
+    }
+
+    pub async fn trigger_backup_run(&self, job_id: i32) -> Result<reqwest::Response, CliError> {
+        self.send_backups_request(
+            reqwest::Method::POST,
+            &format!("/jobs/{}/run", job_id),
+            Some(&serde_json::json!({})),
         )
         .await
     }

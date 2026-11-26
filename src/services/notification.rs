@@ -81,8 +81,8 @@ pub async fn deliver_to_channel(
         .and_then(|v| v.as_i64())
         .map(|v| v as i32);
 
-    let dispatch = db::notification::insert_dispatch(pool, channel.id, event_type, project_id, event)
-        .await?;
+    let dispatch =
+        db::notification::insert_dispatch(pool, channel.id, event_type, project_id, event).await?;
 
     let secret_raw = vault
         .fetch_secret_value(&channel.vault_path)
@@ -214,8 +214,7 @@ pub async fn notify_deployment_status_change(
             deployment.deployment_hash, new_status, status_message
         ),
     );
-    if let Err(error) =
-        dispatch_project_event(pool, mq, vault, deployment.project_id, &event).await
+    if let Err(error) = dispatch_project_event(pool, mq, vault, deployment.project_id, &event).await
     {
         tracing::warn!(
             deployment_hash = %deployment.deployment_hash,
@@ -314,10 +313,7 @@ pub async fn notify_container_down_transitions(
                 .find(|row| row.container_name == container.container_name)
                 .map(|row| row.state.as_deref() == Some("running"))
                 .unwrap_or(false);
-            let is_down = matches!(
-                container.state.as_deref(),
-                Some("exited") | Some("dead")
-            );
+            let is_down = matches!(container.state.as_deref(), Some("exited") | Some("dead"));
             was_running && is_down
         })
         .collect();
@@ -352,4 +348,29 @@ pub async fn notify_container_down_transitions(
         );
         dispatch_project_event_default(pool, deployment.project_id, &event).await;
     }
+}
+
+/// Emit a `backup.succeeded`/`backup.failed` event for a completed backup run
+/// (WS-1 1.5). Dispatched to the project's notification channels.
+pub async fn notify_backup_result(
+    pool: &PgPool,
+    project_id: i32,
+    job_name: &str,
+    success: bool,
+    detail: &str,
+) {
+    let (event_type, verb) = if success {
+        ("backup.succeeded", "succeeded")
+    } else {
+        ("backup.failed", "failed")
+    };
+    let event = build_event(
+        event_type,
+        Some(i64::from(project_id)),
+        "backup_job",
+        job_name,
+        job_name,
+        &format!("Backup job '{}' {}: {}", job_name, verb, detail),
+    );
+    dispatch_project_event_default(pool, project_id, &event).await;
 }

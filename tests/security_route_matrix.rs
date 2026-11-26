@@ -640,6 +640,7 @@ const ROUTES: &[(&str, &str, Kind, &str)] = &[
     ("PATCH", "/api/v1/backups/jobs/{id}", Sweep, ""),
     ("DELETE", "/api/v1/backups/jobs/{id}", Sweep, ""),
     ("GET", "/api/v1/backups/jobs/{id}/runs", Sweep, ""),
+    ("POST", "/api/v1/backups/jobs/{id}/run", Sweep, ""),
 ];
 
 fn table() -> BTreeMap<(String, String), (Kind, &'static str)> {
@@ -1532,6 +1533,12 @@ fn sweep_requests() -> BTreeMap<(&'static str, &'static str), (&'static str, &'s
             "/api/v1/backups/jobs/{id}/runs",
             "/api/v1/backups/jobs/{backupjob}/runs",
             "",
+        ),
+        (
+            "POST",
+            "/api/v1/backups/jobs/{id}/run",
+            "/api/v1/backups/jobs/{backupjob}/run",
+            "{}",
         ),
     ];
     let mut map = BTreeMap::new();

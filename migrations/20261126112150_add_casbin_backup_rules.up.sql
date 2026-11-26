@@ -10,6 +10,7 @@ VALUES
     ('p', 'group_user', '/api/v1/backups/jobs/:id', 'PATCH', '', '', ''),
     ('p', 'group_user', '/api/v1/backups/jobs/:id', 'DELETE', '', '', ''),
     ('p', 'group_user', '/api/v1/backups/jobs/:id/runs', 'GET', '', '', ''),
+    ('p', 'group_user', '/api/v1/backups/jobs/:id/run', 'POST', '', '', ''),
     ('p', 'root', '/api/v1/backups/destinations', 'GET', '', '', ''),
     ('p', 'root', '/api/v1/backups/destinations', 'POST', '', '', ''),
     ('p', 'root', '/api/v1/backups/destinations/:id', 'DELETE', '', '', ''),
@@ -18,4 +19,5 @@ VALUES
     ('p', 'root', '/api/v1/backups/jobs/:id', 'GET', '', '', ''),
     ('p', 'root', '/api/v1/backups/jobs/:id', 'PATCH', '', '', ''),
     ('p', 'root', '/api/v1/backups/jobs/:id', 'DELETE', '', '', ''),
-    ('p', 'root', '/api/v1/backups/jobs/:id/runs', 'GET', '', '', '');
+    ('p', 'root', '/api/v1/backups/jobs/:id/runs', 'GET', '', '', ''),
+    ('p', 'root', '/api/v1/backups/jobs/:id/run', 'POST', '', '', '');
