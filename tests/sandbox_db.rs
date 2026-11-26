@@ -17,6 +17,7 @@ async fn sandbox_insert_fetch_status_and_expiry() {
         pool,
         common::USER_A_ID,
         Some(project_id),
+        None,
         "alpine:3.20",
         "runc",
         "isolated",
@@ -53,12 +54,9 @@ async fn sandbox_insert_fetch_status_and_expiry() {
         1
     );
 
-    // Not expired yet (expires_at is in the future).
-    let now = chrono::Utc::now();
-    assert!(db::sandbox::list_expired(pool, now)
-        .await
-        .unwrap()
-        .is_empty());
+    // Not reapable yet (expires_at is in the future, just created).
+    let reapable = db::sandbox::list_reapable(pool).await.unwrap();
+    assert!(reapable.is_empty());
 
     // Cleanup.
     db::sandbox::delete(pool, sandbox.id).await.expect("delete");

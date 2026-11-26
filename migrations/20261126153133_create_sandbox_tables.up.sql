@@ -5,6 +5,8 @@ CREATE TABLE IF NOT EXISTS sandbox (
     id UUID PRIMARY KEY,
     user_id VARCHAR(255) NOT NULL,
     project_id INTEGER REFERENCES project(id) ON DELETE CASCADE,
+    -- Where it runs (the agent addressed for exec/kill).
+    deployment_id INTEGER REFERENCES deployment(id) ON DELETE CASCADE,
     status VARCHAR(20) NOT NULL DEFAULT 'creating',
     image TEXT NOT NULL,
     runtime VARCHAR(20) NOT NULL DEFAULT 'runc',
@@ -18,6 +20,7 @@ CREATE TABLE IF NOT EXISTS sandbox (
     env_encrypted TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_activity_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '24 hours',
     CONSTRAINT sandbox_status_check CHECK (
         status IN ('creating', 'running', 'killed', 'failed', 'expired')

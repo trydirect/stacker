@@ -148,6 +148,9 @@ pub async fn run(
     // WS-1 1.4: periodically enqueue due backup runs and apply retention.
     crate::services::backup_scheduler::spawn(api_pool.get_ref().clone());
 
+    // WS-S S1: reap sandboxes past their lifetime / inactivity timeout.
+    crate::services::sandbox_lifecycle::spawn(api_pool.get_ref().clone());
+
     let payout_provider = crate::services::init_payout_provider(&settings.payouts)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;
     let payout_provider = web::Data::new(payout_provider);

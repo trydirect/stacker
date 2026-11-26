@@ -8,6 +8,8 @@ pub struct Sandbox {
     pub id: uuid::Uuid,
     pub user_id: String,
     pub project_id: Option<i32>,
+    /// Where it runs (the agent addressed for exec/kill).
+    pub deployment_id: Option<i32>,
     /// `creating` | `running` | `killed` | `failed` | `expired`.
     pub status: String,
     pub image: String,
@@ -24,6 +26,7 @@ pub struct Sandbox {
     pub env_encrypted: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub last_activity_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
 
