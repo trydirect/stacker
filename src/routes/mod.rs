@@ -20,6 +20,7 @@ pub(crate) mod project;
 pub(crate) mod server;
 
 pub(crate) mod agreement;
+pub(crate) mod backup;
 pub(crate) mod chat;
 pub(crate) mod github;
 pub(crate) mod marketplace;

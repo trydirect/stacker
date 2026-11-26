@@ -3,13 +3,18 @@
 Status: in progress. 1.1 ✅ (2026-11-24): migration
 `20261124142356_create_backup_tables` (`backup_destination`, `backup_job`,
 `backup_run`). Crate `crates/backup-core` ✅: typed `DumpPlan`/`RestorePlan`
-(postgres/mysql/mongo/volume; the per-run token referenced by env name only),
-retention policy B2 (7 daily + 4 weekly). 1.2 in progress: models + db layer
-(`src/models/backup.rs`, `src/db/backup.rs`) and the enqueue service
-(`src/services/backup.rs`) build the plan and queue a `backup` agent command —
-runtime-tested (`tests/backup_db.rs`). Pending for 1.2: the agent-side native
-`backup` command (Status Panel, `status/` repo) that executes the plan and
-streams to storage. 1.3-1.6 ahead (storage connector, scheduler, REST/CLI,
+(universal upload protocol — `UploadBody` raw|multipart, `Auth`
+bearer|client_credentials|basic), retention policy B2 (7 daily + 4 weekly).
+1.2 ✅: models + db layer (`src/models/backup.rs`, `src/db/backup.rs`) +
+enqueue service (`src/services/backup.rs`) — builds the plan and queues a
+`backup` agent command; runtime-tested (`tests/backup_db.rs`). The agent-side
+native `backup` command (Status Panel, `status/` repo) is specified in its
+`FEATURES.md` (status#144).
+1.5 (partial): REST `/api/v1/backups/*` (destinations, jobs, runs) + casbin —
+owner-gated, vault_path never leaked (masked endpoint only),
+`tests/backup_rest.rs`. Remaining for 1.5: CLI `stacker backup`, and
+`backup.succeeded`/`backup.failed` events on the WS-N bus (need the run
+lifecycle / agent report). 1.3-1.6 ahead (storage connector, scheduler,
 restore e2e).
 
 A `backup` agent command carries `{action, run_id, plan}` where `plan` is a
