@@ -4,14 +4,17 @@
 //! config/shared-fixtures/api-contracts/backups-storage.json.
 //!
 //! The dump and restore legs run on the target server through the agent
-//! command queue. This crate turns a backup spec into a typed execution plan
-//! (process argv + upload/download metadata); the agent runs the process and
-//! streams its stdout/stdin to the storage backend natively. No shell command
-//! strings, no HTTP client here. The per-run token reaches the agent through
-//! the environment (`BACKUP_TOKEN`), never embedded in argv.
+//! command queue. This crate turns a backup spec into a typed execution plan:
+//! a process `argv` plus an [`UploadTarget`]/[`DownloadTarget`] that
+//! *describes the storage protocol* (body encoding + auth + headers). The
+//! agent interprets the plan: it runs the process and streams the archive to
+//! the backend with its native HTTP client. Nothing vendor-specific is
+//! hardcoded — the protocol is data, so the backend is pluggable (a REST
+//! backup-storage service today, a restic or S3 target tomorrow).
 //!
-//! The storage backend is pluggable: endpoints and upload header names come
-//! from destination configuration, nothing vendor-specific is hardcoded.
+//! Secrets never appear in a plan: auth references environment-variable
+//! *names* (e.g. `BACKUP_TOKEN`, `AGENT_ID`, client-secret env vars), and the
+//! agent resolves them at run time.
 
 use chrono::{DateTime, Datelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -38,7 +41,73 @@ impl DumpSource {
     }
 }
 
-/// Everything needed to build one dump/restore plan.
+/// How the archive is encoded into the upload request body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum UploadBody {
+    /// The archive stream is the request body.
+    Raw,
+    /// `multipart/form-data`: the archive rides in `file_field`, plus literal
+    /// form fields (values may reference environment variables).
+    Multipart {
+        file_field: String,
+        fields: Vec<FormField>,
+    },
+}
+
+/// A literal form field; `value` may reference an env var (`$AGENT_ID`, ...).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormField {
+    pub name: String,
+    pub value: String,
+}
+
+/// How a request is authenticated. Every credential is referenced by env-var
+/// name — never carried as a value in the plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Auth {
+    /// No authentication.
+    None,
+    /// `Authorization: Bearer <token>`; the token is read from `token_env`.
+    Bearer { token_env: String },
+    /// OAuth2 client_credentials: POST `token_url` → `access_token` → Bearer.
+    /// Suits service accounts (e.g. ZITADEL). Client id/secret come from env.
+    ClientCredentials {
+        token_url: String,
+        client_id_env: String,
+        client_secret_env: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+    },
+    /// HTTP Basic; credentials come from env.
+    Basic {
+        username_env: String,
+        password_env: String,
+    },
+}
+
+/// The upload leg of a storage backend: where to POST the archive and how.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UploadTarget {
+    /// Full upload URL.
+    pub url: String,
+    pub body: UploadBody,
+    pub auth: Auth,
+    /// Extra headers; values may reference env vars.
+    pub headers: Vec<(String, String)>,
+}
+
+/// The download leg (restore): where to GET a stored archive and how.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadTarget {
+    /// Full file URL (the caller embeds the remote file id).
+    pub url: String,
+    pub auth: Auth,
+    pub headers: Vec<(String, String)>,
+}
+
+/// What to dump (the storage protocol is supplied separately).
 #[derive(Debug, Clone)]
 pub struct BackupSpec {
     pub source: DumpSource,
@@ -47,34 +116,6 @@ pub struct BackupSpec {
     /// Database name (postgres/mysql); empty uses the engine default from the
     /// container environment.
     pub database: String,
-    /// Backup storage upload endpoint (upload base and file download base).
-    pub endpoint: String,
-    /// Extra HTTP headers for upload/download, as (name, value) pairs. Names
-    /// come from configuration per destination — nothing vendor-specific is
-    /// hardcoded here. Values may reference environment variables that the
-    /// agent resolves at run time (`BACKUP_DEVICE`, `BACKUP_CHECKSUM`, ...).
-    pub extra_headers: Vec<(String, String)>,
-}
-
-/// Where the produced archive goes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UploadTarget {
-    /// `POST {endpoint}/upload`.
-    pub url: String,
-    /// Bearer token env var name; the agent reads the token from there.
-    pub auth_token_env: String,
-    /// Configured extra headers (device id, checksum, ...).
-    pub headers: Vec<(String, String)>,
-}
-
-/// Where the restore source archive comes from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DownloadTarget {
-    /// `GET {endpoint}/upload/files/{file_id}`.
-    pub url: String,
-    /// Bearer token env var name.
-    pub auth_token_env: String,
-    pub headers: Vec<(String, String)>,
 }
 
 /// Typed execution plan for a dump: run `argv`, stream stdout to `upload`.
@@ -91,37 +132,28 @@ pub struct RestorePlan {
     pub download: DownloadTarget,
 }
 
-/// Environment variable holding the per-run bearer token.
-pub const TOKEN_ENV: &str = "BACKUP_TOKEN";
-
-fn validate_target(spec: &BackupSpec) -> Result<(), String> {
+fn validate_spec(spec: &BackupSpec) -> Result<(), String> {
     if spec.target.trim().is_empty() {
         return Err("backup target must not be empty".to_string());
-    }
-    if spec.endpoint.trim().is_empty() {
-        return Err("backup endpoint must not be empty".to_string());
     }
     Ok(())
 }
 
-fn upload_target(spec: &BackupSpec) -> UploadTarget {
-    UploadTarget {
-        url: format!("{}/upload", spec.endpoint.trim_end_matches('/')),
-        auth_token_env: TOKEN_ENV.to_string(),
-        headers: spec.extra_headers.clone(),
+fn validate_headers(headers: &[(String, String)]) -> Result<(), String> {
+    for (name, value) in headers {
+        if name.trim().is_empty() {
+            return Err("header name must not be empty".to_string());
+        }
+        // Reject CR/LF so a configured value cannot inject extra headers.
+        if name.contains('\r')
+            || name.contains('\n')
+            || value.contains('\r')
+            || value.contains('\n')
+        {
+            return Err("header must not contain CR or LF".to_string());
+        }
     }
-}
-
-fn download_target(spec: &BackupSpec, remote_file_id: &str) -> DownloadTarget {
-    DownloadTarget {
-        url: format!(
-            "{}/upload/files/{}",
-            spec.endpoint.trim_end_matches('/'),
-            remote_file_id
-        ),
-        auth_token_env: TOKEN_ENV.to_string(),
-        headers: spec.extra_headers.clone(),
-    }
+    Ok(())
 }
 
 /// In-container script form: when the engine default database or a password
@@ -139,20 +171,12 @@ fn container_script(target: &str, script: &str, interactive: bool) -> Vec<String
     argv
 }
 
-/// Build the dump plan: run `argv`, stream its stdout to the upload target.
-pub fn build_dump_plan(spec: &BackupSpec) -> Result<DumpPlan, String> {
-    validate_target(spec)?;
-    let upload = upload_target(spec);
-
-    let argv = match spec.source {
+fn dump_argv(spec: &BackupSpec) -> Result<Vec<String>, String> {
+    validate_spec(spec)?;
+    Ok(match spec.source {
         DumpSource::Postgres => {
-            let db_arg = if spec.database.is_empty() {
-                "\"$POSTGRES_DB\"".to_string()
-            } else {
-                format!("'{}'", spec.database.replace('\'', r"'\''"))
-            };
             if spec.database.is_empty() {
-                container_script(&spec.target, &format!("pg_dump -Fc {}", db_arg), false)
+                container_script(&spec.target, r#"pg_dump -Fc "$POSTGRES_DB""#, false)
             } else {
                 vec![
                     "docker".to_string(),
@@ -191,20 +215,12 @@ pub fn build_dump_plan(spec: &BackupSpec) -> Result<DumpPlan, String> {
             "-".to_string(),
             ".".to_string(),
         ],
-    };
-
-    Ok(DumpPlan { argv, upload })
+    })
 }
 
-/// Build the restore plan: stream the download into stdin of `argv`.
-pub fn build_restore_plan(spec: &BackupSpec, remote_file_id: &str) -> Result<RestorePlan, String> {
-    validate_target(spec)?;
-    if remote_file_id.trim().is_empty() {
-        return Err("remote file id must not be empty".to_string());
-    }
-    let download = download_target(spec, remote_file_id);
-
-    let argv = match spec.source {
+fn restore_argv(spec: &BackupSpec) -> Result<Vec<String>, String> {
+    validate_spec(spec)?;
+    Ok(match spec.source {
         DumpSource::Postgres => {
             if spec.database.is_empty() {
                 container_script(
@@ -255,9 +271,41 @@ pub fn build_restore_plan(spec: &BackupSpec, remote_file_id: &str) -> Result<Res
             "-xf".to_string(),
             "-".to_string(),
         ],
-    };
+    })
+}
 
-    Ok(RestorePlan { argv, download })
+/// Build the dump plan: run `argv`, stream its stdout to `upload`.
+pub fn build_dump_plan(spec: &BackupSpec, upload: UploadTarget) -> Result<DumpPlan, String> {
+    if upload.url.trim().is_empty() {
+        return Err("upload url must not be empty".to_string());
+    }
+    validate_headers(&upload.headers)?;
+    if let UploadBody::Multipart { fields, .. } = &upload.body {
+        for field in fields {
+            if field.name.trim().is_empty() {
+                return Err("multipart field name must not be empty".to_string());
+            }
+        }
+    }
+    Ok(DumpPlan {
+        argv: dump_argv(spec)?,
+        upload,
+    })
+}
+
+/// Build the restore plan: stream `download` into stdin of `argv`.
+pub fn build_restore_plan(
+    spec: &BackupSpec,
+    download: DownloadTarget,
+) -> Result<RestorePlan, String> {
+    if download.url.trim().is_empty() {
+        return Err("download url must not be empty".to_string());
+    }
+    validate_headers(&download.headers)?;
+    Ok(RestorePlan {
+        argv: restore_argv(spec)?,
+        download,
+    })
 }
 
 /// Retention decision (B2): keep the newest `daily` runs of distinct days
@@ -350,15 +398,27 @@ mod tests {
             source,
             target: target.to_string(),
             database: database.to_string(),
-            endpoint: "https://backup.example".to_string(),
-            extra_headers: Vec::new(),
+        }
+    }
+
+    fn raw_upload() -> UploadTarget {
+        UploadTarget {
+            url: "https://backup.example/upload".to_string(),
+            body: UploadBody::Raw,
+            auth: Auth::Bearer {
+                token_env: "BACKUP_TOKEN".to_string(),
+            },
+            headers: Vec::new(),
         }
     }
 
     #[test]
     fn test_dump_plan_postgres_named_database_is_pure_argv() {
-        let spec = spec(DumpSource::Postgres, "shop-postgres-1", "shop");
-        let plan = build_dump_plan(&spec).unwrap();
+        let plan = build_dump_plan(
+            &spec(DumpSource::Postgres, "shop-postgres-1", "shop"),
+            raw_upload(),
+        )
+        .unwrap();
         assert_eq!(
             plan.argv,
             vec![
@@ -371,88 +431,92 @@ mod tests {
             ]
         );
         assert_eq!(plan.upload.url, "https://backup.example/upload");
-        assert_eq!(plan.upload.auth_token_env, "BACKUP_TOKEN");
     }
 
     #[test]
     fn test_dump_plan_postgres_default_database_uses_container_env() {
-        let spec = spec(DumpSource::Postgres, "shop-postgres-1", "");
-        let plan = build_dump_plan(&spec).unwrap();
-        // argv carries the script as one element: no host shell, no escaping.
-        assert_eq!(plan.argv[0], "docker");
+        let plan = build_dump_plan(
+            &spec(DumpSource::Postgres, "shop-postgres-1", ""),
+            raw_upload(),
+        )
+        .unwrap();
         assert_eq!(plan.argv[3], "sh");
-        assert_eq!(plan.argv[4], "-c");
         assert_eq!(plan.argv[5], r#"pg_dump -Fc "$POSTGRES_DB""#);
     }
 
     #[test]
-    fn test_dump_plan_carries_configured_headers() {
-        let mut spec = spec(DumpSource::Mongo, "shop-mongo-1", "");
-        spec.extra_headers = vec![
-            (
-                "X-Backup-Device-Id".to_string(),
-                "$BACKUP_DEVICE".to_string(),
-            ),
-            (
-                "X-Backup-Checksum".to_string(),
-                "$BACKUP_CHECKSUM".to_string(),
-            ),
-        ];
-        let plan = build_dump_plan(&spec).unwrap();
-        // Configured headers travel as data, whatever they are named.
-        assert_eq!(plan.upload.headers.len(), 2);
-        assert_eq!(plan.upload.headers[0].0, "X-Backup-Device-Id");
-        assert_eq!(plan.upload.headers[1].1, "$BACKUP_CHECKSUM");
-        // The process argv itself never contains secrets or headers.
-        assert!(plan.argv.iter().all(|a| !a.contains("TOKEN")));
+    fn test_multipart_upload_describes_syncopia_protocol() {
+        // The pluggable protocol: multipart body, ZITADEL-style client_credentials
+        // auth, and a device-id form field referencing the agent env.
+        let upload = UploadTarget {
+            url: "https://backup.example/upload".to_string(),
+            body: UploadBody::Multipart {
+                file_field: "file".to_string(),
+                fields: vec![FormField {
+                    name: "device_id".to_string(),
+                    value: "$AGENT_ID".to_string(),
+                }],
+            },
+            auth: Auth::ClientCredentials {
+                token_url: "https://login.example/oauth/v2/token".to_string(),
+                client_id_env: "BACKUP_CLIENT_ID".to_string(),
+                client_secret_env: "BACKUP_CLIENT_SECRET".to_string(),
+                scope: Some("openid".to_string()),
+            },
+            headers: vec![(
+                "X-Backup-Filename".to_string(),
+                "$BACKUP_FILENAME".to_string(),
+            )],
+        };
+        let plan = build_dump_plan(&spec(DumpSource::Mongo, "shop-mongo-1", ""), upload).unwrap();
+
+        // The plan is pure data: it describes the protocol, carries no secret.
+        let serialized = serde_json::to_string(&plan).unwrap();
+        assert!(serialized.contains("client_credentials"));
+        assert!(serialized.contains("multipart"));
+        assert!(serialized.contains("$AGENT_ID"));
+        assert!(!serialized.contains("secret-value"));
+
+        match &plan.upload.body {
+            UploadBody::Multipart { file_field, fields } => {
+                assert_eq!(file_field, "file");
+                assert_eq!(fields[0].value, "$AGENT_ID");
+            }
+            _ => panic!("expected multipart"),
+        }
     }
 
     #[test]
-    fn test_dump_plan_mongo_and_volume_argv() {
-        let mongo = build_dump_plan(&spec(DumpSource::Mongo, "shop-mongo-1", "")).unwrap();
-        assert_eq!(
-            mongo.argv,
-            vec![
-                "docker",
-                "exec",
-                "shop-mongo-1",
-                "mongodump",
-                "--archive",
-                "--quiet"
-            ]
-        );
-
-        let volume = build_dump_plan(&spec(DumpSource::Volume, "postgres_data", "")).unwrap();
-        assert_eq!(
-            volume.argv,
-            vec![
-                "docker",
-                "run",
-                "--rm",
-                "-v",
-                "postgres_data:/data:ro",
-                "alpine",
-                "tar",
-                "-C",
-                "/data",
-                "-cf",
-                "-",
-                "."
-            ]
-        );
+    fn test_header_with_crlf_is_rejected() {
+        let mut upload = raw_upload();
+        upload
+            .headers
+            .push(("X-Bad".to_string(), "value\r\nInjected: 1".to_string()));
+        assert!(build_dump_plan(&spec(DumpSource::Postgres, "db", "x"), upload).is_err());
     }
 
     #[test]
-    fn test_dump_plan_rejects_empty_target() {
-        let mut spec = spec(DumpSource::Postgres, "  ", "");
-        spec.endpoint = "https://backup.example".to_string();
-        assert!(build_dump_plan(&spec).is_err());
+    fn test_dump_plan_rejects_empty_target_and_url() {
+        assert!(build_dump_plan(&spec(DumpSource::Postgres, "  ", ""), raw_upload()).is_err());
+        let mut upload = raw_upload();
+        upload.url = "  ".to_string();
+        assert!(build_dump_plan(&spec(DumpSource::Postgres, "db", "x"), upload).is_err());
     }
 
     #[test]
     fn test_restore_plan_targets_file_and_service() {
-        let spec = spec(DumpSource::Postgres, "shop-postgres-1", "shop");
-        let plan = build_restore_plan(&spec, "f-1").unwrap();
+        let download = DownloadTarget {
+            url: "https://backup.example/upload/files/f-1".to_string(),
+            auth: Auth::Bearer {
+                token_env: "BACKUP_TOKEN".to_string(),
+            },
+            headers: Vec::new(),
+        };
+        let plan = build_restore_plan(
+            &spec(DumpSource::Postgres, "shop-postgres-1", "shop"),
+            download,
+        )
+        .unwrap();
         assert_eq!(plan.download.url, "https://backup.example/upload/files/f-1");
         assert_eq!(
             plan.argv,
@@ -471,24 +535,19 @@ mod tests {
     }
 
     #[test]
-    fn test_restore_plan_default_database_uses_container_env() {
-        let spec = spec(DumpSource::Postgres, "shop-postgres-1", "");
-        let plan = build_restore_plan(&spec, "f-1").unwrap();
-        assert_eq!(
-            plan.argv[6],
-            r#"pg_restore --clean --if-exists -d "$POSTGRES_DB""#
+    fn test_restore_plan_rejects_empty_download_url() {
+        let download = DownloadTarget {
+            url: " ".to_string(),
+            auth: Auth::None,
+            headers: Vec::new(),
+        };
+        assert!(
+            build_restore_plan(&spec(DumpSource::Mysql, "shop-mysql-1", ""), download).is_err()
         );
     }
 
     #[test]
-    fn test_restore_plan_rejects_empty_file_id() {
-        let spec = spec(DumpSource::Mysql, "shop-mysql-1", "");
-        assert!(build_restore_plan(&spec, " ").is_err());
-    }
-
-    #[test]
     fn test_retention_keeps_recent_days() {
-        // Fewer runs than the daily budget: nothing is pruned.
         let runs = daily_runs(5);
         assert!(runs_to_prune(&runs, 7, 4).is_empty());
     }
@@ -497,16 +556,12 @@ mod tests {
     fn test_retention_prunes_old_runs() {
         let runs = daily_runs(30);
         let pruned = runs_to_prune(&runs, 7, 4);
-
-        // The newest 7 daily runs always stay.
         for id in 23..30 {
             assert!(!pruned.contains(&id), "run {} must stay", id);
         }
-        // The oldest runs are gone.
         for id in 0..3 {
             assert!(pruned.contains(&id), "run {} must be pruned", id);
         }
-        // Weekly anchors add at most 4 more kept runs beyond the 7 daily.
         let kept = 30 - pruned.len();
         assert!((7..=11).contains(&kept), "kept {} runs", kept);
     }

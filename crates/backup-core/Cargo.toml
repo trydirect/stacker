@@ -8,5 +8,8 @@ description = "Pure backup logic for TryDirect Stacker: typed dump/restore execu
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde = { version = "1", features = ["derive"] }
 
+[dev-dependencies]
+serde_json = "1"
+
 [features]
 default = []
