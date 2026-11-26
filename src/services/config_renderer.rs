@@ -346,6 +346,16 @@ fn validate_env(environment: &BTreeMap<String, String>) -> std::result::Result<(
     Ok(())
 }
 
+/// Validate a project runtime env union before it is delivered to a deploy.
+/// The union feeds the shared `<compose-dir>/.env`, so a malformed value in
+/// any one app must fail loudly here instead of injecting lines into it.
+fn validated_runtime_env_union(
+    merged: BTreeMap<String, String>,
+) -> Result<HashMap<String, String>> {
+    validate_env(&merged)?;
+    Ok(merged.into_iter().collect())
+}
+
 fn is_valid_env_key(key: &str) -> bool {
     let mut chars = key.chars();
     match chars.next() {
@@ -1095,6 +1105,34 @@ impl ConfigRenderer {
         Ok((config, rendered_env.hash))
     }
 
+    /// Union runtime env across the project's enabled apps.
+    ///
+    /// Compose `${VAR}` interpolation resolves the single `.env` next to the
+    /// compose file for the whole file at once, so an aggregated compose
+    /// cannot be fed one service at a time: the deploy payload must carry
+    /// every service's environment. Apps are merged in `deploy_order`
+    /// (later wins on duplicate keys), matching `ResolvedAppEnvironment`'s
+    /// authored-then-service precedence. The union is validated like any
+    /// rendered env so a malformed value in one app cannot inject lines into
+    /// the shared runtime `.env`.
+    pub async fn resolve_project_runtime_env(
+        &self,
+        pool: &PgPool,
+        project: &Project,
+    ) -> Result<HashMap<String, String>> {
+        let apps = db::project_app::fetch_by_project(pool, project.id)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("Failed to load project apps for runtime env: {error}")
+            })?;
+        let mut merged = BTreeMap::new();
+        for app in apps.iter().filter(|app| app.is_enabled()) {
+            let environment = self.resolve_app_environment(pool, project, app).await?;
+            merged.extend(environment.effective());
+        }
+        validated_runtime_env_union(merged)
+    }
+
     /// Sync all app configs to Vault
     pub async fn sync_to_vault(&self, bundle: &ConfigBundle) -> Result<SyncResult, VaultError> {
         let vault = match &self.vault_service {
@@ -1543,6 +1581,26 @@ mod tests {
                 key: "SECRET".to_string()
             }
         );
+    }
+
+    #[test]
+    fn validated_runtime_env_union_rejects_newline_injection() {
+        // Regression: the union feeds the shared <compose-dir>/.env as naive
+        // KEY=VALUE lines — a multiline value in any one app would inject
+        // extra keys into compose ${VAR} interpolation.
+        let poisoned = BTreeMap::from([("GOOD".to_string(), "value\nINJECTED=evil".to_string())]);
+        assert!(validated_runtime_env_union(poisoned).is_err());
+    }
+
+    #[test]
+    fn validated_runtime_env_union_accepts_clean_secrets() {
+        let merged = BTreeMap::from([
+            ("S3_TEST_MARKER".to_string(), "test-123".to_string()),
+            ("POSTGRES_PASSWORD".to_string(), "pg-secret".to_string()),
+        ]);
+        let union = validated_runtime_env_union(merged).expect("clean union passes");
+        assert_eq!(union.len(), 2);
+        assert_eq!(union["POSTGRES_PASSWORD"], "pg-secret");
     }
 
     #[test]
