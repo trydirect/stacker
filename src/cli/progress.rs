@@ -152,6 +152,20 @@ pub fn update_health(pb: &ProgressBar, running: usize, total: usize) {
     pb.set_message(format!("Container health: {}/{} running", running, total));
 }
 
+/// Like [`update_health`], with what each container is doing right now —
+/// `app: starting · postgres: running (healthy)`. The readiness poll uses
+/// this so waiting shows the states instead of a bare count (BUGS.md #61).
+pub fn update_health_with_detail(pb: &ProgressBar, running: usize, total: usize, detail: &str) {
+    if detail.is_empty() {
+        update_health(pb, running, total);
+        return;
+    }
+    pb.set_message(format!(
+        "Container health: {}/{} running — {}",
+        running, total, detail
+    ));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

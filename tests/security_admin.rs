@@ -4,8 +4,10 @@ use common::{USER_A_TOKEN, USER_B_TOKEN};
 
 use tokio::sync::OnceCell;
 
+#[allow(dead_code)]
 static APP: OnceCell<common::TwoUserTestApp> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> &'static common::TwoUserTestApp {
     common::get_or_init_two_user_app(&APP)
         .await
@@ -24,7 +26,7 @@ async fn test_admin_list_users_rejects_non_admin() {
 
     // group_user → Casbin denies /admin/* → 403
     let resp = client
-        .get(format!("{}/admin/rating", &app.address))
+        .get(format!("{}/admin/rating", app.address))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
         .await
@@ -45,9 +47,9 @@ async fn test_admin_routes_reject_unauthenticated() {
     let client = reqwest::Client::new();
 
     let admin_endpoints = vec![
-        ("GET", format!("{}/admin/rating", &app.address)),
-        ("GET", format!("{}/admin/rating/1", &app.address)),
-        ("PUT", format!("{}/admin/client/1/enable", &app.address)),
+        ("GET", format!("{}/admin/rating", app.address)),
+        ("GET", format!("{}/admin/rating/1", app.address)),
+        ("PUT", format!("{}/admin/client/1/enable", app.address)),
     ];
 
     for (method, url) in admin_endpoints {
@@ -78,11 +80,11 @@ async fn test_admin_endpoint_not_accessible_to_regular_user() {
     let client = reqwest::Client::new();
 
     let admin_endpoints = vec![
-        ("GET", format!("{}/admin/rating", &app.address)),
-        ("GET", format!("{}/admin/rating/999", &app.address)),
-        ("PUT", format!("{}/admin/client/999", &app.address)),
-        ("PUT", format!("{}/admin/client/999/enable", &app.address)),
-        ("PUT", format!("{}/admin/client/999/disable", &app.address)),
+        ("GET", format!("{}/admin/rating", app.address)),
+        ("GET", format!("{}/admin/rating/999", app.address)),
+        ("PUT", format!("{}/admin/client/999", app.address)),
+        ("PUT", format!("{}/admin/client/999/enable", app.address)),
+        ("PUT", format!("{}/admin/client/999/disable", app.address)),
     ];
 
     for (method, url) in admin_endpoints {

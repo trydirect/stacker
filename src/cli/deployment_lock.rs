@@ -47,6 +47,13 @@ pub struct DeploymentLock {
     /// Stacker server deployment ID.
     pub deployment_id: Option<i64>,
 
+    /// Stacker server deployment hash (`deployment_<id>`) — the identifier
+    /// every agent command wants. Recorded so resolution needs no API lookup
+    /// and a human reading the file can pass it straight to `--deployment`
+    /// (BUGS.md #55).
+    #[serde(default)]
+    pub deployment_hash: Option<String>,
+
     /// Stacker server project ID.
     pub project_id: Option<i64>,
 
@@ -63,6 +70,32 @@ pub struct DeploymentLock {
     pub deployed_at: String,
 }
 
+/// A deployment lock candidate together with the lockfile it was read from.
+#[derive(Debug, Clone)]
+pub struct LockChoice {
+    pub lock: DeploymentLock,
+    /// Lockfile name inside `.stacker/`, e.g. `deployment-server.lock`.
+    pub source_file: String,
+}
+
+impl LockChoice {
+    /// Whether this lock was deployed after `other` (BUGS.md #55 warning).
+    pub fn is_newer_than(&self, other: &LockChoice) -> bool {
+        self.cmp_deployed_at(other).is_gt()
+    }
+
+    /// Ordering by `deployed_at`; an unparsable timestamp counts as oldest.
+    pub fn cmp_deployed_at(&self, other: &LockChoice) -> std::cmp::Ordering {
+        deployed_at(&self.lock.deployed_at).cmp(&deployed_at(&other.lock.deployed_at))
+    }
+}
+
+/// Parse a lock's `deployed_at` for ordering; unparsable values count as
+/// oldest so a broken timestamp can never outrank a real one.
+fn deployed_at(value: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    chrono::DateTime::parse_from_rfc3339(value.trim()).ok()
+}
+
 impl DeploymentLock {
     // ── Constructors ─────────────────────────────────
 
@@ -76,6 +109,7 @@ impl DeploymentLock {
             ssh_key: None,
             server_name: None,
             deployment_id: result.deployment_id,
+            deployment_hash: None,
             project_id: result.project_id,
             cloud_id: None,
             project_name: None,
@@ -94,6 +128,7 @@ impl DeploymentLock {
             ssh_key: None,
             server_name: None,
             deployment_id: None,
+            deployment_hash: None,
             project_id: None,
             cloud_id: None,
             project_name: None,
@@ -112,6 +147,7 @@ impl DeploymentLock {
             ssh_key: server_cfg.ssh_key.clone(),
             server_name: None,
             deployment_id: None,
+            deployment_hash: None,
             project_id: None,
             cloud_id: None,
             project_name: None,
@@ -159,6 +195,14 @@ impl DeploymentLock {
     pub fn with_stacker_email(mut self, email: Option<String>) -> Self {
         if email.is_some() {
             self.stacker_email = email;
+        }
+        self
+    }
+
+    /// Record the deployment hash (`deployment_<id>`) in the lock (BUGS.md #55).
+    pub fn with_deployment_hash(mut self, hash: Option<String>) -> Self {
+        if hash.is_some() {
+            self.deployment_hash = hash;
         }
         self
     }
@@ -243,26 +287,77 @@ impl DeploymentLock {
         Ok(Some(lock))
     }
 
-    /// Load a deployment lock from `.stacker/deployment.lock` (legacy).
-    /// Returns `None` if the file does not exist.
+    /// Load the most relevant deployment lock: the active target's lock when
+    /// one is set and present, otherwise the newest by deployment time.
+    ///
+    /// BUGS.md #55: this used to return the first of a fixed
+    /// cloud→server→local order, handing agent commands the *inactive*
+    /// target's, days-older deployment while the active target pointed at the
+    /// live one.
     pub fn load(project_dir: &Path) -> Result<Option<Self>, CliError> {
-        // Try all per-target files first, then fall back to legacy
+        Ok(Self::rank_locks(project_dir, None)?
+            .into_iter()
+            .next()
+            .map(|choice| choice.lock))
+    }
+
+    /// Rank every deployment lock of the project for hash resolution
+    /// (BUGS.md #55).
+    ///
+    /// The preferred target's lock — or the active target's, when no explicit
+    /// preference is given — comes first; the rest follow newest-first by
+    /// `deployed_at`. Each candidate carries the lockfile it was read from so
+    /// callers can say what they resolved.
+    pub fn rank_locks(
+        project_dir: &Path,
+        preferred_target: Option<&str>,
+    ) -> Result<Vec<LockChoice>, CliError> {
+        let mut candidates: Vec<LockChoice> = Vec::new();
         for target in &["cloud", "server", "local"] {
-            let target_path = Self::lockfile_path_for_target(project_dir, target);
-            if target_path.exists() {
-                let content = std::fs::read_to_string(&target_path).map_err(CliError::Io)?;
+            let path = Self::lockfile_path_for_target(project_dir, target);
+            if path.exists() {
+                let content = std::fs::read_to_string(&path).map_err(CliError::Io)?;
                 let lock: Self = serde_yaml::from_str(&content).map_err(|e| {
                     CliError::ConfigValidation(format!(
                         "Failed to parse deployment lock ({}): {}. Delete the file and redeploy.",
-                        target_path.display(),
+                        path.display(),
                         e
                     ))
                 })?;
-                return Ok(Some(lock));
+                candidates.push(LockChoice {
+                    lock,
+                    source_file: lockfile_name_for_target(target),
+                });
             }
         }
 
-        Self::load_legacy(project_dir, None)
+        // Legacy `deployment.lock`, when no per-target lock covers its target.
+        if let Some(legacy) = Self::load_legacy(project_dir, None)? {
+            if !candidates.iter().any(|c| c.lock.target == legacy.target) {
+                candidates.push(LockChoice {
+                    lock: legacy,
+                    source_file: LOCKFILE_NAME.to_string(),
+                });
+            }
+        }
+
+        // Newest first; an unparsable `deployed_at` counts as oldest.
+        candidates.sort_by(|a, b| {
+            deployed_at(&b.lock.deployed_at).cmp(&deployed_at(&a.lock.deployed_at))
+        });
+
+        let preferred = match preferred_target {
+            Some(target) => Some(target.to_string()),
+            None => Self::read_active_target(project_dir)?,
+        };
+        if let Some(target) = preferred {
+            if let Some(index) = candidates.iter().position(|c| c.lock.target == target) {
+                let chosen = candidates.remove(index);
+                candidates.insert(0, chosen);
+            }
+        }
+
+        Ok(candidates)
     }
 
     /// Load the lock for the active target if present, otherwise fall back to the
@@ -491,10 +586,40 @@ impl DeploymentLock {
     pub fn remove_deploy_server(config_path: &Path) -> Result<(), CliError> {
         Self::edit_config_value(config_path, |root| {
             if let Some(deploy) = root
-                .get_mut(&yaml_key("deploy"))
+                .get_mut(yaml_key("deploy"))
                 .and_then(|value| value.as_mapping_mut())
             {
-                deploy.remove(&yaml_key("server"));
+                deploy.remove(yaml_key("server"));
+            }
+            Ok(())
+        })
+    }
+
+    /// Pin (or with `None`, unpin) `deploy.deployment_hash` in stacker.yml,
+    /// preserving all unrelated content. Used by `stacker deployment use`
+    /// (BUGS.md #55) to make "the deployment this directory is working with"
+    /// an act rather than a side effect.
+    pub fn set_deploy_deployment_hash(
+        config_path: &Path,
+        hash: Option<&str>,
+    ) -> Result<(), CliError> {
+        Self::edit_config_value(config_path, |root| {
+            match hash {
+                Some(hash) => {
+                    let deploy = ensure_child_mapping(root, "deploy");
+                    deploy.insert(
+                        yaml_key("deployment_hash"),
+                        serde_yaml::Value::String(hash.to_string()),
+                    );
+                }
+                None => {
+                    if let Some(deploy) = root
+                        .get_mut(yaml_key("deploy"))
+                        .and_then(|value| value.as_mapping_mut())
+                    {
+                        deploy.remove(yaml_key("deployment_hash"));
+                    }
+                }
             }
             Ok(())
         })
@@ -562,9 +687,9 @@ fn yaml_key(key: &str) -> serde_yaml::Value {
 /// Read `parent[section][field]` as a string, if present.
 fn child_string(parent: &serde_yaml::Mapping, section: &str, field: &str) -> Option<String> {
     parent
-        .get(&yaml_key(section))
+        .get(yaml_key(section))
         .and_then(|value| value.as_mapping())
-        .and_then(|map| map.get(&yaml_key(field)))
+        .and_then(|map| map.get(yaml_key(field)))
         .and_then(|value| value.as_str())
         .map(|value| value.to_string())
 }
@@ -630,6 +755,7 @@ mod tests {
             ssh_key: None,
             server_name: Some("my-server".to_string()),
             deployment_id: Some(123),
+            deployment_hash: None,
             project_id: Some(456),
             cloud_id: Some(7),
             project_name: Some("my-project".to_string()),
@@ -679,6 +805,56 @@ mod tests {
         assert!(!DeploymentLock::exists_for_target(tmp.path(), "local"));
     }
 
+    // BUGS.md #55: one project can hold several locks (one per target) and
+    // `DeploymentLock::load` used to return the first of a fixed
+    // cloud→server→local order — handing agent commands the *inactive*
+    // target's, days-older deployment. The active target's lock must win.
+    #[test]
+    fn load_prefers_the_active_targets_lock_over_the_fixed_order() {
+        let tmp = TempDir::new().unwrap();
+
+        let mut cloud = sample_lock();
+        cloud.target = "cloud".to_string();
+        cloud.deployed_at = "2026-11-16T13:43:00+00:00".to_string();
+        cloud.deployment_id = Some(1544);
+        cloud.save(tmp.path()).unwrap();
+
+        let mut server = sample_lock();
+        server.target = "server".to_string();
+        server.deployed_at = "2026-11-17T13:41:00+00:00".to_string();
+        server.deployment_id = Some(1545);
+        server.save(tmp.path()).unwrap();
+
+        DeploymentLock::write_active_target(tmp.path(), "server").unwrap();
+
+        let chosen = DeploymentLock::load(tmp.path()).unwrap().unwrap();
+        assert_eq!(
+            chosen.target, "server",
+            "the active target's lock must win over the cloud-first order"
+        );
+        assert_eq!(chosen.deployment_id, Some(1545));
+    }
+
+    #[test]
+    fn load_prefers_the_newest_lock_when_no_active_target_is_set() {
+        let tmp = TempDir::new().unwrap();
+
+        let mut cloud = sample_lock();
+        cloud.target = "cloud".to_string();
+        cloud.deployed_at = "2026-11-16T13:43:00+00:00".to_string();
+        cloud.deployment_id = Some(1544);
+        cloud.save(tmp.path()).unwrap();
+
+        let mut server = sample_lock();
+        server.target = "server".to_string();
+        server.deployed_at = "2026-11-17T13:41:00+00:00".to_string();
+        server.deployment_id = Some(1545);
+        server.save(tmp.path()).unwrap();
+
+        let chosen = DeploymentLock::load(tmp.path()).unwrap().unwrap();
+        assert_eq!(chosen.deployment_id, Some(1545));
+    }
+
     #[test]
     fn local_and_cloud_locks_coexist() {
         let tmp = TempDir::new().unwrap();
@@ -708,9 +884,58 @@ mod tests {
         assert_eq!(loaded_local.server_ip, Some("127.0.0.1".to_string()));
         assert_eq!(loaded_local.deployment_id, None);
 
-        // Generic load() prefers cloud over local
+        // Generic load() ranks by recency (BUGS.md #55): the local lock was
+        // saved last here, so it is the one a bare `load()` returns.
         let generic = DeploymentLock::load(tmp.path()).unwrap().unwrap();
-        assert_eq!(generic.target, "cloud");
+        assert_eq!(generic.target, "local");
+    }
+
+    // BUGS.md #55: the resolution must say which lockfile it read, and warn
+    // when a newer lock exists than the one the active target selected.
+    #[test]
+    fn rank_locks_carries_source_and_flags_the_newer_lock() {
+        let tmp = TempDir::new().unwrap();
+
+        let mut cloud = sample_lock();
+        cloud.target = "cloud".to_string();
+        cloud.deployed_at = "2026-11-16T13:43:00+00:00".to_string();
+        cloud.save(tmp.path()).unwrap();
+
+        let mut server = sample_lock();
+        server.target = "server".to_string();
+        server.deployed_at = "2026-11-17T13:41:00+00:00".to_string();
+        server.save(tmp.path()).unwrap();
+
+        // The active target points at the OLDER lock.
+        DeploymentLock::write_active_target(tmp.path(), "cloud").unwrap();
+
+        let ranked = DeploymentLock::rank_locks(tmp.path(), None).unwrap();
+        assert_eq!(ranked[0].lock.target, "cloud");
+        assert_eq!(ranked[0].source_file, "deployment-cloud.lock");
+        assert_eq!(ranked[1].lock.target, "server");
+        assert_eq!(ranked[1].source_file, "deployment-server.lock");
+
+        // `deployed_at` ordering is what the warning is built from.
+        let chosen = deployed_at(&ranked[0].lock.deployed_at).unwrap();
+        let newest = deployed_at(&ranked[1].lock.deployed_at).unwrap();
+        assert!(newest > chosen, "the server lock is the newer one");
+    }
+
+    #[test]
+    fn set_deploy_deployment_hash_pins_and_clears() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("stacker.yml");
+        std::fs::write(&path, "name: demo\ndeploy:\n  target: server\n").unwrap();
+
+        DeploymentLock::set_deploy_deployment_hash(&path, Some("deployment_1545")).unwrap();
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["deploy"]["deployment_hash"], "deployment_1545");
+
+        DeploymentLock::set_deploy_deployment_hash(&path, None).unwrap();
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(doc["deploy"].get("deployment_hash").is_none());
     }
 
     #[test]

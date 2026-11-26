@@ -110,6 +110,14 @@ pub struct StackTemplateVersion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[sqlx(default)]
     pub config_contract: Option<serde_json::Value>,
+    /// Git commit of the source checkout this version was published from.
+    ///
+    /// BUGS.md #30: the catalogue is a snapshot of the last manual publish,
+    /// so a template can lag its source repository invisibly. Carrying the
+    /// commit makes a stale copy visible in the API rather than inferred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub source_commit: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
 }
 

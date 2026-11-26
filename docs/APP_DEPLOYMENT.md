@@ -2,6 +2,10 @@
 
 This document outlines the configuration management strategy for Stacker, covering how app configurations flow from the UI through Stacker's database to Vault and ultimately to Status Panel agents on deployed servers.
 
+For what a deployment *is* — its lifecycle, what creates one, and how
+commands resolve theirs — see
+[DEPLOYMENT_LIFECYCLE.md](DEPLOYMENT_LIFECYCLE.md).
+
 ---
 
 ## Architecture Overview

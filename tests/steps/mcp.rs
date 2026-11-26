@@ -12,6 +12,9 @@ fn ws_url(base: &str, path: &str) -> String {
 }
 
 /// Helper: connect to the MCP WebSocket with auth token
+// `tungstenite::Error` is large; boxing it would ripple through every caller
+// of these test helpers for no benefit.
+#[allow(clippy::result_large_err)]
 async fn connect_mcp(
     base_url: &str,
     token: &str,

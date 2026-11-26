@@ -374,7 +374,7 @@ fn rewrite_volumes(
         } else if let serde_yaml::Value::Mapping(map) = volume {
             // Advanced mapping form: { type: bind, source: ..., target: ... }
             let vol_type = map
-                .get(&serde_yaml::Value::String("type".to_string()))
+                .get(serde_yaml::Value::String("type".to_string()))
                 .and_then(|v| v.as_str());
             if vol_type != Some("bind") {
                 continue;
@@ -747,7 +747,7 @@ fn strip_platform_managed_services(compose: &mut serde_yaml::Value) -> Vec<Strin
         {
             for vol in candidate_volumes {
                 if !still_referenced.contains(&vol) {
-                    volumes.remove(&serde_yaml::Value::String(vol));
+                    volumes.remove(serde_yaml::Value::String(vol));
                 }
             }
         }

@@ -237,6 +237,7 @@ fn build_template_body(
     stack_definition: serde_json::Value,
     config_contract: Option<serde_json::Value>,
     source_project_id: Option<i32>,
+    source_commit: Option<String>,
 ) -> serde_json::Value {
     let mut body = serde_json::json!({
         "name": listing.name,
@@ -269,8 +270,36 @@ fn build_template_body(
     if let Some(source_project_id) = source_project_id {
         body["source_project_id"] = serde_json::json!(source_project_id);
     }
+    if let Some(source_commit) = source_commit.filter(|commit| !commit.trim().is_empty()) {
+        body["source_commit"] = serde_json::json!(source_commit);
+    }
 
     body
+}
+
+/// The git commit of the checkout being published (BUGS.md #30) — best
+/// effort: a checkout that is not a git repository publishes without
+/// provenance rather than failing.
+fn detect_source_commit(project_dir: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(project_dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    source_commit_from_git_output(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Parse `git rev-parse HEAD` output: a bare hex object id, or nothing.
+fn source_commit_from_git_output(stdout: &str) -> Option<String> {
+    let commit = stdout.trim();
+    if commit.is_empty() || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+        None
+    } else {
+        Some(commit.to_string())
+    }
 }
 
 impl CallableTrait for SubmitCommand {
@@ -296,6 +325,9 @@ impl CallableTrait for SubmitCommand {
         let source_project_id = DeploymentLock::load_active(&project_dir)?
             .and_then(|lock| lock.project_id)
             .and_then(|id| i32::try_from(id).ok());
+        // BUGS.md #30: record which commit this publish came from, so a
+        // catalogue copy that lags the source repository is visible.
+        let source_commit = detect_source_commit(&project_dir);
 
         // Read the raw YAML content to send as the stack definition
         let raw_yaml = std::fs::read_to_string(&config_path)?;
@@ -344,6 +376,7 @@ impl CallableTrait for SubmitCommand {
             stack_definition,
             config_contract,
             source_project_id,
+            source_commit,
         );
 
         // 3. Create async runtime and execute
@@ -606,6 +639,7 @@ marketplace:
             serde_json::json!({ "services": {} }),
             Some(serde_json::json!({ "services": {} })),
             Some(42),
+            Some("9e107d9d372bb6826bd81d3542a419d6".to_string()),
         );
 
         assert_eq!("Internal AI Helpdesk", body["name"]);
@@ -623,6 +657,8 @@ marketplace:
         assert_eq!(serde_json::json!(["n8n"]), body["tags"]);
         assert_eq!("https://example.com/support", body["vendor_url"]);
         assert_eq!(42, body["source_project_id"]);
+        // BUGS.md #30: the publish carries the source commit.
+        assert_eq!("9e107d9d372bb6826bd81d3542a419d6", body["source_commit"]);
     }
 
     #[test]
@@ -642,7 +678,7 @@ marketplace:
             confirm_no_secrets: true,
         };
 
-        let body = build_template_body(&listing, serde_json::json!({}), None, None);
+        let body = build_template_body(&listing, serde_json::json!({}), None, None, None);
 
         assert_eq!("free", body["plan_type"]);
         assert!(body.get("category_code").is_none());
@@ -651,5 +687,28 @@ marketplace:
         assert!(body.get("vendor_url").is_none());
         assert!(body.get("config_contract").is_none());
         assert!(body.get("source_project_id").is_none());
+        assert!(body.get("source_commit").is_none());
+    }
+
+    // BUGS.md #30: `git rev-parse HEAD` output must reduce to a bare object
+    // id — anything else publishes without provenance instead of a garbage
+    // commit in the catalogue.
+    #[test]
+    fn source_commit_from_git_output_accepts_only_an_object_id() {
+        assert_eq!(
+            source_commit_from_git_output("9e107d9d372bb6826bd81d3542a419d6\n"),
+            Some("9e107d9d372bb6826bd81d3542a419d6".to_string())
+        );
+        assert_eq!(source_commit_from_git_output(""), None);
+        assert_eq!(
+            source_commit_from_git_output("fatal: not a git repository\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn detect_source_commit_returns_none_outside_a_git_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(detect_source_commit(dir.path()), None);
     }
 }

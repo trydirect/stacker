@@ -32,8 +32,6 @@ fn normalized_status_panel_capabilities(capabilities: &[String]) -> serde_json::
     serde_json::json!(normalized)
 }
 
-/// Generate a secure random agent token (86 characters)
-
 /// POST /api/v1/agent/link
 ///
 /// Link an agent to a specific deployment using a session token (OAuth access_token).

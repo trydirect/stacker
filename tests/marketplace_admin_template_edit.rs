@@ -6,22 +6,24 @@ use serde_json::json;
 use sqlx::Row;
 use tokio::sync::OnceCell;
 
-/// `PUT /api/admin/templates/{id}` - an admin correcting a published listing.
-///
-/// The author's own `PUT /api/templates/{id}` refuses anything outside
-/// draft/rejected/needs_changes, because it models the review workflow. An
-/// admin fixing the copy on an approved listing is not in that workflow, so
-/// the admin route lifts the status gate while reusing the same write path
-/// (`creator::apply_template_update`) for validation and secret stripping.
-///
-/// Who may call the route is covered by `security_route_matrix.rs`, which
-/// classifies every `/api/admin/*` path as admin-only and checks live that a
-/// group_user is refused.
+// `PUT /api/admin/templates/{id}` - an admin correcting a published listing.
+//
+// The author's own `PUT /api/templates/{id}` refuses anything outside
+// draft/rejected/needs_changes, because it models the review workflow. An
+// admin fixing the copy on an approved listing is not in that workflow, so
+// the admin route lifts the status gate while reusing the same write path
+// (`creator::apply_template_update`) for validation and secret stripping.
+//
+// Who may call the route is covered by `security_route_matrix.rs`, which
+// classifies every `/api/admin/*` path as admin-only and checks live that a
+// group_user is refused.
 
 // A fresh `PgPool` per test, bound to that test's own runtime - see the note in
 // tests/marketplace_admin_review.rs.
+#[allow(dead_code)]
 static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> common::TestApp {
     common::get_or_init_app_fresh(&APP_CONFIG)
         .await

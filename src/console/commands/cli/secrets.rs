@@ -1362,6 +1362,51 @@ impl CallableTrait for SecretsDeleteCommand {
 // secrets validate
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Collect every `${VAR}` reference in unresolved `stacker.yml` text.
+///
+/// YAML comments are excluded: a variable that only appears inside a comment
+/// (documentation, a commented-out example) is not used by the stack and must
+/// not fail `stacker secrets validate` (BUGS.md #39). The text is parsed so
+/// that only real scalars are scanned — comments drop out naturally, while
+/// content inside block scalars (which may legitimately contain `#`) still
+/// counts. Text that does not parse as YAML falls back to a raw scan.
+fn collect_env_references(raw: &str) -> Vec<String> {
+    let re = regex::Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").expect("valid regex");
+    let mut refs = std::collections::HashSet::new();
+    let mut scan = |text: &str| {
+        for cap in re.captures_iter(text) {
+            refs.insert(cap[1].to_string());
+        }
+    };
+    match serde_yaml::from_str::<serde_yaml::Value>(raw) {
+        Ok(doc) => collect_env_references_in_yaml(&doc, &mut scan),
+        Err(_) => scan(raw),
+    }
+    let mut refs: Vec<String> = refs.into_iter().collect();
+    refs.sort();
+    refs
+}
+
+/// Recursively scan every scalar (mapping keys and values) for `${VAR}`.
+fn collect_env_references_in_yaml(value: &serde_yaml::Value, scan: &mut impl FnMut(&str)) {
+    match value {
+        serde_yaml::Value::String(text) => scan(text),
+        serde_yaml::Value::Sequence(items) => {
+            for item in items {
+                collect_env_references_in_yaml(item, scan);
+            }
+        }
+        serde_yaml::Value::Mapping(map) => {
+            for (key, value) in map {
+                collect_env_references_in_yaml(key, scan);
+                collect_env_references_in_yaml(value, scan);
+            }
+        }
+        serde_yaml::Value::Tagged(tagged) => collect_env_references_in_yaml(&tagged.value, scan),
+        _ => {}
+    }
+}
+
 /// `stacker secrets validate [--file stacker.yml]`
 ///
 /// Scans `stacker.yml` for `${VAR}` references and checks that every
@@ -1390,14 +1435,8 @@ impl CallableTrait for SecretsValidateCommand {
 
         let raw = std::fs::read_to_string(path)?;
 
-        // Collect all ${VAR} references
-        let re = regex::Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap();
-        let refs: Vec<String> = re
-            .captures_iter(&raw)
-            .map(|cap| cap[1].to_string())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
+        // Collect all ${VAR} references (YAML comments excluded)
+        let refs: Vec<String> = collect_env_references(&raw);
 
         if refs.is_empty() {
             println!("✓ No environment variable references found in {config_path}");
@@ -1492,6 +1531,30 @@ mod tests {
             platform: None,
             devices: Vec::new(),
         }
+    }
+
+    // BUGS.md #39: `secrets validate` must not read `${VAR}` references out of
+    // YAML comments — a variable mentioned only in a comment is not used by
+    // the stack, and failing on it broke every pipeline gating on the command.
+    #[test]
+    fn test_collect_env_references_ignores_commented_out_references() {
+        let raw = "name: demo\napp:\n  environment:\n    # ${BASE_PATH}/stacker-project-test, a key from this repository's test\n    KEY: value\n";
+        assert_eq!(collect_env_references(raw), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_collect_env_references_finds_keys_values_and_block_scalar_content() {
+        let raw = "env:\n  ${FOO}: ${BAR}\n  script: |\n    echo \"${BAZ} # not a comment\"\n  note: \"# ${QUX}\"\n";
+        assert_eq!(
+            collect_env_references(raw),
+            vec!["BAR", "BAZ", "FOO", "QUX"]
+        );
+    }
+
+    #[test]
+    fn test_collect_env_references_falls_back_to_text_scan_when_yaml_does_not_parse() {
+        let raw = "key: [unclosed\nref: ${FALLBACK}\n";
+        assert_eq!(collect_env_references(raw), vec!["FALLBACK"]);
     }
 
     #[test]

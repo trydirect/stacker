@@ -148,7 +148,34 @@ impl DockerfileBuilder {
             );
         }
 
-        None
+        // BUGS.md #49: the entry point comes from the project's own
+        // package.json — `scripts.start` first, then `main`, then the old
+        // hardcoded `server.js` as the last resort. The npm default is
+        // `index.js`, and ignoring the manifest crash-looped most projects
+        // with MODULE_NOT_FOUND.
+        let cmd = if has_start_script {
+            vec!["npm".to_string(), "start".to_string()]
+        } else if let Some(main) = manifest
+            .main
+            .as_deref()
+            .map(str::trim)
+            .filter(|main| !main.is_empty())
+        {
+            vec!["node".to_string(), main.to_string()]
+        } else {
+            vec!["node".to_string(), "server.js".to_string()]
+        };
+
+        Some(
+            Self::default()
+                .base_image("node:20-alpine")
+                .work_dir("/app")
+                .copy("package*.json", "./")
+                .run("npm ci --production")
+                .copy(".", ".")
+                .expose(3000)
+                .cmd(cmd),
+        )
     }
 
     pub fn base_image<S: Into<String>>(mut self, image: S) -> Self {
@@ -301,6 +328,8 @@ impl DockerfileBuilder {
 struct NodePackageManifest {
     #[serde(default)]
     scripts: std::collections::BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    main: Option<String>,
     #[serde(default)]
     dependencies: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default, rename = "devDependencies")]
@@ -496,7 +525,9 @@ mod tests {
     }
 
     #[test]
-    fn test_project_aware_node_falls_back_without_nextjs_hints() {
+    fn test_project_aware_node_uses_start_script_from_package_json() {
+        // BUGS.md #49: a project whose entry point is not server.js crash-looped
+        // with MODULE_NOT_FOUND — the generator ignored package.json entirely.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("package.json"),
@@ -513,7 +544,32 @@ mod tests {
 
         let content = DockerfileBuilder::for_project(dir.path(), AppType::Node).build();
         assert!(content.contains("RUN npm ci --production"));
-        assert!(content.contains("CMD [\"node\", \"server.js\"]"));
+        assert!(content.contains("CMD [\"npm\", \"start\"]"));
+        assert!(!content.contains("server.js"));
+    }
+
+    #[test]
+    fn test_project_aware_node_uses_package_json_main_without_start_script() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{ "main": "index.js" }"#).unwrap();
+
+        let content = DockerfileBuilder::for_project(dir.path(), AppType::Node).build();
+        assert!(
+            content.contains("CMD [\"node\", \"index.js\"]"),
+            "{content}"
+        );
+    }
+
+    #[test]
+    fn test_project_aware_node_falls_back_to_server_js_without_clues() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{ "name": "x" }"#).unwrap();
+
+        let content = DockerfileBuilder::for_project(dir.path(), AppType::Node).build();
+        assert!(
+            content.contains("CMD [\"node\", \"server.js\"]"),
+            "{content}"
+        );
     }
 
     #[test]

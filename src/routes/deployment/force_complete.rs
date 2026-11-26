@@ -69,7 +69,7 @@ pub async fn force_complete_handler(
     if let Some(obj) = deployment.metadata.as_object_mut() {
         obj.insert(
             "force_completed_from".into(),
-            serde_json::Value::String(previous_status),
+            serde_json::Value::String(previous_status.clone()),
         );
         if query.force {
             obj.insert("force_override".into(), serde_json::Value::Bool(true));
@@ -81,6 +81,15 @@ pub async fn force_complete_handler(
         .map_err(|err| {
             JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err)
         })?;
+
+    // WS-N N3: edge-triggered deploy notification (best-effort).
+    crate::services::notification::notify_deployment_status_change_default(
+        pg_pool.get_ref(),
+        &deployment,
+        &previous_status,
+        "completed",
+    )
+    .await;
 
     tracing::info!(
         "Force-completed deployment {} (was '{}')",

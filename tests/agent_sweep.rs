@@ -6,8 +6,10 @@ use stacker::db;
 use stacker::models::Agent;
 use tokio::sync::OnceCell;
 
+#[allow(dead_code)]
 static APP: OnceCell<common::TestAppWithVaultShared> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> common::TestAppWithVaultFresh {
     common::get_or_init_vault_app_fresh(&APP)
         .await

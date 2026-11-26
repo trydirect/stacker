@@ -2655,12 +2655,24 @@ fn load_env_file_vars_from_yaml(path: &Path, raw_content: &str) -> HashMap<Strin
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
 
-    let env_file = match env_file_value {
-        Some(v) => v,
-        None => return HashMap::new(),
-    };
+    // BUGS.md #47: with no `env_file` named, fall back to `.env` — the same
+    // default `stacker secrets set` writes to. The two commands used to
+    // disagree about where secrets live: `service add` introduces `${VAR}`
+    // references, `secrets set` stores them in `.env`, and the validator then
+    // rejected the config the two had just produced.
+    let env_file = env_file_value.unwrap_or(".env");
 
     let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut vars = HashMap::new();
+
+    // BUGS.md #12: `.env.example` supplies the template's documented
+    // defaults; the env file overrides them. `stacker install` writes
+    // stacker.yml into a fresh directory, and without these defaults every
+    // `${VAR}` whose value is a `.env.example` line failed to resolve.
+    if let Ok(content) = std::fs::read_to_string(config_dir.join(".env.example")) {
+        parse_env_content(&content, &mut vars);
+    }
+
     let env_file_path = Path::new(env_file);
     let resolved_path = if env_file_path.is_absolute() {
         env_file_path.to_path_buf()
@@ -2668,12 +2680,15 @@ fn load_env_file_vars_from_yaml(path: &Path, raw_content: &str) -> HashMap<Strin
         config_dir.join(env_file_path)
     };
 
-    let content = match std::fs::read_to_string(&resolved_path) {
-        Ok(c) => c,
-        Err(_) => return HashMap::new(),
-    };
+    if let Ok(content) = std::fs::read_to_string(&resolved_path) {
+        parse_env_content(&content, &mut vars);
+    }
 
-    let mut vars = HashMap::new();
+    vars
+}
+
+/// Parse `KEY=value` lines into `vars`, overriding earlier entries.
+fn parse_env_content(content: &str, vars: &mut HashMap<String, String>) {
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -2697,8 +2712,6 @@ fn load_env_file_vars_from_yaml(path: &Path, raw_content: &str) -> HashMap<Strin
             vars.insert(key.to_string(), value);
         }
     }
-
-    vars
 }
 
 /// Extract the host port from a port mapping string like "8080:80" → "8080".
@@ -4633,6 +4646,81 @@ app:
             msg.contains("quoted path string"),
             "unexpected message: {msg}"
         );
+    }
+
+    // BUGS.md #47: `service add` introduces `${VAR}` references and writes no
+    // env_file; `stacker secrets set` stores the values in `.env`; the
+    // validator then rejected the config the two commands had just produced —
+    // the two disagreed about where secrets live. With no env_file named,
+    // `.env` is the source, the same default `secrets set` uses.
+    #[test]
+    fn env_placeholders_resolve_from_dot_env_without_env_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "POSTGRES_PASSWORD=s3cret\n").unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            "name: demo\napp:\n  type: node\nservices:\n  - name: postgres\n    image: postgres:16\n    environment:\n      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}\n",
+        )
+        .unwrap();
+
+        let config = StackerConfig::from_file(&config_path)
+            .expect(".env must fill placeholders when no env_file is named");
+        assert_eq!(
+            config.services[0]
+                .environment
+                .get("POSTGRES_PASSWORD")
+                .map(String::as_str),
+            Some("s3cret"),
+        );
+    }
+
+    // BUGS.md #12: `${VAR}` placeholders whose value is a `.env.example`
+    // default must resolve — `stacker install` writes stacker.yml into a
+    // fresh directory and the deploy then failed on every such placeholder.
+    #[test]
+    fn env_placeholders_fall_back_to_env_example_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".env.example"),
+            "FLOWISE_USERNAME=admin\nSHARED=from-example\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".env"), "SHARED=from-env\n").unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            "name: demo\napp:\n  type: node\nenv:\n  USER: ${FLOWISE_USERNAME}\n  SH: ${SHARED}\n",
+        )
+        .unwrap();
+
+        let config = StackerConfig::from_file(&config_path)
+            .expect(".env.example defaults must fill placeholders");
+        assert_eq!(
+            config.env.get("USER").map(String::as_str),
+            Some("admin"),
+            "a value only .env.example defines resolves from its default"
+        );
+        assert_eq!(
+            config.env.get("SH").map(String::as_str),
+            Some("from-env"),
+            "the env file overrides the example default"
+        );
+    }
+
+    #[test]
+    fn env_placeholders_still_fail_when_no_source_has_the_variable() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            "name: demo\napp:\n  type: node\nservices:\n  - name: postgres\n    image: postgres:16\n    environment:\n      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}\n",
+        )
+        .unwrap();
+
+        let err = StackerConfig::from_file(&config_path)
+            .expect_err("an unsourced placeholder must still fail");
+        assert!(err.to_string().contains("POSTGRES_PASSWORD"), "{err}");
     }
 
     #[test]

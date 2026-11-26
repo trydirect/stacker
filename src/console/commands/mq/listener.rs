@@ -537,6 +537,7 @@ impl crate::console::commands::CallableTrait for ListenCommand {
 
                                 match deployment_result {
                                     Ok(Some(mut row)) => {
+                                        let previous_status = row.status.clone();
                                         row.status = normalized_status;
                                         row.updated_at = Utc::now();
 
@@ -623,12 +624,22 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                                         let row_for_firewall = row.clone();
                                         println!(
                                             "Deployment {} updated with status {}",
-                                            &row.id, &row.status
+                                            row.id, row.status
                                         );
                                         if let Err(e) =
                                             deployment::update(db_pool.get_ref(), row).await
                                         {
                                             eprintln!("Failed to update deployment: {}", e);
+                                        } else {
+                                            // WS-N N3: edge-triggered deploy
+                                            // notifications (best-effort).
+                                            crate::services::notification::notify_deployment_status_change_default(
+                                                db_pool.get_ref(),
+                                                &row_for_firewall,
+                                                &previous_status,
+                                                &row_for_firewall.status,
+                                            )
+                                            .await;
                                         }
 
                                         // Auto-configure cloud firewall when a new

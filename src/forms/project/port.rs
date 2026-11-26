@@ -101,9 +101,9 @@ impl TryInto<dctypes::Port> for &Port {
                 } else {
                     // Previously a bad host port was logged at debug and
                     // dropped to None, publishing the mapping without it.
-                    match parse_port_in_range(hp.as_str()) {
-                        Ok(port) => Some(dctypes::PublishedPort::Single(port)),
-                        Err(err) => return Err(err),
+                    {
+                        let port = parse_port_in_range(hp.as_str())?;
+                        Some(dctypes::PublishedPort::Single(port))
                     }
                 }
             }

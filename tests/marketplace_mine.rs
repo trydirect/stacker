@@ -41,8 +41,10 @@ fn user_lock() -> &'static Mutex<()> {
 // runtime that has already been dropped, and `acquire()` then blocks for the
 // full 120s timeout and fails with `PoolTimedOut`. The server still starts
 // once; only the pool is per test.
+#[allow(dead_code)]
 static APP_CONFIG: OnceCell<common::TestAppConfig> = OnceCell::const_new();
 
+#[allow(dead_code)]
 async fn app() -> common::TestApp {
     common::get_or_init_app_fresh(&APP_CONFIG)
         .await
@@ -54,6 +56,10 @@ async fn app() -> common::TestApp {
 const BEARER_TOKEN: &str = "test-bearer-token";
 
 /// Authenticated user with no templates receives a 200 with an empty list.
+// The `user_lock` guard is meant to span the awaits: these tests share one
+// test user and must not interleave (each runs on its own single-threaded
+// runtime, so holding a std Mutex across awaits here cannot deadlock).
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn mine_returns_empty_list_for_new_user() {
     let _user = user_lock().lock().unwrap_or_else(|e| e.into_inner());
@@ -96,6 +102,10 @@ async fn mine_returns_empty_list_for_new_user() {
 }
 
 /// Authenticated user sees their own templates, not other users' templates.
+// The `user_lock` guard is meant to span the awaits: these tests share one
+// test user and must not interleave (each runs on its own single-threaded
+// runtime, so holding a std Mutex across awaits here cannot deadlock).
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn mine_returns_only_the_authenticated_users_templates() {
     let _user = user_lock().lock().unwrap_or_else(|e| e.into_inner());
@@ -154,6 +164,10 @@ async fn mine_returns_only_the_authenticated_users_templates() {
 /// This assertion also serves as evidence that the Stacker server itself returns 403
 /// for missing auth — *not* 404.  Any 404 seen in production therefore originates
 /// from an external reverse proxy or an outdated server binary, not from this route.
+// The `user_lock` guard is meant to span the awaits: these tests share one
+// test user and must not interleave (each runs on its own single-threaded
+// runtime, so holding a std Mutex across awaits here cannot deadlock).
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn mine_returns_forbidden_without_authorization_header() {
     let _user = user_lock().lock().unwrap_or_else(|e| e.into_inner());

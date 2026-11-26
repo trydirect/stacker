@@ -555,6 +555,17 @@ fn catalog_application_project_form(
     Ok(form)
 }
 
+/// Resolve-or-create the installed project. A project's identity is
+/// (user, name) — the deploy chain resolves by name and syncs metadata into
+/// the row it found — so installing blindly inserted a *second* row with the
+/// same name, and the deploy that followed resolved the older one: two ids
+/// for one project (BUGS.md #28). Both commands now report the row the next
+/// name lookup resolves.
+///
+/// Names compare after `sanitize_project_name`: install stores the sanitized
+/// name while a deploy can create a row from the raw `stacker.yml` name.
+/// Among legacy duplicates (nothing enforced uniqueness) the newest row wins,
+/// so the id most recently printed is the one every later lookup resolves.
 async fn insert_project_from_form(
     pg_pool: &PgPool,
     user: &models::User,
@@ -564,12 +575,41 @@ async fn insert_project_from_form(
     let project_name = form.custom.custom_stack_code.clone();
     let metadata = request_json.clone();
 
-    let project = models::Project::new(user.id.clone(), project_name, metadata, request_json);
+    let want_name = models::sanitize_project_name(&project_name);
+    let existing = db::project::fetch_by_user(pg_pool, &user.id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to look up existing project on install: {}", err);
+            JsonResponse::<serde_json::Value>::build()
+                .internal_server_error("Internal Server Error")
+        })?
+        .into_iter()
+        .filter(|p| models::sanitize_project_name(&p.name) == want_name)
+        .max_by_key(|p| p.id);
 
-    let project = db::project::insert(pg_pool, project).await.map_err(|err| {
-        tracing::error!("Failed to create installed project: {}", err);
-        JsonResponse::<serde_json::Value>::build().internal_server_error("Internal Server Error")
-    })?;
+    let project = match existing {
+        Some(mut project) => {
+            // Reuse and sync, exactly like the deploy chain's
+            // "Found project ... syncing metadata".
+            project.name = project_name;
+            project.metadata = metadata;
+            project.request_json = request_json;
+            db::project::update(pg_pool, project).await.map_err(|err| {
+                tracing::error!("Failed to sync existing project on install: {}", err);
+                JsonResponse::<serde_json::Value>::build()
+                    .internal_server_error("Internal Server Error")
+            })?
+        }
+        None => {
+            let project =
+                models::Project::new(user.id.clone(), project_name, metadata, request_json);
+            db::project::insert(pg_pool, project).await.map_err(|err| {
+                tracing::error!("Failed to create installed project: {}", err);
+                JsonResponse::<serde_json::Value>::build()
+                    .internal_server_error("Internal Server Error")
+            })?
+        }
+    };
 
     project_app::sync_project_level_apps_from_form(pg_pool, project.id, form)
         .await
@@ -1362,6 +1402,7 @@ mod tests {
             changelog: None,
             is_latest: Some(true),
             config_contract: None,
+            source_commit: None,
             created_at: None,
         }
     }
@@ -1783,6 +1824,7 @@ mod tests {
             changelog: None,
             is_latest: Some(true),
             config_contract: None,
+            source_commit: None,
             created_at: None,
         };
 
@@ -1856,6 +1898,7 @@ mod tests {
             changelog: None,
             is_latest: Some(true),
             config_contract: None,
+            source_commit: None,
             created_at: None,
         };
 

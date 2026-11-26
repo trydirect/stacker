@@ -315,6 +315,9 @@ enum StackerCommands {
     },
     /// Show container logs
     Logs {
+        /// App/service to show logs for (same as --service)
+        #[arg(value_name = "APP", conflicts_with = "service")]
+        app: Option<String>,
         /// Show logs for a specific service only
         #[arg(long)]
         service: Option<String>,
@@ -322,7 +325,7 @@ enum StackerCommands {
         #[arg(long, short)]
         follow: bool,
         /// Number of lines to show from the end
-        #[arg(long)]
+        #[arg(long, visible_alias = "lines")]
         tail: Option<u32>,
         /// Show logs since timestamp (e.g. "2h", "2024-01-01")
         #[arg(long)]
@@ -356,6 +359,16 @@ enum StackerCommands {
         /// Deployment hash
         #[arg(long)]
         deployment: Option<String>,
+    },
+    /// Manage notification channels (slack/discord/telegram/email/webhook)
+    Notify {
+        #[command(subcommand)]
+        command: NotifyCommands,
+    },
+    /// Manage backups (destinations, jobs, runs)
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommands,
     },
     /// Explain path and topology decisions
     Explain {
@@ -557,6 +570,70 @@ Use explicit --scope service or --scope server to activate remote mode.",
     Env {
         /// Environment to switch to. Omit to show current.
         environment: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum NotifyCommands {
+    /// Create a notification channel (secret is write-only, stored in Vault)
+    Add {
+        /// Channel name (unique per scope)
+        #[arg(long)]
+        name: String,
+        /// Channel type: slack | discord | telegram | email | webhook
+        #[arg(long = "type")]
+        channel_type: String,
+        /// Project id; omit for a global admin channel (root/group_admin only)
+        #[arg(long)]
+        project: Option<i32>,
+        /// Channel secret as JSON, e.g. '{"url":"https://hooks.example/..."}'
+        #[arg(long)]
+        secret: String,
+        /// Comma-separated event filter, e.g. deploy.failed,backup.failed
+        #[arg(long)]
+        events: Option<String>,
+    },
+    /// Send a test message through the channel
+    Test {
+        /// Channel id
+        #[arg(long)]
+        id: i32,
+    },
+    /// List your notification channels
+    List {
+        /// Filter by project id
+        #[arg(long)]
+        project: Option<i32>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum BackupCommands {
+    /// List backup jobs
+    List {
+        /// Filter by project id
+        #[arg(long)]
+        project: Option<i32>,
+    },
+    /// Trigger a backup run for a job
+    Run {
+        /// Job id
+        #[arg(long)]
+        id: i32,
+    },
+    /// List backup destinations
+    Destinations,
+    /// List runs for a job
+    Runs {
+        /// Job id
+        #[arg(long)]
+        job: i32,
+    },
+    /// Restore a specific run's archive
+    Restore {
+        /// Run id
+        #[arg(long)]
+        run: i32,
     },
 }
 
@@ -900,6 +977,18 @@ enum DeploymentCommands {
         #[arg(long, short = 'y')]
         confirm: bool,
     },
+    /// Pin the deployment this directory works with (writes deploy.deployment_hash)
+    Use {
+        /// Deployment hash to pin (e.g. deployment_1545)
+        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        hash: Option<String>,
+        /// Remove the pin instead
+        #[arg(long)]
+        clear: bool,
+        /// Path to stacker.yml (default: ./stacker.yml)
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -914,6 +1003,9 @@ enum ExplainCommands {
     },
     /// Explain compose/env topology for the current target
     Topology {
+        /// Deployment hash to explain instead of the resolved one
+        #[arg(long)]
+        deployment: Option<String>,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -1518,7 +1610,12 @@ enum AgentCommands {
         /// App code to fetch logs for (default: statuspanel + statuspanel_agent)
         app: Option<String>,
         /// Maximum number of log lines
-        #[arg(long, default_value_t = 400)]
+        #[arg(
+            long,
+            visible_alias = "lines",
+            visible_alias = "tail",
+            default_value_t = 400
+        )]
         limit: i32,
         /// Output in JSON format
         #[arg(long)]
@@ -1580,6 +1677,9 @@ enum AgentCommands {
         /// Revalidate and apply a previously generated deploy-app plan fingerprint
         #[arg(long, value_name = "FINGERPRINT", conflicts_with = "plan")]
         apply_plan: Option<String>,
+        /// Add an app this deployment does not have yet, instead of updating one
+        #[arg(long = "new-app")]
+        new_app: bool,
     },
     /// Remove an app container from the remote deployment
     #[command(name = "remove-app")]
@@ -1737,6 +1837,11 @@ enum AgentCommands {
         /// Detected automatically when deploy.server.host is a private/intranet IP.
         #[arg(long)]
         local: bool,
+        /// Install through a deploy, creating a new deployment. By default an
+        /// install re-registers the agent on the project's existing deployment
+        /// (the hash does not change); this forces the deploy path anyway.
+        #[arg(long)]
+        new_deployment: bool,
     },
 }
 
@@ -1812,6 +1917,14 @@ enum ProxyCommands {
         /// SSL mode: auto, manual, off
         #[arg(long)]
         ssl: Option<String>,
+        /// Proxy type to record in stacker.yml (default: nginx-proxy-manager
+        /// on remote deployments, the configured type or nginx locally)
+        #[arg(
+            long = "type",
+            value_name = "TYPE",
+            value_parser = ["nginx-proxy-manager", "npm", "caddy", "traefik"]
+        )]
+        proxy_type: Option<String>,
     },
     /// Detect existing reverse-proxy containers
     Detect {
@@ -2199,12 +2312,16 @@ fn get_command(
             Box::new(stacker::console::commands::cli::connect::ConnectCommand::new(handoff))
         }
         StackerCommands::Logs {
+            app,
             service,
             follow,
             tail,
             since,
         } => Box::new(stacker::console::commands::cli::logs::LogsCommand::new(
-            service, follow, tail, since,
+            service.or(app),
+            follow,
+            tail,
+            since,
         )),
         StackerCommands::Status {
             json,
@@ -2222,6 +2339,44 @@ fn get_command(
                 once, interval, deployment,
             ),
         ),
+        StackerCommands::Notify { command } => match command {
+            NotifyCommands::Add {
+                name,
+                channel_type,
+                project,
+                secret,
+                events,
+            } => Box::new(stacker::console::commands::cli::notify::NotifyCommand::add(
+                name,
+                channel_type,
+                project,
+                secret,
+                events,
+            )),
+            NotifyCommands::Test { id } => {
+                Box::new(stacker::console::commands::cli::notify::NotifyCommand::test(id))
+            }
+            NotifyCommands::List { project } => {
+                Box::new(stacker::console::commands::cli::notify::NotifyCommand::list(project))
+            }
+        },
+        StackerCommands::Backup { command } => match command {
+            BackupCommands::List { project } => {
+                Box::new(stacker::console::commands::cli::backup::BackupCommand::list(project))
+            }
+            BackupCommands::Run { id } => {
+                Box::new(stacker::console::commands::cli::backup::BackupCommand::trigger(id))
+            }
+            BackupCommands::Destinations => {
+                Box::new(stacker::console::commands::cli::backup::BackupCommand::destinations())
+            }
+            BackupCommands::Runs { job } => {
+                Box::new(stacker::console::commands::cli::backup::BackupCommand::runs(job))
+            }
+            BackupCommands::Restore { run } => {
+                Box::new(stacker::console::commands::cli::backup::BackupCommand::restore(run))
+            }
+        },
         StackerCommands::Deployment { command } => match command {
             DeploymentCommands::State {
                 json,
@@ -2252,13 +2407,20 @@ fn get_command(
                     to, plan, apply_plan, confirm, deployment,
                 ),
             ),
+            DeploymentCommands::Use { hash, clear, file } => Box::new(
+                stacker::console::commands::cli::deployment::DeploymentUseCommand::new(
+                    hash, clear, file,
+                ),
+            ),
         },
         StackerCommands::Explain { command } => match command {
             ExplainCommands::Env { app, json } => Box::new(
                 stacker::console::commands::cli::explain::ExplainEnvCommand::new(app, json),
             ),
-            ExplainCommands::Topology { json } => Box::new(
-                stacker::console::commands::cli::explain::ExplainTopologyCommand::new(json),
+            ExplainCommands::Topology { deployment, json } => Box::new(
+                stacker::console::commands::cli::explain::ExplainTopologyCommand::new(
+                    json, deployment,
+                ),
             ),
         },
         StackerCommands::Destroy { volumes, confirm } => Box::new(
@@ -2343,10 +2505,12 @@ fn get_command(
                 domain,
                 upstream,
                 ssl,
+                proxy_type,
             } => Box::new(
                 stacker::console::commands::cli::proxy::ProxyAddCommand::new(
                     domain, upstream, ssl, false, false, None,
-                ),
+                )
+                .with_proxy_type(proxy_type),
             ),
             ProxyCommands::Detect { json, deployment } => Box::new(
                 stacker::console::commands::cli::proxy::ProxyDetectCommand::new(json, deployment),
@@ -2851,6 +3015,7 @@ fn get_command(
                     environment,
                     plan,
                     apply_plan,
+                    new_app,
                 } => Box::new(
                     agent::AgentDeployAppCommand::new(
                         app,
@@ -2862,7 +3027,8 @@ fn get_command(
                         environment,
                     )
                     .with_plan(plan)
-                    .with_apply_plan(apply_plan),
+                    .with_apply_plan(apply_plan)
+                    .with_new_app(new_app),
                 ),
                 AgentCommands::RemoveApp {
                     app,
@@ -2953,8 +3119,11 @@ fn get_command(
                     persist_config,
                     json,
                     local,
+                    new_deployment,
                 } => Box::new(
-                    agent::AgentInstallCommand::new(file, persist_config, json).with_local(local),
+                    agent::AgentInstallCommand::new(file, persist_config, json)
+                        .with_local(local)
+                        .with_new_deployment(new_deployment),
                 ),
             }
         }

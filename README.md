@@ -188,6 +188,8 @@ monitoring:
 
 Full schema reference: [docs/STACKER_YML_REFERENCE.md](docs/STACKER_YML_REFERENCE.md)
 
+Command cheatsheet: [docs/CHEATSHEET.md](docs/CHEATSHEET.md)
+
 ---
 
 

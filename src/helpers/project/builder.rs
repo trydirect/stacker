@@ -83,7 +83,7 @@ pub fn parse_compose_services(compose_yaml: &str) -> Result<Vec<ExtractedService
                 dctypes::Volumes::Advanced(adv) => Some(format!(
                     "{}:{}",
                     adv.source.as_deref().unwrap_or(""),
-                    &adv.target
+                    adv.target
                 )),
             })
             .collect();

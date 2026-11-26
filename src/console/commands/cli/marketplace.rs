@@ -399,6 +399,59 @@ fn child_mapping<'a>(
         .expect("child_mapping: slot was just made a mapping")
 }
 
+/// Materialize the template's file set next to the installed stacker.yml
+/// (BUGS.md #12 and #33): install used to write only stacker.yml, so a
+/// referenced `./scripts/...` did not exist and every `${VAR}` whose value is
+/// a `.env.example` default was unset — the deploy then failed on both.
+///
+/// Existing files are never overwritten. `.env.example` is written as itself
+/// and, when no `.env` exists yet, its defaults are written to `.env` too.
+/// Returns the files written, for reporting.
+fn materialize_template_files(project_dir: &Path, version: &serde_json::Value) -> Vec<PathBuf> {
+    let mut written = Vec::new();
+    let empty = Vec::new();
+    let files = version
+        .get("config_files")
+        .and_then(|value| value.as_array())
+        .unwrap_or(&empty);
+
+    for file in files {
+        let (Some(name), Some(content)) = (
+            file.get("name").and_then(|v| v.as_str()),
+            file.get("content").and_then(|v| v.as_str()),
+        ) else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() || Path::new(name).is_absolute() || name.contains("..") {
+            continue;
+        }
+        let target = project_dir.join(name);
+        if target.exists() {
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
+        if std::fs::write(&target, content).is_ok() {
+            written.push(target);
+        }
+
+        // BUGS.md #12: the defaults in .env.example are what the deploy's
+        // ${VAR} placeholders expect — seed .env from them once.
+        if name == ".env.example" {
+            let env_path = project_dir.join(".env");
+            if !env_path.exists() && std::fs::write(&env_path, content).is_ok() {
+                written.push(env_path);
+            }
+        }
+    }
+
+    written
+}
+
 impl CallableTrait for MarketplaceInstallCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         // Refuse to run inside an existing project directory.
@@ -663,6 +716,7 @@ impl CallableTrait for MarketplaceInstallCommand {
                     ssh_key: None,
                     server_name: None,
                     deployment_id: Some(deployment_id as i64),
+                    deployment_hash: None,
                     project_id: Some(response.project.id as i64),
                     cloud_id: None,
                     project_name: Some(response.project.name.clone()),
@@ -718,6 +772,20 @@ impl CallableTrait for MarketplaceInstallCommand {
         };
 
         std::fs::write(&self.file, prepend_marketplace_marker(&yaml))?;
+
+        // BUGS.md #12/#33: materialize the template's file set next to
+        // stacker.yml — the `scripts/` the file references and the
+        // `.env.example` defaults its ${VAR} placeholders expect. A fresh
+        // install must be able to deploy without cloning the repository.
+        let install_dir = self
+            .file
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        for path in materialize_template_files(&install_dir, &response.latest_version) {
+            println!("  ✓ Wrote {}", path.display());
+        }
 
         println!(
             "Installed '{}' as project #{}.",
@@ -839,7 +907,7 @@ fn response_stack_definition(
                     dctypes::Volumes::Advanced(adv) => Some(format!(
                         "{}:{}",
                         adv.source.as_deref().unwrap_or(""),
-                        &adv.target
+                        adv.target
                     )),
                 })
                 .collect();
@@ -1425,8 +1493,8 @@ fn truncate(s: &str, max_len: usize) -> String {
 mod tests {
     use super::{
         apply_install_inputs_to_deploy_form, billing_cycle_suffix, display_plan,
-        marketplace_template_matches_slug, resolve_install_inputs, response_stack_definition,
-        truncate, write_install_flags, InstallFileFlags,
+        marketplace_template_matches_slug, materialize_template_files, resolve_install_inputs,
+        response_stack_definition, truncate, write_install_flags, InstallFileFlags,
     };
     use crate::cli::stacker_client::{
         MarketplaceInstallResponse, MarketplaceTemplate, ProjectInfo,
@@ -1459,6 +1527,82 @@ mod tests {
             crate::cli::config_parser::CloudProvider::Hetzner
         );
         assert_eq!(cloud.region.as_deref(), Some("nbg1"));
+    }
+
+    // BUGS.md #27 acceptance: "a value passed to --domain appears in the
+    // generated file". PR 336 wrote the flags into stacker.yml for
+    // server-held templates; this pins the file end of that chain.
+    // BUGS.md #12 and #33: install must materialize the template's file set —
+    // `scripts/` that stacker.yml references and the `.env.example` defaults
+    // that its ${VAR} placeholders expect. Nothing is overwritten.
+    #[test]
+    fn materialize_template_files_writes_scripts_and_seeds_env() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let version = json!({
+            "config_files": [
+                {"name": "scripts/n8n-entrypoint.sh", "content": "#!/bin/sh\necho hi\n"},
+                {"name": ".env.example", "content": "FLOWISE_USERNAME=admin\n"},
+                {"name": "ignored.txt", "content": null},
+            ]
+        });
+
+        let written = materialize_template_files(dir.path(), &version);
+        assert!(dir.path().join("scripts/n8n-entrypoint.sh").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".env")).unwrap(),
+            "FLOWISE_USERNAME=admin\n",
+            ".env must be seeded from the .env.example defaults"
+        );
+        assert!(!dir.path().join("ignored.txt").exists());
+        assert_eq!(written.len(), 3, "{written:?}"); // script + .env.example + .env
+    }
+
+    #[test]
+    fn materialize_template_files_never_overwrites() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("scripts")).unwrap();
+        std::fs::write(dir.path().join("scripts/app.sh"), "mine\n").unwrap();
+        std::fs::write(dir.path().join(".env"), "MINE=1\n").unwrap();
+        let version = json!({
+            "config_files": [
+                {"name": "scripts/app.sh", "content": "theirs\n"},
+                {"name": ".env.example", "content": "THEIRS=2\n"},
+            ]
+        });
+
+        let written = materialize_template_files(dir.path(), &version);
+        assert_eq!(written.len(), 1, "{written:?}");
+        assert!(
+            written[0].ends_with(".env.example"),
+            "only the missing .env.example may be written: {written:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("scripts/app.sh")).unwrap(),
+            "mine\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".env")).unwrap(),
+            "MINE=1\n"
+        );
+    }
+
+    #[test]
+    fn install_domain_appears_in_the_generated_file() {
+        let mut inputs = Map::new();
+        inputs.insert("commonDomain".to_string(), json!("dify.com"));
+        let flags = InstallFileFlags {
+            inputs,
+            cloud: Vec::new(),
+        };
+
+        let (written, not_written) =
+            write_install_flags("name: dify\ninstall:\n  inputs: {}\n", &flags)
+                .expect("flags must write");
+        assert!(not_written.is_empty());
+        assert!(
+            written.contains("commonDomain: dify.com"),
+            "--domain must reach the generated file: {written}"
+        );
     }
 
     #[test]
