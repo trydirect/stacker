@@ -21,8 +21,14 @@ reports a `backup` command, the run is marked uploaded/failed and
 — every minute it finds due jobs (next cron time after the last run has
 arrived; standard 5-field schedules supported), enqueues a `backup` command
 via the project's deployment, and applies retention (B2: 7 daily + 4 weekly →
-mark pruned). Cron matching via the `cron` crate. 1.3, 1.6 ahead (storage
-connector, restore e2e).
+mark pruned). Cron matching via the `cron` crate.
+1.3 ✅ (2026-11-26): storage connector (`src/services/storage.rs`) —
+`StorageClient` with OAuth2 `client_credentials` auth (token cached, refreshed
+on 401), retry on 5xx/timeout, and the control-plane ops Stacker needs:
+`register_device` (`POST /connect`), `delete_file` (retention cleanup),
+`list_files`. Wired into scheduler retention (pruned archives are deleted from
+storage). The heavy data path (upload/download) stays agent-side. Tests:
+wiremock (4). 1.6 ahead (restore e2e).
 
 A `backup` agent command carries `{action, run_id, plan}` where `plan` is a
 `DumpPlan`/`RestorePlan`. The command queue stores only the token env var

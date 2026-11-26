@@ -31,6 +31,7 @@ pub mod redeploy;
 pub mod resilience_engine;
 pub mod server_cleanup_notifier;
 pub mod step_executor;
+pub mod storage;
 pub mod typed_error;
 pub mod vault_service;
 pub mod ws_pipe;

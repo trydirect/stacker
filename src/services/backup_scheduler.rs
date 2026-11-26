@@ -133,6 +133,41 @@ async fn apply_retention(pool: &PgPool, job: &BackupJob) {
     if to_prune.is_empty() {
         return;
     }
+
+    // Delete the pruned archives from storage (best-effort; the run is marked
+    // pruned regardless so retention is idempotent).
+    let token_url = std::env::var("BACKUP_TOKEN_URL").unwrap_or_default();
+    let client_id = std::env::var("BACKUP_CLIENT_ID").unwrap_or_default();
+    let client_secret = std::env::var("BACKUP_CLIENT_SECRET").unwrap_or_default();
+    if !token_url.is_empty() && !client_id.is_empty() {
+        if let Ok(Some(dest)) = db::backup::fetch_destination(pool, job.destination_id).await {
+            let mut client = crate::services::storage::StorageClient::new(
+                &dest.endpoint,
+                &token_url,
+                &client_id,
+                &client_secret,
+            );
+            for run in &runs {
+                if !to_prune.contains(&run.id) {
+                    continue;
+                }
+                if let Some(file_id) = &run.remote_file_id {
+                    match client.delete_file(file_id).await {
+                        Ok(()) => {
+                            tracing::debug!(job_id = job.id, file_id, "pruned archive deleted")
+                        }
+                        Err(err) => tracing::warn!(
+                            job_id = job.id,
+                            file_id,
+                            "failed to delete pruned archive: {}",
+                            err
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
     match db::backup::mark_runs_pruned(pool, &to_prune).await {
         Ok(()) => tracing::info!(
             job_id = job.id,
