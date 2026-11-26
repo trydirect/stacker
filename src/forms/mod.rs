@@ -1,4 +1,5 @@
 pub(crate) mod agreement;
+pub mod backup;
 pub(crate) mod cloud;
 pub mod cloud_firewall;
 pub mod firewall;
@@ -11,6 +12,7 @@ pub(crate) mod server;
 pub mod status_panel;
 pub mod user;
 
+pub use backup::*;
 pub use cloud::*;
 pub use cloud_firewall::*;
 pub use firewall::*;

@@ -138,6 +138,47 @@ pub async fn delete_job(pool: &PgPool, id: i32) -> Result<(), String> {
         .map_err(|e| format!("Failed to delete backup job: {}", e))
 }
 
+/// Update only the provided fields (None leaves the column unchanged).
+#[allow(clippy::too_many_arguments)]
+pub async fn update_job(
+    pool: &PgPool,
+    id: i32,
+    name: Option<&str>,
+    target: Option<&str>,
+    database: Option<&str>,
+    schedule: Option<&str>,
+    retention_daily: Option<i32>,
+    retention_weekly: Option<i32>,
+    enabled: Option<bool>,
+) -> Result<(), String> {
+    sqlx::query(
+        r#"
+        UPDATE backup_job SET
+            name = COALESCE($2, name),
+            target = COALESCE($3, target),
+            database = COALESCE($4, database),
+            schedule = COALESCE($5, schedule),
+            retention_daily = COALESCE($6, retention_daily),
+            retention_weekly = COALESCE($7, retention_weekly),
+            enabled = COALESCE($8, enabled),
+            updated_at = NOW()
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .bind(name)
+    .bind(target)
+    .bind(database)
+    .bind(schedule)
+    .bind(retention_daily)
+    .bind(retention_weekly)
+    .bind(enabled)
+    .execute(pool)
+    .await
+    .map(|_| ())
+    .map_err(|e| format!("Failed to update backup job: {}", e))
+}
+
 // ── Runs ────────────────────────────────────────────────────────────────
 
 pub async fn insert_run(pool: &PgPool, job_id: i32, project_id: i32) -> Result<BackupRun, String> {

@@ -280,6 +280,18 @@ pub async fn run(
                     .service(crate::routes::notification::dispatch_list_handler),
             )
             .service(
+                web::scope("/api/v1/backups")
+                    .service(crate::routes::backup::create_destination)
+                    .service(crate::routes::backup::list_destinations)
+                    .service(crate::routes::backup::delete_destination)
+                    .service(crate::routes::backup::create_job)
+                    .service(crate::routes::backup::list_jobs)
+                    .service(crate::routes::backup::get_job)
+                    .service(crate::routes::backup::update_job)
+                    .service(crate::routes::backup::delete_job)
+                    .service(crate::routes::backup::list_runs),
+            )
+            .service(
                 web::scope("/dockerhub")
                     .service(crate::routes::dockerhub::search_namespaces)
                     .service(crate::routes::dockerhub::list_repositories)
