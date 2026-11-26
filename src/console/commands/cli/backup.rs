@@ -16,6 +16,8 @@ pub enum BackupAction {
     Destinations,
     /// List runs for a job.
     Runs { job: i32 },
+    /// Restore a specific run's archive.
+    Restore { run: i32 },
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +50,12 @@ impl BackupCommand {
         }
     }
 
+    pub fn restore(run: i32) -> Self {
+        Self {
+            action: BackupAction::Restore { run },
+        }
+    }
+
     async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         let cred_manager = crate::cli::credentials::CredentialsManager::with_default_store();
         let creds = cred_manager.require_valid_token("backup")?;
@@ -70,6 +78,10 @@ impl BackupCommand {
             BackupAction::Runs { job } => {
                 let response = client.list_backup_runs(*job).await?;
                 print_result(response, "Server rejected the listing").await?;
+            }
+            BackupAction::Restore { run } => {
+                let response = client.trigger_backup_restore(*run).await?;
+                print_result(response, "Server rejected the restore trigger").await?;
             }
         }
         Ok(())

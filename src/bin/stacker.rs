@@ -629,6 +629,12 @@ enum BackupCommands {
         #[arg(long)]
         job: i32,
     },
+    /// Restore a specific run's archive
+    Restore {
+        /// Run id
+        #[arg(long)]
+        run: i32,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -2366,6 +2372,9 @@ fn get_command(
             }
             BackupCommands::Runs { job } => {
                 Box::new(stacker::console::commands::cli::backup::BackupCommand::runs(job))
+            }
+            BackupCommands::Restore { run } => {
+                Box::new(stacker::console::commands::cli::backup::BackupCommand::restore(run))
             }
         },
         StackerCommands::Deployment { command } => match command {

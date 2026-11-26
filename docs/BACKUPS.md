@@ -83,3 +83,42 @@ Restore: stream the stored archive into `pg_restore` / `mysql` /
 - New migrations only; run `cargo sqlx prepare` after changing sqlx queries.
 - REST `/api/v1/backups*` needs a casbin migration + `api-reviewer` review.
 - `backup.succeeded`/`backup.failed` events go to the WS-N event bus.
+
+## Restore runbook (WS-1 1.6)
+
+Restore is "the chosen backup run" (latest by default). It re-streams a stored
+archive into the target via the agent. Point-in-time restore does not exist on
+the storage side (current state only).
+
+**1. Find the run to restore.** List a job's runs and pick one (the `remoteFileId`
+is the archive in storage):
+
+```
+stacker backup runs --job <job_id>
+# or: GET /api/v1/backups/jobs/<job_id>/runs
+```
+
+**2. Trigger the restore.** Stacker queues a `backup` restore command for the
+project's agent:
+
+```
+stacker backup restore --run <run_id>
+# or: POST /api/v1/backups/runs/<run_id>/restore
+```
+
+**3. The agent executes it** (the native `backup` command, `status#144`): it
+streams `GET {endpoint}/upload/files/{remoteFileId}` into the restore process
+(`pg_restore` / `mysql` / `mongorestore` / volume unpack). It reports the
+result back keyed by `run_id`.
+
+**4. Verify.** Check the run's status (`stacker backup runs --job <job_id>`)
+and the application data. A `backup.succeeded`/`backup.failed` event is
+emitted on completion and delivered to the project's notification channels.
+
+**Notes**
+- Restore targets the project's current deployment (its container/volume).
+  Restoring into a different server is out of scope.
+- If `BACKUP_TOKEN_URL` / the destination credentials are not configured, the
+  trigger answers an error instead of queuing.
+- For a full-DB restore, put the app in maintenance / stop writers first to
+  avoid a torn state.

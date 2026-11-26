@@ -641,6 +641,7 @@ const ROUTES: &[(&str, &str, Kind, &str)] = &[
     ("DELETE", "/api/v1/backups/jobs/{id}", Sweep, ""),
     ("GET", "/api/v1/backups/jobs/{id}/runs", Sweep, ""),
     ("POST", "/api/v1/backups/jobs/{id}/run", Sweep, ""),
+    ("POST", "/api/v1/backups/runs/{id}/restore", Sweep, ""),
 ];
 
 fn table() -> BTreeMap<(String, String), (Kind, &'static str)> {
@@ -918,6 +919,7 @@ impl Fixture {
             "repo",
             "backupdest",
             "backupjob",
+            "backuprun",
         ] {
             m.insert(key, MISSING_INT.to_string());
         }
@@ -1540,6 +1542,12 @@ fn sweep_requests() -> BTreeMap<(&'static str, &'static str), (&'static str, &'s
             "/api/v1/backups/jobs/{backupjob}/run",
             "{}",
         ),
+        (
+            "POST",
+            "/api/v1/backups/runs/{id}/restore",
+            "/api/v1/backups/runs/{backuprun}/restore",
+            "{}",
+        ),
     ];
     let mut map = BTreeMap::new();
     for (method, path, url, body) in rows {
@@ -1615,6 +1623,7 @@ async fn seed(pool: &sqlx::PgPool) -> Fixture {
     let repo = insert_returning(pool, "INSERT INTO github_repo (user_id, installation_id, repo, branch) VALUES ($1, 1, 'matrix/a', 'main') RETURNING id::text", a).await;
     let backupdest = insert_returning(pool, "INSERT INTO backup_destination (user_id, name, endpoint, vault_path) VALUES ($1, 'matrix-a', 'https://b.example', 'backup/matrix-a') RETURNING id::text", a).await;
     let backupjob = insert_returning(pool, &format!("INSERT INTO backup_job (user_id, project_id, destination_id, name, source, target, schedule) VALUES ($1, '{project}', '{backupdest}', 'matrix-a', 'postgres', 'shop-postgres-1', '0 3 * * *') RETURNING id::text"), a).await;
+    let backuprun = insert_returning(pool, &format!("INSERT INTO backup_run (job_id, project_id, status, remote_file_id) VALUES ('{backupjob}', '{project}', 'uploaded', 'matrix-a.bin') RETURNING id::text"), a).await;
 
     let mut m = BTreeMap::new();
     m.insert("project", project.to_string());
@@ -1636,6 +1645,7 @@ async fn seed(pool: &sqlx::PgPool) -> Fixture {
     m.insert("repo", repo);
     m.insert("backupdest", backupdest);
     m.insert("backupjob", backupjob);
+    m.insert("backuprun", backuprun);
     Fixture(m)
 }
 

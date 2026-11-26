@@ -718,6 +718,15 @@ impl StackerClient {
         .await
     }
 
+    pub async fn trigger_backup_restore(&self, run_id: i32) -> Result<reqwest::Response, CliError> {
+        self.send_backups_request(
+            reqwest::Method::POST,
+            &format!("/runs/{}/restore", run_id),
+            Some(&serde_json::json!({})),
+        )
+        .await
+    }
+
     pub async fn resolve_handoff(
         base_url: &str,
         token: &str,
