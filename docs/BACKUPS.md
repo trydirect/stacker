@@ -10,12 +10,29 @@ enqueue service (`src/services/backup.rs`) — builds the plan and queues a
 `backup` agent command; runtime-tested (`tests/backup_db.rs`). The agent-side
 native `backup` command (Status Panel, `status/` repo) is specified in its
 `FEATURES.md` (status#144).
-1.5 (partial): REST `/api/v1/backups/*` (destinations, jobs, runs) + casbin —
-owner-gated, vault_path never leaked (masked endpoint only),
-`tests/backup_rest.rs`. Remaining for 1.5: CLI `stacker backup`, and
-`backup.succeeded`/`backup.failed` events on the WS-N bus (need the run
-lifecycle / agent report). 1.3-1.6 ahead (storage connector, scheduler,
-restore e2e).
+1.5 ✅ (2026-11-26): REST `/api/v1/backups/*` (destinations, jobs, runs, trigger)
++ casbin + CLI `stacker backup {list,run,destinations,runs}`. Owner-gated,
+vault_path never leaked (masked endpoint only). Run lifecycle: when the agent
+reports a `backup` command, the run is marked uploaded/failed and
+`backup.succeeded`/`backup.failed` is emitted on the WS-N bus (report handler
+→ `notify_backup_result`). Tests: `tests/backup_rest.rs`, security matrix
+(route classification + live IDOR).
+1.4 ✅ (2026-11-26): background scheduler (`src/services/backup_scheduler.rs`)
+— every minute it finds due jobs (next cron time after the last run has
+arrived; standard 5-field schedules supported), enqueues a `backup` command
+via the project's deployment, and applies retention (B2: 7 daily + 4 weekly →
+mark pruned). Cron matching via the `cron` crate.
+1.3 ✅ (2026-11-26): storage connector (`src/services/storage.rs`) —
+`StorageClient` with OAuth2 `client_credentials` auth (token cached, refreshed
+on 401), retry on 5xx/timeout, and the control-plane ops Stacker needs:
+`register_device` (`POST /connect`), `delete_file` (retention cleanup),
+`list_files`. Wired into scheduler retention (pruned archives are deleted from
+storage). The heavy data path (upload/download) stays agent-side. Tests:
+wiremock (4). 1.6 ahead (restore e2e).
+BDD ✅: `tests/features/backups.feature` (6 acceptance scenarios — create
+destination/job, list, vault_path never leaked, invalid source rejected,
+cross-user read/delete refused) + `tests/steps/backup.rs`, wired into the
+cucumber harness (`cargo test --test bdd`, 340 scenarios / 1847 steps green).
 
 A `backup` agent command carries `{action, run_id, plan}` where `plan` is a
 `DumpPlan`/`RestorePlan`. The command queue stores only the token env var
@@ -66,3 +83,42 @@ Restore: stream the stored archive into `pg_restore` / `mysql` /
 - New migrations only; run `cargo sqlx prepare` after changing sqlx queries.
 - REST `/api/v1/backups*` needs a casbin migration + `api-reviewer` review.
 - `backup.succeeded`/`backup.failed` events go to the WS-N event bus.
+
+## Restore runbook (WS-1 1.6)
+
+Restore is "the chosen backup run" (latest by default). It re-streams a stored
+archive into the target via the agent. Point-in-time restore does not exist on
+the storage side (current state only).
+
+**1. Find the run to restore.** List a job's runs and pick one (the `remoteFileId`
+is the archive in storage):
+
+```
+stacker backup runs --job <job_id>
+# or: GET /api/v1/backups/jobs/<job_id>/runs
+```
+
+**2. Trigger the restore.** Stacker queues a `backup` restore command for the
+project's agent:
+
+```
+stacker backup restore --run <run_id>
+# or: POST /api/v1/backups/runs/<run_id>/restore
+```
+
+**3. The agent executes it** (the native `backup` command, `status#144`): it
+streams `GET {endpoint}/upload/files/{remoteFileId}` into the restore process
+(`pg_restore` / `mysql` / `mongorestore` / volume unpack). It reports the
+result back keyed by `run_id`.
+
+**4. Verify.** Check the run's status (`stacker backup runs --job <job_id>`)
+and the application data. A `backup.succeeded`/`backup.failed` event is
+emitted on completion and delivered to the project's notification channels.
+
+**Notes**
+- Restore targets the project's current deployment (its container/volume).
+  Restoring into a different server is out of scope.
+- If `BACKUP_TOKEN_URL` / the destination credentials are not configured, the
+  trigger answers an error instead of queuing.
+- For a full-DB restore, put the app in maintenance / stop writers first to
+  avoid a torn state.

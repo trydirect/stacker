@@ -145,6 +145,12 @@ pub async fn run(
     // problems.
     crate::services::agent_sweeper::spawn(api_pool.get_ref().clone());
 
+    // WS-1 1.4: periodically enqueue due backup runs and apply retention.
+    crate::services::backup_scheduler::spawn(api_pool.get_ref().clone());
+
+    // WS-S S1: reap sandboxes past their lifetime / inactivity timeout.
+    crate::services::sandbox_lifecycle::spawn(api_pool.get_ref().clone());
+
     let payout_provider = crate::services::init_payout_provider(&settings.payouts)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;
     let payout_provider = web::Data::new(payout_provider);
@@ -289,7 +295,20 @@ pub async fn run(
                     .service(crate::routes::backup::get_job)
                     .service(crate::routes::backup::update_job)
                     .service(crate::routes::backup::delete_job)
-                    .service(crate::routes::backup::list_runs),
+                    .service(crate::routes::backup::list_runs)
+                    .service(crate::routes::backup::trigger_run)
+                    .service(crate::routes::backup::trigger_restore),
+            )
+            .service(
+                web::scope("/api/v1/sandboxes")
+                    .service(crate::routes::sandbox::create_handler)
+                    .service(crate::routes::sandbox::list_handler)
+                    .service(crate::routes::sandbox::get_handler)
+                    .service(crate::routes::sandbox::kill_handler)
+                    .service(crate::routes::sandbox::exec_handler)
+                    .service(crate::routes::sandbox::write_file_handler)
+                    .service(crate::routes::sandbox::read_file_handler)
+                    .service(crate::routes::sandbox::list_files_handler),
             )
             .service(
                 web::scope("/dockerhub")

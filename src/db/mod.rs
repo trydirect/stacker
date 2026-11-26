@@ -28,5 +28,6 @@ pub mod project_member;
 pub mod rating;
 pub mod remote_secret;
 pub mod resilience;
+pub mod sandbox;
 pub mod server;
 pub mod server_type_daily_rate;

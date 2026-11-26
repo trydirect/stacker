@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod agent_executor;
+pub mod backup;
 pub mod bake_sanitization;
 pub mod cdc;
 pub mod cloud_server;
@@ -10,10 +11,12 @@ pub mod dag;
 pub mod dag_execution;
 pub mod deployment;
 pub mod deployment_state;
+pub mod github;
 pub mod health;
 pub mod marketplace;
 pub mod mcp;
 pub mod ml_field_match;
+pub mod notification;
 pub mod pipe;
 pub mod project;
 pub mod prometheus;

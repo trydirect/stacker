@@ -37,6 +37,7 @@ use crate::mcp::tools::{
     CreatePipeTemplateTool,
     CreateProjectAppTool,
     CreateProjectTool,
+    CreateSandboxTool,
     DeactivatePipeTool,
     DeleteAppEnvVarTool,
     DeleteCloudTool,
@@ -49,6 +50,7 @@ use crate::mcp::tools::{
     DiagnoseDeploymentTool,
     DiscoverStackServicesTool,
     EscalateToSupportTool,
+    ExecSandboxTool,
     // Agent Control tools
     ExecuteAgentCommandTool,
     ExplainEnvTool,
@@ -85,6 +87,7 @@ use crate::mcp::tools::{
     // Phase 5: Vault Configuration tools
     GetVaultConfigTool,
     InitiateDeploymentTool,
+    KillSandboxTool,
     ListAvailableRolesTool,
     ListCloudImagesTool,
     ListCloudRegionsTool,
@@ -100,11 +103,13 @@ use crate::mcp::tools::{
     ListProxiesTool,
     ListRemoteSecretTargetsTool,
     ListRemoteServiceSecretsTool,
+    ListSandboxesTool,
     ListTemplatesTool,
     ListVaultConfigsTool,
     MarkAllNotificationsReadTool,
     MarkNotificationReadTool,
     PreviewInstallConfigTool,
+    ReadSandboxFileTool,
     // Stack Recommendations
     RecommendStackServicesTool,
     RemoveAppTool,
@@ -130,6 +135,7 @@ use crate::mcp::tools::{
     ValidateRoleVarsTool,
     // Phase 5: Stack Validation tool
     ValidateStackConfigTool,
+    WriteSandboxFileTool,
 };
 
 /// Context passed to tool handlers
@@ -239,6 +245,13 @@ impl ToolRegistry {
         registry.register("explain_env", Box::new(ExplainEnvTool));
         registry.register("explain_topology", Box::new(ExplainTopologyTool));
         registry.register("start_deployment", Box::new(StartDeploymentTool));
+        // WS-S: sandboxes (ephemeral containers for untrusted/AI code)
+        registry.register("sandbox_list", Box::new(ListSandboxesTool));
+        registry.register("sandbox_create", Box::new(CreateSandboxTool));
+        registry.register("sandbox_exec", Box::new(ExecSandboxTool));
+        registry.register("sandbox_write_file", Box::new(WriteSandboxFileTool));
+        registry.register("sandbox_read_file", Box::new(ReadSandboxFileTool));
+        registry.register("sandbox_kill", Box::new(KillSandboxTool));
         registry.register("cancel_deployment", Box::new(CancelDeploymentTool));
 
         // Phase 3: Cloud tools
