@@ -16,7 +16,7 @@ use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgPool;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
@@ -710,6 +710,27 @@ pub(crate) async fn enrich_deploy_app_with_compose(
         }
     }
 
+    // Compose `${VAR...}` interpolation is fed from the `.env` next to the
+    // compose file (env_file: never feeds interpolation) — the agent writes
+    // params.env_vars there on deploy. The whole compose is interpolated at
+    // once, so an aggregated stack needs every service's environment, not
+    // just the target app's.
+    if let Some(project_id) = project_id {
+        match render_project_runtime_env(pg_pool, project_id, vault_settings).await {
+            Ok(project_env) => {
+                if insert_project_runtime_env_vars(&mut params, &project_env) {
+                    tracing::info!(
+                        deployment_hash = %deployment_hash,
+                        app_code = %app_code,
+                        env_var_count = project_env.len(),
+                        "Enriched deploy_app command with project runtime env for compose interpolation"
+                    );
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
     Ok(Some(params))
 }
 
@@ -1294,6 +1315,49 @@ mod tests {
             "app_code": "upload"
         })))
         .is_none());
+    }
+
+    #[test]
+    fn insert_project_runtime_env_vars_feeds_aggregated_compose_interpolation() {
+        // Regression: an interpolated compose resolves ${VAR} for the whole
+        // file at once (services.database.environment.POSTGRES_PASSWORD was
+        // failing while only one service's env was delivered), so params must
+        // receive the union of every service's environment.
+        let mut params = serde_json::json!({ "app_code": "upload", "pull": true });
+        let union = HashMap::from([
+            ("S3_TEST_MARKER".to_string(), "test-123".to_string()),
+            ("POSTGRES_PASSWORD".to_string(), "pg-secret".to_string()),
+            ("ZITADEL_MASTERKEY".to_string(), "z-secret".to_string()),
+        ]);
+
+        assert!(insert_project_runtime_env_vars(&mut params, &union));
+
+        let env_vars = params.get("env_vars").expect("env_vars inserted");
+        assert_eq!(env_vars.get("S3_TEST_MARKER").unwrap(), "test-123");
+        assert_eq!(env_vars.get("POSTGRES_PASSWORD").unwrap(), "pg-secret");
+        assert_eq!(env_vars.get("ZITADEL_MASTERKEY").unwrap(), "z-secret");
+        assert_eq!(params.get("pull").unwrap(), true, "other params survive");
+    }
+
+    #[test]
+    fn insert_project_runtime_env_vars_keeps_caller_provided_env_vars() {
+        let mut params = serde_json::json!({ "env_vars": { "CALLER": "wins" } });
+        let union = HashMap::from([("OTHER".to_string(), "value".to_string())]);
+
+        assert!(!insert_project_runtime_env_vars(&mut params, &union));
+        assert_eq!(params["env_vars"]["CALLER"], "wins");
+        assert!(params["env_vars"].get("OTHER").is_none());
+    }
+
+    #[test]
+    fn insert_project_runtime_env_vars_ignores_empty_union() {
+        let mut params = serde_json::json!({ "app_code": "upload" });
+
+        assert!(!insert_project_runtime_env_vars(
+            &mut params,
+            &HashMap::new()
+        ));
+        assert!(params.get("env_vars").is_none());
     }
 
     #[test]

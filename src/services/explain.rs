@@ -134,8 +134,13 @@ pub fn build_explain_topology(
         runtime_env_path: runtime_env_path.to_string(),
         services,
         reasoning: vec![
-            "runtime compose path is fixed to the canonical remote deployment location".to_string(),
-            "runtime env path is shared across deployed services for the target deployment"
+            "runtime compose path is the canonical managed layout; own-server agents \
+             resolve the compose dir at deploy time (COMPOSE_PROJECT_DIR -> container \
+             labels -> /home/trydirect/<deployment-hash>|project|<app-code>)"
+                .to_string(),
+            "runtime env is written as <compose-dir>/.env next to the deployed compose \
+             and is shared across deployed services for the target deployment; it is \
+             the only source of compose ${VAR} interpolation"
                 .to_string(),
         ],
     }
@@ -272,5 +277,18 @@ mod tests {
             "/home/trydirect/test-project/.env"
         );
         assert_eq!(topology.services.len(), 2);
+
+        // Regression: the reasoning must not claim the canonical path is the
+        // fixed runtime location — own-server agents resolve the compose dir
+        // at deploy time and the env is written next to the deployed compose.
+        let reasoning = topology.reasoning.join(" ");
+        assert!(
+            reasoning.contains("resolve the compose dir at deploy time"),
+            "reasoning must explain agent-side path resolution: {reasoning}"
+        );
+        assert!(
+            reasoning.contains("<compose-dir>/.env"),
+            "reasoning must name the compose-adjacent runtime env: {reasoning}"
+        );
     }
 }

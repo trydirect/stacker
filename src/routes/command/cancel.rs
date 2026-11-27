@@ -85,6 +85,6 @@ pub async fn cancel_handler(
     );
 
     Ok(JsonResponse::build()
-        .set_item(Some(cancelled_command))
+        .set_item(Some(cancelled_command.redacted_for_view()))
         .ok("Command cancelled successfully"))
 }
