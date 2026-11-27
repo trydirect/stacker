@@ -352,8 +352,30 @@ fn validate_env(environment: &BTreeMap<String, String>) -> std::result::Result<(
 fn validated_runtime_env_union(
     merged: BTreeMap<String, String>,
 ) -> Result<HashMap<String, String>> {
-    validate_env(&merged)?;
-    Ok(merged.into_iter().collect())
+    // Reserved/stacker-owned keys (STACKER_/DOCKER_/VAULT_/AGENT_ prefixes,
+    // DEPLOYMENT_HASH) can never be legal rendered env keys — but they
+    // legitimately live in infra services' environments (e.g.
+    // VAULT_DEV_LISTEN_ADDRESS for the vault container). One such key must
+    // not poison the union and fail deploy_app/secrets push for every
+    // service in the project: drop them from the union instead. They are set
+    // literally under `environment:` in the compose, so nothing is lost.
+    let mut reserved_keys: Vec<String> = Vec::new();
+    let mut user = BTreeMap::new();
+    for (key, value) in merged {
+        if is_stacker_owned_env_key(&key) {
+            reserved_keys.push(key);
+        } else {
+            user.insert(key, value);
+        }
+    }
+    if !reserved_keys.is_empty() {
+        tracing::warn!(
+            ?reserved_keys,
+            "Dropping reserved/stacker-owned keys from the project runtime env union"
+        );
+    }
+    validate_env(&user)?;
+    Ok(user.into_iter().collect())
 }
 
 fn is_valid_env_key(key: &str) -> bool {
@@ -1601,6 +1623,26 @@ mod tests {
         let union = validated_runtime_env_union(merged).expect("clean union passes");
         assert_eq!(union.len(), 2);
         assert_eq!(union["POSTGRES_PASSWORD"], "pg-secret");
+    }
+
+    #[test]
+    fn validated_runtime_env_union_skips_reserved_keys_instead_of_failing() {
+        // Regression: one infra key (e.g. VAULT_DEV_LISTEN_ADDRESS from the
+        // vault service environment) failed the whole render with "Reserved
+        // env key ... not allowed", breaking deploy_app / secrets push for
+        // every service in the project. Reserved/stacker-owned keys are
+        // dropped from the union instead; user keys still validate.
+        let merged = BTreeMap::from([
+            (
+                "VAULT_DEV_LISTEN_ADDRESS".to_string(),
+                "0.0.0.0:8200".to_string(),
+            ),
+            ("S3_TEST_MARKER".to_string(), "test-123".to_string()),
+        ]);
+        let union = validated_runtime_env_union(merged).expect("reserved keys must be skipped");
+        assert_eq!(union.len(), 1);
+        assert_eq!(union["S3_TEST_MARKER"], "test-123");
+        assert!(!union.contains_key("VAULT_DEV_LISTEN_ADDRESS"));
     }
 
     #[test]
