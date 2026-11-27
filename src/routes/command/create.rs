@@ -771,6 +771,65 @@ fn merge_and_emit_runtime_env(
     merged
 }
 
+/// Insert the project runtime env union into `params.env_vars` so the agent
+/// writes it to the `.env` next to the compose file — the only file compose
+/// `${VAR}` interpolation reads. A non-empty caller-provided `env_vars` wins
+/// (a present but empty object counts as not provided); an empty union is
+/// ignored.
+fn insert_project_runtime_env_vars(
+    params: &mut serde_json::Value,
+    env: &HashMap<String, String>,
+) -> bool {
+    let has_env_vars = params
+        .get("env_vars")
+        .and_then(|value| value.as_object())
+        .map(|map| !map.is_empty())
+        .unwrap_or(false);
+    if has_env_vars || env.is_empty() {
+        return false;
+    }
+    if let Some(obj) = params.as_object_mut() {
+        obj.insert("env_vars".to_string(), json!(env));
+        return true;
+    }
+    false
+}
+
+/// Render the project-level runtime env union (all enabled apps) for compose
+/// interpolation. Mirrors `render_project_env_for_deploy_app`'s setup.
+async fn render_project_runtime_env(
+    pg_pool: &PgPool,
+    project_id: i32,
+    vault_settings: &crate::configuration::VaultSettings,
+) -> Result<HashMap<String, String>, String> {
+    let project = match db::project::fetch(pg_pool, project_id).await {
+        Ok(Some(project)) => project,
+        Ok(None) => {
+            tracing::warn!(
+                project_id,
+                "Cannot render project runtime env because project was not found"
+            );
+            return Ok(HashMap::new());
+        }
+        Err(error) => {
+            return Err(format!(
+                "failed to render project runtime env: project fetch failed: {error}"
+            ));
+        }
+    };
+
+    let vault = VaultService::from_settings(vault_settings)
+        .map_err(|error| format!("failed to initialize Vault for project runtime env: {error}"))?;
+    let renderer = ConfigRenderer::with_vault(vault).map_err(|error| {
+        format!("failed to initialize ConfigRenderer for project runtime env: {error}")
+    })?;
+
+    renderer
+        .resolve_project_runtime_env(pg_pool, &project)
+        .await
+        .map_err(|error| format!("failed to render project runtime env: {error}"))
+}
+
 fn merge_rendered_env_into_app_env_files(
     config_files: &mut [serde_json::Value],
     compose_content: Option<&str>,
