@@ -108,14 +108,16 @@ Each deployment receives its own Vault token, scoped to only access that deploym
    - Status Panel receives complete config set ready to write
 
 4. **Runtime** (Status Panel Agent):
-   - Writes the runtime env payload to `/home/trydirect/project/.env` with
-     `0600` permissions
+   - Writes the project runtime env union (`params.env_vars`) to the `.env` next
+     to the compose it runs — it finds that directory on disk — replacing the
+     whole file. See [RUNTIME_ENV_DELIVERY.md](RUNTIME_ENV_DELIVERY.md) for the
+     layers, both deploy paths and the compose path convention
    - Uses compose-relative `env_file: .env` for generated compose files
-   - For app-local compose files such as `<app>/docker/<env>/compose.yml`, writes
-     bundled config files under `/opt/stacker/deployments/<env>/files/...`; if
-     that compose file references an app-local `.env`, the file contains the
-     local `.env` content plus the Vault-rendered service secrets for the same
-     app target
+   - For app-local compose files such as `<app>/docker/<env>/compose.yml`, the
+     `.env` that compose references receives the local `.env` content plus the
+     Vault-rendered service secrets for the same app target. Older servers also
+     have bundled files under `/opt/stacker/deployments/<env>/files/...`; no
+     current writer of that location was found in the CLI or server code
    - Refuses to overwrite drifted env content unless the command is forced
    - Agent reads `VAULT_TOKEN` from environment on startup
    - Fetches configs via `VaultClient.fetch_app_config()`
@@ -289,8 +291,11 @@ vault.store_app_config(deployment_hash, &format!("{}_configs", app_code), &bundl
 // 2. Fetch bundled configs: {app_code}_configs key (or fallback to _config)
 // 3. Render runtime env from app env + remote service secrets
 // 4. Merge rendered env into app-local compose env_file entries when present
-// 5. Add canonical runtime env and bundled files to config_files array
-// 6. Send enriched command to Status Panel
+// 5. Render the project runtime env union into params.env_vars
+//    (authored app env < project env file < service secrets)
+// 6. Add bundled files to config_files; the single-app runtime env file is
+//    dropped once the union is delivered (RUNTIME_ENV_DELIVERY.md)
+// 7. Send enriched command to Status Panel
 ```
 
 When a CLI request already includes `compose_content` and config files from an

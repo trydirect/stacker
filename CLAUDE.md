@@ -131,6 +131,10 @@ reads `.env` from the project directory — two different mechanisms.)
 
 ## Runtime-env delivery (project/.env vs env_file)
 
+Full reference (both deploy paths, layers, drift guard, compose paths, debugging
+checklist): `docs/RUNTIME_ENV_DELIVERY.md`. Read it before changing `.env` or
+secret handling.
+
 Two distinct mechanisms, both needed — do not make them exclusive:
 
 - **`project/.env`** — the `${VAR:?…}` / `${VAR:-…}` **interpolation source**.
