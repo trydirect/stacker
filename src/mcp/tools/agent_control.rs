@@ -584,6 +584,9 @@ impl ToolHandler for GetAgentCommandHistoryTool {
             .into_iter()
             .take(limit)
             .map(|command| {
+                // Never echo secret-bearing fields at view level (get_env_vars
+                // redacts at the same access level).
+                let command = command.redacted_for_view();
                 json!({
                     "command_id": command.command_id,
                     "type": command.r#type,
