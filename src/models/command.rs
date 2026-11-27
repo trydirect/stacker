@@ -199,7 +199,7 @@ impl Command {
 /// a JSON document. Objects and arrays keep their shape and keys — only leaf
 /// scalars under a sensitive key are replaced with `<redacted>` (the same
 /// marker the status agent uses).
-fn redact_sensitive_json(value: &JsonValue) -> JsonValue {
+pub(crate) fn redact_sensitive_json(value: &JsonValue) -> JsonValue {
     match value {
         JsonValue::Object(map) => JsonValue::Object(
             map.iter()
