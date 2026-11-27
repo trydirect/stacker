@@ -1901,8 +1901,8 @@ AGENT_HOST=h
             &env_map(&[("B", "vault")]),
         );
 
-        // stacker.yml placeholders (e.g. POSTGRES_PASSWORD: postgres) must
-        // not shadow the project env file, and Vault secrets win over both.
+        // Placeholder values authored in stacker.yml must not shadow the
+        // project env file, and Vault secrets win over both.
         assert_eq!(layered["A"], "file");
         assert_eq!(layered["B"], "vault");
     }
@@ -1950,11 +1950,11 @@ AGENT_HOST=h
             ("PEM_KEY".to_string(), "line1\nline2".to_string()),
             ("CR_VALUE".to_string(), "a\rb".to_string()),
             ("BAD-KEY".to_string(), "x".to_string()),
-            ("POSTGRES_PASSWORD".to_string(), "s3cret".to_string()),
+            ("APP_SETTING".to_string(), "kept".to_string()),
         ]));
 
         assert_eq!(kept.len(), 1, "{kept:?}");
-        assert_eq!(kept["POSTGRES_PASSWORD"], "s3cret");
+        assert_eq!(kept["APP_SETTING"], "kept");
     }
 
     #[test]
