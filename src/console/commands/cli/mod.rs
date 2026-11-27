@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod ai;
+pub mod backup;
 pub mod ci;
 pub mod cloud_firewall;
 pub mod config;
@@ -14,6 +15,7 @@ pub mod login;
 pub mod logs;
 pub mod marketplace;
 pub mod monitor;
+pub mod notify;
 pub mod pipe;
 pub mod proxy;
 pub mod pull;

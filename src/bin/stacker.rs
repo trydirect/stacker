@@ -360,6 +360,16 @@ enum StackerCommands {
         #[arg(long)]
         deployment: Option<String>,
     },
+    /// Manage notification channels (slack/discord/telegram/email/webhook)
+    Notify {
+        #[command(subcommand)]
+        command: NotifyCommands,
+    },
+    /// Manage backups (destinations, jobs, runs)
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommands,
+    },
     /// Explain path and topology decisions
     Explain {
         #[command(subcommand)]
@@ -560,6 +570,70 @@ Use explicit --scope service or --scope server to activate remote mode.",
     Env {
         /// Environment to switch to. Omit to show current.
         environment: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum NotifyCommands {
+    /// Create a notification channel (secret is write-only, stored in Vault)
+    Add {
+        /// Channel name (unique per scope)
+        #[arg(long)]
+        name: String,
+        /// Channel type: slack | discord | telegram | email | webhook
+        #[arg(long = "type")]
+        channel_type: String,
+        /// Project id; omit for a global admin channel (root/group_admin only)
+        #[arg(long)]
+        project: Option<i32>,
+        /// Channel secret as JSON, e.g. '{"url":"https://hooks.example/..."}'
+        #[arg(long)]
+        secret: String,
+        /// Comma-separated event filter, e.g. deploy.failed,backup.failed
+        #[arg(long)]
+        events: Option<String>,
+    },
+    /// Send a test message through the channel
+    Test {
+        /// Channel id
+        #[arg(long)]
+        id: i32,
+    },
+    /// List your notification channels
+    List {
+        /// Filter by project id
+        #[arg(long)]
+        project: Option<i32>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum BackupCommands {
+    /// List backup jobs
+    List {
+        /// Filter by project id
+        #[arg(long)]
+        project: Option<i32>,
+    },
+    /// Trigger a backup run for a job
+    Run {
+        /// Job id
+        #[arg(long)]
+        id: i32,
+    },
+    /// List backup destinations
+    Destinations,
+    /// List runs for a job
+    Runs {
+        /// Job id
+        #[arg(long)]
+        job: i32,
+    },
+    /// Restore a specific run's archive
+    Restore {
+        /// Run id
+        #[arg(long)]
+        run: i32,
     },
 }
 
@@ -2265,6 +2339,44 @@ fn get_command(
                 once, interval, deployment,
             ),
         ),
+        StackerCommands::Notify { command } => match command {
+            NotifyCommands::Add {
+                name,
+                channel_type,
+                project,
+                secret,
+                events,
+            } => Box::new(stacker::console::commands::cli::notify::NotifyCommand::add(
+                name,
+                channel_type,
+                project,
+                secret,
+                events,
+            )),
+            NotifyCommands::Test { id } => {
+                Box::new(stacker::console::commands::cli::notify::NotifyCommand::test(id))
+            }
+            NotifyCommands::List { project } => {
+                Box::new(stacker::console::commands::cli::notify::NotifyCommand::list(project))
+            }
+        },
+        StackerCommands::Backup { command } => match command {
+            BackupCommands::List { project } => {
+                Box::new(stacker::console::commands::cli::backup::BackupCommand::list(project))
+            }
+            BackupCommands::Run { id } => {
+                Box::new(stacker::console::commands::cli::backup::BackupCommand::trigger(id))
+            }
+            BackupCommands::Destinations => {
+                Box::new(stacker::console::commands::cli::backup::BackupCommand::destinations())
+            }
+            BackupCommands::Runs { job } => {
+                Box::new(stacker::console::commands::cli::backup::BackupCommand::runs(job))
+            }
+            BackupCommands::Restore { run } => {
+                Box::new(stacker::console::commands::cli::backup::BackupCommand::restore(run))
+            }
+        },
         StackerCommands::Deployment { command } => match command {
             DeploymentCommands::State {
                 json,

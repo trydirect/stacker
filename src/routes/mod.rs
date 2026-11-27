@@ -17,11 +17,15 @@ pub(crate) mod test;
 pub use health_checks::{health_check, health_metrics, prometheus_metrics};
 pub(crate) mod cloud;
 pub(crate) mod project;
+pub(crate) mod sandbox;
 pub(crate) mod server;
 
 pub(crate) mod agreement;
+pub(crate) mod backup;
 pub(crate) mod chat;
+pub(crate) mod github;
 pub(crate) mod marketplace;
+pub(crate) mod notification;
 
 pub use project::*;
 

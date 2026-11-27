@@ -1,7 +1,10 @@
 pub(crate) mod agreement;
+pub mod backup;
 pub(crate) mod cloud;
 pub mod cloud_firewall;
 pub mod firewall;
+pub mod github;
+pub mod notification;
 pub mod project;
 pub mod rating;
 pub mod remote_secret;
@@ -9,9 +12,12 @@ pub(crate) mod server;
 pub mod status_panel;
 pub mod user;
 
+pub use backup::*;
 pub use cloud::*;
 pub use cloud_firewall::*;
 pub use firewall::*;
+pub use github::*;
+pub use notification::*;
 pub use remote_secret::*;
 pub use server::*;
 pub use user::UserForm;

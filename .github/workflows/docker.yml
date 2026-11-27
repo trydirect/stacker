@@ -50,11 +50,28 @@ jobs:
           --health-retries 5
     env:
       SQLX_OFFLINE: true
+      # The runner's disk ran out mid-build on 2026-11-24 (run 45365371063):
+      # `rustc-LLVM ERROR: IO failure on output stream: No space left on
+      # device` while compiling test binaries, and `ld` died with SIGBUS
+      # (Bus error) writing its temp files. Debug info is the bulk of
+      # target/debug — check and test without it. Backtraces lose symbols;
+      # panic messages and locations stay.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      # Incremental caches are large and worthless here: a fresh container
+      # per run, and rust-cache restores the compiled crates anyway.
+      CARGO_INCREMENTAL: "0"
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
         with:
           ref: ${{ github.ref }}
+      # Reclaim disk for the large Rust build (see rust.yml).
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
       - name: Export PostgreSQL connection env
         run: |
           # Inside a job container, services resolve by name on the shared
@@ -112,6 +129,9 @@ jobs:
           done
           echo "PostgreSQL did not become ready in time" >&2
           exit 1
+
+      - name: Disk before the build
+        run: df -h /
 
       - name: Cargo check
         uses: actions-rs/cargo@v1

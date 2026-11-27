@@ -43,6 +43,8 @@ pub struct App {
     pub popularity: Option<u32>,
     pub commercial: Option<bool>,
     pub subscription: Option<Value>,
+    /// Superseded by `github_repo.autodeploy` (WS-G G4): auto-deploy is a
+    /// property of a connected repository, not of the catalog entry.
     pub autodeploy: Option<bool>,
     pub suggested: Option<bool>,
     pub dependency: Option<Value>,

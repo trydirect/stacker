@@ -612,6 +612,45 @@ const ROUTES: &[(&str, &str, Kind, &str)] = &[
     ("POST", "/api/v1/agent/commands/report", Agent, ""),
     ("GET", "/api/v1/agent/notifications", Agent, ""),
     ("POST", "/api/v1/agent/audit", Agent, ""),
+    // notifications (WS-N)
+    ("GET", "/api/v1/notifications/channels", Own, ""),
+    ("POST", "/api/v1/notifications/channels", Own, ""),
+    ("GET", "/api/v1/notifications/dispatches", Own, ""),
+    ("PATCH", "/api/v1/notifications/channels/{id}", Sweep, ""),
+    ("DELETE", "/api/v1/notifications/channels/{id}", Sweep, ""),
+    (
+        "POST",
+        "/api/v1/notifications/channels/{id}/test",
+        Sweep,
+        "",
+    ),
+    // github (WS-G)
+    ("GET", "/api/v1/github/repos", Own, ""),
+    ("POST", "/api/v1/github/repos", Own, ""),
+    ("PATCH", "/api/v1/github/repos/{id}", Sweep, ""),
+    ("DELETE", "/api/v1/github/repos/{id}", Sweep, ""),
+    ("POST", "/api/v1/github/webhook", Token, "webhook signature"),
+    // backups (WS-1)
+    ("GET", "/api/v1/backups/destinations", Own, ""),
+    ("POST", "/api/v1/backups/destinations", Own, ""),
+    ("DELETE", "/api/v1/backups/destinations/{id}", Sweep, ""),
+    ("GET", "/api/v1/backups/jobs", Own, ""),
+    ("POST", "/api/v1/backups/jobs", Own, ""),
+    ("GET", "/api/v1/backups/jobs/{id}", Sweep, ""),
+    ("PATCH", "/api/v1/backups/jobs/{id}", Sweep, ""),
+    ("DELETE", "/api/v1/backups/jobs/{id}", Sweep, ""),
+    ("GET", "/api/v1/backups/jobs/{id}/runs", Sweep, ""),
+    ("POST", "/api/v1/backups/jobs/{id}/run", Sweep, ""),
+    ("POST", "/api/v1/backups/runs/{id}/restore", Sweep, ""),
+    // sandboxes (WS-S)
+    ("GET", "/api/v1/sandboxes", Own, ""),
+    ("POST", "/api/v1/sandboxes", Own, ""),
+    ("GET", "/api/v1/sandboxes/{id}", Sweep, ""),
+    ("DELETE", "/api/v1/sandboxes/{id}", Sweep, ""),
+    ("POST", "/api/v1/sandboxes/{id}/exec", Sweep, ""),
+    ("POST", "/api/v1/sandboxes/{id}/files", Sweep, ""),
+    ("GET", "/api/v1/sandboxes/{id}/files", Sweep, ""),
+    ("GET", "/api/v1/sandboxes/{id}/files/list", Sweep, ""),
 ];
 
 fn table() -> BTreeMap<(String, String), (Kind, &'static str)> {
@@ -885,6 +924,11 @@ impl Fixture {
             "server",
             "client",
             "rating",
+            "channel",
+            "repo",
+            "backupdest",
+            "backupjob",
+            "backuprun",
         ] {
             m.insert(key, MISSING_INT.to_string());
         }
@@ -896,6 +940,7 @@ impl Fixture {
             "pexecution",
             "pdlq",
             "step",
+            "sandbox",
         ] {
             m.insert(key, MISSING_UUID.to_string());
         }
@@ -1438,6 +1483,119 @@ fn sweep_requests() -> BTreeMap<(&'static str, &'static str), (&'static str, &'s
             "/api/v1/pipes/dlq/{pdlq}",
             "",
         ),
+        // notifications (WS-N)
+        (
+            "PATCH",
+            "/api/v1/notifications/channels/{id}",
+            "/api/v1/notifications/channels/{channel}",
+            "{}",
+        ),
+        (
+            "DELETE",
+            "/api/v1/notifications/channels/{id}",
+            "/api/v1/notifications/channels/{channel}",
+            "",
+        ),
+        (
+            "POST",
+            "/api/v1/notifications/channels/{id}/test",
+            "/api/v1/notifications/channels/{channel}/test",
+            "",
+        ),
+        // github (WS-G)
+        (
+            "PATCH",
+            "/api/v1/github/repos/{id}",
+            "/api/v1/github/repos/{repo}",
+            "{}",
+        ),
+        (
+            "DELETE",
+            "/api/v1/github/repos/{id}",
+            "/api/v1/github/repos/{repo}",
+            "",
+        ),
+        // backups (WS-1)
+        (
+            "DELETE",
+            "/api/v1/backups/destinations/{id}",
+            "/api/v1/backups/destinations/{backupdest}",
+            "",
+        ),
+        (
+            "GET",
+            "/api/v1/backups/jobs/{id}",
+            "/api/v1/backups/jobs/{backupjob}",
+            "",
+        ),
+        (
+            "PATCH",
+            "/api/v1/backups/jobs/{id}",
+            "/api/v1/backups/jobs/{backupjob}",
+            "{}",
+        ),
+        (
+            "DELETE",
+            "/api/v1/backups/jobs/{id}",
+            "/api/v1/backups/jobs/{backupjob}",
+            "",
+        ),
+        (
+            "GET",
+            "/api/v1/backups/jobs/{id}/runs",
+            "/api/v1/backups/jobs/{backupjob}/runs",
+            "",
+        ),
+        (
+            "POST",
+            "/api/v1/backups/jobs/{id}/run",
+            "/api/v1/backups/jobs/{backupjob}/run",
+            "{}",
+        ),
+        (
+            "POST",
+            "/api/v1/backups/runs/{id}/restore",
+            "/api/v1/backups/runs/{backuprun}/restore",
+            "{}",
+        ),
+        // sandboxes (WS-S) — bodies/queries must be valid so the request
+        // reaches the ownership check (a bad body 400s before it).
+        (
+            "GET",
+            "/api/v1/sandboxes/{id}",
+            "/api/v1/sandboxes/{sandbox}",
+            "",
+        ),
+        (
+            "DELETE",
+            "/api/v1/sandboxes/{id}",
+            "/api/v1/sandboxes/{sandbox}",
+            "",
+        ),
+        (
+            "POST",
+            "/api/v1/sandboxes/{id}/exec",
+            "/api/v1/sandboxes/{sandbox}/exec",
+            r#"{"command":"true"}"#,
+        ),
+        (
+            "POST",
+            "/api/v1/sandboxes/{id}/files",
+            "/api/v1/sandboxes/{sandbox}/files",
+            r#"{"path":"/tmp/a","contentBase64":"aGk="}"#,
+        ),
+        (
+            "GET",
+            "/api/v1/sandboxes/{id}/files",
+            "/api/v1/sandboxes/{sandbox}/files?path=/tmp",
+            "",
+        ),
+        (
+            "GET",
+            "/api/v1/sandboxes/{id}/files/list",
+            "/api/v1/sandboxes/{sandbox}/files/list?path=/tmp",
+            "",
+        ),
     ];
     let mut map = BTreeMap::new();
     for (method, path, url, body) in rows {
@@ -1509,6 +1667,12 @@ async fn seed(pool: &sqlx::PgPool) -> Fixture {
     let pdlq = insert_returning(pool, &format!("INSERT INTO dead_letter_queue (pipe_instance_id, error, created_by) VALUES ('{pinstance}', 'boom', $1) RETURNING id::text"), a).await;
     let step = insert_returning(pool, &format!("INSERT INTO pipe_dag_steps (pipe_template_id, name, step_type, config) SELECT '{ptemplate}', 'a-step', 'source', '{{}}'::jsonb WHERE $1 IS NOT NULL RETURNING id::text"), a).await;
     let command = insert_returning(pool, &format!("INSERT INTO commands (command_id, deployment_hash, type, status, parameters, created_by, created_at) VALUES ('cmd_matrix_a', '{HASH}', 'health', 'queued', '{{}}'::jsonb, $1, NOW()) RETURNING command_id"), a).await;
+    let channel = insert_returning(pool, "INSERT INTO notification_channel (user_id, name, channel_type, vault_path) VALUES ($1, 'matrix-a', 'webhook', 'secret/matrix/a') RETURNING id::text", a).await;
+    let repo = insert_returning(pool, "INSERT INTO github_repo (user_id, installation_id, repo, branch) VALUES ($1, 1, 'matrix/a', 'main') RETURNING id::text", a).await;
+    let backupdest = insert_returning(pool, "INSERT INTO backup_destination (user_id, name, endpoint, vault_path) VALUES ($1, 'matrix-a', 'https://b.example', 'backup/matrix-a') RETURNING id::text", a).await;
+    let backupjob = insert_returning(pool, &format!("INSERT INTO backup_job (user_id, project_id, destination_id, name, source, target, schedule) VALUES ($1, '{project}', '{backupdest}', 'matrix-a', 'postgres', 'shop-postgres-1', '0 3 * * *') RETURNING id::text"), a).await;
+    let backuprun = insert_returning(pool, &format!("INSERT INTO backup_run (job_id, project_id, status, remote_file_id) VALUES ('{backupjob}', '{project}', 'uploaded', 'matrix-a.bin') RETURNING id::text"), a).await;
+    let sandbox = insert_returning(pool, &format!("INSERT INTO sandbox (id, user_id, project_id, status, image) VALUES (gen_random_uuid(), $1, '{project}', 'running', 'alpine:3.20') RETURNING id::text"), a).await;
 
     let mut m = BTreeMap::new();
     m.insert("project", project.to_string());
@@ -1526,6 +1690,12 @@ async fn seed(pool: &sqlx::PgPool) -> Fixture {
     m.insert("pdlq", pdlq);
     m.insert("step", step);
     m.insert("command", command);
+    m.insert("channel", channel);
+    m.insert("repo", repo);
+    m.insert("backupdest", backupdest);
+    m.insert("backupjob", backupjob);
+    m.insert("backuprun", backuprun);
+    m.insert("sandbox", sandbox);
     Fixture(m)
 }
 

@@ -17,13 +17,14 @@ users wiring infrastructure, alerts, workflows, and service integrations.
 
 ### Notifications and chat
 
-- [ ] **Slack**
-  - Incoming webhook target
-  - Bot API target for richer messages, threads, and file uploads
-- [ ] **Telegram**
-  - Bot API target for alerts, approvals, and simple commands
-- [ ] **Discord**
-  - Webhook target for ops notifications and status feeds
+- [x] **Slack** — done 2026-11-24 (WS-N): incoming webhook target in
+  `crates/notification-core` (`src/services/notification.rs` routes it)
+  - [ ] Bot API target for richer messages, threads, and file uploads
+- [x] **Telegram** — done 2026-11-24 (WS-N): Bot API sendMessage target in
+  `crates/notification-core`
+  - [ ] Approvals and simple commands (interactive)
+- [x] **Discord** — done 2026-11-24 (WS-N): webhook target in
+  `crates/notification-core`
 - [ ] **Microsoft Teams**
   - Incoming webhook target for enterprise alerting
 

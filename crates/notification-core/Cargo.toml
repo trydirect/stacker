@@ -1,0 +1,17 @@
+[package]
+name = "notification-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pure notification channel logic for TryDirect Stacker: event shaping, channel payloads (Slack/Discord/Telegram/webhook), secret masking and error redaction, delivery with retry/backoff. No database, no Vault, no routing — the Stacker service drives persistence and auth."
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+hmac = "0.12.1"
+reqwest = { version = "0.11.23", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10.8"
+tokio = { version = "1", features = ["time"] }
+
+[features]
+default = []
