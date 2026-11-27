@@ -82,10 +82,11 @@ pub fn build_config_bundle(
     let compose_canonical = compose_path.canonicalize()?;
     ensure_inside_project(&project_root, &compose_canonical)?;
     // Relative bind-mount / env_file references inside the compose resolve against
-    // `reference_base`. For a user-supplied compose this is the compose's own
-    // directory (standard Docker Compose semantics); for a generated compose living
-    // under `.stacker/`, the caller passes the project root, because the paths were
-    // authored in stacker.yml relative to the project root, not the output dir.
+    // `reference_base`. For the project compose (user-supplied or generated under
+    // `.stacker/`) callers pass the project root: the remote compose runs from
+    // there, so its paths are project-root-relative. An app-local
+    // `<app>/docker/<env>/compose.yml` keeps its own directory. When the two
+    // bases disagree, see `compose_relative_conflict`.
     let reference_base = reference_base.canonicalize().map_err(|err| {
         validation_error(format!(
             "config bundle reference base directory does not exist or cannot be read: {} ({})",
@@ -133,9 +134,14 @@ pub fn build_config_bundle(
         None
     };
 
+    let compose_file_dir = compose_canonical
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| project_root.clone());
     rewrite_compose_references(
         &project_root,
         &reference_base,
+        &compose_file_dir,
         environment,
         &mut compose_yaml,
         &mut collected,
@@ -274,6 +280,7 @@ struct CollectedFile {
 fn rewrite_compose_references(
     project_root: &Path,
     compose_dir: &Path,
+    compose_file_dir: &Path,
     environment: &str,
     compose_yaml: &mut serde_yaml::Value,
     collected: &mut BTreeMap<PathBuf, CollectedFile>,
@@ -296,6 +303,7 @@ fn rewrite_compose_references(
             rewrite_env_file(
                 project_root,
                 compose_dir,
+                compose_file_dir,
                 environment,
                 env_file_value,
                 collected,
@@ -308,6 +316,7 @@ fn rewrite_compose_references(
             rewrite_volumes(
                 project_root,
                 compose_dir,
+                compose_file_dir,
                 environment,
                 volumes_value,
                 collected,
@@ -321,22 +330,27 @@ fn rewrite_compose_references(
 fn rewrite_env_file(
     project_root: &Path,
     compose_dir: &Path,
+    compose_file_dir: &Path,
     environment: &str,
     value: &mut serde_yaml::Value,
     collected: &mut BTreeMap<PathBuf, CollectedFile>,
 ) -> Result<(), CliError> {
+    let mut collect_env_file = |path: &str| -> Result<String, CliError> {
+        if let Some(conflict) =
+            compose_relative_conflict(project_root, compose_dir, compose_file_dir, path)
+        {
+            return Err(compose_relative_error("env_file", path, &conflict, ""));
+        }
+        collect_reference(project_root, compose_dir, environment, path, collected)
+    };
     match value {
         serde_yaml::Value::String(path) => {
-            let remote =
-                collect_reference(project_root, compose_dir, environment, path, collected)?;
-            *path = remote;
+            *path = collect_env_file(path)?;
         }
         serde_yaml::Value::Sequence(values) => {
             for item in values {
                 if let serde_yaml::Value::String(path) = item {
-                    let remote =
-                        collect_reference(project_root, compose_dir, environment, path, collected)?;
-                    *path = remote;
+                    *path = collect_env_file(path)?;
                 }
             }
         }
@@ -349,12 +363,32 @@ fn rewrite_env_file(
 fn rewrite_volumes(
     project_root: &Path,
     compose_dir: &Path,
+    compose_file_dir: &Path,
     environment: &str,
     value: &mut serde_yaml::Value,
     collected: &mut BTreeMap<PathBuf, CollectedFile>,
 ) -> Result<(), CliError> {
     let serde_yaml::Value::Sequence(volumes) = value else {
         return Ok(());
+    };
+    // A file source written compose-relative would otherwise be skipped as
+    // "created on the target" (an empty directory mounted over the file) or
+    // resolved to a different file at the root. Directories are never
+    // uploaded, so they keep the old behaviour. The suggestion keeps `./`:
+    // a bare relative source reads as a named volume.
+    let reject_compose_relative = |source: &str| -> Result<(), CliError> {
+        if !compose_file_dir.join(source).is_file() {
+            return Ok(());
+        }
+        match compose_relative_conflict(project_root, compose_dir, compose_file_dir, source) {
+            Some(conflict) => Err(compose_relative_error(
+                "bind mount source",
+                source,
+                &conflict,
+                "./",
+            )),
+            None => Ok(()),
+        }
     };
 
     for volume in volumes {
@@ -366,6 +400,7 @@ fn rewrite_volumes(
             // Only project-local files are bundled. Directory mounts, host
             // paths, and not-present sources are runtime volumes managed on the
             // target host, so leave the entry unchanged.
+            reject_compose_relative(source)?;
             if let Some(remote) =
                 collect_volume_reference(project_root, compose_dir, environment, source, collected)?
             {
@@ -384,6 +419,7 @@ fn rewrite_volumes(
                 Some(s) => s.to_string(),
                 None => continue,
             };
+            reject_compose_relative(&source_val)?;
             if let Some(remote) = collect_volume_reference(
                 project_root,
                 compose_dir,
@@ -397,6 +433,84 @@ fn rewrite_volumes(
     }
 
     Ok(())
+}
+
+/// How a compose path relates to the compose file's own directory when that
+/// differs from `base_dir` (the project root Stacker resolves compose paths
+/// from). Only ever turned into an error, never used to resolve silently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ComposeRelative {
+    /// Exists only next to the compose file: it was written compose-relative.
+    /// `suggestion` is the project-root-relative path to write instead.
+    Missing { suggestion: String },
+    /// Exists from both bases as different files: resolving from the root
+    /// would silently pick another file (e.g. a dev `.env` at the root).
+    Ambiguous { root: String, compose: String },
+}
+
+impl ComposeRelative {
+    /// Project-root-relative path of the file next to the compose.
+    pub(crate) fn compose_side(&self) -> &str {
+        match self {
+            ComposeRelative::Missing { suggestion } => suggestion,
+            ComposeRelative::Ambiguous { compose, .. } => compose,
+        }
+    }
+}
+
+pub(crate) fn compose_relative_conflict(
+    project_root: &Path,
+    base_dir: &Path,
+    compose_file_dir: &Path,
+    reference: &str,
+) -> Option<ComposeRelative> {
+    let path = Path::new(reference);
+    if path.is_absolute() || reference.starts_with('~') {
+        return None;
+    }
+    let canonical_or_self = |dir: &Path| dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let project_root = canonical_or_self(project_root);
+    let base_dir = canonical_or_self(base_dir);
+    let compose_file_dir = canonical_or_self(compose_file_dir);
+    if base_dir == compose_file_dir {
+        return None;
+    }
+    let compose_side = compose_file_dir.join(path).canonicalize().ok()?;
+    if !compose_side.starts_with(&project_root) {
+        return None;
+    }
+    let compose = display_project_path(&project_root, &compose_side);
+    match base_dir.join(path).canonicalize() {
+        Ok(root_side) if root_side == compose_side => None,
+        Ok(root_side) => Some(ComposeRelative::Ambiguous {
+            root: display_project_path(&project_root, &root_side),
+            compose,
+        }),
+        Err(_) => Some(ComposeRelative::Missing {
+            suggestion: compose,
+        }),
+    }
+}
+
+/// `prefix` is prepended to suggested paths (`"./"` for bind-mount sources).
+pub(crate) fn compose_relative_error(
+    kind: &str,
+    reference: &str,
+    conflict: &ComposeRelative,
+    prefix: &str,
+) -> CliError {
+    match conflict {
+        ComposeRelative::Missing { suggestion } => validation_error(format!(
+            "{kind} '{reference}' does not exist relative to the project root (compose paths are \
+             project-root-relative); it exists relative to the compose file — write it as \
+             '{prefix}{suggestion}'"
+        )),
+        ComposeRelative::Ambiguous { root, compose } => validation_error(format!(
+            "{kind} '{reference}' is ambiguous: compose paths are project-root-relative, so it \
+             means '{prefix}{root}', but '{prefix}{compose}' exists next to the compose file — \
+             write '{prefix}{compose}' if that is the file you mean, or rename one of them"
+        )),
+    }
 }
 
 fn parse_bind_mount(volume_spec: &str) -> Option<(&str, &str)> {
@@ -941,6 +1055,105 @@ services:
             })
             .expect("selected env file should also be uploaded as compose root .env");
         assert_eq!(root_env["content"], "RUST_LOG=warning\n");
+    }
+
+    /// Project layout with the compose in a subdirectory and the project root
+    /// as the reference base — the convention Stacker deploys with (the remote
+    /// compose runs from the project root).
+    fn subdir_compose_project(compose: &str) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let compose_dir = dir.path().join("docker/prod");
+        std::fs::create_dir_all(&compose_dir).unwrap();
+        std::fs::create_dir_all(dir.path().join("svc/docker/prod")).unwrap();
+        std::fs::write(compose_dir.join(".env"), "IMAGE=x\n").unwrap();
+        std::fs::write(compose_dir.join("nginx.conf"), "events {}\n").unwrap();
+        std::fs::write(dir.path().join("svc/docker/prod/.env"), "RUST_LOG=info\n").unwrap();
+        std::fs::write(dir.path().join("svc/docker/prod/app.toml"), "a = 1\n").unwrap();
+        std::fs::write(compose_dir.join("compose.yml"), compose).unwrap();
+        dir
+    }
+
+    fn build_from_root(dir: &TempDir) -> Result<ConfigBundleArtifacts, CliError> {
+        build_config_bundle(
+            dir.path(),
+            "prod",
+            &dir.path().join("docker/prod/compose.yml"),
+            None,
+            dir.path(),
+            false,
+        )
+    }
+
+    #[test]
+    fn build_config_bundle_resolves_subdir_compose_refs_from_project_root() {
+        let dir = subdir_compose_project(
+            "services:\n  svc:\n    image: svc\n    env_file: svc/docker/prod/.env\n    volumes:\n      - ./svc/docker/prod/app.toml:/app/app.toml:ro\n",
+        );
+
+        let artifacts = build_from_root(&dir).expect("root-relative refs should bundle");
+
+        let sources: Vec<&str> = artifacts
+            .manifest
+            .files
+            .iter()
+            .map(|file| file.source_path.as_str())
+            .collect();
+        assert!(sources.contains(&"svc/docker/prod/.env"), "{sources:?}");
+        assert!(sources.contains(&"svc/docker/prod/app.toml"), "{sources:?}");
+    }
+
+    #[test]
+    fn build_config_bundle_suggests_root_relative_path_for_compose_relative_env_file() {
+        let dir = subdir_compose_project("services:\n  svc:\n    image: svc\n    env_file: .env\n");
+
+        let message = build_from_root(&dir)
+            .expect_err("a compose-relative env_file must not resolve from the root")
+            .to_string();
+
+        assert!(message.contains("'docker/prod/.env'"), "{message}");
+        assert!(message.contains("project-root-relative"), "{message}");
+    }
+
+    #[test]
+    fn build_config_bundle_suggests_root_relative_path_for_compose_relative_bind_mount() {
+        // Before: the missing source was skipped silently as "created on the
+        // target", so Docker would mount an empty directory over the file.
+        let dir = subdir_compose_project(
+            "services:\n  svc:\n    image: svc\n    volumes:\n      - ./nginx.conf:/etc/nginx/nginx.conf:ro\n",
+        );
+
+        let message = build_from_root(&dir)
+            .expect_err("a compose-relative bind mount must not be skipped silently")
+            .to_string();
+
+        assert!(message.contains("'./docker/prod/nginx.conf'"), "{message}");
+    }
+
+    #[test]
+    fn build_config_bundle_rejects_an_env_file_that_resolves_differently_from_each_base() {
+        // A dev `.env` at the root and the prod one next to the compose:
+        // resolving `.env` from the root must not ship the dev file silently.
+        let dir = subdir_compose_project("services:\n  svc:\n    image: svc\n    env_file: .env\n");
+        std::fs::write(dir.path().join(".env"), "DEV=1\n").unwrap();
+
+        let message = build_from_root(&dir)
+            .expect_err("an ambiguous env_file must not resolve silently")
+            .to_string();
+
+        assert!(message.contains("ambiguous"), "{message}");
+        assert!(message.contains("'docker/prod/.env'"), "{message}");
+    }
+
+    #[test]
+    fn build_config_bundle_keeps_compose_relative_directory_mounts_working() {
+        // Directories are never uploaded (created on the target), so a
+        // directory next to the compose must not block the deploy.
+        let dir = subdir_compose_project(
+            "services:\n  svc:\n    image: svc\n    volumes:\n      - ./data:/data\n",
+        );
+        std::fs::create_dir_all(dir.path().join("docker/prod/data")).unwrap();
+
+        build_from_root(&dir).expect("a directory mount stays a runtime volume");
     }
 
     #[test]
