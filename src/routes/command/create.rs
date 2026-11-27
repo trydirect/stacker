@@ -716,7 +716,16 @@ pub(crate) async fn enrich_deploy_app_with_compose(
     // once, so an aggregated stack needs every service's environment, not
     // just the target app's.
     if let Some(project_id) = project_id {
-        match render_project_runtime_env(pg_pool, project_id, vault_settings).await {
+        let command_config_files = params.get("config_files").cloned();
+        match render_project_runtime_env(
+            pg_pool,
+            project_id,
+            deployment_hash,
+            vault_settings,
+            command_config_files.as_ref(),
+        )
+        .await
+        {
             Ok(project_env) => {
                 if insert_project_runtime_env_vars(&mut params, &project_env) {
                     tracing::info!(
@@ -797,12 +806,33 @@ fn insert_project_runtime_env_vars(
     false
 }
 
+/// The project env file to layer into the runtime env union: the `.env` this
+/// deploy_app carries (fresh from the CLI) or, when it carries none — an app
+/// with its own compose ships only its own files — the copy `stacker deploy`
+/// stored in the deployment record's metadata (`config_files`).
+fn project_env_file_for_union(
+    command_config_files: Option<&serde_json::Value>,
+    deployment_metadata: Option<&serde_json::Value>,
+) -> Option<String> {
+    use crate::services::config_renderer::project_env_file_content;
+    command_config_files
+        .and_then(project_env_file_content)
+        .or_else(|| {
+            deployment_metadata
+                .and_then(|metadata| metadata.get("config_files"))
+                .and_then(project_env_file_content)
+        })
+        .map(str::to_string)
+}
+
 /// Render the project-level runtime env union (all enabled apps) for compose
 /// interpolation. Mirrors `render_project_env_for_deploy_app`'s setup.
 async fn render_project_runtime_env(
     pg_pool: &PgPool,
     project_id: i32,
+    deployment_hash: &str,
     vault_settings: &crate::configuration::VaultSettings,
+    command_config_files: Option<&serde_json::Value>,
 ) -> Result<HashMap<String, String>, String> {
     let project = match db::project::fetch(pg_pool, project_id).await {
         Ok(Some(project)) => project,
@@ -826,8 +856,21 @@ async fn render_project_runtime_env(
         format!("failed to initialize ConfigRenderer for project runtime env: {error}")
     })?;
 
+    let deployment_metadata = match command_config_files
+        .and_then(crate::services::config_renderer::project_env_file_content)
+    {
+        Some(_) => None,
+        None => db::deployment::fetch_by_deployment_hash(pg_pool, deployment_hash)
+            .await
+            .map_err(|error| {
+                format!("failed to render project runtime env: deployment fetch failed: {error}")
+            })?
+            .map(|deployment| deployment.metadata),
+    };
+    let project_env_file =
+        project_env_file_for_union(command_config_files, deployment_metadata.as_ref());
     renderer
-        .resolve_project_runtime_env(pg_pool, &project)
+        .resolve_project_runtime_env(pg_pool, &project, project_env_file.as_deref())
         .await
         .map_err(|error| format!("failed to render project runtime env: {error}"))
 }
@@ -1419,6 +1462,36 @@ mod tests {
             &HashMap::new()
         ));
         assert!(params.get("env_vars").is_none());
+    }
+
+    #[test]
+    fn project_env_file_for_union_prefers_the_file_the_cli_just_sent() {
+        let sent = serde_json::json!([{"destination_path": ".env", "content": "FRESH=1\n"}]);
+        let metadata = serde_json::json!({
+            "config_files": [{"destination_path": ".env", "content": "STORED=1\n"}]
+        });
+
+        assert_eq!(
+            project_env_file_for_union(Some(&sent), Some(&metadata)).as_deref(),
+            Some("FRESH=1\n")
+        );
+    }
+
+    #[test]
+    fn project_env_file_for_union_falls_back_to_the_last_stacker_deploy() {
+        // `stacker secrets push` for an app with its own compose sends no
+        // project `.env`; the copy `stacker deploy` stored in the deployment keeps
+        // keys like GRAFANA_ADMIN_PASSWORD in the union.
+        let sent = serde_json::json!([{"destination_path": "upload/docker/prod/.env", "content": "A=1\n"}]);
+        let metadata = serde_json::json!({
+            "config_files": [{"destination_path": ".env", "content": "STORED=1\n"}]
+        });
+
+        assert_eq!(
+            project_env_file_for_union(Some(&sent), Some(&metadata)).as_deref(),
+            Some("STORED=1\n")
+        );
+        assert_eq!(project_env_file_for_union(None, None), None);
     }
 
     #[test]

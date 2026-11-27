@@ -1223,6 +1223,92 @@ fn embedded_marketplace_compose(metadata: &serde_json::Value) -> Option<String> 
     compose_content_from_config_files(cf).ok().flatten()
 }
 
+/// The project env file (the `.env` config file a CLI deploy ships next to the
+/// compose) with the project's Vault service secrets layered in, so the remote
+/// `docker compose up` can interpolate `${VAR:?}`. `None` — the deploy ships
+/// exactly what it did before — when there is no project env file or no
+/// service secret. Contacts Vault only if the project has service secrets;
+/// fails when it has them and Vault cannot be read, instead of shipping a
+/// `.env` that silently omits them.
+async fn render_full_deploy_env_file(
+    pg_pool: &PgPool,
+    settings: &Settings,
+    project: &models::Project,
+) -> Result<Option<String>, String> {
+    use services::config_renderer::project_env_file_content;
+
+    let Some(project_env_file) = project
+        .metadata
+        .get("config_files")
+        .and_then(project_env_file_content)
+    else {
+        return Ok(None);
+    };
+    let renderer = match services::VaultService::from_settings(&settings.vault) {
+        Ok(vault) => services::ConfigRenderer::with_vault(vault),
+        Err(_) => services::ConfigRenderer::new(),
+    }
+    .map_err(|error| format!("Failed to initialize the config renderer: {error}"))?;
+    let secrets = renderer
+        .resolve_project_service_secrets(pg_pool, project)
+        .await
+        .map_err(|error| format!("Failed to render service secrets for the deploy: {error}"))?;
+    Ok(env_file_for_dispatch(project_env_file, &secrets))
+}
+
+/// `None` when there is nothing to add, so a project without service secrets
+/// keeps its `.env` (content and file mode) exactly as the CLI sent it.
+fn env_file_for_dispatch(
+    project_env_file: &str,
+    secrets: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    if secrets.is_empty() {
+        return None;
+    }
+    Some(services::config_renderer::layer_secrets_into_env_file(
+        project_env_file,
+        secrets,
+    ))
+}
+
+/// A copy of `project` for the install payload whose `.env` config file
+/// carries `env_file`. Only this copy may hold secrets: the original project's
+/// metadata is what the deployment record stores.
+fn dispatch_project_with_env_file(
+    project: &models::Project,
+    env_file: Option<&str>,
+) -> models::Project {
+    let mut dispatch = project.clone();
+    let Some(env_file) = env_file else {
+        return dispatch;
+    };
+    // The install service stages `config_files` and also archives
+    // `custom.marketplace_config_files` (where `apply_deploy_bundle` copied the
+    // same `.env`); update both so neither writes the secret-less copy last.
+    // The file now carries secrets: owner-only, like the agent writes it.
+    let targets = [
+        (&["config_files"][..], "destination_path", "file_mode"),
+        (&["custom", "marketplace_config_files"][..], "path", "mode"),
+    ];
+    for (location, path_key, mode_key) in targets {
+        let mut files = Some(&mut dispatch.metadata);
+        for key in location {
+            files = files.and_then(|value| value.get_mut(*key));
+        }
+        let Some(files) = files.and_then(serde_json::Value::as_array_mut) else {
+            continue;
+        };
+        for file in files
+            .iter_mut()
+            .filter(|file| file.get(path_key).and_then(serde_json::Value::as_str) == Some(".env"))
+        {
+            file["content"] = serde_json::Value::String(env_file.to_string());
+            file[mode_key] = serde_json::Value::String("0600".to_string());
+        }
+    }
+    dispatch
+}
+
 async fn load_project_template_version(
     pg_pool: &PgPool,
     project: &models::Project,
@@ -1398,6 +1484,13 @@ async fn execute_deployment(
         ));
     }
 
+    // Render before the deployment record exists, so a Vault failure stops the
+    // deploy without leaving a pending record. The result goes only into the
+    // install payload copy below — never into `json_request`/`dc.project`.
+    let dispatch_env_file = render_full_deploy_env_file(pg_pool, settings, &dc.project)
+        .await
+        .map_err(|error| JsonResponse::<models::Project>::build().internal_server_error(error))?;
+
     let mut json_request = dc.project.metadata.clone();
     // Firewall public ports come from two sources that must be merged:
     //   1. explicit `public_ports` sent by the client — the CLI populates these
@@ -1518,6 +1611,8 @@ async fn execute_deployment(
             .map_or(false, |p| !p.is_empty());
     let firewall_server = server.clone();
     let firewall_cloud = cloud.clone();
+    let dispatch_project =
+        dispatch_project_with_env_file(&dc.project, dispatch_env_file.as_deref());
 
     let deploy_result = install_service
         .deploy(
@@ -1526,7 +1621,7 @@ async fn execute_deployment(
             id,
             deployment_id,
             deployment_hash.clone(),
-            &dc.project,
+            &dispatch_project,
             cloud,
             server,
             &form.stack,
@@ -2275,8 +2370,9 @@ mod tests {
     use super::{
         apply_deploy_bundle, build_runtime_artifact_bundle, compose_content_from_config_files,
         default_status_panel_npm_credentials, derive_public_ports_from_metadata,
-        embedded_marketplace_compose, ensure_trailing_newline, find_matching_hetzner_server,
-        hetzner_server_ip, preserve_marketplace_runtime_artifacts, resolve_provided_ssh_keypair,
+        dispatch_project_with_env_file, embedded_marketplace_compose, ensure_trailing_newline,
+        env_file_for_dispatch, find_matching_hetzner_server, hetzner_server_ip,
+        preserve_marketplace_runtime_artifacts, resolve_provided_ssh_keypair,
         should_seed_default_status_panel_npm_credentials, sync_runtime_artifact_bundle,
         validate_min_cpu_requirement, validate_min_disk_requirement, validate_min_ram_requirement,
         HetznerIpv4, HetznerPublicNet, HetznerServer,
@@ -2529,6 +2625,100 @@ mod tests {
         .expect("compose should be discovered");
 
         assert!(compose.contains("syncopiaapp/website:latest"));
+    }
+
+    fn project_with_env_file(env_content: &str) -> models::Project {
+        models::Project::new(
+            "user-1".to_string(),
+            "syncopia".to_string(),
+            json!({
+                "config_files": [
+                    {"name": "docker-compose.yml", "destination_path": "docker-compose.yml", "content": "services: {}\n"},
+                    {"name": ".env", "destination_path": ".env", "content": env_content},
+                    {"name": ".env", "destination_path": "upload/docker/prod/.env", "content": "APP=1\n"}
+                ],
+                "custom": {
+                    "marketplace_config_files": [
+                        {"path": ".env", "content": env_content, "mode": "0644"},
+                        {"path": "upload/docker/prod/.env", "content": "APP=1\n"}
+                    ]
+                }
+            }),
+            json!({}),
+        )
+    }
+
+    #[test]
+    fn dispatch_project_carries_the_rendered_env_file_only_in_the_copy() {
+        // The secrets must reach the install payload but never the project
+        // whose metadata is written to the deployment record.
+        let project = project_with_env_file("GRAFANA_ADMIN_PASSWORD=g\n");
+
+        let dispatch = dispatch_project_with_env_file(
+            &project,
+            Some("GRAFANA_ADMIN_PASSWORD=g\nPOSTGRES_PASSWORD=s\n"),
+        );
+
+        let files = dispatch.metadata["config_files"].as_array().unwrap();
+        assert_eq!(
+            files[1]["content"],
+            "GRAFANA_ADMIN_PASSWORD=g\nPOSTGRES_PASSWORD=s\n" // pragma: allowlist secret
+        );
+        assert_eq!(
+            files[1]["file_mode"], "0600",
+            "a .env with secrets is owner-only"
+        );
+        assert_eq!(
+            files[2]["content"], "APP=1\n",
+            "app env files are left alone"
+        );
+        let archived = dispatch.metadata["custom"]["marketplace_config_files"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            archived[0]["content"],
+            "GRAFANA_ADMIN_PASSWORD=g\nPOSTGRES_PASSWORD=s\n" // pragma: allowlist secret
+        );
+        assert_eq!(archived[0]["mode"], "0600");
+        assert_eq!(archived[1]["content"], "APP=1\n");
+        assert_eq!(
+            project.metadata["config_files"][1]["content"], "GRAFANA_ADMIN_PASSWORD=g\n",
+            "the original project must not carry secrets"
+        );
+        assert_eq!(
+            project.metadata["custom"]["marketplace_config_files"][0]["content"],
+            "GRAFANA_ADMIN_PASSWORD=g\n"
+        );
+    }
+
+    #[test]
+    fn env_file_for_dispatch_is_none_without_service_secrets() {
+        // No secrets: the deploy must ship exactly what it did before,
+        // including the file mode of the CLI's `.env`.
+        assert_eq!(
+            env_file_for_dispatch("A=1\n", &std::collections::HashMap::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn env_file_for_dispatch_layers_service_secrets_over_the_project_env_file() {
+        let secrets =
+            std::collections::HashMap::from([("POSTGRES_PASSWORD".to_string(), "s".to_string())]);
+
+        let env_file = env_file_for_dispatch("A=1\n", &secrets).expect("secrets to ship");
+
+        assert!(env_file.contains("A=1"), "{env_file}");
+        assert!(env_file.contains("POSTGRES_PASSWORD=s"), "{env_file}");
+    }
+
+    #[test]
+    fn dispatch_project_without_a_rendered_env_file_is_unchanged() {
+        let project = project_with_env_file("A=1\n");
+
+        let dispatch = dispatch_project_with_env_file(&project, None);
+
+        assert_eq!(dispatch.metadata, project.metadata);
     }
 
     #[test]
