@@ -145,3 +145,28 @@ Two distinct mechanisms, both needed — do not make them exclusive:
 dropped the secrets from `project/.env` and broke `${VAR:?…}` (missing required
 variable). The runtime env (`remote_runtime_env_path` = `project/.env`) carries the
 full rendered union (secrets + non-secrets).
+
+### Reserved-prefix routing (STACKER_/DOCKER_/VAULT_/AGENT_)
+
+Reserved prefixes are rejected in **user-authored** env (`app.environment`, the
+`base` layer) but allowed from **Vault service secrets** — some infra secrets
+legitimately carry them (e.g. `VAULT_DEV_ROOT_TOKEN_ID` for a deployed Vault).
+`render_env` (`services/config_renderer.rs`) enforces this split: base → reject,
+service layer → render through.
+
+When the rendered env is emitted, reserved keys are **split** by destination:
+
+- **`env_file` merge** (`vault/docker/prod/.env`, etc.) — **keeps** reserved keys
+  with their prefix (the container needs e.g. `VAULT_DEV_ROOT_TOKEN_ID`).
+- **`project/.env` union** — **strips** reserved keys via
+  `strip_reserved_env_keys` (the union must not carry infra reserved keys).
+
+This split does not break the drift guard: `hash_env_body_semantic` already
+ignores reserved keys, so the stamped render hash is invariant to them.
+
+To get a reserved secret into its `env_file`, store it as a service secret (the
+render pulls it via `load_service_secrets`):
+
+```bash
+stacker secrets set VAULT_DEV_ROOT_TOKEN_ID --scope service --service vault --body "<token>"
+```

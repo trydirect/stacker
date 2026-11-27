@@ -156,6 +156,20 @@ pub struct EnvRenderAuditEvent {
 }
 
 pub fn render_env(input: EnvRenderInput) -> std::result::Result<RenderedEnv, EnvRenderError> {
+    // Reserved prefixes are rejected only for user-authored (base) env. Vault
+    // service secrets may legitimately carry reserved keys (e.g.
+    // VAULT_DEV_ROOT_TOKEN_ID) that must reach the app env_file, so the merged
+    // environment (which folds in the service layer) is validated without the
+    // reserved guard. The project runtime env union drops reserved keys
+    // separately (see `strip_reserved_env_keys`).
+    for key in input.base.keys() {
+        if RESERVED_ENV_PREFIXES
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+        {
+            return Err(EnvRenderError::ReservedKey { key: key.clone() });
+        }
+    }
     let ReconciledEnv { entries, inputs } = reconcile_render_input(&input);
     let environment = entries;
     validate_env(&environment)?;
@@ -332,18 +346,34 @@ fn validate_env(environment: &BTreeMap<String, String>) -> std::result::Result<(
         if !is_valid_env_key(key) {
             return Err(EnvRenderError::InvalidKey { key: key.clone() });
         }
-        if RESERVED_ENV_PREFIXES
-            .iter()
-            .any(|prefix| key.starts_with(prefix))
-        {
-            return Err(EnvRenderError::ReservedKey { key: key.clone() });
-        }
         if value.contains('\n') || value.contains('\r') {
             return Err(EnvRenderError::MultilineValue { key: key.clone() });
         }
     }
 
     Ok(())
+}
+
+/// Drop reserved-prefix keys (`STACKER_`/`DOCKER_`/`VAULT_`/`AGENT_`) from an
+/// env file body. Used for the project-level runtime env union (`project/.env`),
+/// which must not carry infra reserved keys; the per-app `env_file` merge keeps
+/// them (e.g. `VAULT_DEV_ROOT_TOKEN_ID` must reach `vault/docker/prod/.env`).
+/// The stamped render hash is unaffected — `hash_env_body_semantic` already
+/// ignores these keys — so stripping does not trip the drift guard.
+pub fn strip_reserved_env_keys(content: &str) -> String {
+    let mut out = String::new();
+    for line in content.lines() {
+        let key = line.split('=').next().unwrap_or("").trim();
+        if RESERVED_ENV_PREFIXES
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+        {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
 }
 
 /// Validate a project runtime env union before it is delivered to a deploy.
@@ -1572,6 +1602,78 @@ mod tests {
             EnvRenderError::ReservedKey {
                 key: "STACKER_TOKEN".to_string()
             }
+        );
+    }
+
+    #[test]
+    fn render_env_allows_reserved_from_service_layer() {
+        // Vault service secrets may carry reserved keys (e.g. VAULT_DEV_ROOT_TOKEN_ID)
+        // that must reach the app env_file; only user-authored (base) is rejected.
+        let rendered = render_env(EnvRenderInput {
+            base: HashMap::from([("RUST_LOG".to_string(), "info".to_string())]),
+            service: HashMap::from([(
+                "VAULT_DEV_ROOT_TOKEN_ID".to_string(),
+                "root-token".to_string(),
+            )]),
+            ..EnvRenderInput::default()
+        })
+        .expect("service-layer reserved key must not fail the render");
+
+        assert!(
+            rendered
+                .content
+                .contains("VAULT_DEV_ROOT_TOKEN_ID=root-token"),
+            "reserved service key must be rendered into the env body; got:\n{}",
+            rendered.content
+        );
+    }
+
+    #[test]
+    fn render_env_still_rejects_reserved_in_base_with_service_layer() {
+        // A reserved key in base is rejected even when a service layer is present.
+        let result = render_env(EnvRenderInput {
+            base: HashMap::from([("VAULT_TOKEN".to_string(), "x".to_string())]),
+            service: HashMap::from([("RUST_LOG".to_string(), "info".to_string())]),
+            ..EnvRenderInput::default()
+        });
+
+        assert_eq!(
+            result.unwrap_err(),
+            EnvRenderError::ReservedKey {
+                key: "VAULT_TOKEN".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn strip_reserved_env_keys_drops_reserved_prefixes_only() {
+        let content = "\
+# stacker-render version=1 hash=h generated_at=now inputs=service
+RUST_LOG=info
+VAULT_DEV_ROOT_TOKEN_ID=root-token
+POSTGRES_PASSWORD=pw
+AGENT_HOST=h
+";
+        let stripped = strip_reserved_env_keys(content);
+
+        assert!(stripped.contains("RUST_LOG=info"));
+        assert!(stripped.contains("POSTGRES_PASSWORD=pw"));
+        assert!(!stripped.contains("VAULT_DEV_ROOT_TOKEN_ID"));
+        assert!(!stripped.contains("AGENT_HOST"));
+        // Header preserved.
+        assert!(stripped.contains("# stacker-render "));
+    }
+
+    #[test]
+    fn strip_reserved_env_keys_preserves_semantic_hash() {
+        // hash_env_body_semantic ignores reserved keys, so stripping them must
+        // not change the stamped hash (drift guard stays green).
+        let with_reserved = "RUST_LOG=info\nVAULT_DEV_ROOT_TOKEN_ID=root\nPOSTGRES_PASSWORD=pw\n";
+        let without_reserved = "RUST_LOG=info\nPOSTGRES_PASSWORD=pw\n";
+        assert_eq!(
+            hash_env_body_semantic(with_reserved),
+            hash_env_body_semantic(without_reserved),
+            "hash must be invariant to reserved keys"
         );
     }
 

@@ -754,9 +754,11 @@ fn merge_and_emit_runtime_env(
     );
     // Always emit the runtime env as its own config file (destination_path =
     // project/.env). Without this push the secrets never reach the `${VAR}`
-    // interpolation source.
+    // interpolation source. Reserved-prefix keys are stripped here: the union
+    // must not carry infra reserved keys, while the per-app env_file merge
+    // above keeps them (e.g. VAULT_DEV_ROOT_TOKEN_ID → vault/docker/prod/.env).
     config_files.push(json!({
-        "content": env_config.content,
+        "content": crate::services::config_renderer::strip_reserved_env_keys(&env_config.content),
         "content_type": env_config.content_type,
         "destination_path": env_config.destination_path,
         "file_mode": env_config.file_mode,
@@ -1726,6 +1728,70 @@ services:
                 .iter()
                 .any(|f| f["destination_path"] == "/home/trydirect/project/.env"),
             "project/.env must be emitted"
+        );
+    }
+
+    #[test]
+    fn env_file_keeps_reserved_keys_and_project_env_strips_them() {
+        // VAULT_DEV_ROOT_TOKEN_ID (reserved) must land in the vault env_file
+        // with its VAULT_ prefix intact, while the project/.env union drops it.
+        let env_config = crate::services::vault_service::AppConfig {
+            content: "POSTGRES_PASSWORD=secret\nVAULT_DEV_ROOT_TOKEN_ID=root\n".to_string(),
+            content_type: "env".to_string(),
+            destination_path: "/home/trydirect/project/.env".to_string(),
+            file_mode: "0600".to_string(),
+            owner: None,
+            group: None,
+        };
+        let compose = r#"
+services:
+  vault:
+    env_file:
+      - /opt/stacker/deployments/prod/files/vault/docker/prod/.env
+"#;
+        let mut config_files = vec![json!({
+            "content": "OLD=1\n",
+            "destination_path": "/opt/stacker/deployments/prod/files/vault/docker/prod/.env",
+        })];
+        let merged = merge_and_emit_runtime_env(
+            &mut config_files,
+            Some(compose),
+            "vault",
+            &env_config,
+            false,
+        );
+        assert_eq!(merged, 1, "the vault env_file should receive the merge");
+
+        // env_file keeps the reserved key (with prefix).
+        let vault_env = config_files
+            .iter()
+            .find(|f| {
+                f["destination_path"]
+                    == "/opt/stacker/deployments/prod/files/vault/docker/prod/.env"
+            })
+            .expect("vault env_file present");
+        assert!(
+            vault_env["content"]
+                .as_str()
+                .unwrap()
+                .contains("VAULT_DEV_ROOT_TOKEN_ID=root"),
+            "env_file must keep the reserved key with its VAULT_ prefix; got:\n{}",
+            vault_env["content"]
+        );
+
+        // project/.env (union) drops reserved but keeps non-reserved secrets.
+        let project_env = config_files
+            .iter()
+            .find(|f| f["destination_path"] == "/home/trydirect/project/.env")
+            .expect("project/.env emitted");
+        let project_content = project_env["content"].as_str().unwrap();
+        assert!(
+            !project_content.contains("VAULT_DEV_ROOT_TOKEN_ID"),
+            "project/.env union must drop reserved keys; got:\n{project_content}"
+        );
+        assert!(
+            project_content.contains("POSTGRES_PASSWORD=secret"),
+            "project/.env must keep non-reserved secrets; got:\n{project_content}"
         );
     }
 }
