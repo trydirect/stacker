@@ -376,6 +376,96 @@ pub fn strip_reserved_env_keys(content: &str) -> String {
     out
 }
 
+/// Content of the project env file (`environments.<env>.env_file`), which the
+/// CLI ships as the config file with `destination_path: ".env"` — the `.env`
+/// next to the compose. Used both for a deploy_app's own `config_files` and
+/// for the copy stored in `project.metadata.config_files` by `stacker deploy`.
+pub fn project_env_file_content(config_files: &Value) -> Option<&str> {
+    config_files
+        .as_array()?
+        .iter()
+        .find(|file| file.get("destination_path").and_then(Value::as_str) == Some(".env"))?
+        .get("content")?
+        .as_str()
+}
+
+/// Drop entries a `.env` line cannot carry — multiline values, invalid key
+/// names — and name them (keys only) in a warning. A full deploy shipped no
+/// secrets before, so such a secret is left out instead of failing the deploy.
+fn drop_unrepresentable_env_entries(entries: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let mut dropped = Vec::new();
+    let mut kept = BTreeMap::new();
+    for (key, value) in entries {
+        if is_valid_env_key(&key) && !value.contains('\n') && !value.contains('\r') {
+            kept.insert(key, value);
+        } else {
+            dropped.push(key);
+        }
+    }
+    if !dropped.is_empty() {
+        tracing::warn!(
+            ?dropped,
+            "Leaving service secrets a .env line cannot carry out of the deploy .env"
+        );
+    }
+    kept
+}
+
+/// The project env file with Vault service `secrets` layered in: a line whose
+/// key a secret sets is replaced, missing keys are appended, everything else
+/// (other keys, comments) is kept. What a full `stacker deploy` ships as the
+/// `.env` next to the compose, so `${VAR:?}` interpolation finds the secrets.
+pub fn layer_secrets_into_env_file(
+    project_env_file: &str,
+    secrets: &HashMap<String, String>,
+) -> String {
+    if secrets.is_empty() {
+        return project_env_file.to_string();
+    }
+    let ordered: BTreeMap<String, String> = secrets
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    crate::services::env_model::reconcile_env_file_content(
+        project_env_file,
+        &format_env_body(&ordered),
+    )
+}
+
+/// Layer the project runtime env union, lowest precedence first: env authored
+/// on the apps (`stacker.yml`), then the project env file the user maintains,
+/// then Vault service secrets. The union replaces `project/.env` wholesale, so
+/// keys that only the project env file sets must be part of it.
+fn layer_project_runtime_env(
+    authored: &HashMap<String, String>,
+    project_env_file: Option<&str>,
+    service: &HashMap<String, String>,
+) -> BTreeMap<String, String> {
+    let project_env: HashMap<String, String> = project_env_file
+        .map(crate::services::env_model::parse_env_assignments)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    reconcile_env_layers(&[
+        EnvLayer {
+            name: "base",
+            entries: authored,
+            include_in_inputs: false,
+        },
+        EnvLayer {
+            name: "project_env_file",
+            entries: &project_env,
+            include_in_inputs: false,
+        },
+        EnvLayer {
+            name: "service",
+            entries: service,
+            include_in_inputs: false,
+        },
+    ])
+    .entries
+}
+
 /// Validate a project runtime env union before it is delivered to a deploy.
 /// The union feeds the shared `<compose-dir>/.env`, so a malformed value in
 /// any one app must fail loudly here instead of injecting lines into it.
@@ -1162,12 +1252,44 @@ impl ConfigRenderer {
     /// Compose `${VAR}` interpolation resolves the single `.env` next to the
     /// compose file for the whole file at once, so an aggregated compose
     /// cannot be fed one service at a time: the deploy payload must carry
-    /// every service's environment. Apps are merged in `deploy_order`
-    /// (later wins on duplicate keys), matching `ResolvedAppEnvironment`'s
-    /// authored-then-service precedence. The union is validated like any
-    /// rendered env so a malformed value in one app cannot inject lines into
-    /// the shared runtime `.env`.
+    /// every service's environment. Layers, lowest first (see
+    /// [`layer_project_runtime_env`]): env authored on the apps, the project
+    /// env file (`project_env_file`, the content shipped as `.env`), Vault
+    /// service secrets. Within a layer apps are merged in `deploy_order`
+    /// (later wins). The union is validated like any rendered env so a
+    /// malformed value in one app cannot inject lines into the shared
+    /// runtime `.env`.
     pub async fn resolve_project_runtime_env(
+        &self,
+        pool: &PgPool,
+        project: &Project,
+        project_env_file: Option<&str>,
+    ) -> Result<HashMap<String, String>> {
+        let apps = db::project_app::fetch_by_project(pool, project.id)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("Failed to load project apps for runtime env: {error}")
+            })?;
+        let mut authored = HashMap::new();
+        let mut service = HashMap::new();
+        for app in apps.iter().filter(|app| app.is_enabled()) {
+            let environment = self.resolve_app_environment(pool, project, app).await?;
+            authored.extend(environment.authored);
+            service.extend(environment.service);
+        }
+        validated_runtime_env_union(layer_project_runtime_env(
+            &authored,
+            project_env_file,
+            &service,
+        ))
+    }
+
+    /// Vault service secrets of the project's enabled apps (later app in
+    /// `deploy_order` wins), validated like the runtime env union and without
+    /// reserved keys. A full `stacker deploy` layers them over the project env
+    /// file (see [`layer_secrets_into_env_file`]); Vault is only contacted when
+    /// the project has service secrets at all.
+    pub async fn resolve_project_service_secrets(
         &self,
         pool: &PgPool,
         project: &Project,
@@ -1175,14 +1297,13 @@ impl ConfigRenderer {
         let apps = db::project_app::fetch_by_project(pool, project.id)
             .await
             .map_err(|error| {
-                anyhow::anyhow!("Failed to load project apps for runtime env: {error}")
+                anyhow::anyhow!("Failed to load project apps for service secrets: {error}")
             })?;
-        let mut merged = BTreeMap::new();
+        let mut service = BTreeMap::new();
         for app in apps.iter().filter(|app| app.is_enabled()) {
-            let environment = self.resolve_app_environment(pool, project, app).await?;
-            merged.extend(environment.effective());
+            service.extend(self.load_service_secrets(pool, project, app).await?);
         }
-        validated_runtime_env_union(merged)
+        validated_runtime_env_union(drop_unrepresentable_env_entries(service))
     }
 
     /// Sync all app configs to Vault
@@ -1745,6 +1866,118 @@ AGENT_HOST=h
         assert_eq!(union.len(), 1);
         assert_eq!(union["S3_TEST_MARKER"], "test-123");
         assert!(!union.contains_key("VAULT_DEV_LISTEN_ADDRESS"));
+    }
+
+    fn env_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn project_runtime_env_keeps_keys_that_only_the_project_env_file_sets() {
+        // Regression (syncopia, 2026-11-27): the union replaced project/.env
+        // without the project env file, so GRAFANA_ADMIN_PASSWORD — set only
+        // in docker/prod/.env — vanished and `${GRAFANA_ADMIN_PASSWORD:?}`
+        // failed interpolation.
+        let layered = layer_project_runtime_env(
+            &env_map(&[("NODE_ENV", "production")]),
+            Some("GRAFANA_ADMIN_PASSWORD=from-file\n# note\nWEBSITE_IMAGE=org/site\n"),
+            &env_map(&[("POSTGRES_PASSWORD", "from-vault")]),
+        );
+
+        assert_eq!(layered["GRAFANA_ADMIN_PASSWORD"], "from-file");
+        assert_eq!(layered["WEBSITE_IMAGE"], "org/site");
+        assert_eq!(layered["NODE_ENV"], "production");
+        assert_eq!(layered["POSTGRES_PASSWORD"], "from-vault");
+    }
+
+    #[test]
+    fn project_runtime_env_precedence_is_authored_then_file_then_vault() {
+        let layered = layer_project_runtime_env(
+            &env_map(&[("A", "authored"), ("B", "authored")]),
+            Some("A=file\nB=file\n"),
+            &env_map(&[("B", "vault")]),
+        );
+
+        // stacker.yml placeholders (e.g. POSTGRES_PASSWORD: postgres) must
+        // not shadow the project env file, and Vault secrets win over both.
+        assert_eq!(layered["A"], "file");
+        assert_eq!(layered["B"], "vault");
+    }
+
+    #[test]
+    fn project_runtime_env_without_a_project_env_file_is_authored_then_vault() {
+        let layered = layer_project_runtime_env(
+            &env_map(&[("A", "authored"), ("B", "authored")]),
+            None,
+            &env_map(&[("B", "vault")]),
+        );
+
+        assert_eq!(layered["A"], "authored");
+        assert_eq!(layered["B"], "vault");
+    }
+
+    #[test]
+    fn layer_secrets_into_env_file_overrides_and_appends_keeping_the_rest() {
+        // Full `stacker deploy` used to ship docker/prod/.env as-is, so
+        // `${POSTGRES_PASSWORD:?}` failed although the secret was in Vault.
+        let layered = layer_secrets_into_env_file(
+            "# project env\nGRAFANA_ADMIN_PASSWORD=g\nPOSTGRES_PASSWORD=placeholder\nWEBSITE_IMAGE=org/site\n", // pragma: allowlist secret
+            &env_map(&[
+                ("POSTGRES_PASSWORD", "from-vault"),
+                ("ZITADEL_MASTERKEY", "mk"),
+            ]),
+        );
+
+        let parsed = crate::services::env_model::parse_env_assignments(&layered);
+        assert_eq!(parsed["POSTGRES_PASSWORD"], "from-vault");
+        assert_eq!(parsed["ZITADEL_MASTERKEY"], "mk");
+        assert_eq!(parsed["GRAFANA_ADMIN_PASSWORD"], "g");
+        assert_eq!(parsed["WEBSITE_IMAGE"], "org/site");
+        assert!(layered.contains("# project env"), "{layered}");
+        assert_eq!(
+            layered.matches("POSTGRES_PASSWORD=").count(),
+            1,
+            "overridden key must appear once:\n{layered}"
+        );
+    }
+
+    #[test]
+    fn drop_unrepresentable_env_entries_leaves_out_what_a_env_line_cannot_carry() {
+        let kept = drop_unrepresentable_env_entries(BTreeMap::from([
+            ("PEM_KEY".to_string(), "line1\nline2".to_string()),
+            ("CR_VALUE".to_string(), "a\rb".to_string()),
+            ("BAD-KEY".to_string(), "x".to_string()),
+            ("POSTGRES_PASSWORD".to_string(), "s3cret".to_string()),
+        ]));
+
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(kept["POSTGRES_PASSWORD"], "s3cret");
+    }
+
+    #[test]
+    fn layer_secrets_into_env_file_without_secrets_is_unchanged() {
+        let original = "A=1\n# c\nB=2\n";
+        assert_eq!(
+            layer_secrets_into_env_file(original, &HashMap::new()),
+            original
+        );
+    }
+
+    #[test]
+    fn project_env_file_content_picks_the_compose_root_env_only() {
+        let config_files = serde_json::json!([
+            {"destination_path": "docker-compose.yml", "content": "services: {}\n"},
+            {"destination_path": "upload/docker/prod/.env", "content": "APP=1\n"},
+            {"destination_path": "/home/trydirect/project/.env", "content": "RENDERED=1\n"},
+            {"destination_path": ".env", "content": "PROJECT=1\n"}
+        ]);
+
+        assert_eq!(project_env_file_content(&config_files), Some("PROJECT=1\n"));
+        assert_eq!(project_env_file_content(&serde_json::json!([])), None);
+        assert_eq!(project_env_file_content(&serde_json::Value::Null), None);
     }
 
     #[test]
