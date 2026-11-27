@@ -376,6 +376,38 @@ pub fn strip_reserved_env_keys(content: &str) -> String {
     out
 }
 
+/// Validate a project runtime env union before it is delivered to a deploy.
+/// The union feeds the shared `<compose-dir>/.env`, so a malformed value in
+/// any one app must fail loudly here instead of injecting lines into it.
+fn validated_runtime_env_union(
+    merged: BTreeMap<String, String>,
+) -> Result<HashMap<String, String>> {
+    // Reserved/stacker-owned keys (STACKER_/DOCKER_/VAULT_/AGENT_ prefixes,
+    // DEPLOYMENT_HASH) can never be legal rendered env keys — but they
+    // legitimately live in infra services' environments (e.g.
+    // VAULT_DEV_LISTEN_ADDRESS for the vault container). One such key must
+    // not poison the union and fail deploy_app/secrets push for every
+    // service in the project: drop them from the union instead. They are set
+    // literally under `environment:` in the compose, so nothing is lost.
+    let mut reserved_keys: Vec<String> = Vec::new();
+    let mut user = BTreeMap::new();
+    for (key, value) in merged {
+        if is_stacker_owned_env_key(&key) {
+            reserved_keys.push(key);
+        } else {
+            user.insert(key, value);
+        }
+    }
+    if !reserved_keys.is_empty() {
+        tracing::warn!(
+            ?reserved_keys,
+            "Dropping reserved/stacker-owned keys from the project runtime env union"
+        );
+    }
+    validate_env(&user)?;
+    Ok(user.into_iter().collect())
+}
+
 fn is_valid_env_key(key: &str) -> bool {
     let mut chars = key.chars();
     match chars.next() {
@@ -1125,6 +1157,34 @@ impl ConfigRenderer {
         Ok((config, rendered_env.hash))
     }
 
+    /// Union runtime env across the project's enabled apps.
+    ///
+    /// Compose `${VAR}` interpolation resolves the single `.env` next to the
+    /// compose file for the whole file at once, so an aggregated compose
+    /// cannot be fed one service at a time: the deploy payload must carry
+    /// every service's environment. Apps are merged in `deploy_order`
+    /// (later wins on duplicate keys), matching `ResolvedAppEnvironment`'s
+    /// authored-then-service precedence. The union is validated like any
+    /// rendered env so a malformed value in one app cannot inject lines into
+    /// the shared runtime `.env`.
+    pub async fn resolve_project_runtime_env(
+        &self,
+        pool: &PgPool,
+        project: &Project,
+    ) -> Result<HashMap<String, String>> {
+        let apps = db::project_app::fetch_by_project(pool, project.id)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("Failed to load project apps for runtime env: {error}")
+            })?;
+        let mut merged = BTreeMap::new();
+        for app in apps.iter().filter(|app| app.is_enabled()) {
+            let environment = self.resolve_app_environment(pool, project, app).await?;
+            merged.extend(environment.effective());
+        }
+        validated_runtime_env_union(merged)
+    }
+
     /// Sync all app configs to Vault
     pub async fn sync_to_vault(&self, bundle: &ConfigBundle) -> Result<SyncResult, VaultError> {
         let vault = match &self.vault_service {
@@ -1645,6 +1705,46 @@ AGENT_HOST=h
                 key: "SECRET".to_string()
             }
         );
+    }
+
+    #[test]
+    fn validated_runtime_env_union_rejects_newline_injection() {
+        // Regression: the union feeds the shared <compose-dir>/.env as naive
+        // KEY=VALUE lines — a multiline value in any one app would inject
+        // extra keys into compose ${VAR} interpolation.
+        let poisoned = BTreeMap::from([("GOOD".to_string(), "value\nINJECTED=evil".to_string())]);
+        assert!(validated_runtime_env_union(poisoned).is_err());
+    }
+
+    #[test]
+    fn validated_runtime_env_union_accepts_clean_secrets() {
+        let merged = BTreeMap::from([
+            ("S3_TEST_MARKER".to_string(), "test-123".to_string()),
+            ("POSTGRES_PASSWORD".to_string(), "pg-secret".to_string()),
+        ]);
+        let union = validated_runtime_env_union(merged).expect("clean union passes");
+        assert_eq!(union.len(), 2);
+        assert_eq!(union["POSTGRES_PASSWORD"], "pg-secret");
+    }
+
+    #[test]
+    fn validated_runtime_env_union_skips_reserved_keys_instead_of_failing() {
+        // Regression: one infra key (e.g. VAULT_DEV_LISTEN_ADDRESS from the
+        // vault service environment) failed the whole render with "Reserved
+        // env key ... not allowed", breaking deploy_app / secrets push for
+        // every service in the project. Reserved/stacker-owned keys are
+        // dropped from the union instead; user keys still validate.
+        let merged = BTreeMap::from([
+            (
+                "VAULT_DEV_LISTEN_ADDRESS".to_string(),
+                "0.0.0.0:8200".to_string(),
+            ),
+            ("S3_TEST_MARKER".to_string(), "test-123".to_string()),
+        ]);
+        let union = validated_runtime_env_union(merged).expect("reserved keys must be skipped");
+        assert_eq!(union.len(), 1);
+        assert_eq!(union["S3_TEST_MARKER"], "test-123");
+        assert!(!union.contains_key("VAULT_DEV_LISTEN_ADDRESS"));
     }
 
     #[test]

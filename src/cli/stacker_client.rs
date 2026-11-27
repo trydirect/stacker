@@ -4413,6 +4413,23 @@ pub fn build_deploy_form_with_options(
     form
 }
 
+/// The `upstream` the proxy payload carries: bare `host[:port]`.
+///
+/// The consumer (tfa role `nginx_proxy_manager`) splits it into
+/// `forward_host`/`forward_port` with `rsplit(':', 1)`, so a scheme becomes
+/// part of the hostname — `http://n8n:5678` produced `forward_host
+/// "http://n8n"` and `proxy_pass http://http://n8n:5678`, an HTTP 500
+/// (BUGS.md #43). Both documented forms (`app:3000` and `http://web:8080`)
+/// must work, so the scheme is stripped here rather than rejected.
+fn bare_upstream(upstream: &str) -> String {
+    let trimmed = upstream.trim();
+    let without_scheme = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+        .unwrap_or(trimmed);
+    without_scheme.trim_end_matches('/').to_string()
+}
+
 pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     let cloud = config.deploy.cloud.as_ref();
     let provider = cloud
@@ -4584,7 +4601,7 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
                 };
                 serde_json::json!({
                     "domain": d.domain,
-                    "upstream": d.upstream,
+                    "upstream": bare_upstream(&d.upstream),
                     "ssl": ssl,
                 })
             })
@@ -5342,7 +5359,59 @@ mod tests {
         assert_eq!(domains[1]["ssl"], "off");
     }
 
+    /// BUGS.md #43: both documented upstream forms must work. The payload's
+    /// `upstream` is split by the proxy role into `forward_host`/`forward_port`
+    /// (`rsplit(':', 1)`), so a scheme inside it becomes part of the hostname
+    /// — `proxy_pass http://http://n8n:5678`, an HTTP 500 on every request.
     #[test]
+    fn bare_upstream_strips_schemes_and_trailing_slashes() {
+        assert_eq!(bare_upstream("http://n8n:5678"), "n8n:5678");
+        assert_eq!(bare_upstream("https://web:8443"), "web:8443");
+        assert_eq!(bare_upstream("http://n8n:5678/"), "n8n:5678");
+        assert_eq!(bare_upstream("n8n:5678"), "n8n:5678");
+        assert_eq!(bare_upstream("n8n"), "n8n");
+        assert_eq!(bare_upstream("  http://app:3000  "), "app:3000");
+    }
+
+    #[test]
+    fn test_build_deploy_form_proxy_domains_strip_scheme_from_upstream() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::NginxProxyManager,
+                auto_detect: false,
+                domains: vec![
+                    crate::cli::config_parser::DomainConfig {
+                        domain: "n8n.example.com".to_string(),
+                        ssl: crate::cli::config_parser::SslMode::Auto,
+                        upstream: "http://n8n:5678".to_string(),
+                    },
+                    crate::cli::config_parser::DomainConfig {
+                        domain: "web.example.com".to_string(),
+                        ssl: crate::cli::config_parser::SslMode::Off,
+                        upstream: "https://web:8443".to_string(),
+                    },
+                    crate::cli::config_parser::DomainConfig {
+                        domain: "app.example.com".to_string(),
+                        ssl: crate::cli::config_parser::SslMode::Off,
+                        upstream: "app:3000".to_string(),
+                    },
+                ],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let form = build_deploy_form(&config);
+        let domains = form["proxy_domains"]
+            .as_array()
+            .expect("proxy_domains should be present in the deploy form");
+        assert_eq!(domains[0]["upstream"], "n8n:5678");
+        assert_eq!(domains[1]["upstream"], "web:8443");
+        assert_eq!(domains[2]["upstream"], "app:3000");
+    }
+
     fn test_build_deploy_form_drops_blank_proxy_domains() {
         // `${commonDomain}` that resolved to nothing leaves an entry whose domain
         // is empty. It reached the NPM role, which answered with a censored 4xx

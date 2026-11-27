@@ -1563,11 +1563,15 @@ from `2.45.4` to `2.47.7` - `agent containers --json` shows
 with `5678:5678` still published and `/`, `/healthz`, `/healthz/readiness`
 all answering 200 once n8n finished its migrations.
 
-**Follow-up left open:** the agent's `DeployAppCommand.image` is still
-unread (`status/src/commands/stacker.rs:1643` documents "overrides compose
-file", `handle_deploy_app` never consumes it), so a caller that reaches
-`agent exec deploy_app` with `image` but no rewritten `compose_content` is
-still ignored. The CLI no longer depends on it.
+**Agent-side follow-up implemented (2026-11-13, status repo `dev` commit
+`c1e67e5`).** `handle_deploy_app` now applies `DeployAppCommand.image`
+itself: the override lands in the target service's `image:` inside
+`compose_content`, or in the on-disk compose when the payload carries none,
+before anything is pulled or deployed, and an unappliable override fails the
+deploy with `image_override_failed` instead of silently running the
+compose's image. Regression tests in `deploy_image_override_tests`. The
+CLI-side rewrite above stays harmless - the agent's rewrite is idempotent
+with an already-rewritten compose.
 
 ## 36. ✅ FIXED — the clippy and fmt gates fail on pre-existing code (found 2026-11-13, fixed 2026-11-20)
 
@@ -1946,7 +1950,7 @@ aligned. The entry was written after the fix landed and never flipped.
 **How to verify:** `stacker find n8n` — the paid row must read `$7.00/day`
 (no glued enum), and the DESCRIPTION column must stay aligned.
 
-## 42. 🟠 OPEN — `proxy.type: nginx` silently deploys nginx-proxy-manager (found 2026-11-14)
+## 42. ❎ NOT A BUG — `proxy.type: nginx` silently deploys nginx-proxy-manager (found 2026-11-14, corrected 2026-11-24)
 
 `stacker.yml` declared
 
@@ -1992,7 +1996,22 @@ type or reject it with a message.
 **Expected:** `type: nginx` deploys nginx, or `config validate` refuses the
 value and names what is supported.
 
-## 43. 🟠 OPEN — an `upstream` with a scheme produces a broken proxy config and HTTP 500 (found 2026-11-14)
+### ❎ Not a bug (2026-11-24, Vasili) — the substitution is by design
+
+`type: nginx` and `type: nginx-proxy-manager` deliberately share the one
+managed-proxy role (`nginx_proxy_manager` in
+`src/cli/stacker_client.rs:4398-4410` and `4626-4640` push the same
+`nginx_proxy_manager` feature into `extended_features`). The managed proxy
+vocabulary is `nginx_proxy_manager`, `traefik`, `caddy` — there is no plain
+nginx role in the pipeline, and the local generator's `ProxyType::Nginx`
+branch (the `nginx:alpine` service) is the local-deploy path only.
+
+What remains of the entry is documentation: `docs/STACKER_YML_REFERENCE.md`
+lists `nginx` and `nginx-proxy-manager` as two values without saying one is
+an alias of the other on managed deploys. Worth a sentence there — tracked
+as housekeeping, not a defect.
+
+## 43. ✅ FIXED — an `upstream` with a scheme produces a broken proxy config and HTTP 500 (found 2026-11-14, fixed 2026-11-24)
 
 **Severity:** high - the broken form is the one the CLI's own help suggests.
 
@@ -2092,7 +2111,28 @@ actually hit, and the fix is to normalise in the NPM payload the way
 `proxy_pass_target` already does - or to stop routing `type: nginx` to NPM,
 which removes this bug and bug 42 together.
 
-## 44. 🟠 OPEN — the declared `proxy.domains` are not reconciled, and `--action update` refuses a differing entry (found 2026-11-14, narrowed 2026-11-15)
+### ✅ Fixed (2026-11-24) — stacker `fix/proxy-upstream-scheme-43` + tfa PR #153
+
+Two layers, both keeping the two documented forms working (`app:3000` and
+`http://web:8080`) — the docs were never narrowed:
+
+* **stacker (this repo):** the `proxy_domains` payload now carries a bare
+  `host[:port]` — `bare_upstream` strips the scheme before the value leaves
+  the CLI. Red→green: the payload test asserts `http://n8n:5678` →
+  `n8n:5678` (it was `"http://n8n:5678"` verbatim before).
+* **tfa (PR #153):** the role's plan strips schemes too, so any older CLI
+  still sends what the role needs — `forward_host` is bare and the port is
+  separate. Before, `rsplit(':', 1)` left the scheme inside the hostname and
+  NPM proxied to `http://http://n8n:5678` — the HTTP 500 of this entry.
+
+**How to verify:** declare `upstream: http://n8n:5678` and `upstream:
+n8n:5678` in one `proxy.domains` and deploy; both hosts must answer, and the
+NPM proxy host's Forward Hostname must be `n8n` (no scheme) with Forward
+Port `5678`. Locally: `uvx --from ansible-core ansible-playbook -i
+localhost, -c local roles/nginx_proxy_manager/tests/test_reconcile_plan.yml`
+in the tfa repo (asserts the normalization).
+
+## 44. ✅ FIXED — the declared `proxy.domains` are not reconciled, and `--action update` refuses a differing entry (found 2026-11-14, narrowed 2026-11-15, fixed 2026-11-24)
 
 The proxy entry is created on the first deploy and then left alone. Changing
 `upstream` in `stacker.yml` from `http://n8n:5678` to `n8n:5678` and running
@@ -2152,6 +2192,32 @@ existing entry against the declared `proxy.domains`.
 missing, update what differs, and say which it did. Failing that, ship
 `stacker proxy update` and `stacker proxy remove` so a wrong entry can be
 repaired without the NPM UI.
+
+### ✅ Fixed (2026-11-24) — tfa PR #153 (the deploy path)
+
+The declarative path now reconciles, as the expected outcome asked. The
+NPM role (`roles/nginx_proxy_manager/tasks/plan_proxy_hosts.yml` +
+`configure_proxy_hosts.yml`) plans each declared domain against what NPM
+has and then acts: **create** what is missing, **update** what differs
+(PUT with the declared forward target), leave what matches — and says which
+it did per domain (`NPM proxy host app.example.com: updated ->
+n8n:5678`). Before, only "new" domains were created and a changed upstream
+was silently ignored while the deploy reported success.
+
+Regression test (tfa, local and infra-free):
+`roles/nginx_proxy_manager/tests/test_reconcile_plan.yml` — drifted →
+`update` naming the right host id, matching → `unchanged`, missing →
+`create`, aliases resolve to their host, blank domains are skipped.
+
+**Still true, by design:** the imperative `agent configure-proxy --action
+update` refuses a differing entry on the agent side (`npm_existing_conflict`)
+— delete then create remains the manual repair there. This entry's expected
+outcome was the deploy reconciling, which it now does.
+
+**How to verify:** deploy with two `proxy.domains`, change one `upstream` in
+`stacker.yml`, deploy again — the run must report `updated -> host:port` for
+the changed one and `unchanged` for the other, and the changed domain must
+serve the new target.
 
 ## 45. ✅ FIXED — a `proxy:` block makes the whole compose project invalid unless the app service is literally named `app` (found 2026-11-15, fixed by PR #342 on 2026-11-15, verified 2026-11-20)
 

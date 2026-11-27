@@ -174,6 +174,83 @@ impl Command {
         self.updated_at = Utc::now();
         self
     }
+
+    /// Copy safe to return across the API at `Need::View`: every
+    /// secret-bearing field of the free-form JSON columns is masked before
+    /// serialization (the platform deliberately redacts secrets at this
+    /// access level — see `get_env_vars`). Structure and non-sensitive
+    /// fields (statuses, paths, sizes, `env_vars` keys) are kept; unlike
+    /// `get_env_vars`, which masks only sensitive-named variables, all
+    /// `env_vars` values are masked here. Limitation: bare scalar values in
+    /// `parameters`/`result` are passed through — masking is key-based.
+    pub fn redacted_for_view(self) -> Self {
+        Self {
+            parameters: self.parameters.as_ref().map(redact_sensitive_json),
+            result: self.result.as_ref().map(redact_sensitive_json),
+            error: self.error.as_ref().map(redact_sensitive_json),
+            metadata: self.metadata.as_ref().map(redact_sensitive_json),
+            ..self
+        }
+    }
+}
+
+/// Mask the values of secret-bearing keys (`content`, `env_vars`,
+/// `registry_auth`, `diff`, `command`, credential-suffixed names) anywhere in
+/// a JSON document. Objects and arrays keep their shape and keys — only leaf
+/// scalars under a sensitive key are replaced with `<redacted>` (the same
+/// marker the status agent uses).
+fn redact_sensitive_json(value: &JsonValue) -> JsonValue {
+    match value {
+        JsonValue::Object(map) => JsonValue::Object(
+            map.iter()
+                .map(|(key, nested)| {
+                    let redacted = if is_sensitive_key(key) {
+                        redact_shape(nested)
+                    } else {
+                        redact_sensitive_json(nested)
+                    };
+                    (key.clone(), redacted)
+                })
+                .collect(),
+        ),
+        JsonValue::Array(items) => {
+            JsonValue::Array(items.iter().map(redact_sensitive_json).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+/// Replace every leaf under a sensitive key while keeping keys/shape, so
+/// `env_vars` stays a readable key list (matching `get_env_vars`).
+fn redact_shape(value: &JsonValue) -> JsonValue {
+    match value {
+        JsonValue::Object(map) => JsonValue::Object(
+            map.iter()
+                .map(|(key, nested)| (key.clone(), redact_shape(nested)))
+                .collect(),
+        ),
+        JsonValue::Array(items) => JsonValue::Array(items.iter().map(redact_shape).collect()),
+        _ => JsonValue::String("<redacted>".to_string()),
+    }
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    matches!(
+        key.as_str(),
+        "content"
+            | "env_vars"
+            | "registry_auth"
+            | "token"
+            | "secret"
+            | "password"
+            | "diff"
+            | "command"
+    ) || key.ends_with("_token")
+        || key.ends_with("_secret")
+        || key.ends_with("_password")
+        || key.ends_with("_content")
+        || key.ends_with("_preview")
 }
 
 /// Command result payload from agent
@@ -202,6 +279,81 @@ pub struct CommandQueueEntry {
     pub deployment_hash: String,
     pub priority: i32,
     pub created_at: DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn redacted_for_view_masks_env_vars_and_config_content() {
+        // Regression: deploy_app parameters carried rendered secrets readable
+        // at Need::View through the command read APIs.
+        let mut command = Command::new(
+            "cmd_1".into(),
+            "dep-1".into(),
+            "deploy_app".into(),
+            "op".into(),
+        )
+        .with_parameters(json!({
+            "app_code": "upload",
+            "image": "nginx:latest",
+            "env_vars": { "S3_TEST_MARKER": "test-123", "POSTGRES_PASSWORD": "pg-secret" },
+            "config_files": [
+                { "destination_path": "upload/docker/prod/.env", "content": "SECRET_KEY=content-secret" }
+            ],
+            "registry_auth": { "username": "bot", "password": "registry-secret" },
+            "command": "mysql -pexec-secret shop",
+            "vault_token": "suffix-secret"
+        }));
+        command.result = Some(json!({
+            "status": "deployed",
+            "size_bytes": 2991,
+            "diff": { "vault_preview": "SECRET_KEY=preview-secret" }
+        }));
+
+        let redacted = command.redacted_for_view();
+        let serialized = serde_json::to_string(&redacted).expect("serialize");
+
+        for secret in [
+            "test-123",
+            "pg-secret",
+            "content-secret",
+            "registry-secret",
+            "preview-secret",
+            "exec-secret",
+            "suffix-secret",
+        ] {
+            assert!(
+                !serialized.contains(secret),
+                "{secret} leaked: {serialized}"
+            );
+        }
+        // Keys and operational fields stay readable.
+        let parameters = redacted.parameters.expect("parameters kept");
+        assert_eq!(parameters["app_code"], "upload");
+        assert_eq!(parameters["image"], "nginx:latest");
+        assert_eq!(parameters["env_vars"]["S3_TEST_MARKER"], "<redacted>");
+        assert!(parameters["env_vars"].get("POSTGRES_PASSWORD").is_some());
+        assert_eq!(
+            parameters["config_files"][0]["destination_path"],
+            "upload/docker/prod/.env"
+        );
+        assert_eq!(redacted.result.expect("result kept")["size_bytes"], 2991);
+    }
+
+    #[test]
+    fn redaction_keeps_non_sensitive_documents_intact() {
+        let command = Command::new("cmd_2".into(), "dep-1".into(), "health".into(), "op".into())
+            .with_parameters(json!({ "app_code": "upload", "include_metrics": true }));
+
+        let redacted = command.redacted_for_view();
+        assert_eq!(
+            serde_json::to_string(&redacted.parameters.unwrap()).unwrap(),
+            r#"{"app_code":"upload","include_metrics":true}"#
+        );
+    }
 }
 
 #[cfg(test)]

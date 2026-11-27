@@ -16,7 +16,7 @@ use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgPool;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
@@ -710,6 +710,27 @@ pub(crate) async fn enrich_deploy_app_with_compose(
         }
     }
 
+    // Compose `${VAR...}` interpolation is fed from the `.env` next to the
+    // compose file (env_file: never feeds interpolation) — the agent writes
+    // params.env_vars there on deploy. The whole compose is interpolated at
+    // once, so an aggregated stack needs every service's environment, not
+    // just the target app's.
+    if let Some(project_id) = project_id {
+        match render_project_runtime_env(pg_pool, project_id, vault_settings).await {
+            Ok(project_env) => {
+                if insert_project_runtime_env_vars(&mut params, &project_env) {
+                    tracing::info!(
+                        deployment_hash = %deployment_hash,
+                        app_code = %app_code,
+                        env_var_count = project_env.len(),
+                        "Enriched deploy_app command with project runtime env for compose interpolation"
+                    );
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
     Ok(Some(params))
 }
 
@@ -750,6 +771,65 @@ fn merge_and_emit_runtime_env(
         },
     }));
     merged
+}
+
+/// Insert the project runtime env union into `params.env_vars` so the agent
+/// writes it to the `.env` next to the compose file — the only file compose
+/// `${VAR}` interpolation reads. A non-empty caller-provided `env_vars` wins
+/// (a present but empty object counts as not provided); an empty union is
+/// ignored.
+fn insert_project_runtime_env_vars(
+    params: &mut serde_json::Value,
+    env: &HashMap<String, String>,
+) -> bool {
+    let has_env_vars = params
+        .get("env_vars")
+        .and_then(|value| value.as_object())
+        .map(|map| !map.is_empty())
+        .unwrap_or(false);
+    if has_env_vars || env.is_empty() {
+        return false;
+    }
+    if let Some(obj) = params.as_object_mut() {
+        obj.insert("env_vars".to_string(), json!(env));
+        return true;
+    }
+    false
+}
+
+/// Render the project-level runtime env union (all enabled apps) for compose
+/// interpolation. Mirrors `render_project_env_for_deploy_app`'s setup.
+async fn render_project_runtime_env(
+    pg_pool: &PgPool,
+    project_id: i32,
+    vault_settings: &crate::configuration::VaultSettings,
+) -> Result<HashMap<String, String>, String> {
+    let project = match db::project::fetch(pg_pool, project_id).await {
+        Ok(Some(project)) => project,
+        Ok(None) => {
+            tracing::warn!(
+                project_id,
+                "Cannot render project runtime env because project was not found"
+            );
+            return Ok(HashMap::new());
+        }
+        Err(error) => {
+            return Err(format!(
+                "failed to render project runtime env: project fetch failed: {error}"
+            ));
+        }
+    };
+
+    let vault = VaultService::from_settings(vault_settings)
+        .map_err(|error| format!("failed to initialize Vault for project runtime env: {error}"))?;
+    let renderer = ConfigRenderer::with_vault(vault).map_err(|error| {
+        format!("failed to initialize ConfigRenderer for project runtime env: {error}")
+    })?;
+
+    renderer
+        .resolve_project_runtime_env(pg_pool, &project)
+        .await
+        .map_err(|error| format!("failed to render project runtime env: {error}"))
 }
 
 fn merge_rendered_env_into_app_env_files(
@@ -1296,6 +1376,49 @@ mod tests {
             "app_code": "upload"
         })))
         .is_none());
+    }
+
+    #[test]
+    fn insert_project_runtime_env_vars_feeds_aggregated_compose_interpolation() {
+        // Regression: an interpolated compose resolves ${VAR} for the whole
+        // file at once (services.database.environment.POSTGRES_PASSWORD was
+        // failing while only one service's env was delivered), so params must
+        // receive the union of every service's environment.
+        let mut params = serde_json::json!({ "app_code": "upload", "pull": true });
+        let union = HashMap::from([
+            ("S3_TEST_MARKER".to_string(), "test-123".to_string()),
+            ("POSTGRES_PASSWORD".to_string(), "pg-secret".to_string()),
+            ("ZITADEL_MASTERKEY".to_string(), "z-secret".to_string()),
+        ]);
+
+        assert!(insert_project_runtime_env_vars(&mut params, &union));
+
+        let env_vars = params.get("env_vars").expect("env_vars inserted");
+        assert_eq!(env_vars.get("S3_TEST_MARKER").unwrap(), "test-123");
+        assert_eq!(env_vars.get("POSTGRES_PASSWORD").unwrap(), "pg-secret");
+        assert_eq!(env_vars.get("ZITADEL_MASTERKEY").unwrap(), "z-secret");
+        assert_eq!(params.get("pull").unwrap(), true, "other params survive");
+    }
+
+    #[test]
+    fn insert_project_runtime_env_vars_keeps_caller_provided_env_vars() {
+        let mut params = serde_json::json!({ "env_vars": { "CALLER": "wins" } });
+        let union = HashMap::from([("OTHER".to_string(), "value".to_string())]);
+
+        assert!(!insert_project_runtime_env_vars(&mut params, &union));
+        assert_eq!(params["env_vars"]["CALLER"], "wins");
+        assert!(params["env_vars"].get("OTHER").is_none());
+    }
+
+    #[test]
+    fn insert_project_runtime_env_vars_ignores_empty_union() {
+        let mut params = serde_json::json!({ "app_code": "upload" });
+
+        assert!(!insert_project_runtime_env_vars(
+            &mut params,
+            &HashMap::new()
+        ));
+        assert!(params.get("env_vars").is_none());
     }
 
     #[test]

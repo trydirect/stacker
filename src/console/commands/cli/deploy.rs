@@ -2253,6 +2253,13 @@ fn extract_host_port_from_string(spec: &str) -> Option<String> {
 /// so two services with different names but the same host port will both survive the merge and
 /// cause Docker to fail at runtime.  This check catches that case locally before any remote
 /// operation is attempted.
+///
+/// A service of the same name in both files is one service described twice, not a collision:
+/// the merge dedupes by name and `merge_stacker_config_service` never materializes a
+/// stacker.yml service the compose file already defines, so the shared host port keeps a
+/// single owner at runtime.  Ports are therefore only compared between *different* service
+/// names — comparing ports alone reported false collisions and blocked deploys whose
+/// stacker.yml `services:` merely restate services the compose file already deploys.
 fn validate_cross_source_port_collisions(
     config: &crate::cli::config_parser::StackerConfig,
     compose_path: &Path,
@@ -2311,6 +2318,11 @@ fn validate_cross_source_port_collisions(
         for port in ports {
             if let Some(host_port) = extract_published_host_port(port) {
                 if let Some(stacker_svc) = stacker_port_owners.get(&host_port) {
+                    // Same service name in both sources = one service described
+                    // twice (see the doc comment) — the port has a single owner.
+                    if compose_svc.eq_ignore_ascii_case(stacker_svc) {
+                        continue;
+                    }
                     collisions.push(format!(
                         "port {} is used by '{}' in stacker.yml and '{}' in {}",
                         host_port,
@@ -6119,6 +6131,126 @@ services:
         assert_eq!(service_names, vec!["upload"]);
         assert_eq!(services[0].image, "ghcr.io/example/upload:1.0");
         assert_eq!(services[0].ports, vec!["8081:8080"]);
+    }
+
+    // ── validate_cross_source_port_collisions ─────────────────────────────
+    //
+    // Regression: a stacker.yml `services:` entry of the same name as a compose
+    // service is one service described twice, not two deploy sources colliding.
+    // Port-only comparison blocked `stacker deploy` (and --dry-run) outright for
+    // projects whose stacker.yml merely restates services the environment
+    // compose file deploys (syncopia: grafana/rabbitmq/website).
+
+    fn service_with_ports(
+        name: &str,
+        ports: &[&str],
+    ) -> crate::cli::config_parser::ServiceDefinition {
+        crate::cli::config_parser::ServiceDefinition {
+            name: name.to_string(),
+            image: format!("example/{name}:1.0"),
+            ports: ports.iter().map(|port| port.to_string()).collect(),
+            environment: Default::default(),
+            volumes: Vec::new(),
+            depends_on: Vec::new(),
+            command: None,
+            healthcheck: None,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            privileged: false,
+            platform: None,
+            devices: Vec::new(),
+            runtime: Default::default(),
+        }
+    }
+
+    #[test]
+    fn same_service_sharing_a_port_across_sources_is_not_a_collision() {
+        let dir = setup_local_project(&[(
+            "docker/prod/compose.yml",
+            r#"
+services:
+  grafana:
+    image: grafana/grafana:10.4
+    ports:
+      - "3000:3000"
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5673:5672"
+      - "15672:15672"
+  website:
+    image: example/website:1.0
+    ports:
+      - "3001:3000"
+"#,
+        )]);
+        let config = StackerConfig {
+            name: "syncopia".to_string(),
+            services: vec![
+                service_with_ports("grafana", &["3000:3000"]),
+                service_with_ports("rabbitmq", &["5673:5672", "15672:15672"]),
+                service_with_ports("website", &["3001:3000"]),
+            ],
+            ..StackerConfig::default()
+        };
+
+        validate_cross_source_port_collisions(&config, &dir.path().join("docker/prod/compose.yml"))
+            .expect("the same service in both files is described twice, not deployed twice");
+    }
+
+    #[test]
+    fn different_services_sharing_a_port_across_sources_are_a_collision() {
+        let dir = setup_local_project(&[(
+            "docker/prod/compose.yml",
+            r#"
+services:
+  grafana:
+    image: grafana/grafana:10.4
+    ports:
+      - "3000:3000"
+"#,
+        )]);
+        let config = StackerConfig {
+            name: "syncopia".to_string(),
+            services: vec![service_with_ports("website", &["3000:3000"])],
+            ..StackerConfig::default()
+        };
+
+        let err = validate_cross_source_port_collisions(
+            &config,
+            &dir.path().join("docker/prod/compose.yml"),
+        )
+        .expect_err("two different services cannot share one host port");
+        let message = err.to_string();
+        assert!(message.contains("Host-port collision"), "{message}");
+        assert!(message.contains("3000"), "{message}");
+    }
+
+    #[test]
+    fn app_ports_against_the_compose_app_service_are_not_a_collision() {
+        // `app` is the conventional name of the main compose service, and
+        // stacker.yml `app.ports` describes that very service.
+        let dir = setup_local_project(&[(
+            "docker/prod/compose.yml",
+            r#"
+services:
+  app:
+    image: example/app:1.0
+    ports:
+      - "8080:8080"
+"#,
+        )]);
+        let config = StackerConfig {
+            name: "syncopia".to_string(),
+            app: crate::cli::config_parser::AppSource {
+                ports: vec!["8080:8080".to_string()],
+                ..Default::default()
+            },
+            ..StackerConfig::default()
+        };
+
+        validate_cross_source_port_collisions(&config, &dir.path().join("docker/prod/compose.yml"))
+            .expect("stacker.yml app.ports restates the compose app service");
     }
 
     fn minimal_config_yaml() -> String {

@@ -91,6 +91,11 @@ pub async fn list_handler(
     );
 
     Ok(JsonResponse::build()
-        .set_list(commands)
+        .set_list(
+            commands
+                .into_iter()
+                .map(|cmd| cmd.redacted_for_view())
+                .collect::<Vec<_>>(),
+        )
         .ok("Commands fetched successfully"))
 }

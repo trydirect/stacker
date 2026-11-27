@@ -253,7 +253,7 @@ pub async fn enqueue_handler(
     );
 
     Ok(JsonResponse::build()
-        .set_item(Some(saved))
+        .set_item(Some(saved.redacted_for_view()))
         .created("Command enqueued"))
 }
 
