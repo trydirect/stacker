@@ -107,3 +107,24 @@ cargo run --bin stacker-cli -- <command>
 - Use `code-reviewer` before commits — focus on security and SQL safety
 - Use `migration-checker` for any database schema changes
 - Use `api-reviewer` when adding or modifying REST endpoints
+## Compose path convention (env_file / bind-mounts)
+
+Docker Compose resolves **all** relative paths (`env_file`, bind-mount `volumes`,
+`build.context`) against the **project directory**, not the compose file's own
+location. Stacker runs the compose from the **project root** (the generated
+`docker-compose.yml` lands at the root), so the base is always the root.
+
+**Rule: paths in a compose must be project-root-relative** (`device-api/docker/prod/.env`
+or `./data/env`). `../` escapes are **rejected** (`env_file_outside_project`) —
+never silently rewritten (this carries secrets). Enforced in
+`src/console/commands/cli/deploy.rs` (`push_env_file_path` /
+`collect_compose_env_file_paths`, resolved against `project_root`).
+
+Note the file/directory asymmetry: bind-mount **files** + `env_file` are
+normalized into the config bundle (project-root-relative), but bind-mount
+**directories** are shipped as-is with the project sync — so a `../..` in a
+directory source is a deploy-time break. Keep directory sources root-relative
+too.
+
+(`env_file` per service injects vars into the container; `${VAR}` interpolation
+reads `.env` from the project directory — two different mechanisms.)

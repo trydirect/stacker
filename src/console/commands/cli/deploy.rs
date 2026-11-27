@@ -335,27 +335,34 @@ fn ensure_env_file_from_example(env_path: &Path, source: &str) -> Result<(), Cli
     )))
 }
 
-fn collect_compose_env_file_paths(compose_path: &Path) -> Result<Vec<PathBuf>, CliError> {
+/// Collect `env_file` paths of a compose document. Relative paths resolve
+/// against the **project root** (not the compose file's directory): Stacker
+/// runs the compose from the project root, so root-relative is the only style
+/// that matches the base. `../` escapes are rejected — see
+/// [`append_env_file_value_paths`].
+fn collect_compose_env_file_paths(
+    compose_path: &Path,
+    project_root: &Path,
+) -> Result<Vec<PathBuf>, CliError> {
     let raw = std::fs::read_to_string(compose_path)?;
     let doc: serde_yaml::Value = serde_yaml::from_str(&raw)
         .map_err(|e| CliError::ConfigValidation(format!("Failed to parse compose file: {e}")))?;
-    let compose_dir = compose_path.parent().unwrap_or_else(|| Path::new("."));
     let mut paths = Vec::new();
-    collect_compose_env_file_paths_from_doc(&doc, compose_dir, &mut paths);
+    collect_compose_env_file_paths_from_doc(&doc, project_root, &mut paths)?;
     Ok(paths)
 }
 
 fn collect_compose_env_file_paths_from_doc(
     doc: &serde_yaml::Value,
-    compose_dir: &Path,
+    project_root: &Path,
     paths: &mut Vec<PathBuf>,
-) {
+) -> Result<(), CliError> {
     let Some(services) = doc
         .as_mapping()
         .and_then(|root| root.get(serde_yaml::Value::String("services".to_string())))
         .and_then(serde_yaml::Value::as_mapping)
     else {
-        return;
+        return Ok(());
     };
 
     for service in services.values() {
@@ -366,27 +373,23 @@ fn collect_compose_env_file_paths_from_doc(
         else {
             continue;
         };
-        append_env_file_value_paths(env_file, compose_dir, paths);
+        append_env_file_value_paths(env_file, project_root, paths)?;
     }
+    Ok(())
 }
 
 fn append_env_file_value_paths(
     value: &serde_yaml::Value,
-    compose_dir: &Path,
+    project_root: &Path,
     paths: &mut Vec<PathBuf>,
-) {
+) -> Result<(), CliError> {
     match value {
         serde_yaml::Value::String(path) => {
-            let path = PathBuf::from(path);
-            paths.push(if path.is_absolute() {
-                path
-            } else {
-                compose_dir.join(path)
-            });
+            push_env_file_path(path, project_root, paths)?;
         }
         serde_yaml::Value::Sequence(values) => {
             for value in values {
-                append_env_file_value_paths(value, compose_dir, paths);
+                append_env_file_value_paths(value, project_root, paths)?;
             }
         }
         serde_yaml::Value::Mapping(map) => {
@@ -394,20 +397,44 @@ fn append_env_file_value_paths(
                 .get(serde_yaml::Value::String("path".to_string()))
                 .and_then(serde_yaml::Value::as_str)
             {
-                let path = PathBuf::from(path);
-                paths.push(if path.is_absolute() {
-                    path
-                } else {
-                    compose_dir.join(path)
-                });
+                push_env_file_path(path, project_root, paths)?;
             }
         }
         _ => {}
     }
+    Ok(())
 }
 
-fn ensure_compose_env_files_if_needed(compose_path: &Path) -> Result<(), CliError> {
-    for env_path in collect_compose_env_file_paths(compose_path)? {
+/// Resolve one env_file path against the project root and reject `../`
+/// escapes. Relative paths must be project-root-relative (the base Stacker
+/// runs compose from); `../` would resolve outside the project.
+fn push_env_file_path(
+    path: &str,
+    project_root: &Path,
+    paths: &mut Vec<PathBuf>,
+) -> Result<(), CliError> {
+    let path_buf = PathBuf::from(path);
+    if path_buf.is_absolute() {
+        paths.push(path_buf);
+        return Ok(());
+    }
+    // Reject `../` escapes: only root-relative (`./x` or `x`) is allowed.
+    let rel = path.strip_prefix("./").unwrap_or(path);
+    if rel.starts_with("../") {
+        return Err(CliError::ConfigValidation(format!(
+            "env_file '{}' must be project-root-relative; '../' escapes are not allowed (env_file_outside_project)",
+            path
+        )));
+    }
+    paths.push(project_root.join(path_buf));
+    Ok(())
+}
+
+fn ensure_compose_env_files_if_needed(
+    compose_path: &Path,
+    project_root: &Path,
+) -> Result<(), CliError> {
+    for env_path in collect_compose_env_file_paths(compose_path, project_root)? {
         ensure_env_file_from_example(&env_path, "compose env_file")?;
     }
     Ok(())
@@ -3969,7 +3996,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     if compose_is_user_supplied {
         validate_cross_source_port_collisions(&config, &compose_path)?;
     }
-    ensure_compose_env_files_if_needed(&compose_path)?;
+    ensure_compose_env_files_if_needed(&compose_path, project_dir)?;
     let image_env = build_image_env_lookup(project_dir, &config)?;
     merge_compose_public_ports_into_app_config(&mut config, &compose_path, &image_env)?;
     if matches!(deploy_target, DeployTarget::Cloud | DeployTarget::Server) {
@@ -9945,5 +9972,110 @@ monitoring:
             )));
         let matched = matches!(outcome, DeploymentWatchOutcome::Failed(_));
         assert!(matched);
+    }
+
+    // ── env_file path resolution (project-root base) + `../` rejection ──
+
+    #[test]
+    fn test_env_file_root_relative_resolves_from_project_root() {
+        let root = Path::new("/project");
+        let doc = serde_yaml::from_str(
+            r#"
+services:
+  a:
+    env_file: device-api/docker/prod/.env
+"#,
+        )
+        .unwrap();
+        let mut paths = Vec::new();
+        collect_compose_env_file_paths_from_doc(&doc, root, &mut paths).unwrap();
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("/project/device-api/docker/prod/.env")]
+        );
+    }
+
+    #[test]
+    fn test_env_file_dot_relative_resolves_from_project_root() {
+        // `./x` is root-relative too (base = project root).
+        let root = Path::new("/project");
+        let doc = serde_yaml::from_str(
+            r#"
+services:
+  a:
+    env_file: ./data/env
+"#,
+        )
+        .unwrap();
+        let mut paths = Vec::new();
+        collect_compose_env_file_paths_from_doc(&doc, root, &mut paths).unwrap();
+        assert_eq!(paths, vec![PathBuf::from("/project/data/env")]);
+    }
+
+    #[test]
+    fn test_env_file_dotdot_escape_is_rejected() {
+        let root = Path::new("/project");
+        let doc = serde_yaml::from_str(
+            r#"
+services:
+  a:
+    env_file: ../../device-api/docker/prod/.env
+"#,
+        )
+        .unwrap();
+        let mut paths = Vec::new();
+        let err = collect_compose_env_file_paths_from_doc(&doc, root, &mut paths).unwrap_err();
+        assert!(
+            err.to_string().contains("project-root-relative"),
+            "expected root-relative rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_env_file_sequence_and_mapping_forms_validate_too() {
+        let root = Path::new("/project");
+        // Sequence form.
+        let doc = serde_yaml::from_str(
+            r#"
+services:
+  a:
+    env_file:
+      - ../escape/.env
+"#,
+        )
+        .unwrap();
+        let mut paths = Vec::new();
+        assert!(collect_compose_env_file_paths_from_doc(&doc, root, &mut paths).is_err());
+
+        // Mapping form ({path: ...}).
+        let doc = serde_yaml::from_str(
+            r#"
+services:
+  a:
+    env_file:
+      path: ../escape/.env
+"#,
+        )
+        .unwrap();
+        let mut paths = Vec::new();
+        assert!(collect_compose_env_file_paths_from_doc(&doc, root, &mut paths).is_err());
+    }
+
+    #[test]
+    fn test_absolute_env_file_is_allowed() {
+        // Absolute paths are not `../` escapes; the outside-project guard
+        // handles them separately.
+        let root = Path::new("/project");
+        let doc = serde_yaml::from_str(
+            r#"
+services:
+  a:
+    env_file: /etc/app/.env
+"#,
+        )
+        .unwrap();
+        let mut paths = Vec::new();
+        collect_compose_env_file_paths_from_doc(&doc, root, &mut paths).unwrap();
+        assert_eq!(paths, vec![PathBuf::from("/etc/app/.env")]);
     }
 }
