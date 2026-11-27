@@ -141,10 +141,17 @@ Two distinct mechanisms, both needed — do not make them exclusive:
 
 `deploy_app` enrichment (`routes/command/create.rs`: `merge_and_emit_runtime_env`)
 **ANDs** them: merge the rendered runtime env into a referenced `env_file` (container)
-**and always** emit it as `project/.env` (interpolation). Never `if/else` — that
-dropped the secrets from `project/.env` and broke `${VAR:?…}` (missing required
-variable). The runtime env (`remote_runtime_env_path` = `project/.env`) carries the
-full rendered union (secrets + non-secrets).
+**and** deliver the interpolation source. Never drop the interpolation source because
+an `env_file` merge happened — that broke `${VAR:?…}` (missing required variable).
+
+The interpolation source is the project runtime env union in `params.env_vars`
+(authored app env < project env file < Vault service secrets); the agent writes it to
+the `.env` next to the compose it actually runs. Once the union is delivered, the
+single-app file emitted to `remote_runtime_env_path_for(stack_code)` is dropped
+(`drop_superseded_runtime_env_file`): that path is only Stacker's guess
+(`/home/trydirect/<name>-<id>/.env`), it can differ from the real compose dir, and it is
+shared by every app, so keeping it made the next app's push fail the drift guard. It is
+still emitted when no union is delivered (caller-provided `env_vars`, empty union).
 
 ### Reserved-prefix routing (STACKER_/DOCKER_/VAULT_/AGENT_)
 

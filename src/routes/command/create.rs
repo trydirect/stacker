@@ -629,6 +629,7 @@ pub(crate) async fn enrich_deploy_app_with_compose(
         "Looking up .env file in Vault"
     );
 
+    let mut emitted_runtime_env_destination: Option<String> = None;
     if let Some((env_config, _config_hash)) = render_project_env_for_deploy_app(
         pg_pool,
         project_id,
@@ -653,6 +654,7 @@ pub(crate) async fn enrich_deploy_app_with_compose(
             &env_config,
             force_config_overwrite,
         );
+        emitted_runtime_env_destination = Some(env_config.destination_path.clone());
         if merged_into_bundle > 0 {
             tracing::info!(
                 deployment_hash = %deployment_hash,
@@ -734,6 +736,16 @@ pub(crate) async fn enrich_deploy_app_with_compose(
                         env_var_count = project_env.len(),
                         "Enriched deploy_app command with project runtime env for compose interpolation"
                     );
+                    if let Some(destination) = emitted_runtime_env_destination.as_deref() {
+                        if drop_superseded_runtime_env_file(&mut params, destination) {
+                            tracing::info!(
+                                deployment_hash = %deployment_hash,
+                                app_code = %app_code,
+                                destination = %destination,
+                                "Dropped the single-app runtime env file; the agent writes the project runtime env from env_vars"
+                            );
+                        }
+                    }
                 }
             }
             Err(error) => return Err(error),
@@ -804,6 +816,38 @@ fn insert_project_runtime_env_vars(
         return true;
     }
     false
+}
+
+/// Remove the single-app runtime env file `merge_and_emit_runtime_env` emitted
+/// to `destination` (`remote_runtime_env_path_for(stack_code)`) once the
+/// project union is delivered as `env_vars`. The agent writes `env_vars` to
+/// the `.env` next to the compose it actually runs (it resolves that directory
+/// itself), so the emitted file is either overwritten right away (same path)
+/// or lands in a directory Stacker only guessed — e.g.
+/// `/home/trydirect/<name>-<id>/.env` while the stack runs in
+/// `/home/trydirect/project` — where every app overwrites it and the drift
+/// guard rejects the next app's push. Only a file carrying the stacker-render
+/// drift check is removed; anything else at that path is left alone.
+fn drop_superseded_runtime_env_file(params: &mut serde_json::Value, destination: &str) -> bool {
+    let Some(files) = params
+        .get_mut("config_files")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return false;
+    };
+    let before = files.len();
+    files.retain(|file| {
+        let rendered_here = file
+            .get("destination_path")
+            .and_then(serde_json::Value::as_str)
+            == Some(destination)
+            && file
+                .pointer("/drift_check/hash_source")
+                .and_then(serde_json::Value::as_str)
+                == Some("stacker-render-header");
+        !rendered_here
+    });
+    files.len() != before
 }
 
 /// The project env file to layer into the runtime env union: the `.env` this
@@ -1777,6 +1821,62 @@ services:
                 .any(|f| f["destination_path"] == "/home/trydirect/project/.env"),
             "project/.env must be emitted even when the env_file merge happened"
         );
+    }
+
+    fn destinations(params: &serde_json::Value) -> Vec<String> {
+        params["config_files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| file["destination_path"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn single_app_runtime_env_file_is_dropped_once_the_union_is_delivered() {
+        // Live failure (2026-11-27): the single-app render went to
+        // /home/trydirect/<name>-<id>/.env while the stack runs in
+        // /home/trydirect/project. One file for every app: pushing upload
+        // after device-api hit the drift guard ("expected hash <upload's
+        // render>, found <device-api's>"). With the union in env_vars the
+        // agent writes the real compose-dir .env itself.
+        let mut config = sample_env_config();
+        config.destination_path = "/home/trydirect/syncopia-823/.env".to_string();
+        let mut config_files = vec![
+            json!({"destination_path": ".env", "content": "PROJECT=1\n"}),
+            json!({"destination_path": "upload/docker/prod/.env", "content": "A=1\n"}),
+        ];
+        merge_and_emit_runtime_env(&mut config_files, None, "upload", &config, false);
+        let mut params = json!({ "config_files": config_files });
+        assert!(insert_project_runtime_env_vars(
+            &mut params,
+            &HashMap::from([("S3_BUCKET".to_string(), "b".to_string())])
+        ));
+
+        assert!(drop_superseded_runtime_env_file(
+            &mut params,
+            &config.destination_path
+        ));
+        assert_eq!(
+            destinations(&params),
+            vec![".env".to_string(), "upload/docker/prod/.env".to_string()]
+        );
+    }
+
+    #[test]
+    fn drop_superseded_runtime_env_file_keeps_files_it_did_not_render() {
+        // Same destination but no stacker-render drift check: not ours.
+        let mut params = json!({
+            "config_files": [
+                {"destination_path": "/home/trydirect/project/.env", "content": "X=1\n"}
+            ]
+        });
+
+        assert!(!drop_superseded_runtime_env_file(
+            &mut params,
+            "/home/trydirect/project/.env"
+        ));
+        assert_eq!(destinations(&params).len(), 1);
     }
 
     #[test]
