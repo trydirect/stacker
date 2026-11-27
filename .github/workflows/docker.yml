@@ -69,8 +69,13 @@ jobs:
       # Reclaim disk for the large Rust build (see rust.yml).
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo docker image prune -af >/dev/null 2>&1 || true
+          # Best-effort cleanup, sudo optional: this job may run inside a
+          # container (docker.yml runs in rust:bookworm) where sudo does not
+          # exist and the job already runs as root, while a bare runner needs
+          # sudo for these paths. Never fail the build over cleanup.
+          SUDO="$(command -v sudo || true)"
+          $SUDO rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          $SUDO docker image prune -af >/dev/null 2>&1 || true
           df -h /
       - name: Export PostgreSQL connection env
         run: |
