@@ -56,7 +56,7 @@ pub async fn get_handler(
             );
 
             Ok(JsonResponse::build()
-                .set_item(Some(cmd))
+                .set_item(Some(cmd.redacted_for_view()))
                 .ok("Command fetched successfully"))
         }
         None => {
