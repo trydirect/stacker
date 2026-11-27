@@ -644,13 +644,14 @@ pub(crate) async fn enrich_deploy_app_with_compose(
             destination = %env_config.destination_path,
             "Enriched deploy_app command with freshly rendered runtime env"
         );
-        let merged_into_bundle = merge_rendered_env_into_app_env_files(
+        let merged_into_bundle = merge_and_emit_runtime_env(
             &mut config_files,
             params
                 .get("compose_content")
                 .and_then(|value| value.as_str()),
             &app_code,
-            &env_config.content,
+            &env_config,
+            force_config_overwrite,
         );
         if merged_into_bundle > 0 {
             tracing::info!(
@@ -659,22 +660,6 @@ pub(crate) async fn enrich_deploy_app_with_compose(
                 merged_file_count = merged_into_bundle,
                 "Merged rendered runtime env into deploy_app config bundle env files"
             );
-        } else {
-            // No existing .env entry to merge into — add as a new config file
-            let env_file = json!({
-                "content": env_config.content,
-                "content_type": env_config.content_type,
-                "destination_path": env_config.destination_path,
-                "file_mode": env_config.file_mode,
-                "owner": env_config.owner,
-                "group": env_config.group,
-                "force_overwrite": force_config_overwrite,
-                "drift_check": {
-                    "enabled": true,
-                    "hash_source": "stacker-render-header"
-                },
-            });
-            config_files.push(env_file);
         }
     } else {
         match vault.fetch_app_config(deployment_hash, &env_key).await {
@@ -726,6 +711,43 @@ pub(crate) async fn enrich_deploy_app_with_compose(
     }
 
     Ok(Some(params))
+}
+
+/// Merge the rendered runtime env into any referenced app `env_file` **and**
+/// always emit it as `project/.env`. Both are needed: the env_file merge feeds
+/// the container, but `${VAR:?…}` interpolation only reads `project/.env` — so
+/// the runtime env must land there regardless of the merge. Returns how many
+/// env_files received the merge.
+fn merge_and_emit_runtime_env(
+    config_files: &mut Vec<serde_json::Value>,
+    compose_content: Option<&str>,
+    app_code: &str,
+    env_config: &AppConfig,
+    force_overwrite: bool,
+) -> usize {
+    let merged = merge_rendered_env_into_app_env_files(
+        config_files,
+        compose_content,
+        app_code,
+        &env_config.content,
+    );
+    // Always emit the runtime env as its own config file (destination_path =
+    // project/.env). Without this push the secrets never reach the `${VAR}`
+    // interpolation source.
+    config_files.push(json!({
+        "content": env_config.content,
+        "content_type": env_config.content_type,
+        "destination_path": env_config.destination_path,
+        "file_mode": env_config.file_mode,
+        "owner": env_config.owner,
+        "group": env_config.group,
+        "force_overwrite": force_overwrite,
+        "drift_check": {
+            "enabled": true,
+            "hash_source": "stacker-render-header"
+        },
+    }));
+    merged
 }
 
 fn merge_rendered_env_into_app_env_files(
@@ -1513,5 +1535,74 @@ services:
 
         assert!(destinations
             .contains("/opt/stacker/deployments/prod/files/device-api/docker/prod/.env"));
+    }
+
+    // ── merge_and_emit_runtime_env: project/.env is ALWAYS emitted (AND) ──
+
+    fn sample_env_config() -> crate::services::vault_service::AppConfig {
+        crate::services::vault_service::AppConfig {
+            content: "POSTGRES_PASSWORD=secret\nGRAFANA_ADMIN_PASSWORD=g\n".to_string(),
+            content_type: "env".to_string(),
+            destination_path: "/home/trydirect/project/.env".to_string(),
+            file_mode: "0600".to_string(),
+            owner: None,
+            group: None,
+        }
+    }
+
+    #[test]
+    fn runtime_env_is_emitted_even_when_merged_into_an_env_file() {
+        // Case 1: compose references an env_file → merge succeeds (merged=1),
+        // but project/.env (the ${VAR} interpolation source) must STILL be
+        // emitted — this is the regression the AND-fix guards.
+        let compose = r#"
+services:
+  device-api:
+    env_file:
+      - /opt/stacker/deployments/prod/files/device-api/docker/prod/.env
+"#;
+        let mut config_files = vec![json!({
+            "content": "OLD=1\n",
+            "destination_path": "/opt/stacker/deployments/prod/files/device-api/docker/prod/.env",
+        })];
+        let merged = merge_and_emit_runtime_env(
+            &mut config_files,
+            Some(compose),
+            "device-api",
+            &sample_env_config(),
+            false,
+        );
+        assert_eq!(merged, 1, "the env_file should receive the merge");
+        assert!(
+            config_files
+                .iter()
+                .any(|f| f["destination_path"] == "/home/trydirect/project/.env"),
+            "project/.env must be emitted even when the env_file merge happened"
+        );
+    }
+
+    #[test]
+    fn runtime_env_is_emitted_without_an_env_file() {
+        // Case 2: no env_file → merge=0, project/.env still emitted.
+        let compose = r#"
+services:
+  device-api:
+    image: x
+"#;
+        let mut config_files = Vec::new();
+        let merged = merge_and_emit_runtime_env(
+            &mut config_files,
+            Some(compose),
+            "device-api",
+            &sample_env_config(),
+            false,
+        );
+        assert_eq!(merged, 0);
+        assert!(
+            config_files
+                .iter()
+                .any(|f| f["destination_path"] == "/home/trydirect/project/.env"),
+            "project/.env must be emitted"
+        );
     }
 }
