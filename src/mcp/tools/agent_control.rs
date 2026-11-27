@@ -95,8 +95,8 @@ async fn enqueue_and_wait(
             "command_id": cmd.command_id,
             "deployment_hash": deployment_hash,
             "command_type": command_type,
-            "result": cmd.result,
-            "error": cmd.error,
+            "result": cmd.result.as_ref().map(crate::models::redact_sensitive_json),
+            "error": cmd.error.as_ref().map(crate::models::redact_sensitive_json),
         }))
     } else {
         Ok(json!({
@@ -150,8 +150,8 @@ async fn enqueue_request_and_wait(
             "command_id": cmd.command_id,
             "deployment_hash": request.deployment_hash,
             "command_type": request.command_type,
-            "result": cmd.result,
-            "error": cmd.error,
+            "result": cmd.result.as_ref().map(crate::models::redact_sensitive_json),
+            "error": cmd.error.as_ref().map(crate::models::redact_sensitive_json),
         }))
     } else {
         Ok(json!({

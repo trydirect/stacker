@@ -175,8 +175,8 @@ impl ToolHandler for GetContainerLogsTool {
                 "deployment_hash": deployment_hash,
                 "app_code": params.app_code,
                 "limit": limit,
-                "result": cmd.result,
-                "error": cmd.error,
+                "result": cmd.result.as_ref().map(crate::models::redact_sensitive_json),
+                "error": cmd.error.as_ref().map(crate::models::redact_sensitive_json),
                 "message": "Logs retrieved."
             })
         } else {
@@ -301,8 +301,8 @@ impl ToolHandler for GetContainerHealthTool {
                 "command_id": cmd.command_id,
                 "deployment_hash": deployment_hash,
                 "app_code": params.app_code,
-                "result": cmd.result,
-                "error": cmd.error,
+                "result": cmd.result.as_ref().map(crate::models::redact_sensitive_json),
+                "error": cmd.error.as_ref().map(crate::models::redact_sensitive_json),
                 "message": "Health metrics retrieved."
             })
         } else {
@@ -1323,8 +1323,8 @@ impl ToolHandler for GetServerResourcesTool {
                 "status": status,
                 "command_id": cmd.command_id,
                 "deployment_hash": deployment_hash,
-                "result": cmd.result,
-                "error": cmd.error,
+                "result": cmd.result.as_ref().map(crate::models::redact_sensitive_json),
+                "error": cmd.error.as_ref().map(crate::models::redact_sensitive_json),
                 "message": "Server resources collected.",
                 "metrics_included": ["cpu_percent", "memory_used", "memory_total", "disk_used", "disk_total", "network_io"]
             })
