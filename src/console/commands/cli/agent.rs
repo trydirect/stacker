@@ -1159,16 +1159,14 @@ fn collect_local_config_files_for_agent_deploy(
     }
 
     let bundle = if compose_path == configured_compose_path.as_path() {
-        let reference_base = configured_compose_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| project_dir.to_path_buf());
+        // The project compose is project-root-relative, like on `stacker
+        // deploy` (deploy.rs); the agent runs it from the project root.
         let mut bundle = build_config_bundle(
             project_dir,
             &environment,
             &configured_compose_path,
             config.env_file.as_deref(),
-            &reference_base,
+            project_dir,
             false,
         )?;
         if materialize_stacker_service_in_bundle(&mut bundle, &config, app_code)? {
@@ -3899,7 +3897,7 @@ environments:
         std::fs::create_dir_all(root.join("docker/prod")).expect("project compose dir");
         std::fs::write(
             root.join("docker/prod/compose.yml"),
-            "services:\n  upload:\n    image: syncopia/upload:prod\n    env_file: .env\n",
+            "services:\n  upload:\n    image: syncopia/upload:prod\n    env_file: docker/prod/.env\n",
         )
         .expect("project compose");
         std::fs::write(
@@ -3946,6 +3944,70 @@ environments:
                     .map(|content| content.contains("UPLOAD_IMAGE=syncopia/upload:prod"))
                     .unwrap_or(false)
         }));
+    }
+
+    fn project_compose_root(env_file: &str) -> TempDir {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docker/prod")).expect("project compose dir");
+        std::fs::create_dir_all(root.join("database/docker/prod")).expect("service dir");
+        std::fs::write(root.join("docker/prod/.env"), "IMAGE=x\n").expect("project env");
+        std::fs::write(root.join("database/docker/prod/.env"), "PGDATA=/d\n").expect("svc env");
+        std::fs::write(
+            root.join("docker/prod/compose.yml"),
+            format!("services:\n  database:\n    image: postgres\n    env_file: {env_file}\n"),
+        )
+        .expect("project compose");
+        std::fs::write(
+            root.join("stacker.yml"),
+            r#"
+name: syncopia
+project:
+  identity: syncopia
+app:
+  image: syncopia/website:latest
+deploy:
+  target: server
+  environment: prod
+environments:
+  prod:
+    compose_file: docker/prod/compose.yml
+    env_file: docker/prod/.env
+"#,
+        )
+        .expect("stacker config");
+        dir
+    }
+
+    /// A service without its own `<app>/docker/<env>/compose.yml` ships the
+    /// project compose; its paths are project-root-relative, as on `stacker
+    /// deploy`. Resolving them from docker/prod/ used to fail the push.
+    #[test]
+    fn local_config_files_resolve_project_compose_refs_from_project_root() {
+        let dir = project_compose_root("database/docker/prod/.env");
+
+        let config =
+            local_config_files_for_agent_deploy(dir.path(), "database", None, None).unwrap();
+
+        let config_files = config.config_files.expect("config files");
+        assert!(config_files.iter().any(|file| {
+            file.get("destination_path").and_then(|path| path.as_str())
+                == Some("database/docker/prod/.env")
+        }));
+    }
+
+    #[test]
+    fn local_config_files_name_the_root_relative_path_for_compose_relative_refs() {
+        let dir = project_compose_root(".env");
+
+        let message = local_config_files_for_agent_deploy(dir.path(), "database", None, None)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            message.contains("write it as 'docker/prod/.env'"),
+            "{message}"
+        );
     }
 
     /// A template-based project resolves no environment at all - no

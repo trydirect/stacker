@@ -9,7 +9,9 @@ use crate::cli::ai_client::{
 use crate::cli::cloud_env;
 #[cfg(test)]
 use crate::cli::compose_targets::extract_compose_secret_target_services;
-use crate::cli::config_bundle::build_config_bundle;
+use crate::cli::config_bundle::{
+    build_config_bundle, compose_relative_conflict, compose_relative_error,
+};
 use crate::cli::config_parser::{
     AiProviderType, CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, RegistryConfig,
     ServerConfig, StackerConfig,
@@ -347,14 +349,16 @@ fn collect_compose_env_file_paths(
     let raw = std::fs::read_to_string(compose_path)?;
     let doc: serde_yaml::Value = serde_yaml::from_str(&raw)
         .map_err(|e| CliError::ConfigValidation(format!("Failed to parse compose file: {e}")))?;
+    let compose_dir = compose_path.parent().unwrap_or(project_root);
     let mut paths = Vec::new();
-    collect_compose_env_file_paths_from_doc(&doc, project_root, &mut paths)?;
+    collect_compose_env_file_paths_from_doc(&doc, project_root, compose_dir, &mut paths)?;
     Ok(paths)
 }
 
 fn collect_compose_env_file_paths_from_doc(
     doc: &serde_yaml::Value,
     project_root: &Path,
+    compose_dir: &Path,
     paths: &mut Vec<PathBuf>,
 ) -> Result<(), CliError> {
     let Some(services) = doc
@@ -373,7 +377,7 @@ fn collect_compose_env_file_paths_from_doc(
         else {
             continue;
         };
-        append_env_file_value_paths(env_file, project_root, paths)?;
+        append_env_file_value_paths(env_file, project_root, compose_dir, paths)?;
     }
     Ok(())
 }
@@ -381,15 +385,16 @@ fn collect_compose_env_file_paths_from_doc(
 fn append_env_file_value_paths(
     value: &serde_yaml::Value,
     project_root: &Path,
+    compose_dir: &Path,
     paths: &mut Vec<PathBuf>,
 ) -> Result<(), CliError> {
     match value {
         serde_yaml::Value::String(path) => {
-            push_env_file_path(path, project_root, paths)?;
+            push_env_file_path(path, project_root, compose_dir, paths)?;
         }
         serde_yaml::Value::Sequence(values) => {
             for value in values {
-                append_env_file_value_paths(value, project_root, paths)?;
+                append_env_file_value_paths(value, project_root, compose_dir, paths)?;
             }
         }
         serde_yaml::Value::Mapping(map) => {
@@ -397,7 +402,7 @@ fn append_env_file_value_paths(
                 .get(serde_yaml::Value::String("path".to_string()))
                 .and_then(serde_yaml::Value::as_str)
             {
-                push_env_file_path(path, project_root, paths)?;
+                push_env_file_path(path, project_root, compose_dir, paths)?;
             }
         }
         _ => {}
@@ -407,10 +412,13 @@ fn append_env_file_value_paths(
 
 /// Resolve one env_file path against the project root and reject `../`
 /// escapes. Relative paths must be project-root-relative (the base Stacker
-/// runs compose from); `../` would resolve outside the project.
+/// runs compose from); `../` would resolve outside the project. When the path
+/// only makes sense relative to the compose file (`compose_dir`), the error
+/// names the root-relative path to write instead.
 fn push_env_file_path(
     path: &str,
     project_root: &Path,
+    compose_dir: &Path,
     paths: &mut Vec<PathBuf>,
 ) -> Result<(), CliError> {
     let path_buf = PathBuf::from(path);
@@ -420,11 +428,19 @@ fn push_env_file_path(
     }
     // Reject `../` escapes: only root-relative (`./x` or `x`) is allowed.
     let rel = path.strip_prefix("./").unwrap_or(path);
+    let conflict = compose_relative_conflict(project_root, project_root, compose_dir, path);
     if rel.starts_with("../") {
+        let hint = conflict
+            .as_ref()
+            .map(|conflict| format!(" — write it as '{}'", conflict.compose_side()))
+            .unwrap_or_default();
         return Err(CliError::ConfigValidation(format!(
-            "env_file '{}' must be project-root-relative; '../' escapes are not allowed (env_file_outside_project)",
-            path
+            "env_file '{}' must be project-root-relative; '../' escapes are not allowed (env_file_outside_project){}",
+            path, hint
         )));
+    }
+    if let Some(conflict) = conflict {
+        return Err(compose_relative_error("env_file", path, &conflict, ""));
     }
     paths.push(project_root.join(path_buf));
     Ok(())
@@ -4048,18 +4064,12 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         // this namespace is flagged so it never leaks as the deploy environment.
         let synthesized_environment = selected_environment.is_none();
         let bundle_env = selected_environment.as_deref().unwrap_or("default");
-        // A generated compose lives under .stacker/ but its bind-mount paths were
-        // authored in stacker.yml relative to the project root, so resolve them
-        // against project_dir. A user-supplied compose keeps standard Docker Compose
-        // semantics (relative to the compose file's own directory).
-        let reference_base: PathBuf = if compose_is_user_supplied {
-            compose_path
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| project_dir.to_path_buf())
-        } else {
-            project_dir.to_path_buf()
-        };
+        // Compose paths are project-root-relative for every compose: the remote
+        // compose runs from the project root, and the env_file preflight above
+        // resolves from there too. A user-supplied compose in a subdirectory
+        // that still uses compose-relative paths gets an error naming the
+        // root-relative path to write (see `compose_relative_conflict`).
+        let reference_base: PathBuf = project_dir.to_path_buf();
         // Cloud/server deploys always run the status-panel agent, so put project
         // services on the agent's shared network for reachability.
         let mut bundle = build_config_bundle(
@@ -9988,7 +9998,7 @@ services:
         )
         .unwrap();
         let mut paths = Vec::new();
-        collect_compose_env_file_paths_from_doc(&doc, root, &mut paths).unwrap();
+        collect_compose_env_file_paths_from_doc(&doc, root, root, &mut paths).unwrap();
         assert_eq!(
             paths,
             vec![PathBuf::from("/project/device-api/docker/prod/.env")]
@@ -10008,7 +10018,7 @@ services:
         )
         .unwrap();
         let mut paths = Vec::new();
-        collect_compose_env_file_paths_from_doc(&doc, root, &mut paths).unwrap();
+        collect_compose_env_file_paths_from_doc(&doc, root, root, &mut paths).unwrap();
         assert_eq!(paths, vec![PathBuf::from("/project/data/env")]);
     }
 
@@ -10024,11 +10034,82 @@ services:
         )
         .unwrap();
         let mut paths = Vec::new();
-        let err = collect_compose_env_file_paths_from_doc(&doc, root, &mut paths).unwrap_err();
+        let err =
+            collect_compose_env_file_paths_from_doc(&doc, root, root, &mut paths).unwrap_err();
         assert!(
             err.to_string().contains("project-root-relative"),
             "expected root-relative rejection, got: {err}"
         );
+    }
+
+    /// Project with the compose in docker/prod/, as syncopia lays it out.
+    fn subdir_compose_root(env_file: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docker/prod")).unwrap();
+        std::fs::create_dir_all(root.join("device-api/docker/prod")).unwrap();
+        std::fs::write(root.join("docker/prod/.env"), "A=1\n").unwrap();
+        std::fs::write(root.join("device-api/docker/prod/.env"), "B=2\n").unwrap();
+        let compose = root.join("docker/prod/compose.yml");
+        std::fs::write(
+            &compose,
+            format!("services:\n  device-api:\n    env_file: {env_file}\n"),
+        )
+        .unwrap();
+        (dir, compose)
+    }
+
+    #[test]
+    fn test_env_file_escape_error_names_the_root_relative_path() {
+        let (dir, compose) = subdir_compose_root("../../device-api/docker/prod/.env");
+
+        let err = collect_compose_env_file_paths(&compose, dir.path()).unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("env_file_outside_project"), "{message}");
+        assert!(
+            message.contains("write it as 'device-api/docker/prod/.env'"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn test_compose_relative_env_file_error_names_the_root_relative_path() {
+        // `.env` next to docker/prod/compose.yml, none at the project root:
+        // resolving from the root must not pass (or be created from an
+        // example) silently.
+        let (dir, compose) = subdir_compose_root(".env");
+
+        let err = collect_compose_env_file_paths(&compose, dir.path()).unwrap_err();
+
+        let message = err.to_string();
+        assert!(
+            message.contains("write it as 'docker/prod/.env'"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn test_env_file_resolving_to_different_files_from_each_base_is_rejected() {
+        // A dev `.env` at the root must not stand in for docker/prod/.env.
+        let (dir, compose) = subdir_compose_root(".env");
+        std::fs::write(dir.path().join(".env"), "DEV=1\n").unwrap();
+
+        let message = collect_compose_env_file_paths(&compose, dir.path())
+            .unwrap_err()
+            .to_string();
+
+        assert!(message.contains("ambiguous"), "{message}");
+        assert!(message.contains("'docker/prod/.env'"), "{message}");
+    }
+
+    #[test]
+    fn test_root_relative_env_file_in_subdir_compose_is_accepted() {
+        let (dir, compose) = subdir_compose_root("device-api/docker/prod/.env");
+
+        let paths = collect_compose_env_file_paths(&compose, dir.path()).unwrap();
+
+        assert_eq!(paths, vec![dir.path().join("device-api/docker/prod/.env")]);
     }
 
     #[test]
@@ -10045,7 +10126,7 @@ services:
         )
         .unwrap();
         let mut paths = Vec::new();
-        assert!(collect_compose_env_file_paths_from_doc(&doc, root, &mut paths).is_err());
+        assert!(collect_compose_env_file_paths_from_doc(&doc, root, root, &mut paths).is_err());
 
         // Mapping form ({path: ...}).
         let doc = serde_yaml::from_str(
@@ -10058,7 +10139,7 @@ services:
         )
         .unwrap();
         let mut paths = Vec::new();
-        assert!(collect_compose_env_file_paths_from_doc(&doc, root, &mut paths).is_err());
+        assert!(collect_compose_env_file_paths_from_doc(&doc, root, root, &mut paths).is_err());
     }
 
     #[test]
@@ -10075,7 +10156,7 @@ services:
         )
         .unwrap();
         let mut paths = Vec::new();
-        collect_compose_env_file_paths_from_doc(&doc, root, &mut paths).unwrap();
+        collect_compose_env_file_paths_from_doc(&doc, root, root, &mut paths).unwrap();
         assert_eq!(paths, vec![PathBuf::from("/etc/app/.env")]);
     }
 }
