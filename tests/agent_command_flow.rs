@@ -1477,6 +1477,73 @@ async fn test_activate_pipe_report_accepts_runtime_lifecycle_shape() {
 }
 
 #[tokio::test]
+async fn test_health_report_records_the_stack_compose_location_on_the_agent() {
+    // The agent reports where the stack's compose lives; deployment state reads
+    // it from agents.system_info instead of guessing /home/trydirect/<name>-<id>.
+    let app = app().await;
+    let client = reqwest::Client::new();
+    let deployment_hash = format!("test_stack_compose_deployment_{}", uuid::Uuid::new_v4());
+
+    create_test_deployment(&app, "test_stack_compose_project", &deployment_hash).await;
+    let (agent_id, agent_token) = register_test_agent(&client, &app, &deployment_hash).await;
+    let command_id =
+        queue_pipe_command(&app, &deployment_hash, "health", json!({"app_code": "all"})).await;
+    let wait_result =
+        wait_for_command(&client, &app, &deployment_hash, &agent_id, &agent_token).await;
+    assert_eq!(
+        wait_result["item"]["command_id"].as_str(),
+        Some(command_id.as_str())
+    );
+
+    let mut report_result: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/agent-contract/health.all_health.report.json"
+    ))
+    .expect("all_health fixture");
+    report_result["deployment_hash"] = json!(deployment_hash.clone());
+
+    let report_response = client
+        .post(format!("{}/api/v1/agent/commands/report", app.address))
+        .header("X-Agent-Id", &agent_id)
+        .header("Authorization", format!("Bearer {}", agent_token))
+        .json(&json!({
+            "command_id": command_id,
+            "deployment_hash": deployment_hash,
+            "status": "completed",
+            "executed_by": "compose_agent",
+            "started_at": Utc::now(),
+            "completed_at": Utc::now(),
+            "result": report_result
+        }))
+        .send()
+        .await
+        .expect("Failed to report health command");
+    assert!(
+        report_response.status().is_success(),
+        "health report failed: {}",
+        report_response.text().await.unwrap_or_default()
+    );
+
+    let system_info: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT system_info FROM agents WHERE deployment_hash = $1")
+            .bind(&deployment_hash)
+            .fetch_one(&app.db_pool)
+            .await
+            .expect("Failed to fetch agent system_info");
+    let system_info = system_info.expect("system_info should be set");
+    assert_eq!(
+        system_info["stack_compose"]["dir"],
+        "/home/trydirect/project"
+    );
+    assert_eq!(
+        system_info["stack_compose"]["file"],
+        "/home/trydirect/project/docker-compose.yml"
+    );
+    // What the agent registered with is kept.
+    assert_eq!(system_info["os"], "linux");
+    assert_eq!(system_info["arch"], "x86_64");
+}
+
+#[tokio::test]
 async fn test_deactivate_pipe_report_accepts_runtime_lifecycle_shape() {
     let app = app().await;
     let client = reqwest::Client::new();

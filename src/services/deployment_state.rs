@@ -102,6 +102,30 @@ pub struct DeploymentLastCommandState {
     pub finished_at: DateTime<Utc>,
 }
 
+/// Where the stack runs: the location the agent reported (`system_info.stack_compose`,
+/// see `services::stack_compose`), otherwise the `<name>-<id>` guess. The guess
+/// is wrong for stacks in a legacy `/home/trydirect/project` or a catalog role's
+/// own directory, which is why the agent's report wins.
+fn runtime_state(project: &Project, agent: Option<&Agent>) -> DeploymentRuntimeState {
+    use crate::services::stack_compose;
+
+    if let Some(location) =
+        agent.and_then(|agent| stack_compose::from_system_info(agent.system_info.as_ref()))
+    {
+        return DeploymentRuntimeState {
+            stack_code: stack_compose::stack_dir_name(&location),
+            env_path: stack_compose::env_path(&location),
+            compose_path: location.file,
+        };
+    }
+    let guess = format!("{}-{}", sanitize_project_name(&project.name), project.id);
+    DeploymentRuntimeState {
+        compose_path: remote_runtime_compose_path_for(&guess),
+        env_path: remote_runtime_env_path_for(&guess),
+        stack_code: guess,
+    }
+}
+
 impl DeploymentState {
     pub fn from_parts(
         project: &Project,
@@ -166,19 +190,7 @@ impl DeploymentState {
                 capabilities,
                 features,
             },
-            runtime: DeploymentRuntimeState {
-                stack_code: format!("{}-{}", sanitize_project_name(&project.name), project.id),
-                compose_path: remote_runtime_compose_path_for(&format!(
-                    "{}-{}",
-                    sanitize_project_name(&project.name),
-                    project.id
-                )),
-                env_path: remote_runtime_env_path_for(&format!(
-                    "{}-{}",
-                    sanitize_project_name(&project.name),
-                    project.id
-                )),
-            },
+            runtime: runtime_state(project, agent),
             apps,
             drift: DeploymentDriftState {
                 has_drift: false,
@@ -321,5 +333,55 @@ mod tests {
         assert_eq!(json["agent"]["status"], "offline");
         assert!(json["agent"].get("id").is_none());
         assert!(json.get("lastCommand").is_none());
+    }
+
+    #[test]
+    fn runtime_paths_come_from_the_agent_report_when_recorded() {
+        // Live case (2026-11-27): the stack runs in /home/trydirect/project,
+        // state showed the guessed /home/trydirect/<name>-<id>.
+        let mut agent = Agent::new("deployment_state_reported".to_string());
+        agent.system_info = Some(json!({
+            "hostname": "srv",
+            "stack_compose": {
+                "dir": "/home/trydirect/project",
+                "file": "/home/trydirect/project/docker-compose.yml",
+                "reported_at": "2026-11-27T20:00:00+00:00"
+            }
+        }));
+
+        let state = DeploymentState::from_parts(
+            &sample_project(),
+            &sample_deployment("deployment_state_reported", "completed"),
+            Some(&agent),
+            &[],
+            None,
+        );
+
+        assert_eq!(state.runtime.stack_code, "project");
+        assert_eq!(
+            state.runtime.compose_path,
+            "/home/trydirect/project/docker-compose.yml"
+        );
+        assert_eq!(state.runtime.env_path, "/home/trydirect/project/.env");
+    }
+
+    #[test]
+    fn runtime_paths_fall_back_to_the_stack_code_guess_until_reported() {
+        let project = sample_project();
+        let guess = format!("{}-{}", sanitize_project_name(&project.name), project.id);
+
+        let state = DeploymentState::from_parts(
+            &project,
+            &sample_deployment("deployment_state_unreported", "completed"),
+            None,
+            &[],
+            None,
+        );
+
+        assert_eq!(state.runtime.stack_code, guess);
+        assert_eq!(
+            state.runtime.compose_path,
+            remote_runtime_compose_path_for(&guess)
+        );
     }
 }

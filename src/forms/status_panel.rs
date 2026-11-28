@@ -334,6 +334,18 @@ pub struct AllHealthCommandReport {
     pub system_containers: Vec<HealthContainerReport>,
     #[serde(default)]
     pub errors: Vec<StatusPanelCommandError>,
+    /// Where the agent found the stack's compose (from the compose labels of
+    /// the project's containers). Recorded on the agent so deployment state
+    /// shows the real path instead of guessing it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_compose: Option<StackComposeLocation>,
+}
+
+/// The stack's compose directory and file as the agent sees them on the server.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct StackComposeLocation {
+    pub dir: String,
+    pub file: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -1460,6 +1472,14 @@ mod tests {
             names,
             vec!["project-app-1", "project-floci-ui-1"],
             "container_name and app_code are distinct fields and must not be conflated"
+        );
+
+        // Where the agent found the stack's compose; must survive validation
+        // so the report handler can record it (deployment state shows it).
+        assert_eq!(stored["stack_compose"]["dir"], "/home/trydirect/project");
+        assert_eq!(
+            stored["stack_compose"]["file"],
+            "/home/trydirect/project/docker-compose.yml"
         );
     }
 
