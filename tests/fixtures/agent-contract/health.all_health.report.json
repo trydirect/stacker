@@ -9,6 +9,8 @@
       "container_name": "project-app-1",
       "container_state": "running",
       "status": "ok",
+      "scope": "project",
+      "image": "floci/floci:latest",
       "metrics": {
         "cpu_pct": 0.17623701691627502,
         "mem_limit_bytes": 8122089472,
@@ -23,6 +25,8 @@
       "container_name": "project-floci-ui-1",
       "container_state": "running",
       "status": "ok",
+      "scope": "project",
+      "image": "floci/floci-ui:latest",
       "metrics": {
         "cpu_pct": 0.06171600893139839,
         "mem_limit_bytes": 8122089472,
@@ -32,5 +36,27 @@
         "tx_bytes": 537354
       }
     }
-  ]
+  ],
+  "system_containers": [
+    {
+      "app_code": "statuspanel",
+      "container_name": "statuspanel",
+      "container_state": "running",
+      "status": "ok",
+      "scope": "platform",
+      "image": "trydirect/status:latest"
+    },
+    {
+      "app_code": "statuspanel_agent",
+      "container_name": "statuspanel_agent",
+      "container_state": "running",
+      "status": "ok",
+      "scope": "platform",
+      "image": "trydirect/status:latest"
+    }
+  ],
+  "stack_compose": {
+    "dir": "/home/trydirect/project",
+    "file": "/home/trydirect/project/docker-compose.yml"
+  }
 }

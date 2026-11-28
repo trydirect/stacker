@@ -7,6 +7,36 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
+/// Store the agent-reported stack compose location under the agent's
+/// `system_info` (only when it changed). Failures are logged, never returned:
+/// the report itself is already stored.
+async fn record_stack_compose(
+    pool: &sqlx::PgPool,
+    deployment_hash: &str,
+    location: &status_panel::StackComposeLocation,
+) {
+    let agent = match db::agent::fetch_by_deployment_hash(pool, deployment_hash).await {
+        Ok(Some(agent)) => agent,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(%deployment_hash, %error, "Could not load agent to record stack compose location");
+            return;
+        }
+    };
+    let Some(system_info) = crate::services::stack_compose::merge_into_system_info(
+        agent.system_info.as_ref(),
+        location,
+        chrono::Utc::now(),
+    ) else {
+        return;
+    };
+    let mut agent = agent;
+    agent.system_info = Some(system_info);
+    if let Err(error) = db::agent::update(pool, agent).await {
+        tracing::warn!(%deployment_hash, %error, "Could not record stack compose location");
+    }
+}
+
 /// Event published to RabbitMQ when a command result is reported
 #[derive(Debug, Serialize)]
 pub struct CommandCompletedEvent {
@@ -173,6 +203,21 @@ pub async fn report_handler(
 
             // Remove from queue if still there (shouldn't be, but cleanup)
             let _ = db::command::remove_from_queue(agent_pool.as_ref(), &payload.command_id).await;
+
+            // Record where the stack's compose actually lives, as the agent
+            // found it, so deployment state stops guessing the path.
+            // Best-effort, like the bookkeeping below.
+            if status == models::CommandStatus::Completed
+                && matches!(command.r#type.as_str(), "health" | "deploy_app")
+            {
+                if let Some(location) = result_payload
+                    .as_ref()
+                    .and_then(crate::services::stack_compose::from_report)
+                {
+                    record_stack_compose(agent_pool.as_ref(), &payload.deployment_hash, &location)
+                        .await;
+                }
+            }
 
             // Record what the deployment is running. Membership of the
             // dashboard's container list comes from this table rather than from

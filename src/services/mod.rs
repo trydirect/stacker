@@ -32,6 +32,7 @@ pub mod resilience_engine;
 pub mod sandbox;
 pub mod sandbox_lifecycle;
 pub mod server_cleanup_notifier;
+pub mod stack_compose;
 pub mod step_executor;
 pub mod storage;
 pub mod typed_error;
